@@ -6,19 +6,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
-
-
-# response = client.chat.completions.create(
-#     model="deepseek-chat",
-#     messages=[
-#         {"role": "system", "content": "You are a helpful assistant"},
-#         {"role": "user", "content": "Hello"},
-#     ],
-#     stream=False
-# )
-
-# print(response.choices[0].message.content)
+import requests
+import json
+import os
+from typing import Optional
 
 import requests
 import json
@@ -33,6 +24,35 @@ class DeepSeekStreamingChat:
         Args:
             api_key: DeepSeek API key (can be None if set as env var)
             model: Model to use
+
+        ## Usage Example:
+        ```
+        DeepSeek Streaming Chat
+        ============================================================
+        Commands:
+        /clear   - Clear conversation history
+        /history - Show conversation history
+        /quit    - Exit the chat
+        ============================================================
+        Tip: Press Ctrl+C during streaming to interrupt current response
+        ============================================================
+
+        You: Explain quantum computing in detail
+
+        Assistant: Quantum computing is a type of computation that...
+        [User presses Ctrl+C here]
+        [Streaming interrupted by user]
+
+        Save partial response? (y/n): y
+
+        You: [Continues with next question]
+        ```
+
+        This implementation allows users to:
+        1. Stop long responses with Ctrl+C
+        2. Choose whether to save partial responses
+        3. Continue chatting without restarting the program
+        4. Maintain conversation history properly
         """
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         self.model = model
@@ -41,34 +61,36 @@ class DeepSeekStreamingChat:
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
-    
+
     def add_to_history(self, role: str, content: str):
         """Add message to conversation history"""
         self.conversation_history.append({"role": role, "content": content})
-
+    
     def clear_history(self):
         """Clear conversation history"""
         self.conversation_history = []
-    
+
     def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048):
         """
-        Stream response from DeepSeek API
+        Stream response with Ctrl+C interruption support
 
         Args:
             prompt: User's input prompt
             temperature: Controls randomness (0.0 to 1.0)
             max_tokens: Maximum tokens in response
+
+        Returns:
+            Full response string or None if interrupted
         """
-        
         # Add user message to history
         self.add_to_history("user", prompt)
-        
+
         # Prepare headers
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
-
+        
         # Prepare payload with conversation history
         payload = {
             "model": self.model,
@@ -77,7 +99,7 @@ class DeepSeekStreamingChat:
             "temperature": temperature,
             "max_tokens": max_tokens
         }
-
+        
         try:
             # Make streaming request
             response = requests.post(
@@ -90,36 +112,48 @@ class DeepSeekStreamingChat:
 
             if response.status_code != 200:
                 print(f"\nError {response.status_code}: {response.text}")
+                # Remove failed user message from history
+                self.conversation_history.pop()
                 return None
 
             print("\nAssistant: ", end="", flush=True)
-
             full_response = ""
 
-            # Process streaming chunks
-            for line in response.iter_lines():
-                if line:
-                    line = line.decode('utf-8')
+            try:
+                # Process streaming chunks
+                for line in response.iter_lines():
+                    if line:
+                        line = line.decode('utf-8')
+                        if line.startswith("data: "):
+                            data = line[6:]
+                            if data == "[DONE]":
+                                break
+                            try:
+                                json_data = json.loads(data)
+                                if "choices" in json_data and json_data["choices"]:
+                                    delta = json_data["choices"][0].get("delta", {})
+                                    content = delta.get("content", "")
+                                    if content:
+                                        print(content, end="", flush=True)
+                                        full_response += content
+                            except json.JSONDecodeError:
+                                continue
 
-                    if line.startswith("data: "):
-                        data = line[6:]
+            except KeyboardInterrupt:
+                # User pressed Ctrl+C to interrupt streaming
+                print("\n\n[Streaming interrupted by user]")
+                # Ensure connection is closed
+                response.close()
 
-                        if data == "[DONE]":
-                            break
-
-                        try:
-                            json_data = json.loads(data)
-
-                            if "choices" in json_data and json_data["choices"]:
-                                delta = json_data["choices"][0].get("delta", {})
-                                content = delta.get("content", "")
-
-                                if content:
-                                    print(content, end="", flush=True)
-                                    full_response += content
-                                    
-                        except json.JSONDecodeError:
-                            continue
+                # Ask user if they want to save partial response
+                save_partial = input("\nSave partial response? (y/n): ").strip().lower()
+                if save_partial == 'y' and full_response:
+                    self.add_to_history("assistant", full_response + "\n[Response interrupted by user]")
+                    return full_response + "\n[Response interrupted by user]"
+                else:
+                    # Remove the incomplete user message from history
+                    self.conversation_history.pop()  # Remove user message
+                    return None
 
             # Add assistant response to history
             if full_response:
@@ -130,44 +164,46 @@ class DeepSeekStreamingChat:
 
         except requests.exceptions.Timeout:
             print("\nRequest timed out. Please try again.")
+            # Remove user message on timeout
+            self.conversation_history.pop()
             return None
         except requests.exceptions.RequestException as e:
             print(f"\nRequest failed: {e}")
+            # Remove user message on request failure
+            self.conversation_history.pop()
             return None
-        except KeyboardInterrupt:
-            print("\n\nStreaming interrupted.")
-            return None
+
 
 def interactive_chat():
-    """Interactive chat interface"""
-
+    """Interactive chat interface with proper Ctrl+C handling"""
     # Try to get API key from environment
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     
     if not api_key:
         print("DEEPSEEK_API_KEY environment variable not found.")
         api_key = input("Enter your DeepSeek API key: ").strip()
-    
-    if not api_key:
-        print("API key is required!")
-        return
+        if not api_key:
+            print("API key is required!")
+            return
 
     # Initialize chat
     chat = DeepSeekStreamingChat(api_key=api_key)
-    
+
     print("\n" + "="*60)
     print("DeepSeek Streaming Chat")
     print("="*60)
     print("Commands:")
-    print("  /clear  - Clear conversation history")
+    print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
-    print("  /quit   - Exit the chat")
+    print("  /quit    - Exit the chat")
+    print("="*60)
+    print("Tip: Press Ctrl+C during streaming to interrupt current response")
     print("="*60 + "\n")
 
     while True:
         try:
             # Get user input
-            user_input = input("You: ").strip()
+            user_input = input("\nYou: ").strip()
 
             # Handle commands
             if user_input.lower() in ['/quit', '/exit', 'quit', 'exit']:
@@ -180,9 +216,11 @@ def interactive_chat():
             elif user_input.lower() == '/history':
                 print("\nConversation History:")
                 for i, msg in enumerate(chat.conversation_history):
-                    role = msg["role"].capitalize()
-                    content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
-                    print(f"{i+1}. {role}: {content}")
+                    role = "System" if msg["role"] == "system" else "User" if msg["role"] == "user" else "Assistant"
+                    content = msg["content"]
+                    # Show first 150 characters
+                    preview = content[:150] + "..." if len(content) > 150 else content
+                    print(f"{i+1}. {role}: {preview}")
                 print()
                 continue
 
@@ -194,10 +232,14 @@ def interactive_chat():
             chat.stream_response(user_input)
 
         except KeyboardInterrupt:
-            print("\n\nChat ended.")
+            # Ctrl+C pressed while waiting for user input
+            print("\n\nCtrl+C detected. Exiting...")
             break
         except Exception as e:
             print(f"\nError: {e}")
+            # Continue instead of exiting on error
+            continue
+
 
 if __name__ == "__main__":
     # Run interactive chat
