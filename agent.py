@@ -9,13 +9,196 @@ load_dotenv()
 client = OpenAI(api_key=os.getenv('DEEPSEEK_API_KEY'), base_url="https://api.deepseek.com")
 
 
-response = client.chat.completions.create(
-    model="deepseek-chat",
-    messages=[
-        {"role": "system", "content": "You are a helpful assistant"},
-        {"role": "user", "content": "Hello"},
-    ],
-    stream=False
-)
+# response = client.chat.completions.create(
+#     model="deepseek-chat",
+#     messages=[
+#         {"role": "system", "content": "You are a helpful assistant"},
+#         {"role": "user", "content": "Hello"},
+#     ],
+#     stream=False
+# )
 
-print(response.choices[0].message.content)
+# print(response.choices[0].message.content)
+
+import requests
+import json
+import os
+from typing import Optional
+
+class DeepSeekStreamingChat:
+    def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
+        """
+        Initialize DeepSeek streaming chat
+
+        Args:
+            api_key: DeepSeek API key (can be None if set as env var)
+            model: Model to use
+        """
+        self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
+        self.model = model
+        self.base_url = "https://api.deepseek.com/chat/completions"
+        self.conversation_history = []
+
+        if not self.api_key:
+            raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
+    
+    def add_to_history(self, role: str, content: str):
+        """Add message to conversation history"""
+        self.conversation_history.append({"role": role, "content": content})
+
+    def clear_history(self):
+        """Clear conversation history"""
+        self.conversation_history = []
+    
+    def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048):
+        """
+        Stream response from DeepSeek API
+
+        Args:
+            prompt: User's input prompt
+            temperature: Controls randomness (0.0 to 1.0)
+            max_tokens: Maximum tokens in response
+        """
+        
+        # Add user message to history
+        self.add_to_history("user", prompt)
+        
+        # Prepare headers
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+
+        # Prepare payload with conversation history
+        payload = {
+            "model": self.model,
+            "messages": self.conversation_history,
+            "stream": True,
+            "temperature": temperature,
+            "max_tokens": max_tokens
+        }
+
+        try:
+            # Make streaming request
+            response = requests.post(
+                self.base_url,
+                headers=headers,
+                json=payload,
+                stream=True,
+                timeout=30
+            )
+
+            if response.status_code != 200:
+                print(f"\nError {response.status_code}: {response.text}")
+                return None
+
+            print("\nAssistant: ", end="", flush=True)
+
+            full_response = ""
+
+            # Process streaming chunks
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+
+                    if line.startswith("data: "):
+                        data = line[6:]
+
+                        if data == "[DONE]":
+                            break
+
+                        try:
+                            json_data = json.loads(data)
+
+                            if "choices" in json_data and json_data["choices"]:
+                                delta = json_data["choices"][0].get("delta", {})
+                                content = delta.get("content", "")
+
+                                if content:
+                                    print(content, end="", flush=True)
+                                    full_response += content
+                                    
+                        except json.JSONDecodeError:
+                            continue
+
+            # Add assistant response to history
+            if full_response:
+                self.add_to_history("assistant", full_response)
+
+            print()  # New line after streaming
+            return full_response
+
+        except requests.exceptions.Timeout:
+            print("\nRequest timed out. Please try again.")
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"\nRequest failed: {e}")
+            return None
+        except KeyboardInterrupt:
+            print("\n\nStreaming interrupted.")
+            return None
+
+def interactive_chat():
+    """Interactive chat interface"""
+
+    # Try to get API key from environment
+    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    
+    if not api_key:
+        print("DEEPSEEK_API_KEY environment variable not found.")
+        api_key = input("Enter your DeepSeek API key: ").strip()
+    
+    if not api_key:
+        print("API key is required!")
+        return
+
+    # Initialize chat
+    chat = DeepSeekStreamingChat(api_key=api_key)
+    
+    print("\n" + "="*60)
+    print("DeepSeek Streaming Chat")
+    print("="*60)
+    print("Commands:")
+    print("  /clear  - Clear conversation history")
+    print("  /history - Show conversation history")
+    print("  /quit   - Exit the chat")
+    print("="*60 + "\n")
+
+    while True:
+        try:
+            # Get user input
+            user_input = input("You: ").strip()
+
+            # Handle commands
+            if user_input.lower() in ['/quit', '/exit', 'quit', 'exit']:
+                print("Goodbye!")
+                break
+            elif user_input.lower() == '/clear':
+                chat.clear_history()
+                print("Conversation history cleared.")
+                continue
+            elif user_input.lower() == '/history':
+                print("\nConversation History:")
+                for i, msg in enumerate(chat.conversation_history):
+                    role = msg["role"].capitalize()
+                    content = msg["content"][:100] + "..." if len(msg["content"]) > 100 else msg["content"]
+                    print(f"{i+1}. {role}: {content}")
+                print()
+                continue
+
+            # Skip empty input
+            if not user_input:
+                continue
+
+            # Stream response
+            chat.stream_response(user_input)
+
+        except KeyboardInterrupt:
+            print("\n\nChat ended.")
+            break
+        except Exception as e:
+            print(f"\nError: {e}")
+
+if __name__ == "__main__":
+    # Run interactive chat
+    interactive_chat()
