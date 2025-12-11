@@ -17,6 +17,8 @@ try:
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.key_binding import KeyBindings
     from prompt_toolkit.keys import Keys
+    from prompt_toolkit.document import Document
+    from prompt_toolkit.enums import EditingMode
     PROMPT_TOOLKIT_AVAILABLE = True
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
@@ -36,7 +38,7 @@ class DeepSeekStreamingChat:
     def add_to_history(self, role: str, content: str):
         """Add message to conversation history"""
         self.conversation_history.append({"role": role, "content": content})
-    
+
     def clear_history(self):
         """Clear conversation history"""
         self.conversation_history = []
@@ -129,6 +131,48 @@ class DeepSeekStreamingChat:
             return None
 
 
+def get_multiline_input_with_prompt_toolkit(session):
+    """Get multiline input with prompt_toolkit, supporting \ + Enter for line continuation"""
+    lines = []
+    prompt = "You: "
+    continuation_prompt = "... "
+    
+    while True:
+        try:
+            # Get input line
+            line = session.prompt(
+                continuation_prompt if lines else prompt,
+                multiline=False,
+                enable_history_search=False if lines else True  # Only search history on first line
+            )
+
+            # Check if line ends with backslash for continuation
+            if line.rstrip().endswith('\\'):
+                # Remove the trailing backslash and add the line
+                lines.append(line.rstrip()[:-1])
+                # Continue to next line
+                continue
+            else:
+                # Add the final line
+                lines.append(line)
+                break
+
+        except KeyboardInterrupt:
+            # User pressed Ctrl+C to cancel input
+            print("\n[Input cancelled]")
+            return None
+        except EOFError:
+            # User pressed Ctrl+D
+            print()
+            break
+
+    if not lines:
+        return None
+
+    # Join all lines
+    return '\n'.join(lines)
+
+
 def interactive_chat_with_prompt_toolkit():
     """Interactive chat using prompt_toolkit for best cross-platform experience"""
     # Try to get API key from environment
@@ -151,29 +195,26 @@ def interactive_chat_with_prompt_toolkit():
     print("  /history - Show conversation history")
     print("  /quit    - Exit the chat")
     print("="*60)
-    print("Tip: Press Ctrl+C during streaming to interrupt current response")
-    print("Tip: Use ↑/↓ arrows to navigate through previous queries")
+    print("Input Features:")
+    print("  • Use \\ + Enter for line continuation")
+    print("  • Press Ctrl+C during input to cancel")
+    print("  • Press Ctrl+C during streaming to interrupt response")
+    print("  • Use ↑/↓ arrows to navigate through previous queries")
     print("="*60 + "\n")
 
     # Create prompt session with history
     session = PromptSession(history=InMemoryHistory())
-    
-    # Create custom key bindings
-    kb = KeyBindings()
-    
-    @kb.add(Keys.ControlC)
-    def _(event):
-        """Handle Ctrl+C in prompt"""
-        event.app.exit(exception=KeyboardInterrupt)
-    
+
     while True:
         try:
-            # Get user input with prompt_toolkit
-            user_input = session.prompt(
-                "You: ",
-                key_bindings=kb,
-                enable_history_search=True
-            ).strip()
+            # Get multiline user input
+            user_input = get_multiline_input_with_prompt_toolkit(session)
+
+            # Handle cancelled input
+            if user_input is None:
+                continue
+
+            user_input = user_input.strip()
 
             # Handle commands
             if user_input.lower() in ['/quit', '/exit', 'quit', 'exit']:
@@ -212,6 +253,43 @@ def interactive_chat_with_prompt_toolkit():
             continue
 
 
+def get_multiline_input_fallback():
+    """Fallback multiline input without prompt_toolkit"""
+    lines = []
+    print("You: ", end="", flush=True)
+    
+    while True:
+        try:
+            line = input()
+
+            # Check if line ends with backslash for continuation
+            if line.rstrip().endswith('\\'):
+                # Remove the trailing backslash and add the line
+                lines.append(line.rstrip()[:-1])
+                # Show continuation prompt
+                print("... ", end="", flush=True)
+                continue
+            else:
+                # Add the final line
+                lines.append(line)
+                break
+
+        except KeyboardInterrupt:
+            # User pressed Ctrl+C to cancel input
+            print("\n[Input cancelled]")
+            return None
+        except EOFError:
+            # User pressed Ctrl+D
+            print()
+            break
+
+    if not lines:
+        return None
+
+    # Join all lines
+    return '\n'.join(lines)
+
+
 def interactive_chat_fallback():
     """Fallback interactive chat without prompt_toolkit"""
     # Try to get API key from environment
@@ -234,14 +312,22 @@ def interactive_chat_fallback():
     print("  /history - Show conversation history")
     print("  /quit    - Exit the chat")
     print("="*60)
-    print("Tip: Press Ctrl+C during streaming to interrupt current response")
-    print("Note: Install prompt_toolkit for arrow key navigation: pip install prompt_toolkit")
+    print("Input Features:")
+    print("  • Use \\ + Enter for line continuation")
+    print("  • Press Ctrl+C during input to cancel")
+    print("  • Press Ctrl+C during streaming to interrupt response")
     print("="*60 + "\n")
 
     while True:
         try:
-            # Simple input without advanced features
-            user_input = input("You: ").strip()
+            # Get multiline user input
+            user_input = get_multiline_input_fallback()
+
+            # Handle cancelled input
+            if user_input is None:
+                continue
+
+            user_input = user_input.strip()
 
             # Handle commands
             if user_input.lower() in ['/quit', '/exit', 'quit', 'exit']:
