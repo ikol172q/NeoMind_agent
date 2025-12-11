@@ -2,7 +2,6 @@
 # pip install openai python-dotenv requests prompt_toolkit
 
 import os
-from openai import OpenAI
 from dotenv import load_dotenv
 load_dotenv()
 
@@ -15,10 +14,7 @@ from typing import Optional
 try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
-    from prompt_toolkit.key_binding import KeyBindings
-    from prompt_toolkit.keys import Keys
-    from prompt_toolkit.document import Document
-    from prompt_toolkit.enums import EditingMode
+    from prompt_toolkit.styles import Style
     PROMPT_TOOLKIT_AVAILABLE = True
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
@@ -31,6 +27,7 @@ class DeepSeekStreamingChat:
         self.model = model
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.conversation_history = []
+        self.thinking_enabled = False  # Add thinking mode flag
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -43,11 +40,16 @@ class DeepSeekStreamingChat:
         """Clear conversation history"""
         self.conversation_history = []
 
+    def toggle_thinking_mode(self):
+        """Toggle thinking mode on/off"""
+        self.thinking_enabled = not self.thinking_enabled
+        return self.thinking_enabled
+
     def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4):
-        """Stream response with Ctrl+C interruption support"""
+        """Stream response with separate thinking and final response streams"""
         # Add user message to history
         self.add_to_history("user", prompt)
-        
+
         # Prepare headers
         headers = {
             "Content-Type": "application/json",
@@ -62,6 +64,10 @@ class DeepSeekStreamingChat:
             "temperature": temperature,
             "max_tokens": max_tokens
         }
+
+        # Add thinking parameter if thinking mode is enabled
+        if self.thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
 
         try:
             # Make streaming request
@@ -79,8 +85,11 @@ class DeepSeekStreamingChat:
                 self.conversation_history.pop()
                 return None
 
-            print("\nAssistant: ", end="", flush=True)
             full_response = ""
+            reasoning_content = ""
+            is_reasoning_active = False
+            is_final_response_active = False
+            has_seen_reasoning = False
 
             try:
                 # Process streaming chunks
@@ -95,8 +104,37 @@ class DeepSeekStreamingChat:
                                 json_data = json.loads(data)
                                 if "choices" in json_data and json_data["choices"]:
                                     delta = json_data["choices"][0].get("delta", {})
+
+                                    # Check for reasoning content
+                                    reasoning_chunk = delta.get("reasoning_content")
+
+                                    # Handle reasoning content (could be string or null)
+                                    if reasoning_chunk is not None:
+                                        if reasoning_chunk and not is_reasoning_active:
+                                            # Start of reasoning - subtle header
+                                            print("\n\033[90m" + "─" * 40 + "🤔 THINKING" + "─" * 40 + "\033[0m")
+                                            is_reasoning_active = True
+                                            is_final_response_active = False
+                                            has_seen_reasoning = True
+                                        
+                                        if reasoning_chunk:  # Only if it's not empty string
+                                            # Print reasoning in a subtle gray color
+                                            print(f"\033[90m{reasoning_chunk}\033[0m", end="", flush=True)
+                                            reasoning_content += reasoning_chunk
+
+                                    # Get regular content
                                     content = delta.get("content", "")
                                     if content:
+                                        if not is_final_response_active:
+                                            # Start of final response
+                                            if has_seen_reasoning and is_reasoning_active:
+                                                print("\n\033[90m" + "-" * 40 + "💬 RESPONSE" + "-" * 40 + "\033[0m\n")
+                                            elif not self.thinking_enabled:
+                                                print("\nAssistant: ", end="", flush=True)
+                                            is_final_response_active = True
+                                            is_reasoning_active = False
+                                        
+                                        # Print final response in normal style
                                         print(content, end="", flush=True)
                                         full_response += content
                             except json.JSONDecodeError:
@@ -118,6 +156,10 @@ class DeepSeekStreamingChat:
             if full_response:
                 self.add_to_history("assistant", full_response)
 
+            # Print closing separator if thinking was shown
+            if has_seen_reasoning or is_final_response_active:
+                print("\n\033[90m" + "=" * 90 + "\033[0m")
+
             print()
             return full_response
 
@@ -129,14 +171,13 @@ class DeepSeekStreamingChat:
             print(f"\nRequest failed: {e}")
             self.conversation_history.pop()
             return None
-
-
+    
 def get_multiline_input_with_prompt_toolkit(session):
     """Get multiline input with prompt_toolkit, supporting \ + Enter for line continuation"""
     lines = []
     prompt = "You: "
     continuation_prompt = "... "
-    
+
     while True:
         try:
             # Get input line
@@ -188,18 +229,22 @@ def interactive_chat_with_prompt_toolkit():
     chat = DeepSeekStreamingChat(api_key=api_key)
 
     print("\n" + "="*60)
-    print("DeepSeek Streaming Chat (Enhanced)")
+    print("DeepSeek Streaming Chat (Enhanced with Thinking Stream)")
     print("="*60)
     print("Commands:")
     print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
+    print("  /think   - Toggle thinking mode (currently: OFF)")
     print("  /quit    - Exit the chat")
     print("="*60)
-    print("Input Features:")
-    print("  • Use \\ + Enter for line continuation")
-    print("  • Press Ctrl+C during input to cancel")
-    print("  • Press Ctrl+C during streaming to interrupt response")
-    print("  • Use ↑/↓ arrows to navigate through previous queries")
+    print("Features:")
+    print("   Thinking process streams in yellow color")
+    print("   Final response streams in normal color")
+    print("   Clear visual separation between thinking and response")
+    print("   Use \\ + Enter for line continuation")
+    print("   Press Ctrl+C during input to cancel")
+    print("   Press Ctrl+C during streaming to interrupt response")
+    print("   Use / arrows to navigate through previous queries")
     print("="*60 + "\n")
 
     # Create prompt session with history
@@ -234,6 +279,11 @@ def interactive_chat_with_prompt_toolkit():
                     print(f"{i+1}. {role}: {preview}")
                 print()
                 continue
+            elif user_input.lower() == '/think':
+                thinking_status = chat.toggle_thinking_mode()
+                status_text = "ON" if thinking_status else "OFF"
+                print(f"\nThinking mode is now: {status_text}")
+                continue
 
             # Skip empty input
             if not user_input:
@@ -257,7 +307,7 @@ def get_multiline_input_fallback():
     """Fallback multiline input without prompt_toolkit"""
     lines = []
     print("You: ", end="", flush=True)
-    
+
     while True:
         try:
             line = input()
@@ -305,17 +355,21 @@ def interactive_chat_fallback():
     chat = DeepSeekStreamingChat(api_key=api_key)
 
     print("\n" + "="*60)
-    print("DeepSeek Streaming Chat")
+    print("DeepSeek Streaming Chat (Enhanced with Thinking Stream)")
     print("="*60)
     print("Commands:")
     print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
+    print("  /think   - Toggle thinking mode (currently: OFF)")
     print("  /quit    - Exit the chat")
     print("="*60)
-    print("Input Features:")
-    print("  • Use \\ + Enter for line continuation")
-    print("  • Press Ctrl+C during input to cancel")
-    print("  • Press Ctrl+C during streaming to interrupt response")
+    print("Features:")
+    print("   Thinking process streams in yellow color")
+    print("   Final response streams in normal color")
+    print("   Clear visual separation between thinking and response")
+    print("   Use \\ + Enter for line continuation")
+    print("   Press Ctrl+C during input to cancel")
+    print("   Press Ctrl+C during streaming to interrupt response")
     print("="*60 + "\n")
 
     while True:
@@ -345,6 +399,11 @@ def interactive_chat_fallback():
                     preview = content[:150] + "..." if len(content) > 150 else content
                     print(f"{i+1}. {role}: {preview}")
                 print()
+                continue
+            elif user_input.lower() == '/think':
+                thinking_status = chat.toggle_thinking_mode()
+                status_text = "ON" if thinking_status else "OFF"
+                print(f"\nThinking mode is now: {status_text}")
                 continue
 
             # Skip empty input
