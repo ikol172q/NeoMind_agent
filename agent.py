@@ -25,6 +25,102 @@ except ImportError:
 import time
 from typing import Dict, List, Any, Tuple
 
+import asyncio
+import aiohttp
+from lxml import html as lxml_html
+import re
+import time
+from typing import List, Tuple
+from functools import lru_cache
+
+class OptimizedDuckDuckGoSearch:
+    """Async + lxml optimized search"""
+    
+    def __init__(self):
+        self.cache = {}
+        self.min_interval = 0.5  # Faster but be nice to DDG
+
+    @lru_cache(maxsize=100)
+    def should_search(self, query: str) -> bool:
+        """Cache decision for whether to search"""
+        triggers = {"today", "news", "weather", "latest", "current", "now", "recent"}
+        return any(trigger in query.lower() for trigger in triggers)
+
+    async def _fetch_html(self, query: str) -> str:
+        """Async fetch with connection pooling"""
+        params = {
+            'q': query,
+            'kl': 'us-en',
+            'kp': '1',  # Safe search on
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://html.duckduckgo.com/html/",
+                data=params,
+                headers={'User-Agent': 'Mozilla/5.0'},
+                timeout=10
+            ) as response:
+                return await response.text()
+
+    def _parse_fast(self, html: str) -> List[str]:
+        """Lxml parsing - 10x faster than BeautifulSoup"""
+        try:
+            tree = lxml_html.fromstring(html.encode('utf-8'))
+
+            # XPath for snippets (fastest method)
+            snippets = tree.xpath('//a[contains(@class, "snippet")]//text()')
+
+            # Alternative XPath if first one fails
+            if not snippets:
+                snippets = tree.xpath('//div[contains(@class, "result")]//text()')
+
+            # Clean and filter
+            results = []
+            seen = set()
+            for text in snippets:
+                if text and isinstance(text, str):
+                    cleaned = re.sub(r'\s+', ' ', text).strip()
+                    if (len(cleaned) > 30 and 
+                        cleaned not in seen and
+                        len(cleaned) < 1000):
+                        seen.add(cleaned)
+                        results.append(cleaned[:400])
+
+            return results[:5]  # Return top 5
+
+        except Exception:
+            return []
+
+    async def search(self, query: str) -> Tuple[bool, str]:
+        """Main async search method"""
+        start = time.time()
+        
+        try:
+            # Rate limiting
+            current = time.time()
+            if hasattr(self, 'last_search'):
+                elapsed = current - self.last_search
+                if elapsed < self.min_interval:
+                    await asyncio.sleep(self.min_interval - elapsed)
+
+            html = await self._fetch_html(query)
+            results = self._parse_fast(html)
+
+            self.last_search = time.time()
+
+            if results:
+                elapsed = time.time() - start
+                formatted = "\n".join([f"{i+1}. {r}" for i, r in enumerate(results)])
+                return True, f"✅ [{elapsed:.2f}s] Found {len(results)} results:\n\n{formatted}"
+            else:
+                return False, "No results found"
+
+        except asyncio.TimeoutError:
+            return False, "Search timeout"
+        except Exception as e:
+            return False, f"Error: {str(e)}"
+
 class DuckDuckGoSearch:
     """Lightweight DuckDuckGo search with caching"""
 
@@ -84,6 +180,8 @@ class DeepSeekStreamingChat:
         self.thinking_enabled = False  # Add thinking mode flag
         self.searcher = DuckDuckGoSearch()  # ADD THIS LINE
         self.enable_auto_search = False  # ADD THIS LINE - optional auto-search
+        self.searcher = OptimizedDuckDuckGoSearch()
+        self.search_loop = None
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -96,6 +194,15 @@ class DeepSeekStreamingChat:
         success, result = self.searcher.search(query.strip())
         return result
     
+    def search_sync(self, query: str) -> str:
+        """Run async search from sync code"""
+        if not self.search_loop:
+            self.search_loop = asyncio.new_event_loop()
+        
+        return self.search_loop.run_until_complete(
+            self.searcher.search(query)
+        )
+
     def add_to_history(self, role: str, content: str):
         """Add message to conversation history"""
         self.conversation_history.append({"role": role, "content": content})
@@ -253,6 +360,31 @@ class DeepSeekStreamingChat:
             self.conversation_history.pop()
             return None
     
+    async def stream_response_async(self, prompt: str, **kwargs):
+        """Async version - handles search commands asynchronously"""
+        if prompt.startswith("/search"):
+            query = prompt[7:].strip()
+            print(f"\n🔍 Searching for: {query}")
+            success, result = await self.searcher.search(query)
+            print(f"\n{result}\n")
+            return None
+
+        # For non-search prompts, fall back to sync version
+        # Or implement async chat if you want
+        return self.stream_response(prompt, **kwargs)
+
+    def run_async(self, prompt: str, **kwargs):
+        """Helper to run async from sync code"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            result = loop.run_until_complete(
+                self.stream_response_async(prompt, **kwargs)
+            )
+            return result
+        finally:
+            loop.close()
+
 def get_multiline_input_with_prompt_toolkit(session):
     """Get multiline input with prompt_toolkit, supporting \ + Enter for line continuation"""
     lines = []
@@ -375,8 +507,15 @@ def interactive_chat_with_prompt_toolkit():
                 continue
 
             # Stream response
-            chat.stream_response(user_input)
-
+            # chat.stream_response(user_input)
+            if user_input.startswith("/search"):
+                # Run search asynchronously
+                print(f"\n🚀 Running async search...")
+                chat.run_async(user_input)  # This runs async version
+            else:
+                # Normal chat stays synchronous
+                chat.stream_response(user_input)
+            
         except KeyboardInterrupt:
             print("\n\nCtrl+C detected. Exiting...")
             break
