@@ -21,6 +21,60 @@ except ImportError:
     print("Note: For better experience, install prompt_toolkit: pip install prompt_toolkit")
 
 
+# Add after your existing imports
+import time
+from typing import Dict, List, Any, Tuple
+
+class DuckDuckGoSearch:
+    """Lightweight DuckDuckGo search with caching"""
+
+    def __init__(self):
+        self.cache: Dict[str, Dict] = {}
+        self.last_search = 0
+        self.min_interval = 1.0  # seconds between requests
+        self.headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+    
+    def search(self, query: str, max_results: int = 3) -> Tuple[bool, str]:
+        """Search DuckDuckGo and return (success, result_string)"""
+        # Rate limiting
+        current = time.time()
+        if current - self.last_search < self.min_interval:
+            time.sleep(self.min_interval - (current - self.last_search))
+
+        try:
+            # Try HTML search (more robust)
+            url = "https://html.duckduckgo.com/html/"
+            data = {'q': query, 'kl': 'us-en'}
+
+            response = requests.post(url, data=data, 
+                                   headers=self.headers, timeout=8)
+            response.raise_for_status()
+
+            # Parse with BeautifulSoup
+            from bs4 import BeautifulSoup
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            results = []
+            # Extract search snippets
+            for snippet in soup.find_all('a', class_='result__snippet', 
+                                       limit=max_results):
+                text = snippet.get_text(strip=True)
+                if text and len(text) > 30:
+                    results.append(text[:500])
+
+            if results:
+                formatted = "\n".join([f"• {r}" for r in results])
+                self.last_search = time.time()
+                return True, f"🔍 **Search Results for '{query}':**\n\n{formatted}"
+            else:
+                return False, "No results found."
+
+        except Exception as e:
+            return False, f"Search failed: {str(e)}"
+
+
 class DeepSeekStreamingChat:
     def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -28,10 +82,20 @@ class DeepSeekStreamingChat:
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.conversation_history = []
         self.thinking_enabled = False  # Add thinking mode flag
+        self.searcher = DuckDuckGoSearch()  # ADD THIS LINE
+        self.enable_auto_search = False  # ADD THIS LINE - optional auto-search
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
 
+    def handle_search(self, query: str) -> str:
+        """Process search command and return results"""
+        if not query or query.strip() == "":
+            return "Usage: /search <your query>"
+        
+        success, result = self.searcher.search(query.strip())
+        return result
+    
     def add_to_history(self, role: str, content: str):
         """Add message to conversation history"""
         self.conversation_history.append({"role": role, "content": content})
@@ -47,6 +111,23 @@ class DeepSeekStreamingChat:
 
     def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4):
         """Stream response with separate thinking and final response streams"""
+         # NEW: Check for search command
+        if prompt.startswith("/search"):
+            search_query = prompt[7:].strip()  # Remove "/search"
+            search_result = self.handle_search(search_query)
+            print(f"\n{search_result}\n")
+            return None
+
+        # NEW: Optional auto-search (disabled by default)
+        # If you want AI to auto-search for certain queries, uncomment:
+        # auto_search_triggers = ["today", "weather", "news", "latest", "current"]
+        # if any(trigger in prompt.lower() for trigger in auto_search_triggers):
+        #     print(f"\n🔍 [Auto-searching for: {prompt[:50]}...]")
+        #     success, search_result = self.searcher.search(prompt)
+        #     if success:
+        #         # Add search results to the prompt
+        #         prompt = f"Search Context:\n{search_result}\n\nUser Question: {prompt}"
+
         # Add user message to history
         self.add_to_history("user", prompt)
 
@@ -235,6 +316,7 @@ def interactive_chat_with_prompt_toolkit():
     print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
     print("  /think   - Toggle thinking mode (currently: OFF)")
+    print("  /search  - Search web (new!)")  # ADD THIS LINE
     print("  /quit    - Exit the chat")
     print("="*60)
     print("Features:")
@@ -245,6 +327,9 @@ def interactive_chat_with_prompt_toolkit():
     print("   Press Ctrl+C during input to cancel")
     print("   Press Ctrl+C during streaming to interrupt response")
     print("   Use / arrows to navigate through previous queries")
+    print("\nSearch Usage:")
+    print("  /search <query>    - Search DuckDuckGo")
+    print("  Example: /search latest AI news")
     print("="*60 + "\n")
 
     # Create prompt session with history
@@ -361,6 +446,7 @@ def interactive_chat_fallback():
     print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
     print("  /think   - Toggle thinking mode (currently: OFF)")
+    print("  /search  - Search web (new!)")  # ADD THIS LINE
     print("  /quit    - Exit the chat")
     print("="*60)
     print("Features:")
@@ -370,6 +456,9 @@ def interactive_chat_fallback():
     print("   Use \\ + Enter for line continuation")
     print("   Press Ctrl+C during input to cancel")
     print("   Press Ctrl+C during streaming to interrupt response")
+    print("\nSearch Usage:")
+    print("  /search <query>    - Search DuckDuckGo")
+    print("  Example: /search latest AI news")
     print("="*60 + "\n")
 
     while True:
