@@ -1,0 +1,73 @@
+```txt
+# DeepSeek AI Agent - Requirements
+# Install with: pip install -r requirements.txt
+
+# Core dependencies
+openai>=1.0.0
+python-dotenv>=1.0.0
+requests>=2.31.0
+
+# Enhanced CLI experience (optional but recommended)
+prompt_toolkit>=3.0.0
+
+# Web search dependencies
+aiohttp>=3.9.0
+lxml>=4.9.0
+beautifulsoup4>=4.12.0
+
+# Note: asyncio is included in Python 3.7+
+```
+
+## Alternative with pinned versions (for production):
+
+```txt
+# DeepSeek AI Agent - Pinned Requirements
+# Version-locked for stability
+
+# Core API and utilities
+openai==1.12.0
+python-dotenv==1.0.0
+requests==2.31.0
+
+# Enhanced command-line interface
+prompt_toolkit==3.0.43
+
+# Web search and parsing
+aiohttp==3.9.3
+lxml==4.9.4
+beautifulsoup4==4.12.3
+```
+
+## Installation instructions:
+
+```bash
+# Basic installation (minimum requirements)
+pip install openai python-dotenv requests
+
+# Full installation (recommended for all features)
+pip install openai python-dotenv requests prompt_toolkit aiohttp lxml beautifulsoup4
+
+# Or install from requirements.txt
+pip install -r requirements.txt
+```
+
+## Package descriptions:
+
+| Package | Purpose | Required |
+|---------|---------|----------|
+| `openai` | DeepSeek API client (OpenAI-compatible) | **Required** |
+| `python-dotenv` | Environment variable management | **Required** |
+| `requests` | HTTP library for API calls | **Required** |
+| `prompt_toolkit` | Enhanced CLI with history, autocomplete | Optional (recommended) |
+| `aiohttp` | Async HTTP client for efficient searching | Optional (recommended) |
+| `lxml` | Fast HTML parser for search results | Optional (recommended) |
+| `beautifulsoup4` | HTML parser (fallback) | Optional |
+
+## Environment setup:
+
+Create a `.env` file in your project root:
+```env
+DEEPSEEK_API_KEY=your_api_key_here
+```
+
+Get your API key from: https://platform.deepseek.com/api_keys
