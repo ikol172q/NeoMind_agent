@@ -1,0 +1,9 @@
+agent:
+  model: "deepseek-chat"
+  temperature: 0.7
+  max_tokens: 8192
+  thinking_enabled: false
+  stream: true
+  timeout: 30
+  max_retries: 3
+  system_prompt: ""
