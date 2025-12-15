@@ -6,6 +6,7 @@ from typing import Optional, Dict, List, Any
 import requests
 
 from .search import OptimizedDuckDuckGoSearch
+from agent_config import agent_config
 
 
 class DeepSeekStreamingChat:
@@ -13,13 +14,18 @@ class DeepSeekStreamingChat:
 
     def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
-        self.model = model
+        # CHANGED: Use agent_config instead of hardcoded values
+        self.model = model if model != "deepseek-chat" else agent_config.model
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.conversation_history = []
-        self.thinking_enabled = False
+        self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
         self.searcher = OptimizedDuckDuckGoSearch()
         self.enable_auto_search = False
         self.search_loop = None
+
+        # NEW: Add system prompt if provided
+        if agent_config.system_prompt:
+            self.add_to_history("system", agent_config.system_prompt)
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -73,8 +79,8 @@ class DeepSeekStreamingChat:
             "model": self.model,
             "messages": self.conversation_history,
             "stream": True,
-            "temperature": temperature,
-            "max_tokens": max_tokens
+            "temperature": temperature or agent_config.temperature,  # CHANGED
+            "max_tokens": max_tokens or agent_config.max_tokens,    # CHANGED
         }
 
         if self.thinking_enabled:
