@@ -8,6 +8,11 @@ from bs4 import BeautifulSoup
 import re
 import html2text
 
+# Add to imports
+import html
+from urllib.parse import urlparse
+import chardet  # For auto-detecting encoding
+
 from .search import OptimizedDuckDuckGoSearch
 from agent_config import agent_config
 
@@ -294,7 +299,7 @@ class DeepSeekStreamingChat:
             return f"❌ Failed to extract content from {url}. All strategies failed."
 
     def _try_trafilatura(self, url: str, max_length: int) -> Optional[str]:
-        """Try using trafilatura (best for articles)"""
+        """Try using trafilatura with encoding handling"""
         if not HAS_TRAFILATURA:
             return None
 
@@ -306,20 +311,26 @@ class DeepSeekStreamingChat:
                 include_images=False,
                 include_tables=False,
                 no_fallback=False,
+                include_formatting=False,  # Cleaner output
+                output_format='txt',       # Plain text
             )
+
+            if text:
+                # Clean the text
+                text = self._clean_text(text)
+
             return text
         except:
             return None
 
     def _try_beautifulsoup(self, url: str, max_length: int) -> Optional[str]:
-        """Try BeautifulSoup extraction with smart cleaning"""
+        """Try BeautifulSoup extraction with proper encoding handling"""
         try:
             headers = {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9',
-                'Accept-Encoding': 'gzip, deflate',
-                'Connection': 'keep-alive',
+                'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+                'Accept-Charset': 'utf-8, iso-8859-1, utf-16, *;q=0.7',
             }
 
             # Special headers for specific sites
@@ -327,11 +338,59 @@ class DeepSeekStreamingChat:
                 headers['Accept'] = 'application/vnd.github.v3+json'
             elif 'bilibili.com' in url:
                 headers['Referer'] = 'https://www.bilibili.com'
+                headers['Accept-Charset'] = 'utf-8, gb2312, gbk, *;q=0.7'
 
             response = requests.get(url, headers=headers, timeout=15)
             response.raise_for_status()
 
-            soup = BeautifulSoup(response.content, 'html.parser')
+            # Detect encoding
+            encoding = None
+
+            # 1. Check HTTP header
+            if response.encoding:
+                encoding = response.encoding.lower()
+
+            # 2. Check HTML meta tag
+            soup_for_encoding = BeautifulSoup(response.content[:5000], 'html.parser')
+            meta_charset = soup_for_encoding.find('meta', charset=True)
+            if meta_charset:
+                encoding = meta_charset['charset'].lower()
+            else:
+                meta_http_equiv = soup_for_encoding.find('meta', attrs={'http-equiv': 'Content-Type'})
+                if meta_http_equiv and 'content' in meta_http_equiv.attrs:
+                    content_value = meta_http_equiv['content'].lower()
+                    if 'charset=' in content_value:
+                        encoding = content_value.split('charset=')[1].split(';')[0].strip()
+
+            # 3. Use chardet as fallback
+            if not encoding:
+                detected = chardet.detect(response.content)
+                encoding = detected.get('encoding', 'utf-8').lower()
+
+            # Normalize encoding names
+            encoding_map = {
+                'gb2312': 'gbk',
+                'gbk': 'gbk',
+                'gb18030': 'gb18030',
+                'big5': 'big5',
+                'shift_jis': 'shift_jis',
+                'euc-jp': 'euc-jp',
+                'utf-8': 'utf-8',
+                'utf8': 'utf-8',
+                'ascii': 'utf-8',
+            }
+
+            encoding = encoding_map.get(encoding, 'utf-8')
+
+            # Decode with proper encoding
+            try:
+                content = response.content.decode(encoding, errors='replace')
+            except (UnicodeDecodeError, LookupError):
+                # Try UTF-8 as fallback
+                content = response.content.decode('utf-8', errors='replace')
+
+            # Now parse with BeautifulSoup
+            soup = BeautifulSoup(content, 'html.parser')
 
             # Remove unwanted elements
             for tag in ['script', 'style', 'nav', 'footer', 'header', 
@@ -360,23 +419,41 @@ class DeepSeekStreamingChat:
                 body = soup.find('body')
                 text = body.get_text(separator='\n', strip=True) if body else ""
 
-            # Clean text
-            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-            text = re.sub(r'[ \t]{2,}', ' ', text)
+            # Clean the text
+            text = self._clean_text(text)
 
             return text.strip()
-        except:
+        except Exception as e:
+            print(f"Debug: BeautifulSoup error for {url}: {str(e)}")
             return None
 
     def _try_html2text(self, url: str, max_length: int) -> Optional[str]:
-        """Try html2text conversion"""
+        """Try html2text conversion with encoding handling"""
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers, timeout=10)
             response.raise_for_status()
 
+            # Detect encoding
+            try:
+                detected = chardet.detect(response.content)
+                encoding = detected.get('encoding', 'utf-8').lower()
+                content = response.content.decode(encoding, errors='replace')
+            except:
+                content = response.content.decode('utf-8', errors='replace')
+
+            # Configure html2text for better Chinese support
+            self.html_converter.unicode_snob = True  # Use Unicode
+            self.html_converter.escape_snob = False  # Don't escape
+            self.html_converter.links_each_paragraph = False
+            self.html_converter.body_width = 0  # No width limit
+
             # Convert HTML to markdown-like text
-            text = self.html_converter.handle(response.text)
+            text = self.html_converter.handle(content)
+
+            # Clean the text
+            text = self._clean_text(text)
+
             return text.strip()
         except:
             return None
@@ -413,11 +490,36 @@ class DeepSeekStreamingChat:
             return None
 
     def _score_content(self, content: str) -> int:
-        """Score content quality (0-100)"""
+        """Score content quality (0-100) with language checking"""
         if not content:
             return 0
 
+        # First, clean the content
+        content = self._clean_text(content)
+
         score = 0
+
+        # Check for valid text (not just gibberish)
+        # Count Chinese characters
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', content))
+        # Count English words (basic detection)
+        english_words = len(re.findall(r'\b[a-zA-Z]{2,}\b', content))
+
+        # Penalize if there are weird character sequences
+        weird_sequences = len(re.findall(r'[Ã©äåçèéêëìíîïðñòóôõöøùúûüýþÿ]', content))
+        if weird_sequences > len(content) * 0.1:  # More than 10% weird chars
+            return 0  # Definitely gibberish
+
+        # If we have both Chinese and English, that's good
+        if chinese_chars > 10 and english_words > 10:
+            score += 30
+        elif chinese_chars > 20:
+            score += 25
+        elif english_words > 20:
+            score += 25
+        else:
+            # Might not be meaningful content
+            return 10
 
         # Length score (more content is better)
         length = len(content)
@@ -429,27 +531,19 @@ class DeepSeekStreamingChat:
             score += 10
 
         # Sentence structure score
-        sentences = re.findall(r'[.!?]+', content)
+        sentences = re.findall(r'[.!?。！？]+', content)
         if len(sentences) > 5:
             score += 30
-
-        # Paragraph structure score
-        paragraphs = content.count('\n\n')
-        if paragraphs > 3:
-            score += 20
-
-        # Word diversity score
-        words = content.split()
-        unique_words = len(set(words))
-        if len(words) > 0 and unique_words / len(words) > 0.5:
-            score += 10
 
         return min(score, 100)
 
     def _format_result(self, url: str, content: str, score: int) -> str:
-        """Format the final result"""
+        """Format the final result with language info"""
         if len(content) > 20000:
             content = content[:20000] + f"\n\n[Content truncated. Original: {len(content)} chars]"
+        
+        # Clean content one more time
+        content = self._clean_text(content)
 
         # Get page title if possible
         title = "Unknown Title"
@@ -457,15 +551,27 @@ class DeepSeekStreamingChat:
             response = requests.get(url, timeout=5)
             soup = BeautifulSoup(response.content, 'html.parser')
             if soup.title and soup.title.string:
-                title = soup.title.string.strip()
+                title = self._clean_text(soup.title.string.strip())
         except:
             pass
 
+        # Detect language
+        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', content))
+        english_words = len(re.findall(r'\b[a-zA-Z]{3,}\b', content))
+
+        if chinese_chars > english_words:
+            language = "中文 (Chinese)"
+        elif english_words > chinese_chars:
+            language = "English"
+        else:
+            language = "Mixed/Unknown"
+        
         # Quality indicator
         quality = "🟢 High" if score > 70 else "🟡 Medium" if score > 40 else "🔴 Low"
         
         result = f"""📄 PAGE: {title}
 🔗 URL: {url}
+🌐 Language: {language}
 📊 Quality: {quality} ({score}/100)
 📏 Length: {len(content)} characters
 {"─" * 60}
@@ -474,8 +580,60 @@ class DeepSeekStreamingChat:
 
 {"─" * 60}
 ✅ End of content from: {url}"""
-
+        
         return result
+    
+    def _clean_text(self, text: str) -> str:
+        """
+        Clean text by fixing encoding issues, removing HTML entities, and normalizing
+        """
+        if not text:
+            return ""
+        
+        # 1. Unescape HTML entities (convert &lt; to <, etc.)
+        text = html.unescape(text)
+
+        # 2. Fix common encoding issues
+        # Replace common mojibake patterns
+        replacements = {
+            'Ã¡': 'á', 'Ã©': 'é', 'Ã³': 'ó', 'Ãº': 'ú', 'Ã±': 'ñ',
+            'Ã': 'Á', 'Ã': 'É', 'Ã': 'Ó', 'Ã': 'Ú', 'Ã': 'Ñ',
+            'Ã¤': 'ä', 'Ã«': 'ë', 'Ã¶': 'ö', 'Ã¼': 'ü', 'Ã': 'ß',
+            'Ã': 'Ä', 'Ã': 'Ë', 'Ã': 'Ö', 'Ã': 'Ü',
+            'â€™': "'", 'â€œ': '"', 'â€': '"', 'â€"': '-', 'â€¢': '•',
+            'â€¦': '…', 'â€"': '—', 'â€"': '–',
+            'Â': '',  # Remove extra spaces from UTF-8 BOM issues
+        }
+
+        for wrong, correct in replacements.items():
+            text = text.replace(wrong, correct)
+        
+        # 3. Remove control characters and excessive whitespace
+        # Remove non-printable characters except common whitespace
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+        
+        # 4. Normalize line endings and whitespace
+        text = re.sub(r'\r\n', '\n', text)  # Windows to Unix
+        text = re.sub(r'\r', '\n', text)    # Old Mac to Unix
+        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Multiple blank lines
+        text = re.sub(r'[ \t]{2,}', ' ', text)        # Multiple spaces/tabs
+
+        # 5. Clean up specific patterns
+        # Remove HTML comments
+        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+        # Remove inline JavaScript
+        text = re.sub(r'javascript:', '', text, flags=re.IGNORECASE)
+        # Remove data URLs
+        text = re.sub(r'data:[^ ]+;base64,[^ ]+', '', text)
+
+        # 6. Preserve Chinese and other Unicode characters
+        # Keep Chinese, Japanese, Korean characters and common punctuation
+        text = re.sub(r'[^\u0000-\uFFFF]', '', text)  # Remove non-BMP characters if any
+
+        # 7. Remove empty lines at start/end
+        text = text.strip()
+
+        return text
 
     def handle_read_command(self, url_or_command: str) -> str:
         """
