@@ -638,51 +638,63 @@ class DeepSeekStreamingChat:
     def handle_read_command(self, url_or_command: str) -> str:
         """
         Handle /read command for webpage reading with enhanced capabilities
+        Automatically adds content to conversation history for AI awareness
         """
         if not url_or_command or url_or_command.strip() == "":
             help_text = """
-📚 /read Command Usage:
-  /read <url>                     - Read webpage content
-  /read --debug <url>            - Show debugging info
-  /read --strategy <n> <url>     - Use specific strategy (0-4)
-  
-Strategies:
-  0: trafilatura (best for articles)
-  1: beautifulsoup (smart extraction)
-  2: html2text (markdown conversion)
-  3: requests-html (JavaScript sites)
-  4: fallback (basic extraction)
+    📚 /read Command Usage:
+    /read <url>                     - Read webpage content and make AI aware of it
+    /read --debug <url>            - Show debugging info (doesn't add to AI memory)
+    /read --strategy <n> <url>     - Use specific strategy (0-4)
+    /read --no-ai <url>            - Read without adding to AI memory
+
+    Strategies:
+    0: trafilatura (best for articles)
+    1: beautifulsoup (smart extraction)
+    2: html2text (markdown conversion)
+    3: requests-html (JavaScript sites)
+    4: fallback (basic extraction)
+
+    Note: By default, all content is added to AI memory so you can ask questions about it.
             """.strip()
             return help_text
 
         parts = url_or_command.split()
 
-        # Handle flags
+        # Parse flags
         debug = False
         strategy = None
-        url = url_or_command
+        no_ai = False  # New flag to prevent adding to AI memory
+        url = None
 
-        if '--debug' in parts:
-            debug = True
-            parts.remove('--debug')
-            url = ' '.join(parts[1:]) if len(parts) > 1 else ''
-        elif '--strategy' in parts:
-            try:
-                idx = parts.index('--strategy')
-                if idx + 1 < len(parts):
-                    strategy = int(parts[idx + 1])
-                    # Remove both --strategy and the number
-                    parts.pop(idx)
-                    parts.pop(idx)
-                    url = ' '.join(parts)
-            except:
-                pass
-        else:
-            url = ' '.join(parts)
+        # Parse flags
+        i = 0
+        while i < len(parts):
+            if parts[i] == '--debug':
+                debug = True
+                parts.pop(i)
+            elif parts[i] == '--strategy':
+                if i + 1 < len(parts):
+                    try:
+                        strategy = int(parts[i + 1])
+                        parts.pop(i)  # Remove --strategy
+                        parts.pop(i)  # Remove the number
+                    except ValueError:
+                        return f"❌ Invalid strategy number. Must be 0-4."
+                else:
+                    return "❌ Missing strategy number. Use: /read --strategy <0-4> <url>"
+            elif parts[i] == '--no-ai':
+                no_ai = True
+                parts.pop(i)
+            else:
+                i += 1
 
-        if not url:
+        # The remaining parts should form the URL
+        if not parts:
             return "❌ Please provide a URL"
         
+        url = ' '.join(parts)
+
         print(f"🌐 Processing: {url}")
         
         if debug:
@@ -696,21 +708,27 @@ Strategies:
                 ("fallback", self._try_fallback),
             ]
 
+            best_content = None
+            best_score = 0
+
             for name, strategy_func in strategies:
                 try:
                     content = strategy_func(url, 5000)
                     if content:
                         score = self._score_content(content)
                         results.append(f"{name}: {score}/100, {len(content)} chars")
-                        if len(results) == 1:  # First successful
-                            final_content = content
-                            final_score = score
+                        if score > best_score:
+                            best_content = content
+                            best_score = score
                 except Exception as e:
                     results.append(f"{name}: ERROR - {str(e)}")
 
-            debug_info = "\n".join(results)
-            final_result = self._format_result(url, final_content, final_score)
-            return f"🔍 Debug Results:\n{debug_info}\n\n{final_result}"
+            if best_content:
+                debug_info = "\n".join(results)
+                final_result = self._format_result(url, best_content, best_score)
+                return f"🔍 Debug Results:\n{debug_info}\n\n{final_result}"
+            else:
+                return f"❌ All strategies failed for {url}"
         
         elif strategy is not None:
             # Use specific strategy
@@ -726,26 +744,77 @@ Strategies:
                 content = strategies[strategy](url, 20000)
                 if content:
                     score = self._score_content(content)
-                    return self._format_result(url, content, score)
+                    formatted_content = self._format_result(url, content, score)
+
+                    # Add to conversation history unless --no-ai flag is set
+                    if not no_ai:
+                        self._add_webpage_to_memory(url, content)
+
+                    return formatted_content
                 else:
                     return f"❌ Strategy {strategy} failed to extract content"
             else:
                 return f"❌ Invalid strategy number. Use 0-{len(strategies)-1}"
 
         else:
-            # Normal reading with best strategy
-            return self.read_webpage(url)
+            # Normal reading with best strategy (default behavior)
+            content = self.read_webpage(url)
 
-    def handle_read_command(self, url_or_command: str) -> str:
-        """
-        Handle /read command for webpage reading
-        """
-        if not url_or_command or url_or_command.strip() == "":
-            return "Usage: /read <url>\nExample: /read https://example.com"
+            # Add to conversation history unless --no-ai flag is set
+            if not no_ai:
+                self._add_webpage_to_memory(url, content)
+            
+            return content
 
-        url = url_or_command.strip()
-        print(f"\n🌐 Reading webpage: {url}")
-        return self.read_webpage(url)
+    def _add_webpage_to_memory(self, url: str, content: str) -> None:
+        """
+        Add webpage content to conversation history for AI awareness
+        """
+        # Extract just the main text content (remove formatting headers)
+        # Find where the actual content starts (after the "─" * 60 line)
+        lines = content.split('\n')
+        content_start = 0
+
+        for i, line in enumerate(lines):
+            if '─' * 60 in line or '=' * 60 in line:
+                content_start = i + 1
+                break
+
+        main_content = '\n'.join(lines[content_start:])
+        
+        # Remove trailing separator if present
+        if '─' * 60 in main_content or '=' * 60 in main_content:
+            main_content = main_content[:main_content.rfind('─' * 60)]
+
+        # Clean up whitespace
+        main_content = main_content.strip()
+
+        # Truncate to avoid token limits (adjust based on your context window)
+        max_chars = 6000
+        if len(main_content) > max_chars:
+            # Try to find a good truncation point
+            truncated = main_content[:max_chars]
+            last_period = truncated.rfind('.')
+            last_newline = truncated.rfind('\n')
+
+            if last_period > max_chars * 0.8:
+                main_content = truncated[:last_period + 1]
+            elif last_newline > max_chars * 0.8:
+                main_content = truncated[:last_newline]
+            else:
+                main_content = truncated + "\n\n[Content truncated for context]"
+
+        # Add to conversation history
+        self.add_to_history("user", f"""I've read the following webpage:
+
+    URL: {url}
+
+    Content:
+    {main_content}
+
+    Please remember this content. I may ask you questions about it.""")
+
+        print("💡 Content added to AI memory. You can now ask questions about it!")
     
     def search_sync(self, query: str) -> str:
         """Run async search from sync code"""
@@ -785,10 +854,10 @@ Strategies:
         elif prompt.startswith("/read"):  # NEW: Handle /read command
             url = prompt[5:].strip()
             if url:
-                content = self.handle_read_command(url)
+                content = self.handle_read_command(url)  # Calls the single merged method
                 print(f"\n{content}\n")
             else:
-                print("Usage: /read <url>\nExample: /read https://example.com")
+                print("Usage: /read <url> [options]\nTry: /read --help")
             return None
 
         # Regular chat processing
