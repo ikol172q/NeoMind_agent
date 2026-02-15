@@ -4,10 +4,29 @@ import json
 import asyncio
 from typing import Optional, Dict, List, Any
 import requests
+from bs4 import BeautifulSoup
+import re
+import html2text
 
 from .search import OptimizedDuckDuckGoSearch
 from agent_config import agent_config
 
+try:
+    from requests_html import HTMLSession
+    HAS_REQUESTS_HTML = True
+except ImportError:
+    HAS_REQUESTS_HTML = False
+    HTMLSession = None
+
+# Optional: For better article extraction
+try:
+    import trafilatura
+    HAS_TRAFILATURA = True
+except ImportError:
+    HAS_TRAFILATURA = False
+
+from .search import OptimizedDuckDuckGoSearch
+from agent_config import agent_config
 
 class DeepSeekStreamingChat:
     """Main DeepSeek agent with streaming, search, and model listing capabilities"""
@@ -33,6 +52,19 @@ class DeepSeekStreamingChat:
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
+        # Initialize HTML-to-text converter
+        self.html_converter = html2text.HTML2Text()
+        self.html_converter.ignore_links = False
+        self.html_converter.ignore_images = True
+        self.html_converter.body_width = 0  # No width limit
+
+        # Initialize optional renderer
+        self.session = None
+        if HAS_REQUESTS_HTML:
+            try:
+                self.session = HTMLSession()
+            except:
+                self.session = None
 
     # NEW METHODS FOR MODEL LISTING
     def list_models(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
@@ -216,6 +248,347 @@ class DeepSeekStreamingChat:
 
         return None
 
+    # NEW: Webpage reading capabilities
+    
+    def read_webpage(self, url: str, max_length: int = 20000) -> str:
+        """
+        Read webpage content using multiple strategies for maximum compatibility
+        """
+        # Normalize URL
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
+        print(f"🌐 Fetching: {url}")
+
+        # Try multiple strategies in order
+        strategies = [
+            self._try_trafilatura,
+            self._try_beautifulsoup,
+            self._try_html2text,
+            self._try_requests_html,
+            self._try_fallback,
+        ]
+        
+        best_result = None
+        best_score = 0
+
+        for strategy in strategies:
+            try:
+                content = strategy(url, max_length)
+                if content:
+                    # Score the content quality
+                    score = self._score_content(content)
+                    if score > best_score:
+                        best_result = content
+                        best_score = score
+
+                    # If we have good content, stop trying
+                    if score > 50:  # Good enough threshold
+                        break
+            except Exception as e:
+                continue  # Try next strategy
+
+        if best_result:
+            return self._format_result(url, best_result, best_score)
+        else:
+            return f"❌ Failed to extract content from {url}. All strategies failed."
+
+    def _try_trafilatura(self, url: str, max_length: int) -> Optional[str]:
+        """Try using trafilatura (best for articles)"""
+        if not HAS_TRAFILATURA:
+            return None
+
+        try:
+            downloaded = trafilatura.fetch_url(url)
+            text = trafilatura.extract(
+                downloaded,
+                include_links=False,
+                include_images=False,
+                include_tables=False,
+                no_fallback=False,
+            )
+            return text
+        except:
+            return None
+
+    def _try_beautifulsoup(self, url: str, max_length: int) -> Optional[str]:
+        """Try BeautifulSoup extraction with smart cleaning"""
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate',
+                'Connection': 'keep-alive',
+            }
+
+            # Special headers for specific sites
+            if 'github.com' in url:
+                headers['Accept'] = 'application/vnd.github.v3+json'
+            elif 'bilibili.com' in url:
+                headers['Referer'] = 'https://www.bilibili.com'
+
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.content, 'html.parser')
+
+            # Remove unwanted elements
+            for tag in ['script', 'style', 'nav', 'footer', 'header', 
+                       'aside', 'form', 'iframe', 'noscript', 'svg']:
+                for element in soup.find_all(tag):
+                    element.decompose()
+
+            # Try to find main content first
+            main_selectors = [
+                'main', 'article', '[role="main"]', '.main-content',
+                '.content', '.post-content', '.article-content',
+                '#content', '.markdown-body',  # GitHub
+                '.video-info', '.video-desc',   # Bilibili
+            ]
+
+            main_content = None
+            for selector in main_selectors:
+                main_content = soup.select_one(selector)
+                if main_content:
+                    break
+
+            if main_content:
+                text = main_content.get_text(separator='\n', strip=True)
+            else:
+                # Fallback to body
+                body = soup.find('body')
+                text = body.get_text(separator='\n', strip=True) if body else ""
+
+            # Clean text
+            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+            text = re.sub(r'[ \t]{2,}', ' ', text)
+
+            return text.strip()
+        except:
+            return None
+
+    def _try_html2text(self, url: str, max_length: int) -> Optional[str]:
+        """Try html2text conversion"""
+        try:
+            headers = {'User-Agent': 'Mozilla/5.0'}
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+
+            # Convert HTML to markdown-like text
+            text = self.html_converter.handle(response.text)
+            return text.strip()
+        except:
+            return None
+
+    def _try_requests_html(self, url: str, max_length: int) -> Optional[str]:
+        """Try JavaScript rendering for dynamic sites"""
+        if not self.session:
+            return None
+
+        try:
+            r = self.session.get(url, timeout=20)
+            # Render JavaScript (adjust timeout based on site)
+            render_timeout = 30 if 'bilibili.com' in url else 15
+            r.html.render(timeout=render_timeout, sleep=2)
+
+            # Try to get text
+            text = r.html.text
+
+            # Clean up
+            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
+            return text.strip()
+        except:
+            return None
+
+    def _try_fallback(self, url: str, max_length: int) -> Optional[str]:
+        """Last resort fallback"""
+        try:
+            response = requests.get(url, timeout=10)
+            # Try to extract text between tags
+            text = re.sub(r'<[^>]+>', ' ', response.text)
+            text = re.sub(r'\s+', ' ', text)
+            return text.strip()
+        except:
+            return None
+
+    def _score_content(self, content: str) -> int:
+        """Score content quality (0-100)"""
+        if not content:
+            return 0
+
+        score = 0
+
+        # Length score (more content is better)
+        length = len(content)
+        if length > 1000:
+            score += 40
+        elif length > 500:
+            score += 20
+        elif length > 100:
+            score += 10
+
+        # Sentence structure score
+        sentences = re.findall(r'[.!?]+', content)
+        if len(sentences) > 5:
+            score += 30
+
+        # Paragraph structure score
+        paragraphs = content.count('\n\n')
+        if paragraphs > 3:
+            score += 20
+
+        # Word diversity score
+        words = content.split()
+        unique_words = len(set(words))
+        if len(words) > 0 and unique_words / len(words) > 0.5:
+            score += 10
+
+        return min(score, 100)
+
+    def _format_result(self, url: str, content: str, score: int) -> str:
+        """Format the final result"""
+        if len(content) > 20000:
+            content = content[:20000] + f"\n\n[Content truncated. Original: {len(content)} chars]"
+
+        # Get page title if possible
+        title = "Unknown Title"
+        try:
+            response = requests.get(url, timeout=5)
+            soup = BeautifulSoup(response.content, 'html.parser')
+            if soup.title and soup.title.string:
+                title = soup.title.string.strip()
+        except:
+            pass
+
+        # Quality indicator
+        quality = "🟢 High" if score > 70 else "🟡 Medium" if score > 40 else "🔴 Low"
+        
+        result = f"""📄 PAGE: {title}
+🔗 URL: {url}
+📊 Quality: {quality} ({score}/100)
+📏 Length: {len(content)} characters
+{"─" * 60}
+
+{content}
+
+{"─" * 60}
+✅ End of content from: {url}"""
+
+        return result
+
+    def handle_read_command(self, url_or_command: str) -> str:
+        """
+        Handle /read command for webpage reading with enhanced capabilities
+        """
+        if not url_or_command or url_or_command.strip() == "":
+            help_text = """
+📚 /read Command Usage:
+  /read <url>                     - Read webpage content
+  /read --debug <url>            - Show debugging info
+  /read --strategy <n> <url>     - Use specific strategy (0-4)
+  
+Strategies:
+  0: trafilatura (best for articles)
+  1: beautifulsoup (smart extraction)
+  2: html2text (markdown conversion)
+  3: requests-html (JavaScript sites)
+  4: fallback (basic extraction)
+            """.strip()
+            return help_text
+
+        parts = url_or_command.split()
+
+        # Handle flags
+        debug = False
+        strategy = None
+        url = url_or_command
+
+        if '--debug' in parts:
+            debug = True
+            parts.remove('--debug')
+            url = ' '.join(parts[1:]) if len(parts) > 1 else ''
+        elif '--strategy' in parts:
+            try:
+                idx = parts.index('--strategy')
+                if idx + 1 < len(parts):
+                    strategy = int(parts[idx + 1])
+                    # Remove both --strategy and the number
+                    parts.pop(idx)
+                    parts.pop(idx)
+                    url = ' '.join(parts)
+            except:
+                pass
+        else:
+            url = ' '.join(parts)
+
+        if not url:
+            return "❌ Please provide a URL"
+        
+        print(f"🌐 Processing: {url}")
+        
+        if debug:
+            # Run all strategies and show results
+            results = []
+            strategies = [
+                ("trafilatura", self._try_trafilatura),
+                ("beautifulsoup", self._try_beautifulsoup),
+                ("html2text", self._try_html2text),
+                ("requests-html", self._try_requests_html),
+                ("fallback", self._try_fallback),
+            ]
+
+            for name, strategy_func in strategies:
+                try:
+                    content = strategy_func(url, 5000)
+                    if content:
+                        score = self._score_content(content)
+                        results.append(f"{name}: {score}/100, {len(content)} chars")
+                        if len(results) == 1:  # First successful
+                            final_content = content
+                            final_score = score
+                except Exception as e:
+                    results.append(f"{name}: ERROR - {str(e)}")
+
+            debug_info = "\n".join(results)
+            final_result = self._format_result(url, final_content, final_score)
+            return f"🔍 Debug Results:\n{debug_info}\n\n{final_result}"
+        
+        elif strategy is not None:
+            # Use specific strategy
+            strategies = [
+                self._try_trafilatura,
+                self._try_beautifulsoup,
+                self._try_html2text,
+                self._try_requests_html,
+                self._try_fallback,
+            ]
+
+            if 0 <= strategy < len(strategies):
+                content = strategies[strategy](url, 20000)
+                if content:
+                    score = self._score_content(content)
+                    return self._format_result(url, content, score)
+                else:
+                    return f"❌ Strategy {strategy} failed to extract content"
+            else:
+                return f"❌ Invalid strategy number. Use 0-{len(strategies)-1}"
+
+        else:
+            # Normal reading with best strategy
+            return self.read_webpage(url)
+
+    def handle_read_command(self, url_or_command: str) -> str:
+        """
+        Handle /read command for webpage reading
+        """
+        if not url_or_command or url_or_command.strip() == "":
+            return "Usage: /read <url>\nExample: /read https://example.com"
+
+        url = url_or_command.strip()
+        print(f"\n🌐 Reading webpage: {url}")
+        return self.read_webpage(url)
+    
     def search_sync(self, query: str) -> str:
         """Run async search from sync code"""
         if not self.search_loop:
@@ -250,6 +623,14 @@ class DeepSeekStreamingChat:
             response = self.handle_models_command(prompt)
             if response:
                 print(f"\n{response}\n")
+            return None
+        elif prompt.startswith("/read"):  # NEW: Handle /read command
+            url = prompt[5:].strip()
+            if url:
+                content = self.handle_read_command(url)
+                print(f"\n{content}\n")
+            else:
+                print("Usage: /read <url>\nExample: /read https://example.com")
             return None
 
         # Regular chat processing
@@ -364,7 +745,7 @@ class DeepSeekStreamingChat:
         """Async version - handles search and model commands asynchronously"""
         if prompt.startswith("/search"):
             query = prompt[7:].strip()
-            print(f"\n Searching for: {query}")
+            print(f"\n🔍 Searching for: {query}")
             success, result = await self.searcher.search(query)
             print(f"\n{result}\n")
             return None
@@ -372,6 +753,16 @@ class DeepSeekStreamingChat:
             # Run model commands in thread pool
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: self.handle_models_command(prompt))
+            return None
+        elif prompt.startswith("/read"):  # NEW: Handle /read command asynchronously
+            url = prompt[5:].strip()
+            if url:
+                # Run webpage reading in thread pool (IO-bound)
+                loop = asyncio.get_event_loop()
+                content = await loop.run_in_executor(None, self.handle_read_command, url)
+                print(f"\n{content}\n")
+            else:
+                print("Usage: /read <url>\nExample: /read https://example.com")
             return None
 
         return self.stream_response(prompt, **kwargs)
