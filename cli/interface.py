@@ -23,6 +23,7 @@ def display_welcome_banner():
     print("  /clear   - Clear conversation history")
     print("  /history - Show conversation history")
     print("  /think   - Toggle thinking mode")
+    print("  /test    - Run development tests")
     print("  /search  - Search web")
     print("  /quit    - Exit the chat")
     print("="*60)
@@ -75,6 +76,18 @@ def handle_command(chat: DeepSeekStreamingChat, command: str, session=None) -> b
         thinking_status = chat.toggle_thinking_mode()
         status_text = "ON" if thinking_status else "OFF"
         print(f"\nThinking mode is now: {status_text}")
+        return True
+    elif command.lower() == '/test':
+        print("\nRunning development tests...")
+        try:
+            import dev_test
+            success = dev_test.run_tests()
+            if success:
+                print("\nTests completed successfully.")
+            else:
+                print("\nTests failed.")
+        except ImportError as e:
+            print(f"Failed to run tests: {e}")
         return True
 
     return None  # Not a command

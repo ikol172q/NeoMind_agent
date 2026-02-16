@@ -238,12 +238,24 @@ Remember: Always ask for permission before making changes!
         if model_id in available_ids:
             old_model = self.model
             self.model = model_id
-            print(f"✓ Model switched from '{old_model}' to '{model_id}'")
+
+            # Update configuration file
+            try:
+                from agent_config import agent_config
+                success = agent_config.update_value("agent.model", model_id)
+                if success:
+                    print(f"✓ Model switched from '{old_model}' to '{model_id}' (saved to config)")
+                else:
+                    print(f"✓ Model switched from '{old_model}' to '{model_id}' (but failed to save config)")
+            except ImportError:
+                print(f"✓ Model switched from '{old_model}' to '{model_id}' (config update failed: agent_config not found)")
+
             return True
         else:
             print(f"✗ Model '{model_id}' not found. Available models:")
             self.print_models()
             return False
+
 
     # Updated stream_response to handle /models command
     def handle_search(self, query: str) -> str:
@@ -276,12 +288,28 @@ Remember: Always ask for permission before making changes!
                 self.print_models(force_refresh=len(parts) > 2 and parts[2] == "--refresh")
                 return None
             elif subcommand in ["switch", "use", "set"]:
-                if len(parts) >= 3:
+                # Handle: /models switch <model> (agent)
+                #         /models switch agent <model>
+                if len(parts) == 3:
+                    # /models switch <model> - default to agent
                     model_id = parts[2]
                     success = self.set_model(model_id)
                     return "Model switched successfully." if success else "Failed to switch model."
+                elif len(parts) == 4:
+                    target = parts[2].lower()
+                    model_id = parts[3]
+                    if target in ["agent", "a"]:
+                        success = self.set_model(model_id)
+                        return "Model switched successfully." if success else "Failed to switch model."
+                    else:
+                        print(f"Unknown target: {target}. Use 'agent'.")
+                        print("Usage: /models switch [agent] <model_id>")
+                        return None
                 else:
-                    print("Usage: /models switch <model_id>")
+                    print("Usage: /models switch [agent] <model_id>")
+                    print("Examples:")
+                    print("  /models switch deepseek-reasoner          # Switch model")
+                    print("  /models switch agent deepseek-reasoner    # Switch model (explicit)")
                     return None
             elif subcommand in ["current", "active"]:
                 print(f"\nCurrent model: {self.model}")
@@ -292,9 +320,10 @@ Remember: Always ask for permission before making changes!
   /models                    - Show available models
   /models list              - List all available models
   /models list --refresh    - Force refresh model list
-  /models switch <model>   - Switch to a different model
-  /models current          - Show current model
-  /models help             - Show this help
+  /models switch <model>    - Switch agent model (backward compatible)
+  /models switch agent <model> - Switch agent model
+  /models current           - Show current agent model
+  /models help              - Show this help
                 """.strip())
                 return None
             else:
@@ -1451,8 +1480,16 @@ Please analyze this code structure.""")
         self.conversation_history = []
 
     def toggle_thinking_mode(self):
-        """Toggle thinking mode on/off"""
+        """Toggle thinking mode on/off and save to config"""
         self.thinking_enabled = not self.thinking_enabled
+        try:
+            success = agent_config.update_value("agent.thinking_enabled", self.thinking_enabled)
+            if success:
+                print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (saved to config)")
+            else:
+                print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (but failed to save config)")
+        except Exception as e:
+            print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (config update error: {e})")
         return self.thinking_enabled
 
     def debug_agent_status(self):
