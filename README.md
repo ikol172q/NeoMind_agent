@@ -6,11 +6,13 @@ A Python package for interacting with DeepSeek AI models through a CLI interface
 
 - **Streaming Chat**: Real-time streaming of AI responses with thinking process visualization
 - **Web Search Integration**: `/search` command for DuckDuckGo web searches
-- **Thinking Mode**: Toggle thinking process streaming with `/think` command
+- **Thinking Mode**: Toggle thinking process streaming with `/think` command (saves to config)
+- **Model Management**: Switch between DeepSeek models (`/models switch <model>`) with config persistence
+- **Development Testing**: Built-in test suite with `/test` command or `python main.py test`
 - **Conversation History**: Maintains context across conversations with `/history` view
 - **Multi-line Input**: Support for continuation lines with `\` at end of line
 - **Enhanced CLI**: Optional `prompt_toolkit` support for better user experience
-- **Configuration Management**: Hydra-based configuration with environment variable overrides
+- **Configuration Management**: Hydra-based configuration with YAML file and environment variable overrides
 - **Package Distribution**: Installable via `pip` with optional dependencies
 
 ## Installation
@@ -39,25 +41,73 @@ pip install "ikol1729-agent[full]"
 
 ### Usage
 ```bash
-# Run the agent
+# Interactive chat (default)
 ikol1729-agent
 
 # Alternative: run as a module
 python -m ikol1729_agent
 
-# Backward compatibility (deprecated)
-python deepseek_agent_v0/main.py
+# Run development tests
+python main.py test
+
+# Show version information
+python main.py --version
+
+# Standalone development test script
+python dev_test.py
 ```
 
 ## Configuration
 
-1. **Environment Variables**: Create a `.env` file with your API key:
-   ```env
-   DEEPSEEK_API_KEY=your_api_key_here
-   ```
-   Copy from `.env.example` as a template.
+### Environment Variables
+Create a `.env` file with your API key:
+```env
+DEEPSEEK_API_KEY=your_api_key_here
+```
+Copy from `.env.example` as a template.
 
-2. **Configuration File**: `agent/config.yaml` contains default settings for model, temperature, etc.
+### Configuration File
+`agent/config.yaml` contains all agent settings:
+
+```yaml
+agent:
+  model: deepseek-chat           # Model to use (deepseek-chat, deepseek-reasoner, etc.)
+  temperature: 0.7               # Creativity level (0.0 to 1.0)
+  max_tokens: 8192               # Maximum response length
+  thinking_enabled: false        # Whether to show thinking process
+  stream: true                   # Stream responses
+  timeout: 30                    # API timeout in seconds
+  max_retries: 3                 # API retry attempts
+  system_prompt: |               # System instructions for the agent
+    You are DeepSeek AI...
+```
+
+### Configuration Management
+- **Model Switching**: Use `/models switch <model>` to change models (saves to config)
+- **Thinking Mode**: Use `/think` to toggle thinking mode (saves to config)
+- **Environment Overrides**: Set `DEEPSEEK_MODEL` or `DEEPSEEK_TEMPERATURE` env vars to override config
+- **Persistent Changes**: All configuration changes are saved to `agent/config.yaml`
+
+## Commands
+
+### Interactive Chat Commands
+- `/clear` - Clear conversation history
+- `/history` - Show conversation history
+- `/think` - Toggle thinking mode (saves to config)
+- `/test` - Run development tests
+- `/search <query>` - Search DuckDuckGo for information
+- `/quit` - Exit the chat
+
+### Model Management Commands
+- `/models` or `/models list` - Show available models
+- `/models switch <model>` - Switch agent model (saves to config)
+- `/models current` - Show current model
+- `/models help` - Show model command help
+
+### Development Commands
+- `python main.py test` - Run development tests from command line
+- `python dev_test.py` - Standalone development test script
+- `python main.py --version` - Show version information
 
 ## Package Structure
 
@@ -77,8 +127,10 @@ ikol1729_agent/
 │   ├── __init__.py
 │   └── __main__.py    # Module entry point
 ├── agent_config.py    # Hydra-based configuration manager
-├── main.py            # Main entry point
-└── pyproject.toml     # Package configuration
+├── dev_test.py        # Development test suite
+├── main.py            # Main entry point with argument parsing
+├── pyproject.toml     # Package configuration
+└── test_config.py     # Configuration test script
 ```
 
 ## Overview
@@ -125,7 +177,7 @@ User Input
     ↓
 CLI Layer (main.py → interface.py → input_handlers.py)
     ↓
-Command Parser (/search, /think, /clear, etc.)
+Command Parser (/search, /think, /clear, /test, etc.)
     ↓
     ├── If /search → Search Engine (search.py) → DuckDuckGo
     │        ↓
@@ -247,7 +299,7 @@ main.py
 ## In Plain English:
 
 1. **You type something** → CLI captures it
-2. **If it's a command** (/search, /think, etc.) → CLI handles it
+2. **If it's a command** (/search, /think, /test, etc.) → CLI handles it
 3. **If it's a question** → Agent sends to DeepSeek API
 4. **Agent streams back** answer with thinking process
 5. **If you type /search** → Agent searches web and shows results
