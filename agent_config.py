@@ -4,42 +4,34 @@ from typing import Any, Optional
 import hydra
 from omegaconf import DictConfig, OmegaConf
 from hydra.core.global_hydra import GlobalHydra
+import importlib.resources
 
 
 class AgentConfigManager:
     """Manages agent configuration using Hydra"""
 
     def __init__(self, config_name: str = "config"):
-        # Get the directory where this file is located
+        # Determine the directory where config.yaml is located
+        # It should be in the 'agent' subdirectory relative to this file
         self.base_dir = Path(__file__).parent
+        config_dir = "agent"  # config.yaml is in agent/ subdirectory
 
-        # Hydra requires relative paths
-        # We'll temporarily change to base_dir to load config
-        original_cwd = os.getcwd()
-        
-        try:
-            # Change to the directory where config.yaml should be
-            os.chdir(self.base_dir)
+        # Hydra initialization - config_path is relative to the location of this file
+        # We do NOT change the working directory
+        if not GlobalHydra.instance().is_initialized():
+            hydra.initialize(config_path=config_dir, version_base="1.3")
 
-            # Initialize Hydra with relative path "."
-            if not GlobalHydra.instance().is_initialized():
-                hydra.initialize(config_path=".", version_base="1.3")
+        # Load configuration
+        self._cfg = hydra.compose(config_name=config_name)
 
-            # Load configuration
-            self._cfg = hydra.compose(config_name=config_name)
+        # Apply environment overrides
+        self._apply_env_overrides()
 
-            # Apply environment overrides
-            self._apply_env_overrides()
-
-            # Extract agent config
-            self._agent_config = OmegaConf.to_container(
-                self._cfg.get("agent", {}), 
-                resolve=True
-            )
-
-        finally:
-            # Restore original working directory
-            os.chdir(original_cwd)
+        # Extract agent config
+        self._agent_config = OmegaConf.to_container(
+            self._cfg.get("agent", {}),
+            resolve=True
+        )
     
     def _apply_env_overrides(self):
         """Apply environment variable overrides to config"""
