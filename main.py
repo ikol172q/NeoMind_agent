@@ -3,6 +3,7 @@
 
 import sys
 import os
+import argparse
 from dotenv import load_dotenv
 
 # Load environment variables FIRST
@@ -12,8 +13,8 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def main():
-    """Main entry point"""
+def interactive_main():
+    """Interactive chat mode"""
     # Check for prompt_toolkit availability
     try:
         from prompt_toolkit import PromptSession
@@ -30,6 +31,50 @@ def main():
     else:
         from cli.interface import interactive_chat_fallback
         interactive_chat_fallback()
+
+
+def test_main():
+    """Run development tests"""
+    # Use the dev_test module
+    try:
+        import dev_test
+        success = dev_test.run_tests()
+        sys.exit(0 if success else 1)
+    except ImportError:
+        print("Error: dev_test.py not found")
+        sys.exit(1)
+
+
+def main():
+    """Main entry point with argument parsing"""
+    parser = argparse.ArgumentParser(
+        description="DeepSeek AI Agent",
+        epilog="Use 'user-agent' without arguments for interactive chat."
+    )
+    parser.add_argument(
+        'mode',
+        nargs='?',
+        default='interactive',
+        choices=['interactive', 'test'],
+        help="Run mode: interactive chat or development tests"
+    )
+    parser.add_argument(
+        '--version',
+        action='store_true',
+        help="Show version information"
+    )
+
+    args = parser.parse_args()
+
+    if args.version:
+        from user_agent import __version__
+        print(f"user-agent version {__version__}")
+        return
+
+    if args.mode == 'test':
+        test_main()
+    else:
+        interactive_main()
 
 
 if __name__ == "__main__":

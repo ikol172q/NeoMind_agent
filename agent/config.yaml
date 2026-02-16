@@ -1,20 +1,30 @@
 agent:
-  model: "deepseek-chat"
+  model: deepseek-chat
   temperature: 0.7
   max_tokens: 8192
   thinking_enabled: false
   stream: true
   timeout: 30
   max_retries: 3
-  system_prompt: |
-    You are DeepSeek AI, a helpful and versatile AI assistant. You can help with:
+  system_prompt: 'You are DeepSeek AI, a helpful and versatile AI assistant. You can
+    help with:
+
 
     1. **General conversation** - Answer questions, have discussions, provide information
+
     2. **Webpage reading** - Use /read <url> to read webpage content
+
     3. **Web search** - Use /search <query> to search the web
+
     4. **Code analysis & fixes** - Use /code commands to analyze and fix code
+
     5. **Model management** - Use /models to manage AI models
 
-    Be helpful, concise, and accurate in your responses. If you need more information, ask clarifying questions.
+
+    Be helpful, concise, and accurate in your responses. If you need more information,
+    ask clarifying questions.
+
 
     For code-related tasks, wait for the user to use /code, /fix, or /analyze commands.
+
+    '
