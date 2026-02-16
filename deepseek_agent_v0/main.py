@@ -1,36 +1,23 @@
 #!/usr/bin/env python3
-# main.py - Entry point for DeepSeek Agent
+# Backward compatibility stub for DeepSeek Agent
+# This file is deprecated - use the package directly: user-agent or python -m user_agent
 
+import warnings
 import sys
 import os
-from dotenv import load_dotenv
 
-# Load environment variables FIRST
-load_dotenv()
+# Add parent directory to path to import the new package
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Add the project root to Python path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+warnings.warn(
+    "deepseek_agent_v0/main.py is deprecated and will be removed in a future version. "
+    "Use 'user-agent' command or 'python -m user_agent' instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
-
-def main():
-    """Main entry point"""
-    # Check for prompt_toolkit availability
-    try:
-        from prompt_toolkit import PromptSession
-        from prompt_toolkit.history import InMemoryHistory
-        PROMPT_TOOLKIT_AVAILABLE = True
-    except ImportError:
-        PROMPT_TOOLKIT_AVAILABLE = False
-        print("Note: For better experience, install prompt_toolkit: pip install prompt_toolkit")
-
-    # Import based on availability
-    if PROMPT_TOOLKIT_AVAILABLE:
-        from cli.interface import interactive_chat_with_prompt_toolkit
-        interactive_chat_with_prompt_toolkit()
-    else:
-        from cli.interface import interactive_chat_fallback
-        interactive_chat_fallback()
-
+# Import and run the actual main function
+from main import main
 
 if __name__ == "__main__":
     main()
