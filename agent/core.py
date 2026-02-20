@@ -6,7 +6,6 @@ from typing import Optional, Dict, List, Any
 import requests
 from bs4 import BeautifulSoup
 import re
-import html2text
 import os
 import json
 import asyncio
@@ -19,19 +18,36 @@ import hashlib
 import warnings
 import sys
 import stat
-from typing import Optional, Dict, List, Any, Set, Tuple
+from typing import Optional, Dict, List, Any, Set, Tuple, Callable
 import requests
 from urllib.parse import urlparse
-import chardet
+try:
+    import chardet
+    HAS_CHARDET = True
+except ImportError:
+    HAS_CHARDET = False
+    chardet = None
 from .code_analyzer import CodeAnalyzer
+from .self_iteration import SelfIteration
+from .formatter import Formatter, success, error, warning, info, header, code_block, command_help
+from .help_system import HelpSystem, get_help
+from .command_executor import CommandExecutor, execute_safe, execute_git_safe
+from .safety import SafetyManager, safe_read_file, safe_write_file, safe_delete_file, is_path_safe, log_operation
+from .planner import Planner, plan_changes
 import difflib  # Add this line to your imports
 
 # Add to imports
 import html
 from urllib.parse import urlparse
-import chardet  # For auto-detecting encoding
+try:
+    import chardet
+    HAS_CHARDET = True
+except ImportError:
+    HAS_CHARDET = False
+    chardet = None  # For auto-detecting encoding
 
 from .search import OptimizedDuckDuckGoSearch
+from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
 
 try:
@@ -48,6 +64,14 @@ try:
 except ImportError:
     HAS_TRAFILATURA = False
 
+# Optional: html2text for HTML to markdown conversion
+try:
+    import html2text
+    HAS_HTML2TEXT = True
+except ImportError:
+    HAS_HTML2TEXT = False
+    html2text = None
+
 from .search import OptimizedDuckDuckGoSearch
 from agent_config import agent_config
 
@@ -63,8 +87,30 @@ class DeepSeekStreamingChat:
         self.models_url = "https://api.deepseek.com/models"  # NEW: For listing models
         self.conversation_history = []
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
-        self.searcher = OptimizedDuckDuckGoSearch()
-        self.enable_auto_search = False
+        # Searcher with configurable auto-search triggers
+        self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
+        # Formatter for consistent output
+        self.formatter = Formatter()
+        # Command executor for safe shell execution
+        self.command_executor = CommandExecutor()
+        # Self-iteration setup
+        self.agent_root = os.path.dirname(os.path.abspath(__file__))
+        # Safety manager for file operations (after agent_root is defined)
+        self.safety_manager = SafetyManager(os.getcwd(), agent_root=self.agent_root)
+        # Help system for command documentation
+        self.help_system = HelpSystem()
+        self.self_iteration = None  # Lazy initialization
+        # Auto-features configuration
+        self.enable_auto_search = agent_config.auto_search_enabled
+        self.auto_search_enabled = agent_config.auto_search_enabled
+        self.natural_language_enabled = agent_config.natural_language_enabled
+        self.natural_language_confidence_threshold = agent_config.natural_language_confidence_threshold
+        self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
+        self.safety_confirm_code_changes = agent_config.safety_confirm_code_changes
+        # Natural language interpreter
+        self.interpreter = NaturalLanguageInterpreter(
+            confidence_threshold=self.natural_language_confidence_threshold
+        ) if self.natural_language_enabled else None
         self.search_loop = None
         self.available_models_cache = None  # NEW: Cache for available models
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
@@ -75,11 +121,14 @@ class DeepSeekStreamingChat:
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
-        # Initialize HTML-to-text converter
-        self.html_converter = html2text.HTML2Text()
-        self.html_converter.ignore_links = False
-        self.html_converter.ignore_images = True
-        self.html_converter.body_width = 0  # No width limit
+        # Initialize HTML-to-text converter if available
+        if HAS_HTML2TEXT:
+            self.html_converter = html2text.HTML2Text()
+            self.html_converter.ignore_links = False
+            self.html_converter.ignore_images = True
+            self.html_converter.body_width = 0  # No width limit
+        else:
+            self.html_converter = None
 
         # Initialize optional renderer
         self.session = None
@@ -92,6 +141,70 @@ class DeepSeekStreamingChat:
         # NEW: Code analyzer
         self.code_analyzer = None
         self.code_changes_pending = []  # Store proposed changes
+
+        # Command registry for unified routing
+        self.command_handlers = {}
+        self._setup_command_handlers()
+
+    def _setup_command_handlers(self) -> None:
+        """Initialize command handler registry."""
+        # Mapping: prefix -> (handler, strip_prefix)
+        self.command_handlers = {
+            "/search": (self.handle_search, True),
+            "/auto": (self.handle_auto_command, True),
+            "/models": (self.handle_models_command, False),
+            "/help": (self.handle_help_command, True),
+            "/diff": (self.handle_diff_command, True),
+            "/browse": (self.handle_browse_command, True),
+            "/undo": (self.handle_undo_command, True),
+            "/test": (self.handle_test_command, True),
+            "/apply": (self.handle_apply_command, True),
+            "/read": (self.handle_read_command, True),
+            "/write": (self.handle_write_command, True),
+            "/edit": (self.handle_edit_command, True),
+            "/run": (self.handle_run_command, True),
+            "/git": (self.handle_git_command, True),
+            "/code": (self.handle_code_command, True),
+            "/fix": (self.handle_auto_fix_command, False),
+            "/analyze": (self.handle_auto_fix_command, False),
+        }
+
+    def _safe_print(self, message: str) -> None:
+        """Print message safely, handling Unicode encoding errors on Windows."""
+        import sys
+        try:
+            print(message)
+        except UnicodeEncodeError:
+            # Fallback: replace common emojis with ASCII equivalents
+            replacements = {
+                "🔧": "[FIX]",
+                "📝": "[NOTE]",
+                "❌": "[ERROR]",
+                "🌐": "[WEB]",
+                "🚀": "[RUN]",
+                "📁": "[DIR]",
+                "⏱️": "[TIME]",
+                "📤": "[OUT]",
+                "🔍": "[SEARCH]",
+                "💡": "[INFO]",
+                "📄": "[FILE]",
+                "📭": "[EMPTY]",
+                "🔧": "[TOOL]",
+                "📝": "[DOC]",
+                "❌": "[FAIL]",
+                "✅": "[OK]",
+                "⚠️": "[WARN]",
+                "⏳": "[WAIT]",
+                "🔄": "[GIT]",
+                "🧪": "[TEST]",
+                "🤖": "[BOT]",
+            }
+            safe_message = message
+            for emoji, ascii_repl in replacements.items():
+                safe_message = safe_message.replace(emoji, ascii_repl)
+            # Also strip any other non-ASCII characters
+            safe_message = safe_message.encode('ascii', 'ignore').decode('ascii')
+            print(safe_message)
 
     # Add get_code_change_instructions method here:
     def get_code_change_instructions(self) -> str:
@@ -213,7 +326,7 @@ Remember: Always ask for permission before making changes!
                 print(f"  • {model['id']}")
         
         if other_models:
-            print("\n🔧 OTHER MODELS:")
+            self._safe_print("\n🔧 OTHER MODELS:")
             for model in other_models:
                 print(f"  • {model['id']}")
 
@@ -256,6 +369,64 @@ Remember: Always ask for permission before making changes!
             self.print_models()
             return False
 
+    def with_model(self, model_id: str, func: Callable, *args, **kwargs):
+        """
+        Temporarily switch to a model, execute a function, then restore original model.
+        Does NOT update configuration file.
+
+        Args:
+            model_id: Model ID to temporarily switch to
+            func: Callable to execute with temporary model
+            *args, **kwargs: Passed to func
+
+        Returns:
+            Result of func call
+        """
+        models = self.list_models()
+        available_ids = [m["id"] for m in models]
+        if model_id not in available_ids:
+            raise ValueError(f"Model '{model_id}' not available")
+
+        original_model = self.model
+        try:
+            if self.model != model_id:
+                self.model = model_id
+                # Optionally notify user
+                print(f"[Model] Temporarily switched to '{model_id}' for this task")
+            result = func(*args, **kwargs)
+        finally:
+            if self.model != original_model:
+                self.model = original_model
+                print(f"[Model] Restored model to '{original_model}'")
+        return result
+
+    def generate_completion(self, messages, temperature=0.7, max_tokens=2048):
+        """Generate a completion using the current model (non-streaming)."""
+        headers = {
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {self.api_key}"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+        }
+        if self.thinking_enabled:
+            payload["thinking"] = {"type": "enabled"}
+
+        try:
+            import requests
+            response = requests.post(self.base_url, headers=headers, json=payload, timeout=60)
+            response.raise_for_status()
+            result = response.json()
+            if "choices" in result and result["choices"]:
+                return result["choices"][0]["message"]["content"]
+            else:
+                raise ValueError("Unexpected response format")
+        except Exception as e:
+            return f"Error generating completion: {str(e)}"
 
     # Updated stream_response to handle /models command
     def handle_search(self, query: str) -> str:
@@ -264,7 +435,86 @@ Remember: Always ask for permission before making changes!
             return "Usage: /search <your query>"
 
         success, result = self.searcher.search(query.strip())
+        if success:
+            self.add_search_results_to_history('web', query.strip(), result)
+        else:
+            # Add error to history as system message
+            self.add_to_history("system", f"Web search failed for '{query.strip()}': {result}")
         return result
+
+    def handle_auto_command(self, subcommand: str) -> Optional[str]:
+        """
+        Handle /auto command for controlling auto-features.
+        Subcommands:
+          search on/off     - Toggle auto-search
+          interpret on/off  - Toggle natural language interpretation
+          status           - Show current auto-feature settings
+        """
+        subcommand = subcommand.strip().lower()
+        parts = subcommand.split()
+        if not parts:
+            return self._show_auto_status()
+
+        if parts[0] == 'search' and len(parts) == 2:
+            value = parts[1]
+            if value in ('on', 'enable', 'true'):
+                self.auto_search_enabled = True
+                success = agent_config.update_value("agent.auto_features.auto_search.enabled", True)
+                return f"Auto-search enabled {'(config saved)' if success else '(config save failed)'}"
+            elif value in ('off', 'disable', 'false'):
+                self.auto_search_enabled = False
+                success = agent_config.update_value("agent.auto_features.auto_search.enabled", False)
+                return f"Auto-search disabled {'(config saved)' if success else '(config save failed)'}"
+            else:
+                return "Usage: /auto search on|off"
+
+        elif parts[0] == 'interpret' and len(parts) == 2:
+            value = parts[1]
+            if value in ('on', 'enable', 'true'):
+                self.natural_language_enabled = True
+                if not self.interpreter:
+                    self.interpreter = NaturalLanguageInterpreter(
+                        confidence_threshold=self.natural_language_confidence_threshold
+                    )
+                success = agent_config.update_value("agent.auto_features.natural_language.enabled", True)
+                return f"Natural language interpretation enabled {'(config saved)' if success else '(config save failed)'}"
+            elif value in ('off', 'disable', 'false'):
+                self.natural_language_enabled = False
+                self.interpreter = None
+                success = agent_config.update_value("agent.auto_features.natural_language.enabled", False)
+                return f"Natural language interpretation disabled {'(config saved)' if success else '(config save failed)'}"
+            else:
+                return "Usage: /auto interpret on|off"
+
+        elif parts[0] == 'status':
+            return self._show_auto_status()
+
+        elif parts[0] == 'help':
+            return self._show_auto_help()
+
+        else:
+            return self._show_auto_help()
+
+    def _show_auto_status(self) -> str:
+        """Return status of auto-features."""
+        status_lines = []
+        status_lines.append("🤖 Auto-feature Status:")
+        status_lines.append(f"  • Auto-search: {'ENABLED' if self.auto_search_enabled else 'DISABLED'}")
+        status_lines.append(f"  • Natural language interpretation: {'ENABLED' if self.natural_language_enabled else 'DISABLED'}")
+        if self.interpreter:
+            status_lines.append(f"  • Confidence threshold: {self.interpreter.confidence_threshold}")
+        status_lines.append(f"  • Safety confirmations: File ops={self.safety_confirm_file_operations}, Code changes={self.safety_confirm_code_changes}")
+        return "\n".join(status_lines)
+
+    def _show_auto_help(self) -> str:
+        """Return help for /auto command."""
+        help_lines = []
+        help_lines.append("🤖 /auto command usage:")
+        help_lines.append("  /auto search on|off      - Enable/disable auto-search")
+        help_lines.append("  /auto interpret on|off   - Enable/disable natural language interpretation")
+        help_lines.append("  /auto status            - Show current auto-feature settings")
+        help_lines.append("  /auto help              - Show this help")
+        return "\n".join(help_lines)
 
     def handle_models_command(self, command: str) -> Optional[str]:
         """
@@ -346,13 +596,16 @@ Remember: Always ask for permission before making changes!
         print(f"🌐 Fetching: {url}")
 
         # Try multiple strategies in order
-        strategies = [
-            self._try_trafilatura,
-            self._try_beautifulsoup,
-            self._try_html2text,
-            self._try_requests_html,
-            self._try_fallback,
-        ]
+        # Try multiple strategies in order
+        strategies = []
+        if HAS_TRAFILATURA:
+            strategies.append(self._try_trafilatura)
+        strategies.append(self._try_beautifulsoup)
+        if HAS_HTML2TEXT:
+            strategies.append(self._try_html2text)
+        if HAS_REQUESTS_HTML:
+            strategies.append(self._try_requests_html)
+        strategies.append(self._try_fallback)
         
         best_result = None
         best_score = 0
@@ -376,7 +629,7 @@ Remember: Always ask for permission before making changes!
         if best_result:
             return self._format_result(url, best_result, best_score)
         else:
-            return f"❌ Failed to extract content from {url}. All strategies failed."
+            return self.formatter.error(f"Failed to extract content from {url}. All strategies failed.")
 
     def _try_trafilatura(self, url: str, max_length: int) -> Optional[str]:
         """Try using trafilatura with encoding handling"""
@@ -509,6 +762,8 @@ Remember: Always ask for permission before making changes!
 
     def _try_html2text(self, url: str, max_length: int) -> Optional[str]:
         """Try html2text conversion with encoding handling"""
+        if not HAS_HTML2TEXT or self.html_converter is None:
+            return None
         try:
             headers = {'User-Agent': 'Mozilla/5.0'}
             response = requests.get(url, headers=headers, timeout=10)
@@ -724,11 +979,12 @@ Remember: Always ask for permission before making changes!
             help_text = """
     📚 /read Command Usage:
     /read <url>                     - Read webpage content and make AI aware of it
+    /read <file_path>               - Read local file (supports line ranges: file.py:10-20)
     /read --debug <url>            - Show debugging info (doesn't add to AI memory)
     /read --strategy <n> <url>     - Use specific strategy (0-4)
-    /read --no-ai <url>            - Read without adding to AI memory
+    /read --no-ai <url|file>       - Read without adding to AI memory
 
-    Strategies:
+    Strategies (for webpages only):
     0: trafilatura (best for articles)
     1: beautifulsoup (smart extraction)
     2: html2text (markdown conversion)
@@ -760,9 +1016,9 @@ Remember: Always ask for permission before making changes!
                         parts.pop(i)  # Remove --strategy
                         parts.pop(i)  # Remove the number
                     except ValueError:
-                        return f"❌ Invalid strategy number. Must be 0-4."
+                        return self.formatter.error(f"Invalid strategy number. Must be 0-4.")
                 else:
-                    return "❌ Missing strategy number. Use: /read --strategy <0-4> <url>"
+                    return self.formatter.error("Missing strategy number. Use: /read --strategy <0-4> <url>")
             elif parts[i] == '--no-ai':
                 no_ai = True
                 parts.pop(i)
@@ -771,22 +1027,28 @@ Remember: Always ask for permission before making changes!
 
         # The remaining parts should form the URL
         if not parts:
-            return "❌ Please provide a URL"
+            return self.formatter.error("Please provide a URL")
         
         url = ' '.join(parts)
+
+        # Check if this is a local file path
+        if self._is_likely_file_path(url):
+            return self._handle_file_read(url, no_ai)
 
         print(f"🌐 Processing: {url}")
         
         if debug:
             # Run all strategies and show results
             results = []
-            strategies = [
-                ("trafilatura", self._try_trafilatura),
-                ("beautifulsoup", self._try_beautifulsoup),
-                ("html2text", self._try_html2text),
-                ("requests-html", self._try_requests_html),
-                ("fallback", self._try_fallback),
-            ]
+            strategies = []
+            if HAS_TRAFILATURA:
+                strategies.append(("trafilatura", self._try_trafilatura))
+            strategies.append(("beautifulsoup", self._try_beautifulsoup))
+            if HAS_HTML2TEXT:
+                strategies.append(("html2text", self._try_html2text))
+            if HAS_REQUESTS_HTML:
+                strategies.append(("requests-html", self._try_requests_html))
+            strategies.append(("fallback", self._try_fallback))
 
             best_content = None
             best_score = 0
@@ -808,7 +1070,7 @@ Remember: Always ask for permission before making changes!
                 final_result = self._format_result(url, best_content, best_score)
                 return f"🔍 Debug Results:\n{debug_info}\n\n{final_result}"
             else:
-                return f"❌ All strategies failed for {url}"
+                return self.formatter.error(f"All strategies failed for {url}")
         
         elif strategy is not None:
             # Use specific strategy
@@ -832,9 +1094,9 @@ Remember: Always ask for permission before making changes!
 
                     return formatted_content
                 else:
-                    return f"❌ Strategy {strategy} failed to extract content"
+                    return self.formatter.error(f"Strategy {strategy} failed to extract content")
             else:
-                return f"❌ Invalid strategy number. Use 0-{len(strategies)-1}"
+                return self.formatter.error(f"Invalid strategy number. Use 0-{len(strategies)-1}")
 
         else:
             # Normal reading with best strategy (default behavior)
@@ -845,6 +1107,871 @@ Remember: Always ask for permission before making changes!
                 self._add_webpage_to_memory(url, content)
             
             return content
+
+    def _read_interactive_content(self, prompt: str = "Enter content (end with EOF: Ctrl+D on Unix, Ctrl+Z on Windows):") -> str:
+        """Read multiline content from stdin until EOF."""
+        import sys
+        lines = []
+        if sys.stdin.isatty():
+            print(prompt)
+            print("Type your content line by line. Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.")
+        try:
+            for line in sys.stdin:
+                lines.append(line)
+        except KeyboardInterrupt:
+            print("\nInput interrupted.")
+            return ""
+        return "".join(lines)
+
+    def handle_write_command(self, command: str) -> str:
+        """
+        Handle /write command for creating or overwriting files.
+
+        Usage:
+          /write <file_path> [content]   - Write content to file (content optional)
+          /write --interactive <file_path> - Enter content interactively
+
+        If content is not provided, reads from stdin until EOF (Ctrl+D on Unix, Ctrl+Z on Windows).
+        """
+        if not command or command.strip() == "":
+            help_text = """
+📝 /write Command Usage:
+  /write <file_path> [content]   - Write content to file
+  /write --interactive <file_path> - Enter content interactively (end with EOF)
+
+Examples:
+  /write hello.txt "Hello World"
+  /write script.py "print('hello')"
+  /write --interactive notes.md
+            """.strip()
+            return help_text
+
+        # Parse flags
+        interactive = False
+        parts = command.split()
+        # Check for --interactive flag
+        if parts[0] == '--interactive':
+            interactive = True
+            parts.pop(0)
+
+        if not parts:
+            return self.formatter.error("Please provide a file path")
+
+        file_path = parts[0]
+        content = ' '.join(parts[1:]) if len(parts) > 1 else ""
+
+        # If interactive mode or no content provided, read from stdin
+        if interactive or not content:
+            content = self._read_interactive_content()
+            if not content:
+                return self.formatter.warning("No content provided. File not written.")
+
+        # Ensure code analyzer is initialized
+        if not self.code_analyzer:
+            self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
+
+        # Write file
+        success, message = self.code_analyzer.write_file_safe(file_path, content)
+        if success:
+            return self.formatter.success(message)
+        else:
+            return self.formatter.error(message)
+
+    def handle_edit_command(self, command: str) -> str:
+        """
+        Handle /edit command for editing files with code changes.
+
+        Usage:
+          /edit <file_path> "<old_code>" "<new_code>" [--description "desc"]
+          /edit --help
+
+        Examples:
+          /edit test.py "print('hello')" "print('Hello World')"
+        """
+        import shlex
+        import os
+        from .code_analyzer import CodeAnalyzer
+        if not command or command.strip() == "":
+            help_text = """
+📝 /edit Command Usage:
+  /edit <file_path> "<old_code>" "<new_code>"   - Replace old code with new code
+  /edit --help                                  - Show this help
+
+Examples:
+  /edit script.py "print('old')" "print('new')"
+  /edit script.py "def old():" "def new():"
+            """.strip()
+            return help_text
+
+        # Parse flags
+        parts = []
+        try:
+            parts = shlex.split(command)
+        except ValueError as e:
+            return self.formatter.error(f"Invalid command syntax: {e}")
+
+        if not parts:
+            return self.formatter.error("Please provide a file path")
+
+        file_path = parts[0]
+        description = "Manual edit via /edit command"
+        line = None
+        old_code = ""
+        new_code = ""
+
+        # Parse flags
+        i = 1
+        while i < len(parts):
+            if parts[i] == '--description':
+                if i + 1 < len(parts):
+                    description = parts[i + 1]
+                    i += 2
+                else:
+                    return self.formatter.error("Missing description after --description")
+            else:
+                # Treat as old_code and new_code positional arguments
+                if i + 1 < len(parts):
+                    old_code = parts[i]
+                    new_code = parts[i + 1]
+                    i += 2
+                else:
+                    return self.formatter.error("Need both old_code and new_code arguments")
+                break  # No more flags after positional args
+
+        # Ensure we have old_code and new_code
+        if not old_code or not new_code:
+            return self.formatter.error("Missing old_code or new_code")
+
+        # Initialize code analyzer if needed
+        if not self.code_analyzer:
+            self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
+
+        # Validate change
+        is_valid, error_msg = self.validate_proposed_change(old_code, new_code, file_path)
+        if not is_valid:
+            return self.formatter.error(f"Change validation failed: {error_msg}")
+
+        # Propose change
+        result = self.propose_code_change(file_path, old_code, new_code, description, line)
+        return result
+
+    def handle_run_command(self, command: str) -> str:
+        """
+        Handle /run command for executing shell commands safely.
+
+        Usage:
+          /run <command> [args...]
+
+        Example:
+          /run ls -la
+          /run python --version
+        """
+        if not command or command.strip() == "":
+            help_text = """
+🔧 /run Command Usage:
+  /run <command> [args...]   - Execute a shell command safely
+
+Examples:
+  /run ls -la
+  /run python --version
+  /run echo "Hello"
+            """.strip()
+            return help_text
+
+        # Determine working directory
+        import os
+        cwd = os.getcwd()
+        if self.code_analyzer:
+            cwd = self.code_analyzer.root_path
+
+        # Execute using command executor
+        result = self.command_executor.execute(command, cwd=cwd)
+        # Log command execution
+        log_operation('execute', command, result['success'],
+                     f"cwd={cwd}, exit_code={result['returncode']}, time={result['execution_time']:.2f}s")
+
+        # Format result using formatter
+        if not result['success']:
+            return self.formatter.error(result['error_message'])
+
+        # Build formatted output
+        output = f"🚀 Command: {command}\n"
+        output += f"📁 Working directory: {cwd}\n"
+        output += f"⏱️  Execution time: {result['execution_time']:.2f}s\n"
+        output += f"📤 Exit code: {result['returncode']}\n"
+
+        if result['stdout']:
+            output += f"\n📤 STDOUT:\n{result['stdout'].rstrip()}\n"
+        if result['stderr']:
+            output += f"\n📤 STDERR:\n{result['stderr'].rstrip()}\n"
+
+        if result['returncode'] == 0:
+            output += f"\n{self.formatter.success('Command completed successfully.')}"
+        else:
+            output += f"\n{self.formatter.warning('Command failed (non-zero exit code).')}"
+
+        return output
+
+    def handle_git_command(self, command: str) -> str:
+        """
+        Handle /git command for version control operations.
+
+        Usage:
+          /git <subcommand> [args...]
+
+        Examples:
+          /git status
+          /git diff
+          /git log --oneline -5
+          /git commit -m "message"
+          /git push origin main
+        """
+        if not command or command.strip() == "":
+            help_text = """
+🔄 /git Command Usage:
+  /git <subcommand> [args...]   - Execute git command safely
+
+Common subcommands:
+  status, diff, log, commit, push, pull, branch, checkout, clone, init
+
+Examples:
+  /git status
+  /git diff
+  /git log --oneline -5
+  /git commit -m "message"
+  /git push origin main
+            """.strip()
+            return help_text
+
+        # Determine working directory
+        import os
+        cwd = os.getcwd()
+        if self.code_analyzer:
+            cwd = self.code_analyzer.root_path
+
+        # Execute using command executor's git-specific method
+        result = self.command_executor.execute_git(command, cwd=cwd)
+
+        # Format result using formatter
+        if not result['success']:
+            return self.formatter.error(result['error_message'])
+
+        # Build formatted output
+        output = f"🔄 Git command: git {command}\n"
+        output += f"📁 Working directory: {cwd}\n"
+        output += f"⏱️  Execution time: {result['execution_time']:.2f}s\n"
+        output += f"📤 Exit code: {result['returncode']}\n"
+
+        if result['stdout']:
+            output += f"\n📤 STDOUT:\n{result['stdout'].rstrip()}\n"
+        if result['stderr']:
+            output += f"\n📤 STDERR:\n{result['stderr'].rstrip()}\n"
+
+        if result['returncode'] == 0:
+            output += f"\n{self.formatter.success('Git command completed successfully.')}"
+        else:
+            output += f"\n{self.formatter.warning('Git command failed (non-zero exit code).')}"
+
+        return output
+
+    def handle_help_command(self, command: str = "") -> str:
+        """
+        Handle /help command.
+        Usage: /help [command]
+        Examples:
+          /help          - Show all available commands
+          /help write    - Show detailed help for /write command
+        """
+        help_texts = {
+            "write": """
+📝 /write Command:
+  /write <file_path> [content]   - Write content to file
+  /write --interactive <file_path> - Enter content interactively
+
+Examples:
+  /write hello.txt "Hello World"
+  /write script.py "print('hello')"
+""",
+            "edit": """
+📝 /edit Command:
+  /edit <file_path> "<old_code>" "<new_code>"   - Replace old code with new code
+
+Examples:
+  /edit script.py "print('old')" "print('new')"
+""",
+            "read": """
+📚 /read Command:
+  /read <url>                     - Read webpage content
+  /read <file_path>               - Read local file (supports line ranges)
+  /read --debug <url>            - Show debugging info
+  /read --strategy <n> <url>     - Use specific strategy (0-4)
+""",
+            "run": """
+🔧 /run Command:
+  /run <command> [args...]   - Execute a shell command safely
+
+Examples:
+  /run ls -la
+  /run python --version
+""",
+            "git": """
+🔄 /git Command:
+  /git <subcommand> [args...]   - Execute git command safely
+
+Common subcommands: status, diff, log, commit, push, pull, branch, checkout
+""",
+            "code": """
+📁 /code Command:
+  /code scan [path]              - Scan codebase
+  /code summary                  - Show codebase summary
+  /code find <pattern>          - Find files matching pattern
+  /code read <file_path>        - Read and analyze a file
+  /code analyze <file_path>     - Analyze file structure
+  /code search <text>           - Search for text in code
+  /code changes                 - Show pending changes
+  /code apply                   - Apply pending changes
+  /code clear                   - Clear pending changes
+  /code self-scan              - Scan agent's own codebase
+  /code self-improve <feature> - Suggest improvements
+  /code self-apply             - Apply self-improvements safely
+""",
+            "search": """
+🔍 /search Command:
+  /search <query>   - Search the web using DuckDuckGo
+""",
+            "models": """
+🤖 /models Command:
+  /models list      - List available DeepSeek models
+  /models switch <model> - Switch to a different model
+""",
+            "fix": """
+🔧 /fix Command:
+  /fix <file_path> [description] - Automatically fix code issues
+""",
+            "analyze": """
+🔬 /analyze Command:
+  /analyze <file_path> - Analyze code for issues and suggest improvements
+""",
+            "diff": """
+📝 /diff Command:
+  /diff <file1> <file2>        - Compare two files
+  /diff --git <file>           - Show git diff for file
+  /diff --backup <file>        - Compare with latest backup
+
+Examples:
+  /diff old.py new.py
+  /diff --git agent/core.py
+""",
+            "browse": """
+📁 /browse Command:
+  /browse [path]              - Browse directory (default: current)
+  /browse --details [path]    - Show detailed listing with sizes
+  /browse --filter <ext>      - Filter by extension (e.g., .py)
+
+Examples:
+  /browse
+  /browse agent/
+  /browse --details src/
+""",
+            "undo": """
+↩️ /undo Command:
+  /undo list [n]              - List recent changes (default: 5)
+  /undo last                  - Revert last change
+  /undo <change_id>           - Revert specific change by index
+
+Examples:
+  /undo list
+  /undo last
+  /undo 2
+""",
+            "test": """
+🧪 /test Command:
+  /test                       - Run basic development tests (dev_test.py)
+  /test unit                  - Run unit tests (if available)
+  /test all                   - Run all available tests
+
+Examples:
+  /test
+  /test unit
+""",
+            "apply": """
+🔧 /apply Command (alias for /code apply):
+  /apply              - Apply pending changes with confirmation
+  /apply force        - Apply without interactive confirmation
+  /apply confirm      - Apply with confirmation (same as /apply)
+
+Note: This is an alias for /code apply.
+""",
+        }
+
+        if not command:
+            # Show all commands
+            result = "🤖 Available Commands:\n\n"
+            for cmd in sorted(help_texts.keys()):
+                # Extract first line of each help text
+                first_line = help_texts[cmd].strip().split('\n')[0]
+                result += f"{first_line}\n"
+            result += "\n💡 Use /help <command> for detailed usage."
+            return result
+        else:
+            cmd = command.strip().lower()
+            if cmd in help_texts:
+                return help_texts[cmd].strip()
+            else:
+                return self.formatter.error(f"No help available for '{command}'. Available commands: {', '.join(sorted(help_texts.keys()))}")
+
+    def handle_diff_command(self, command: str) -> str:
+        """Handle /diff command.
+
+        Usage:
+          /diff <file1> <file2>        - Compare two files
+          /diff --git <file>           - Show git diff for file
+          /diff --backup <file>        - Compare with latest backup
+
+        Examples:
+          /diff old.py new.py
+          /diff --git agent/core.py
+        """
+        if not command or command.strip() == "":
+            help_text = """
+📝 /diff Command Usage:
+  /diff <file1> <file2>        - Compare two files
+  /diff --git <file>           - Show git diff for file
+  /diff --backup <file>        - Compare with latest backup
+  /diff --help                 - Show this help
+
+Examples:
+  /diff old.py new.py
+  /diff --git agent/core.py
+            """.strip()
+            return help_text
+
+        parts = command.split()
+        if parts[0] == '--git':
+            # Git diff implementation
+            if len(parts) < 2:
+                return self.formatter.error("Please specify a file for git diff")
+            file_path = parts[1]
+            try:
+                import subprocess
+                result = subprocess.run(
+                    ['git', 'diff', file_path],
+                    capture_output=True,
+                    text=True,
+                    cwd=os.getcwd()
+                )
+                if result.stdout:
+                    return f"🔀 Git diff for {file_path}:\n\n{result.stdout}"
+                else:
+                    return f"📭 No changes for {file_path} in git"
+            except Exception as e:
+                return self.formatter.error(f"Error running git diff: {str(e)}")
+        elif parts[0] == '--backup':
+            # Compare with backup (simplified)
+            if len(parts) < 2:
+                return self.formatter.error("Please specify a file for backup comparison")
+            return "🔧 Backup comparison not yet implemented"
+        else:
+            # Compare two files
+            if len(parts) < 2:
+                return self.formatter.error("Please specify two files to compare")
+            file1, file2 = parts[0], parts[1]
+            try:
+                # Read both files
+                if not self.code_analyzer:
+                    self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
+                success1, msg1, content1 = self.code_analyzer.read_file_safe(file1)
+                success2, msg2, content2 = self.code_analyzer.read_file_safe(file2)
+                if not success1:
+                    return self.formatter.error(f"Cannot read {file1}: {msg1}")
+                if not success2:
+                    return self.formatter.error(f"Cannot read {file2}: {msg2}")
+
+                # Generate diff
+                lines1 = content1.splitlines(keepends=True)
+                lines2 = content2.splitlines(keepends=True)
+                diff = difflib.unified_diff(
+                    lines1, lines2,
+                    fromfile=file1,
+                    tofile=file2,
+                    lineterm=''
+                )
+                diff_result = ''.join(diff)
+                if diff_result:
+                    return f"🔀 Diff between {file1} and {file2}:\n\n{diff_result}"
+                else:
+                    return self.formatter.success(f"Files {file1} and {file2} are identical")
+            except Exception as e:
+                return self.formatter.error(f"Error comparing files: {str(e)}")
+
+    def handle_browse_command(self, command: str) -> str:
+        """Handle /browse command.
+
+        Usage:
+          /browse [path]              - Browse directory (default: current)
+          /browse --details [path]    - Show detailed listing
+          /browse --filter <ext>      - Filter by extension (e.g., .py)
+          /browse --help              - Show help
+
+        Examples:
+          /browse
+          /browse agent/
+          /browse --details src/
+          /browse --filter .py
+        """
+        if not command or command.strip() == "":
+            path = os.getcwd()
+        else:
+            path = command.strip()
+
+        # Parse flags
+        details = False
+        filter_ext = None
+        parts = path.split()
+        actual_path = os.getcwd()
+
+        i = 0
+        while i < len(parts):
+            if parts[i] == '--details':
+                details = True
+                parts.pop(i)
+            elif parts[i] == '--filter':
+                if i + 1 < len(parts):
+                    filter_ext = parts[i + 1]
+                    parts.pop(i)  # Remove --filter
+                    parts.pop(i)  # Remove the extension
+                else:
+                    return self.formatter.error("Missing extension after --filter")
+            elif parts[i] == '--help':
+                help_text = """
+📁 /browse Command Usage:
+  /browse [path]              - Browse directory (default: current)
+  /browse --details [path]    - Show detailed listing with sizes
+  /browse --filter <ext>      - Filter by extension (e.g., .py)
+  /browse --help              - Show this help
+
+Examples:
+  /browse                     # Browse current directory
+  /browse agent/              # Browse agent directory
+  /browse --details src/      # Detailed listing of src/
+  /browse --filter .py        # Show only Python files
+                """.strip()
+                return help_text
+            else:
+                # This is the path
+                if i == len(parts) - 1:  # Last part
+                    actual_path = parts[i]
+                    if not os.path.isabs(actual_path):
+                        actual_path = os.path.join(os.getcwd(), actual_path)
+                i += 1
+
+        # If no path specified and we consumed all parts with flags
+        if actual_path is None:
+            actual_path = os.getcwd()
+
+        try:
+            if not os.path.exists(actual_path):
+                return self.formatter.error(f"Path does not exist: {actual_path}")
+            if not os.path.isdir(actual_path):
+                return self.formatter.error(f"Not a directory: {actual_path}")
+
+            # List directory
+            items = os.listdir(actual_path)
+
+            # Separate directories and files
+            dirs = []
+            files = []
+            for item in items:
+                item_path = os.path.join(actual_path, item)
+                if os.path.isdir(item_path):
+                    dirs.append(item)
+                else:
+                    if filter_ext and not item.endswith(filter_ext):
+                        continue
+                    files.append(item)
+
+            # Sort
+            dirs.sort()
+            files.sort()
+
+            # Build result
+            result = f"📁 Directory: {actual_path}\n"
+            result += f"📊 Items: {len(dirs)} directories, {len(files)} files"
+            if filter_ext:
+                result += f" (filtered: *{filter_ext})"
+            result += "\n\n"
+
+            # Show directories
+            if dirs:
+                result += "📂 Directories:\n"
+                for d in dirs[:20]:  # Limit to 20
+                    result += f"  • {d}/\n"
+                if len(dirs) > 20:
+                    result += f"  ... and {len(dirs) - 20} more directories\n"
+                result += "\n"
+
+            # Show files
+            if files:
+                result += "📄 Files:\n"
+                for f in files[:30]:  # Limit to 30
+                    if details:
+                        try:
+                            size = os.path.getsize(os.path.join(actual_path, f))
+                            size_str = f"{size:,} bytes"
+                            if size > 1024:
+                                size_str = f"{size/1024:.1f} KB"
+                            result += f"  • {f} ({size_str})\n"
+                        except:
+                            result += f"  • {f}\n"
+                    else:
+                        result += f"  • {f}\n"
+                if len(files) > 30:
+                    result += f"  ... and {len(files) - 30} more files\n"
+
+            result += f"\n💡 Use '/browse --details {actual_path}' for detailed listing"
+            result += f"\n💡 Use '/read {actual_path}/<file>' to read a file"
+
+            return result
+        except Exception as e:
+            return self.formatter.error(f"Error browsing directory: {str(e)}")
+
+    def handle_undo_command(self, command: str) -> str:
+        """Handle /undo command.
+
+        Usage:
+          /undo list [n]              - List recent changes (default: 5)
+          /undo last                  - Revert last change
+          /undo <change_id>           - Revert specific change by index
+          /undo --help                - Show help
+
+        Change ID is shown in /undo list output.
+        """
+        if not command or command.strip() == "":
+            command = "list 5"
+
+        parts = command.split()
+        action = parts[0].lower()
+
+        if action == '--help':
+            help_text = """
+↩️ /undo Command Usage:
+  /undo list [n]              - List recent changes (default: 5)
+  /undo last                  - Revert last change
+  /undo <change_id>           - Revert specific change by index
+  /undo --help                - Show this help
+
+Examples:
+  /undo list                 # List 5 most recent changes
+  /undo list 10              # List 10 most recent changes
+  /undo last                 # Revert last change
+  /undo 2                    # Revert change with ID 2
+            """.strip()
+            return help_text
+
+        if action == 'list':
+            limit = 5
+            if len(parts) > 1:
+                try:
+                    limit = int(parts[1])
+                except ValueError:
+                    return self.formatter.error(f"Invalid limit: {parts[1]}")
+
+            si = self._get_self_iteration()
+            changes = si.get_change_history(limit=limit)
+            if not changes:
+                return "📭 No change history found."
+
+            result = f"📜 Recent Changes (last {len(changes)}):\n\n"
+            for i, change in enumerate(changes):
+                timestamp = change.get('timestamp', 0)
+                dt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
+                file_path = change.get('file_path', 'unknown')
+                desc = change.get('description', 'No description')
+                backup = change.get('backup', 'No backup')
+                result += f"{i+1}. [{dt}] {file_path}\n"
+                result += f"   Description: {desc}\n"
+                if backup and os.path.exists(backup):
+                    result += f"   Backup: {backup} ✓\n"
+                result += "\n"
+            result += "💡 Use '/undo <number>' to revert a specific change"
+            return result
+
+        elif action == 'last':
+            # Revert last change
+            si = self._get_self_iteration()
+            changes = si.get_change_history(limit=1)
+            if not changes:
+                return "📭 No changes to undo."
+            change = changes[0]
+            return self._revert_change(change)
+
+        else:
+            # Try to parse as number
+            try:
+                change_id = int(action)
+                si = self._get_self_iteration()
+                changes = si.get_change_history(limit=change_id + 10)  # Get enough
+                if change_id < 1 or change_id > len(changes):
+                    return self.formatter.error(f"Invalid change ID. Use '/undo list' to see available IDs.")
+                change = changes[change_id - 1]  # 1-indexed
+                return self._revert_change(change)
+            except ValueError:
+                return self.formatter.error(f"Invalid command: {command}. Use '/undo --help' for usage.")
+
+    def _revert_change(self, change: dict) -> str:
+        """Revert a change by restoring from backup."""
+        try:
+            file_path = change.get('file_path')
+            backup_path = change.get('backup')
+            description = change.get('description', 'Unknown change')
+
+            if not file_path:
+                return self.formatter.error("Cannot revert: missing file path in change record")
+            if not backup_path:
+                return self.formatter.error("Cannot revert: no backup path in change record")
+            if not os.path.exists(backup_path):
+                return self.formatter.error(f"Cannot revert: backup file not found: {backup_path}")
+
+            # Read backup content
+            success, message, backup_content = self.safety_manager.safe_read_file(backup_path)
+            if not success:
+                return self.formatter.error(f"Cannot read backup: {message}")
+
+            # Write back to original file
+            success, message, _ = self.safety_manager.safe_write_file(file_path, backup_content, create_backup=False)
+            if not success:
+                return self.formatter.error(f"Cannot write original file: {message}")
+
+            # Log the revert
+            si = self._get_self_iteration()
+            si.log_change({
+                'timestamp': time.time(),
+                'file_path': file_path,
+                'description': f'Reverted: {description}',
+                'backup': backup_path,
+                'status': 'reverted',
+                'original_change': change.get('timestamp')
+            })
+
+            return f"{self.formatter.success(f'Reverted change: {description}')}\n📄 File restored from: {backup_path}"
+        except Exception as e:
+            return self.formatter.error(f"Error reverting change: {str(e)}")
+
+    def handle_test_command(self, command: str) -> str:
+        """Handle /test command.
+
+        Usage:
+          /test                       - Run basic development tests (dev_test.py)
+          /test unit                  - Run unit tests (if available)
+          /test all                   - Run all available tests
+          /test --help                - Show help
+        """
+        if not command or command.strip() == "":
+            command = "basic"
+
+        cmd = command.strip().lower()
+        if cmd == '--help':
+            help_text = """
+🧪 /test Command Usage:
+  /test                       - Run basic development tests (dev_test.py)
+  /test unit                  - Run unit tests (if available)
+  /test all                   - Run all available tests
+  /test --help                - Show this help
+
+Examples:
+  /test              # Run basic tests
+  /test unit         # Run unit tests
+            """.strip()
+            return help_text
+
+        try:
+            if cmd == 'basic' or cmd == 'dev' or cmd == '':
+                # Run dev_test.py
+                test_path = os.path.join(self.agent_root, "..", "dev_test.py")
+                test_path = os.path.abspath(test_path)
+                if not os.path.exists(test_path):
+                    return self.formatter.error(f"Test file not found: {test_path}")
+
+                import subprocess
+                result = subprocess.run(
+                    [sys.executable, test_path],
+                    capture_output=True,
+                    text=True,
+                    timeout=60,
+                    cwd=os.path.dirname(test_path)
+                )
+
+                output = result.stdout
+                if result.stderr:
+                    output += f"\n\nSTDERR:\n{result.stderr}"
+
+                if result.returncode == 0:
+                    return self.formatter.success(f"Tests passed:\n\n{output}")
+                else:
+                    return self.formatter.error(f"Tests failed (exit code: {result.returncode}):\n\n{output}")
+
+            elif cmd == 'unit':
+                # Try to run pytest
+                try:
+                    import subprocess
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pytest", "tests/", "-v"],
+                        capture_output=True,
+                        text=True,
+                        timeout=120,
+                        cwd=os.getcwd()
+                    )
+                    output = result.stdout
+                    if result.stderr:
+                        output += f"\n\nSTDERR:\n{result.stderr}"
+
+                    if result.returncode == 0:
+                        return self.formatter.success(f"Unit tests passed:\n\n{output}")
+                    else:
+                        return self.formatter.error(f"Unit tests failed (exit code: {result.returncode}):\n\n{output}")
+                except FileNotFoundError:
+                    return self.formatter.error("pytest not found. Install with: pip install pytest")
+                except Exception as e:
+                    return self.formatter.error(f"Error running unit tests: {str(e)}")
+
+            elif cmd == 'all':
+                # Run both
+                basic_result = self.handle_test_command('basic')
+                unit_result = self.handle_test_command('unit')
+                return f"🧪 ALL TESTS\n\n{'='*60}\nBASIC TESTS:\n{basic_result}\n\n{'='*60}\nUNIT TESTS:\n{unit_result}"
+            else:
+                return self.formatter.error(f"Unknown test command: {command}. Use '/test --help' for usage.")
+        except subprocess.TimeoutExpired:
+            return self.formatter.error("Test execution timed out")
+        except Exception as e:
+            return self.formatter.error(f"Error running tests: {str(e)}")
+
+    def handle_apply_command(self, command: str) -> str:
+        """Handle /apply command (alias for /code apply).
+
+        Usage:
+          /apply              - Apply pending changes with confirmation
+          /apply force        - Apply without interactive confirmation
+          /apply confirm      - Apply with confirmation (same as /apply)
+          /apply --help       - Show help
+        """
+        if command and command.strip().lower() in ['--help', 'help']:
+            help_text = """
+🔧 /apply Command (alias for /code apply):
+  /apply              - Apply pending changes with confirmation
+  /apply force        - Apply without interactive confirmation
+  /apply confirm      - Apply with confirmation (same as /apply)
+  /apply --help       - Show this help
+
+Note: This is an alias for /code apply. See '/help code' for more details.
+            """.strip()
+            return help_text
+
+        # Map to /code apply subcommand
+        if command and 'force' in command.lower():
+            return self._code_apply_changes_confirm(force=True)
+        else:
+            return self._code_apply_changes()
 
     def _add_webpage_to_memory(self, url: str, content: str) -> None:
         """
@@ -895,7 +2022,111 @@ Remember: Always ask for permission before making changes!
     Please remember this content. I may ask you questions about it.""")
 
         print("💡 Content added to AI memory. You can now ask questions about it!")
-    
+
+    def _is_likely_file_path(self, path: str) -> bool:
+        """
+        Determine if the given string is likely a local file path rather than a URL.
+        """
+        # Check for URL indicators
+        if '://' in path:
+            return False
+        if path.startswith(('http://', 'https://', 'ftp://', 'file://')):
+            return False
+
+        # Check for file path indicators
+        if '/' in path or '\\' in path:
+            return True
+        if path.startswith(('./', '../', '~/')):
+            return True
+        # Check for file extension (common code/text extensions)
+        import os
+        ext = os.path.splitext(path)[1].lower()
+        if ext in {'.py', '.js', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css', '.java', '.cpp', '.c', '.h', '.go', '.rs', '.rb', '.php', '.swift'}:
+            return True
+        # Check if path exists (relative to current directory or code analyzer root)
+        if os.path.exists(path):
+            return True
+        # Default to URL assumption (but could be a domain)
+        return False
+
+    def _get_self_iteration(self):
+        """Initialize and return SelfIteration instance."""
+        if self.self_iteration is None:
+            self.self_iteration = SelfIteration(self.agent_root, self.code_analyzer)
+        return self.self_iteration
+
+    def _is_self_modification(self, file_path: str) -> bool:
+        """Check if file is within agent's own codebase."""
+        try:
+            abs_path = os.path.abspath(file_path)
+            return abs_path.startswith(self.agent_root)
+        except:
+            return False
+
+    def _handle_file_read(self, file_path: str, no_ai: bool = False) -> str:
+        """
+        Read a local file and optionally add to conversation history.
+        Supports line ranges: file.py:10-20
+        """
+        import os
+        import re
+
+        # Parse line range (e.g., file.py:10-20)
+        line_range = None
+        match = re.match(r'^(.+):(\d+)(?:-(\d+))?$', file_path)
+        if match:
+            file_path = match.group(1)
+            start_line = int(match.group(2))
+            end_line = int(match.group(3)) if match.group(3) else start_line
+            line_range = (start_line, end_line)
+
+        # Ensure code analyzer is initialized
+        if not self.code_analyzer:
+            self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
+
+        # Read file
+        success, message, content = self.code_analyzer.read_file_safe(file_path)
+        if not success:
+            return self.formatter.error(f"Cannot read file: {message}")
+
+        # Apply line range if specified
+        if line_range:
+            lines = content.split('\n')
+            start, end = line_range
+            if start < 1 or end > len(lines) or start > end:
+                return self.formatter.error(f"Invalid line range: {start}-{end} (file has {len(lines)} lines)")
+            # Convert to 0-index and slice
+            content = '\n'.join(lines[start-1:end])
+            line_info = f" (lines {start}-{end})"
+        else:
+            line_info = ""
+
+        # Add to conversation history unless --no-ai flag is set
+        if not no_ai:
+            self.add_to_history("user", f"""I've read the following file:
+
+    File: {file_path}{line_info}
+    Lines: {len(content.splitlines())}
+
+    ```python
+    {content[:2000]}{'...' if len(content) > 2000 else ''}
+    ```
+
+    Please remember this code. I may ask you to analyze or fix it.
+
+    Note: If I ask you to propose changes to this code, use the PROPOSED CHANGE format with exact Old Code and New Code.""")
+
+        # Return formatted result
+        result = f"📄 File: {file_path}{line_info}\n"
+        result += f"📏 Size: {len(content)} characters, {len(content.splitlines())} lines\n"
+        if len(content) > 2000:
+            result += f"📝 Preview (first 2000 chars):\n```\n{content[:2000]}...\n```\n"
+        else:
+            result += f"📝 Content:\n```\n{content}\n```\n"
+        if not no_ai:
+            result += "\n💡 Content added to AI memory. You can now ask questions about it!"
+        return result
+
     # NEW: Code analysis methods
     def handle_code_command(self, command: str) -> str:
         """
@@ -944,8 +2175,18 @@ Remember: Always ask for permission before making changes!
             return self._code_apply_changes()
         elif subcommand == 'clear':
             return self._code_clear_changes()
+        elif subcommand == 'self-scan':
+            return self._code_self_scan()
+        elif subcommand == 'self-improve':
+            feature = ' '.join(parts[1:]) if len(parts) > 1 else ""
+            return self._code_self_improve(feature)
+        elif subcommand == 'self-apply':
+            return self._code_self_apply()
+        elif subcommand == 'reason':
+            file_path = ' '.join(parts[1:]) if len(parts) > 1 else ""
+            return self._code_reason(file_path)
         else:
-            return f"❌ Unknown subcommand: {subcommand}\n{self._code_help()}"
+            return self.formatter.error(f"Unknown subcommand: {subcommand}\n{self._code_help()}")
 
     def _code_help(self) -> str:
         return """
@@ -959,12 +2200,17 @@ Remember: Always ask for permission before making changes!
   /code changes              - Show pending code changes
   /code apply                - Apply pending changes (requires confirmation)
   /code clear                - Clear pending changes
+  /code self-scan            - Scan agent's own codebase
+  /code self-improve [target]- Suggest improvements to agent's own code
+  /code self-apply           - Apply vetted self-improvements with safety checks
+  /code reason <file_path>   - Deep analysis using reasoning model (chain-of-thought)
   /code help                 - Show this help
 
 💡 TIPS:
   • Use relative paths from current directory
   • Changes are grouped and require confirmation
   • Large codebases (>500 files) require specific file targeting
+  • Use /code reason for complex analysis with deepseek-reasoner
         """.strip()
 
     def _code_scan(self, path: str) -> str:
@@ -972,25 +2218,26 @@ Remember: Always ask for permission before making changes!
         try:
             abs_path = os.path.abspath(path)
             if not os.path.exists(abs_path):
-                return f"❌ Path does not exist: {abs_path}"
+                return self.formatter.error(f"Path does not exist: {abs_path}")
 
-            self.code_analyzer = CodeAnalyzer(abs_path)
+            self.code_analyzer = CodeAnalyzer(abs_path, safety_manager=self.safety_manager)
 
             # Count files to warn if too many
             total_files, total_dirs = self.code_analyzer.count_files()
 
-            result = f"✅ Codebase scanned: {abs_path}\n"
+            result = f"{self.formatter.success(f'Codebase scanned: {abs_path}')}\n"
             result += f"📊 Statistics:\n"
             result += f"  • Total files: {total_files}\n"
             result += f"  • Total directories: {total_dirs}\n"
 
             if total_files > self.code_analyzer.max_files_before_warning:
-                result += f"\n⚠️  LARGE CODEBASE: {total_files} files detected\n"
+                result += f"\n{self.formatter.warning(f'LARGE CODEBASE: {total_files} files detected')}\n"
                 result += f"💡 Use '/code find <pattern>' to search for specific files\n"
                 result += f"   or '/code read <specific_file>' to analyze individual files\n"
 
-            # Show file type distribution for smaller codebases
-            if total_files <= 1000:
+            # Check threshold and ask for confirmation to show detailed summary
+            should_continue, _ = self._check_file_threshold(total_files, "scan codebase for detailed summary")
+            if should_continue and total_files <= 1000:
                 summary = self.code_analyzer.get_code_summary()
                 if 'file_types' in summary:
                     result += f"\n📁 File Types:\n"
@@ -1000,12 +2247,12 @@ Remember: Always ask for permission before making changes!
             return result
 
         except Exception as e:
-            return f"❌ Error scanning path: {str(e)}"
+            return self.formatter.error(f"Error scanning path: {str(e)}")
     
     def _code_summary(self) -> str:
         """Show codebase summary"""
         if not self.code_analyzer:
-            return "❌ No codebase scanned. Use '/code scan <path>' first."
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
         
         summary = self.code_analyzer.get_code_summary()
         
@@ -1015,7 +2262,7 @@ Remember: Always ask for permission before making changes!
         result += f"Total files: {summary['total_files']}\n"
 
         if 'warning' in summary:
-            result += f"\n⚠️  {summary['warning']}\n"
+            result += f"\n{self.formatter.warning(summary['warning'])}\n"
             result += f"💡 {summary['suggestion']}\n"
 
         if 'file_types' in summary:
@@ -1037,16 +2284,20 @@ Remember: Always ask for permission before making changes!
     def _code_find(self, pattern: str) -> str:
         """Find files matching pattern"""
         if not self.code_analyzer:
-            return "❌ No codebase scanned. Use '/code scan <path>' first."
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
 
         if not pattern:
-            return "❌ Please specify a pattern. Examples:\n" \
+            return self.formatter.error("Please specify a pattern. Examples:\n" \
                    "  /code find *.py\n" \
                    "  /code find *test*\n" \
-                   "  /code find agent.py\n"
+                   "  /code find agent.py")
         
-        # Smart search
-        results = self.code_analyzer.smart_find_files(pattern, max_results=20)
+        # Check total files and ask for confirmation if large
+        total_files, _ = self.code_analyzer.count_files()
+        should_continue, limit = self._check_file_threshold(total_files, f"find files matching '{pattern}'")
+        # Even if user declined full operation, we continue with reduced limit
+        # Smart search with appropriate limit
+        results = self.code_analyzer.smart_find_files(pattern, max_results=20, search_limit=limit)
         
         if not results:
             return f"🔍 No files found matching: {pattern}"
@@ -1069,10 +2320,10 @@ Remember: Always ask for permission before making changes!
     def _code_read(self, file_path: str) -> str:
         """Read and display a file"""
         if not self.code_analyzer:
-            return "❌ No codebase scanned. Use '/code scan <path>' first."
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
         
         if not file_path:
-            return "❌ Please specify a file path"
+            return self.formatter.error("Please specify a file path")
         
         try:
             # ... existing file reading code ...
@@ -1094,7 +2345,7 @@ Remember: Always ask for permission before making changes!
             return result
 
         except Exception as e:
-            return f"❌ Error reading file: {str(e)}"
+            return self.formatter.error(f"Error reading file: {str(e)}")
     
     def add_code_context_instructions(self):
         """
@@ -1156,17 +2407,17 @@ Remember: Always ask for permission before making changes!
     def _code_analyze(self, file_path: str) -> str:
         """Analyze a file's structure"""
         if not self.code_analyzer:
-            return "❌ No codebase scanned. Use '/code scan <path>' first."
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
 
         if not file_path:
-            return "❌ Please specify a file path"
+            return self.formatter.error("Please specify a file path")
         
         try:
             abs_path = os.path.abspath(file_path)
             analysis = self.code_analyzer.analyze_file(abs_path)
 
             if not analysis['success']:
-                return f"❌ {analysis['error']}"
+                return self.formatter.error(f"{analysis['error']}")
 
             result = f"🔬 FILE ANALYSIS: {os.path.basename(abs_path)}\n"
             result += f"📁 Path: {abs_path}\n"
@@ -1222,24 +2473,32 @@ Please analyze this code structure.""")
             return result
 
         except Exception as e:
-            return f"❌ Error analyzing file: {str(e)}"
+            return self.formatter.error(f"Error analyzing file: {str(e)}")
 
     def _code_search(self, search_text: str) -> str:
         """Search for text in code files"""
         if not self.code_analyzer:
-            return "❌ No codebase scanned. Use '/code scan <path>' first."
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
         
         if not search_text:
-            return "❌ Please specify search text"
+            return self.formatter.error("Please specify search text")
 
-        # Find code files
-        code_files = self.code_analyzer.find_code_files(limit=200)  # Limit for performance
+        # Check total files and ask for confirmation if large
+        total_files, _ = self.code_analyzer.count_files()
+
+        should_continue, limit = self._check_file_threshold(
+            total_files, f"search for '{search_text}'"
+        )
+        # Even if user declined full operation, we continue with reduced limit
+
+        # Find code files with appropriate limit
+        code_files = self.code_analyzer.find_code_files(limit=limit)
 
         if not code_files:
-            return "❌ No code files found in the scanned codebase."
+            return self.formatter.error("No code files found in the scanned codebase.")
 
         results = []
-        print(f"🔍 Searching in {len(code_files)} files...")
+        self._safe_print(f"🔍 Searching in {len(code_files)} files...")
         
         for file_path in code_files:
             try:
@@ -1271,7 +2530,9 @@ Please analyze this code structure.""")
                 continue
 
         if not results:
-            return f"🔍 No matches found for '{search_text}' in {len(code_files)} files."
+            result_msg = f"🔍 No matches found for '{search_text}' in {len(code_files)} files."
+            self.add_search_results_to_history('code', search_text, result_msg)
+            return result_msg
         
         result = f"🔍 SEARCH RESULTS for '{search_text}'\n"
         result += f"📁 Found in {len(results)} files (searched {len(code_files)} files)\n"
@@ -1282,7 +2543,8 @@ Please analyze this code structure.""")
             result += f"   Matches: {res['occurrences']}\n"
             if res['sample']:
                 result += f"   Sample:\n{res['sample']}\n"
-        
+
+        self.add_search_results_to_history('code', search_text, result)
         return result
 
     def _code_show_changes(self) -> str:
@@ -1293,12 +2555,17 @@ Please analyze this code structure.""")
         result = f"📋 PENDING CODE CHANGES ({len(self.code_changes_pending)})\n"
         result += "────────────────────────\n"
 
-        # Group changes by file
+        # Order changes by dependencies
+        ordered_changes = self._order_changes_by_dependencies(self.code_changes_pending)
+
+        # Group changes by file, preserving file order
         changes_by_file = {}
-        for change in self.code_changes_pending:
+        file_order = []
+        for change in ordered_changes:
             file_path = change['file_path']
             if file_path not in changes_by_file:
                 changes_by_file[file_path] = []
+                file_order.append(file_path)
             changes_by_file[file_path].append(change)
 
         for file_path, changes in changes_by_file.items():
@@ -1323,7 +2590,7 @@ Please analyze this code structure.""")
         # Show what will be changed
         result = self._code_show_changes()
         result += "\n\n" + "="*60 + "\n"
-        result += "⚠️  WARNING: This will modify files on disk!\n"
+        result += f"{self.formatter.warning('WARNING: This will modify files on disk!')}\n"
         result += "="*60 + "\n\n"
 
         # Ask for confirmation
@@ -1335,6 +2602,16 @@ Please analyze this code structure.""")
         result += "\n💡 Or use '/code apply force' to apply without interactive confirmation"
         
         return result
+    def _order_changes_by_dependencies(self, changes):
+        """Order changes based on file dependencies."""
+        if not changes:
+            return changes
+        # Determine root path: use agent_root for self-modifications, else code_analyzer.root_path
+        import os
+        root_path = self.agent_root if hasattr(self, 'agent_root') else (self.code_analyzer.root_path if self.code_analyzer else os.getcwd())
+        planner = Planner(root_path)
+        ordered = planner.plan_changes(changes)
+        return ordered
 
     def _code_apply_changes_confirm(self, force: bool = False) -> str:
         """Actually apply the changes (called after confirmation)"""
@@ -1344,17 +2621,45 @@ Please analyze this code structure.""")
         applied = []
         failed = []
 
-        # Group changes by file
+        # Order changes by dependencies
+        ordered_changes = self._order_changes_by_dependencies(self.code_changes_pending)
+
+        # Group changes by file, preserving file order
         changes_by_file = {}
-        for change in self.code_changes_pending:
+        file_order = []
+        for change in ordered_changes:
             file_path = change['file_path']
             if file_path not in changes_by_file:
                 changes_by_file[file_path] = []
+                file_order.append(file_path)
             changes_by_file[file_path].append(change)
 
         # Apply changes to each file
-        for file_path, changes in changes_by_file.items():
+        for file_path in file_order:
+            changes = changes_by_file[file_path]
             try:
+                # Check if this is a self-modification
+                if self._is_self_modification(file_path):
+                    # Use self-iteration framework for safety
+                    si = self._get_self_iteration()
+                    file_applied = False
+                    for change in changes:
+                        if 'old_code' in change and 'new_code' in change:
+                            success, msg, backup = si.apply_change(
+                                file_path,
+                                change['old_code'],
+                                change['new_code'],
+                                change.get('description', 'Unknown change')
+                            )
+                            if success:
+                                file_applied = True
+                            else:
+                                failed.append(f"{file_path}: {msg}")
+                    if file_applied:
+                        applied.append(file_path)
+                    continue  # Skip original logic
+
+                # Original logic for non-self modifications
                 # Read current file
                 success, message, content = self.code_analyzer.read_file_safe(file_path)
                 if not success:
@@ -1397,8 +2702,10 @@ Please analyze this code structure.""")
 
                 # Write back only if changes were made
                 if content != original_content:
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        f.write(content)
+                    success, message, _ = self.safety_manager.safe_write_file(file_path, content, create_backup=True)
+                    if not success:
+                        failed.append(f"{file_path}: {message}")
+                        continue
                     applied.append(file_path)
                 else:
                     failed.append(f"{file_path}: No changes were made (old_code not found)")
@@ -1414,14 +2721,14 @@ Please analyze this code structure.""")
         result += "\n"
         
         if applied:
-            result += f"\n✅ Successfully applied changes to {len(applied)} files:\n"
+            result += f"\n{self.formatter.success(f'Successfully applied changes to {len(applied)} files:')}\n"
             for file_path in applied:
                 result += f"   📄 {file_path}\n"
 
         if failed:
-            result += f"\n❌ Failed to apply changes to {len(failed)} files:\n"
+            result += f"\n{self.formatter.error(f'Failed to apply changes to {len(failed)} files:')}\n"
             for error in failed:
-                result += f"   ⚠️  {error}\n"
+                result += f"   {self.formatter.warning(error)}\n"
 
         if not applied and not failed:
             result += "\n📭 No changes were applied."
@@ -1434,7 +2741,165 @@ Please analyze this code structure.""")
         self.code_changes_pending = []
         return f"🧹 Cleared {count} pending changes."
 
-    def propose_code_change(self, file_path: str, old_code: str, new_code: str, 
+    def _code_self_scan(self) -> str:
+        """Scan the agent's own codebase."""
+        if not self.code_analyzer:
+            self.code_analyzer = CodeAnalyzer(self.agent_root, safety_manager=self.safety_manager)
+        summary = self.code_analyzer.get_code_summary()
+        result = "🔍 SELF-SCAN: Agent's own codebase\n"
+        result += f"Root: {self.agent_root}\n"
+        result += f"Total files: {summary['total_files']}\n"
+        if 'file_types' in summary:
+            result += "\nFile types:\n"
+            for ext, count in summary['file_types'].items():
+                result += f"  {ext or 'no ext'}: {count}\n"
+        return result
+
+    def _code_self_improve(self, feature: str) -> str:
+        """Suggest improvements to the agent's own code."""
+        try:
+            si = self._get_self_iteration()
+            # Determine target files
+            target_files = []
+            if feature and os.path.isfile(feature):
+                target_files.append(feature)
+            elif feature and os.path.isdir(feature):
+                # Directory: find Python files
+                for root, dirs, files in os.walk(feature):
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', '.git')]
+                    for f in files:
+                        if f.endswith('.py'):
+                            target_files.append(os.path.join(root, f))
+            else:
+                # Default: agent's own Python files
+                for root, dirs, files in os.walk(self.agent_root):
+                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', '.git')]
+                    for f in files:
+                        if f.endswith('.py'):
+                            target_files.append(os.path.join(root, f))
+
+            if not target_files:
+                return self.formatter.error("No Python files found to improve.")
+
+            total_suggestions = 0
+            result = f"🔍 Self-improvement scan: {len(target_files)} Python files\n"
+
+            for file_path in target_files:
+                suggestions = si.suggest_improvements(file_path)
+                if suggestions:
+                    result += f"\n📄 {os.path.relpath(file_path, self.agent_root)}:\n"
+                    for sugg in suggestions:
+                        # Propose change
+                        self.propose_code_change(
+                            file_path=file_path,
+                            old_code=sugg['old_code'],
+                            new_code=sugg['new_code'],
+                            description=sugg['description']
+                        )
+                        result += f"  • {sugg['description']}\n"
+                        total_suggestions += 1
+
+            if total_suggestions == 0:
+                result += f"\n{self.formatter.success('No improvements suggested (code looks good!).')}"
+            else:
+                result += f"\n💡 {total_suggestions} improvement(s) proposed. Use '/code changes' to review, '/code apply' to apply."
+
+            return result
+        except Exception as e:
+            return self.formatter.error(f"Error during self-improvement: {str(e)}")
+
+    def _code_self_apply(self) -> str:
+        """Apply vetted self-improvements with safety checks."""
+        # Check if there are pending changes
+        if not self.code_changes_pending:
+            return "📭 No pending changes to apply."
+
+        # Ensure all changes are self-modifications (optional)
+        non_self = []
+        for change in self.code_changes_pending:
+            if not self._is_self_modification(change['file_path']):
+                non_self.append(change['file_path'])
+        if non_self:
+            return self.formatter.error(f"Self-apply only works on agent's own code. Non-self files: {', '.join(set(non_self))}")
+
+        # Run pre-tests using self-iteration framework
+        si = self._get_self_iteration()
+        test_success, test_msg = si.run_basic_tests()
+        if not test_success:
+            return self.formatter.error(f"Pre-test suite failed: {test_msg}. Aborting self-apply.")
+
+        # Apply changes using existing logic (which will use self-iteration with tests)
+        result = self._code_apply_changes_confirm(force=True)
+
+        # Run post-tests (optional) - already done per file in apply_change
+        # Add note about tests
+        return "🔧 Self-apply completed with safety checks.\n" + result
+    def _code_reason(self, file_path: str) -> str:
+        """Deep analysis of a file using reasoning model (chain-of-thought)."""
+        if not file_path:
+            return self.formatter.error("Please specify a file path")
+
+        # Read file
+        if not self.code_analyzer:
+            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
+
+        success, message, content = self.code_analyzer.read_file_safe(file_path)
+        if not success:
+            return self.formatter.error(f"Cannot read file: {message}")
+
+        # Use deepseek-reasoner for deep analysis (temporary switch)
+        reasoner_model = "deepseek-reasoner"
+        model_used = self.model  # default
+
+        # Construct prompt for analysis
+        prompt = f"""Please analyze the following code file using chain-of-thought reasoning.
+Provide a detailed analysis covering:
+1. Code structure and organization
+2. Potential bugs or issues
+3. Performance considerations
+4. Readability and maintainability
+5. Suggested improvements with reasoning
+
+File: {file_path}
+Code:
+```python
+{content}
+```
+
+Please think step by step and provide your analysis:"""
+
+        messages = [
+            {"role": "user", "content": prompt}
+        ]
+
+        # Define analysis function to run with temporary model
+        def perform_analysis():
+            print(f"[Reasoner] Using model '{self.model}' for deep analysis...")
+            return self.generate_completion(messages, temperature=0.3, max_tokens=4000)
+
+        try:
+            analysis = self.with_model(reasoner_model, perform_analysis)
+            model_used = reasoner_model
+        except ValueError as e:
+            # Fallback to current model if reasoner not available
+            print(f"Warning: {e}. Falling back to current model '{self.model}'.")
+            analysis = perform_analysis()
+            model_used = self.model
+
+        if analysis.startswith("Error generating completion"):
+            return self.formatter.error(analysis)
+
+        result = f"[Analysis] DEEP ANALYSIS (using {model_used}): {os.path.basename(file_path)}\n"
+        result += f"Path: {file_path}\n"
+        line_count = content.count('\n')
+        result += f"Stats: Content length: {len(content)} characters, {line_count} lines\n"
+        result += "────────────────────────\n"
+        result += analysis
+        result += "\n\nTip: Use '/code analyze' for structural analysis or '/code self-improve' to propose changes."
+
+        return result
+
+    def propose_code_change(self, file_path: str, old_code: str, new_code: str,
                            description: str, line: int = None) -> str:
         """
         Propose a code change (called by AI analysis)
@@ -1475,6 +2940,25 @@ Please analyze this code structure.""")
         """Add message to conversation history"""
         self.conversation_history.append({"role": role, "content": content})
 
+    def add_search_results_to_history(self, search_type: str, query: str, results: str):
+        """
+        Add search results to conversation history as system message.
+
+        Args:
+            search_type: 'web' or 'code'
+            query: The search query
+            results: The search results text
+        """
+        if search_type == 'web':
+            prefix = "🔍 Web search results for"
+        elif search_type == 'code':
+            prefix = "📁 Code search results for"
+        else:
+            prefix = "Search results for"
+
+        message = f"{prefix} '{query}':\n\n{results}"
+        self.add_to_history("system", message)
+
     def clear_history(self):
         """Clear conversation history"""
         self.conversation_history = []
@@ -1509,65 +2993,109 @@ Please analyze this code structure.""")
     def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4):
         """Stream response with auto-file detection, analysis, and auto-fix capabilities"""
         import re
+        import sys
+        import os
+
+        # Color support for thinking content (light gray)
+        COLORS_ENABLED = sys.stdout.isatty() and os.getenv('TERM') not in ('dumb', '')
+        COLOR_THINKING = '\033[90m'  # Light gray
+        COLOR_RESET = '\033[0m'
 
         # Auto-detect if this is a code-related query
         if not prompt.startswith(('/fix', '/analyze', '/code', '/read', '/search', '/models')):
             if self.is_code_related_query(prompt):
-                print(f"🔍 Detected code-related query. Adding code context...")
+                self._safe_print(f"🔍 Detected code-related query. Adding code context...")
                 self.add_code_context_instructions()
 
-        print(f"🔄 Processing command: {prompt[:50]}{'...' if len(prompt) > 50 else ''}")
-        
-        # Auto-detect file paths before handling commands
-        file_content = self.auto_detect_and_read_file(prompt)
+        self._safe_print(f"🔄 Processing command: {prompt[:50]}{'...' if len(prompt) > 50 else ''}")
+
+        # Quick input classification (URLs, file paths, etc.)
+        modified_prompt = prompt
+        classified_cmd = self.classify_and_enhance_input(prompt)
+        if classified_cmd:
+            self._safe_print(f"🎯 Classified as: {classified_cmd}")
+            modified_prompt = classified_cmd
+            # Skip natural language interpretation since we already classified
+            skip_natural_language = True
+        else:
+            skip_natural_language = False
+
+        # Natural language interpretation (skip if already classified)
+        if not skip_natural_language and self.natural_language_enabled and self.interpreter:
+            suggested_cmd, confidence = self.interpreter.interpret(prompt)
+            if suggested_cmd and confidence >= self.interpreter.confidence_threshold:
+                self._safe_print(f"🤖 Interpreting as: {suggested_cmd} (confidence: {confidence:.2f})")
+                log_operation("natural_language_interpretation", prompt, True,
+                             f"interpreted_as={suggested_cmd}, confidence={confidence:.2f}")
+                modified_prompt = suggested_cmd
+
+        # Auto-search detection (skip if already a command)
+        if (self.auto_search_enabled and
+            not modified_prompt.startswith('/') and
+            self.searcher.should_search(modified_prompt)):
+            self._safe_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...")
+            log_operation("auto_search_triggered", modified_prompt, True,
+                         f"query_length={len(modified_prompt)}")
+            success, results = self.search_sync(modified_prompt)
+            if success:
+                log_operation("auto_search_results", modified_prompt, True,
+                             f"results_length={len(results)}")
+                self.add_search_results_to_history('web', modified_prompt, results)
+                modified_prompt = f"Web search results:\n{results}\n\nUser question: {modified_prompt}"
+            else:
+                log_operation("auto_search_failed", modified_prompt, False,
+                             "search returned no results or error")
+                self.add_to_history("system", f"Web search failed for '{modified_prompt}': {results}")
+
+        # Update prompt with modifications
+        prompt = modified_prompt
+
+        # Auto-detect file paths before handling commands (skip if already a read command)
+        file_content = None
+        if not prompt.startswith(('/read', '/code read', '/fix', '/analyze')):
+            file_content = self.auto_detect_and_read_file(prompt)
         if file_content:
             # Extract just the filename from path
             file_match = re.search(r'([^\\/]+\.\w+)$', prompt)
             if file_match:
                 filename = file_match.group(1)
-                print(f"🔍 Detected file reference: {filename}")
-                print(f"📄 Auto-loaded file content into conversation")
+                self._safe_print(f"🔍 Detected file reference: {filename}")
+                self._safe_print(f"📄 Auto-loaded file content into conversation")
 
-        # Handle commands first
-        if prompt.startswith("/search"):
-            search_query = prompt[7:].strip()
-            search_result = self.handle_search(search_query)
-            print(f"\n{search_result}\n")
-            return None
-        elif prompt.startswith("/models"):
-            response = self.handle_models_command(prompt)
-            if response:
-                print(f"\n{response}\n")
-            return None
-        elif prompt.startswith("/read"):
-            url = prompt[5:].strip()
-            if url:
-                content = self.handle_read_command(url)
-                print(f"\n{content}\n")
-            else:
-                print("Usage: /read <url> [options]\nTry: /read --help")
-            return None
-        elif prompt.startswith("/code"):
-            subcommand = prompt[5:].strip()
-            response = self.handle_code_command(subcommand)
+        # Handle commands using registry
+        skip_user_add = False
+        command_handled = False
+        # Sort prefixes by length descending to match longest first
+        for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
+            if prompt.startswith(prefix):
+                handler, strip_prefix = self.command_handlers[prefix]
+                arg = prompt[len(prefix):].strip() if strip_prefix else prompt
+                response = handler(arg)
+                command_handled = True
 
-            # Handle special apply confirmations
-            if subcommand.startswith("apply confirm") or subcommand == "apply force":
-                force = "force" in subcommand
-                response = self._code_apply_changes_confirm(force)
+                # Special handling for /fix and /analyze
+                if prefix in ["/fix", "/analyze"]:
+                    skip_user_add = True
+                    if response is not None:
+                        self._safe_print(f"\n{response}\n")
+                    # Continue to API call
+                    break
 
-            print(f"\n{response}\n")
-            return None
-        elif prompt.startswith("/fix") or prompt.startswith("/analyze"):
-            # NEW: Handle auto-fix/analyze commands
-            print(f"🚀 Starting auto-fix/analyze process...")
-            result = self.handle_auto_fix_command(prompt)
-            if result is not None:
-                print(f"\n{result}\n")
-            # Don't return None here - let it continue to the API call
-            # Just set a flag to skip adding the user message
-            skip_user_add = True
-        else:
+                # Special handling for /code apply confirm
+                if prefix == "/code":
+                    subcommand = arg
+                    if subcommand.startswith("apply confirm") or subcommand == "apply force":
+                        force = "force" in subcommand
+                        response = self._code_apply_changes_confirm(force)
+
+                # For other commands, print response and return
+                if response is not None:
+                    self._safe_print(f"\n{response}\n")
+                return None
+
+        # If no command matched
+        if not command_handled:
+            skip_user_add = False
             skip_user_add = False
 
         # Regular chat processing (skip if we already added in handle_auto_fix_command)
@@ -1668,14 +3196,23 @@ Please analyze this code structure.""")
 
                                     if reasoning_chunk is not None:
                                         if reasoning_chunk and not is_reasoning_active:
-                                            print(f"\n💭 THINKING:")
-                                            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                            if COLORS_ENABLED:
+                                                print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
+                                            else:
+                                                print(f"\n💭 THINKING:")
+                                            if COLORS_ENABLED:
+                                                print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
+                                            else:
+                                                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                                             is_reasoning_active = True
                                             is_final_response_active = False
                                             has_seen_reasoning = True
 
                                         if reasoning_chunk:
-                                            print(f"{reasoning_chunk}", end="", flush=True)
+                                            if COLORS_ENABLED and is_reasoning_active:
+                                                print(f"{COLOR_THINKING}{reasoning_chunk}{COLOR_RESET}", end="", flush=True)
+                                            else:
+                                                print(f"{reasoning_chunk}", end="", flush=True)
                                             reasoning_content += reasoning_chunk
 
                                     content = delta.get("content", "")
@@ -1728,7 +3265,7 @@ Please analyze this code structure.""")
                 full_response):
 
                 print(f"\n{'='*80}")
-                print(f"🔧 AUTO-FIX MODE: Processing AI response...")
+                self._safe_print(f"🔧 AUTO-FIX MODE: Processing AI response...")
                 print(f"{'='*80}")
 
                 # Parse the AI response for PROPOSED CHANGE blocks
@@ -1777,27 +3314,43 @@ Please analyze this code structure.""")
 
     async def stream_response_async(self, prompt: str, **kwargs):
         """Async version - handles search and model commands asynchronously"""
+        # Special case for /search (native async)
         if prompt.startswith("/search"):
             query = prompt[7:].strip()
-            print(f"\n🔍 Searching for: {query}")
+            self._safe_print(f"\n🔍 Searching for: {query}")
             success, result = await self.searcher.search(query)
-            print(f"\n{result}\n")
-            return None
-        elif prompt.startswith("/models"):
-            # Run model commands in thread pool
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: self.handle_models_command(prompt))
-            return None
-        elif prompt.startswith("/read"):  # NEW: Handle /read command asynchronously
-            url = prompt[5:].strip()
-            if url:
-                # Run webpage reading in thread pool (IO-bound)
-                loop = asyncio.get_event_loop()
-                content = await loop.run_in_executor(None, self.handle_read_command, url)
-                print(f"\n{content}\n")
+            if success:
+                self.add_search_results_to_history('web', query, result)
             else:
-                print("Usage: /read <url>\nExample: /read https://example.com")
+                # Add error to history as system message
+                self.add_to_history("system", f"Web search failed for '{query}': {result}")
+            self._safe_print(f"\n{result}\n")
             return None
+
+        # Use command registry for other commands (excluding /search, /fix, /analyze)
+        for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
+            if prefix in ["/search", "/fix", "/analyze"]:
+                continue
+            if prompt.startswith(prefix):
+                handler, strip_prefix = self.command_handlers[prefix]
+                arg = prompt[len(prefix):].strip() if strip_prefix else prompt
+                # Run sync handler in thread pool
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, handler, arg)
+
+                # Special handling for /code apply confirm
+                if prefix == "/code":
+                    subcommand = arg
+                    if subcommand.startswith("apply confirm") or subcommand == "apply force":
+                        force = "force" in subcommand
+                        response = self._code_apply_changes_confirm(force)
+
+                if response is not None:
+                    self._safe_print(f"\n{response}\n")
+                return None
+
+        # No command matched, fall back to sync stream_response
+        return self.stream_response(prompt, **kwargs)
 
         return self.stream_response(prompt, **kwargs)
 
@@ -1935,17 +3488,98 @@ Please analyze this code structure.""")
             for match in matches:
                 # Check if it looks like a real file path (not just random text)
                 if any(ext in match for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
+                    # Safety confirmation for auto-file operations
+                    if self.safety_confirm_file_operations:
+                        print(f"🔍 Detected file reference: {match}")
+                        response = input("Read file? (y/n): ").strip().lower()
+                        if response not in ('y', 'yes'):
+                            log_operation("auto_file_read", match, False, "user_denied_confirmation")
+                            continue
+                        else:
+                            log_operation("auto_file_read", match, True, "user_confirmed")
                     try:
                         # Try to read the file
                         if not self.code_analyzer:
-                            self.code_analyzer = CodeAnalyzer()
+                            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
 
                         success, message, content = self.code_analyzer.read_file_safe(match)
                         if success:
-                            print(f"📄 Auto-reading detected file: {match}")
+                            self._safe_print(f"📄 Auto-reading detected file: {match}")
+                            log_operation("auto_file_read", match, True, f"size={len(content)}")
                             return content
-                    except:
+                        else:
+                            log_operation("auto_file_read", match, False, f"reason={message}")
+                    except Exception as e:
+                        log_operation("auto_file_read", match, False, f"exception={str(e)}")
                         continue
+
+        return None
+
+    def classify_and_enhance_input(self, text: str) -> Optional[str]:
+        """
+        Classify input type and convert to appropriate command if it's a direct object.
+        Returns command string or None if no classification.
+        """
+        import re
+        text = text.strip()
+
+        # If it's already a command, don't reclassify
+        if text.startswith('/'):
+            return None
+
+        # 1. URL detection
+        url_pattern = r'^(https?://[^\s]+)$'
+        if re.match(url_pattern, text, re.IGNORECASE):
+            self._safe_print(f"🔗 Detected URL: {text}")
+            log_operation("url_detection", text, True, "auto_classified_as_url")
+            return f"/read {text}"
+
+        # 2. File path with optional line numbers (e.g., file.py:15, file.py:10-20)
+        # Match whole string as a file path
+        file_line_pattern = r'^([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+\.\w+)(?::(\d+)(?:-(\d+))?)?$'
+        file_line_pattern_unix = r'^(/(?:[^/]+/)*[^/]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?$'
+        file_line_pattern_rel = r'^((?:\.{1,2}/)?(?:[^/\s]+/)*[^/\s]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?$'
+
+        for pattern in [file_line_pattern, file_line_pattern_unix, file_line_pattern_rel]:
+            match = re.match(pattern, text)
+            if match:
+                file_path = match.group(1)
+                line_start = match.group(2) if match.group(2) else None
+                line_end = match.group(3) if match.group(3) else None
+
+                # Check if it's a known file extension
+                if any(ext in file_path for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
+                    self._safe_print(f"📄 Detected file path with line numbers: {text}")
+                    log_operation("file_path_detection", text, True, f"path={file_path}, lines={line_start}-{line_end}")
+
+                    # Build appropriate command
+                    if line_start:
+                        if line_end:
+                            return f"/read {file_path}:{line_start}-{line_end}"
+                        else:
+                            return f"/read {file_path}:{line_start}"
+                    else:
+                        return f"/read {file_path}"
+
+        # 3. Simple filename (just a filename without path)
+        simple_file_pattern = r'^([^/\s]+\.\w+)$'
+        match = re.match(simple_file_pattern, text)
+        if match:
+            filename = match.group(1)
+            if any(ext in filename for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
+                self._safe_print(f"📄 Detected simple filename: {filename}")
+                log_operation("filename_detection", text, True, f"filename={filename}")
+                return f"/read {filename}"
+
+        # 4. Code reference pattern (e.g., "function_name()", "ClassName.method", "module.Class")
+        # This is more speculative - might trigger false positives
+        code_ref_pattern = r'^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\(\)?)$'
+        match = re.match(code_ref_pattern, text)
+        if match and len(text.split()) == 1:  # Single token only
+            self._safe_print(f"🔍 Detected possible code reference: {text}")
+            log_operation("code_reference_detection", text, True, "possible_code_reference")
+            # Could trigger code search, but might be too aggressive
+            # Let's not auto-convert this, as it could be many things
 
         return None
 
@@ -1954,13 +3588,13 @@ Please analyze this code structure.""")
         Automatically handle file analysis when mentioned
         """
         if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer()
+            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
         
         # Try to read the file
         success, message, content = self.code_analyzer.read_file_safe(file_path)
         
         if not success:
-            return f"❌ Could not read file {file_path}: {message}"
+            return self.formatter.error(f"Could not read file {file_path}: {message}")
         
         # Add to conversation history
         self.add_to_history("user", f"""I want to analyze this file:
@@ -1973,7 +3607,7 @@ File: {file_path}
 
 Please analyze this code and suggest any improvements, fixes, or optimizations.""")
 
-        return f"✅ Successfully loaded {file_path} for analysis. Please continue with your request."
+        return self.formatter.success(f"Successfully loaded {file_path} for analysis. Please continue with your request.")
     
     def handle_auto_fix_command(self, command: str) -> Optional[str]:
         """
@@ -1990,17 +3624,17 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         file_path = parts[1]
         description = " ".join(parts[2:]) if len(parts) > 2 else "Please analyze and fix any issues"
 
-        print(f"🔧 {'Fixing' if cmd_type == '/fix' else 'Analyzing'}: {file_path}")
-        print(f"📝 Description: {description}")
+        self._safe_print(f"🔧 {'Fixing' if cmd_type == '/fix' else 'Analyzing'}: {file_path}")
+        self._safe_print(f"📝 Description: {description}")
 
         # Initialize code analyzer if needed
         if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer()
+            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
 
         # Read the file
         success, message, content = self.code_analyzer.read_file_safe(file_path)
         if not success:
-            print(f"❌ Cannot read file: {message}")
+            self._safe_print(f"❌ Cannot read file: {message}")
             return None
 
         # Store original content for diff
@@ -2073,7 +3707,7 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         self.auto_fix_mode = (cmd_type == '/fix')
         self.current_fix_file = file_path
 
-        print(f"🤖 AI is analyzing the file. It will propose changes automatically...")
+        self._safe_print(f"🤖 AI is analyzing the file. It will propose changes automatically...")
 
         # Return None to let the normal streaming handle the response
         return None
@@ -2099,26 +3733,26 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
             old_code = re.sub(r'^```\w*\s*|\s*```$', '', old_code).strip()
             new_code = re.sub(r'^```\w*\s*|\s*```$', '', new_code).strip()
 
-            print(f"\n🔍 Validating change: {description}")
+            self._safe_print(f"\n🔍 Validating change: {description}")
             
             # Skip if old_code is clearly invalid
             if "# truncated for large files" in old_code.lower() or "# sample code" in old_code.lower():
-                print(f"❌ Skipping invalid change (contains truncation comment)")
+                self._safe_print(f"❌ Skipping invalid change (contains truncation comment)")
                 continue
 
             # Try to validate, but be more lenient
             is_valid, error_msg = self.validate_proposed_change(old_code, new_code, file_path)
 
             if not is_valid:
-                print(f"⚠️  Change validation warning: {error_msg}")
-                print(f"💡 Still adding to pending changes for manual review")
+                self._safe_print(f"⚠️  Change validation warning: {error_msg}")
+                self._safe_print(f"💡 Still adding to pending changes for manual review")
                 # Still add it, but mark as needs review
                 description = f"[Needs Review] {description}"
             
             # Add to pending changes
             self.propose_code_change(file_path, old_code, new_code, description, line)
             change_count += 1
-            print(f"✅ Added change to pending changes")
+            self._safe_print(f"✅ Added change to pending changes")
 
         return change_count
 
@@ -2127,17 +3761,17 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         Automatically apply changes after user confirmation
         """
         if not self.code_changes_pending:
-            print("📭 No changes to apply.")
+            self._safe_print("📭 No changes to apply.")
             return
 
         # Show what will be changed
         print("\n" + "="*60)
-        print("📋 PROPOSED CHANGES:")
+        self._safe_print("📋 PROPOSED CHANGES:")
         print("="*60)
         
         for change in self.code_changes_pending:
-            print(f"\n📄 File: {change['file_path']}")
-            print(f"📝 {change['description']}")
+            self._safe_print(f"\n📄 File: {change['file_path']}")
+            self._safe_print(f"📝 {change['description']}")
             if 'old_code' in change and 'new_code' in change:
                 print(f"   - {change['old_code'][:80]}{'...' if len(change['old_code']) > 80 else ''}")
                 print(f"   + {change['new_code'][:80]}{'...' if len(change['new_code']) > 80 else ''}")
@@ -2192,6 +3826,44 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
             except (EOFError, KeyboardInterrupt):
                 print("\n\nInterrupted. Assuming 'no'")
                 return False
+
+    def _check_file_threshold(self, total_files: int, operation_description: str = "process files") -> Tuple[bool, Optional[int]]:
+        """
+        Check if total files exceeds thresholds and ask user for confirmation.
+
+        Args:
+            total_files: Total number of files detected
+            operation_description: Description of the operation for the prompt
+
+        Returns:
+            Tuple[bool, Optional[int]]: (should_continue, limit)
+                - should_continue: True if user wants to continue, False otherwise
+                - limit: Suggested limit for file operations (None for no limit)
+        """
+        # Thresholds for confirmation
+        thresholds = [100, 200, 300]
+        exceeded_threshold = None
+
+        for threshold in sorted(thresholds, reverse=True):
+            if total_files >= threshold:
+                exceeded_threshold = threshold
+                break
+
+        limit = 200  # Default limit for performance
+
+        if exceeded_threshold is not None:
+            self._safe_print(f"📊 Found {total_files} total files in codebase (exceeds threshold: {exceeded_threshold})")
+            if self.get_user_confirmation(f"Continue to {operation_description} for all {total_files} files?", "no"):
+                limit = None  # No limit, process all files
+                self._safe_print(f"✅ Processing all {total_files} files...")
+                return True, limit
+            else:
+                limit = 100  # Reduced limit for safety
+                self._safe_print(f"⚠️  Using reduced limit of {limit} files for safety.")
+                return False, limit  # User declined full operation
+
+        # If no threshold exceeded, continue with default limit
+        return True, limit
 
     def show_diff(self, old_content: str, new_content: str, filename: str = "file"):
         """

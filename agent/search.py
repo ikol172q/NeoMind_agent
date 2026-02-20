@@ -13,16 +13,39 @@ from bs4 import BeautifulSoup
 class OptimizedDuckDuckGoSearch:
     """Async + lxml optimized search"""
     
-    def __init__(self):
+    def __init__(self, triggers=None):
         self.cache = {}
         self.min_interval = 0.5
         self.last_search = 0
+        # Default triggers for auto-search detection
+        self.triggers = triggers or {"today", "news", "weather", "latest", "current", "now", "recent",
+                                     "2026", "2025", "2024", "yesterday", "tomorrow", "update", "breaking",
+                                     "stock", "price", "score", "results", "announcement", "release"}
+        # Time-sensitive patterns
+        self.time_patterns = [
+            r"what.*happened.*today",
+            r"current.*events",
+            r"latest.*news",
+            r"recent.*developments",
+            r"stock.*price.*of",
+            r"score.*of.*game",
+            r"weather.*in.*",
+            r"forecast.*for.*",
+            r"breaking.*news",
+        ]
 
     @lru_cache(maxsize=100)
     def should_search(self, query: str) -> bool:
         """Cache decision for whether to search"""
-        triggers = {"today", "news", "weather", "latest", "current", "now", "recent"}
-        return any(trigger in query.lower() for trigger in triggers)
+        query_lower = query.lower()
+        # Check trigger keywords
+        if any(trigger in query_lower for trigger in self.triggers):
+            return True
+        # Check time-sensitive patterns
+        import re
+        if any(re.search(pattern, query_lower) for pattern in self.time_patterns):
+            return True
+        return False
 
     async def _fetch_html(self, query: str) -> str:
         """Async fetch with connection pooling"""

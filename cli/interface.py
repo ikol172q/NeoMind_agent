@@ -26,6 +26,7 @@ def display_welcome_banner():
     print("  /test    - Run development tests")
     print("  /search  - Search web")
     print("  /quit    - Exit the chat")
+    print("  /auto    - Control auto-features (search/interpret)")
     print("="*60)
     print("Features:")
     print("   Thinking process streams in subtle gray")

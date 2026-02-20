@@ -12,6 +12,7 @@ A Python package for interacting with DeepSeek AI models through a CLI interface
 - **Conversation History**: Maintains context across conversations with `/history` view
 - **Multi-line Input**: Support for continuation lines with `\` at end of line
 - **Enhanced CLI**: Optional `prompt_toolkit` support for better user experience
+- **Code Analysis & Self-Iteration**: Full suite of code analysis commands with safe self-modification capabilities
 - **Configuration Management**: Hydra-based configuration with YAML file and environment variable overrides
 - **Package Distribution**: Installable via `pip` with optional dependencies
 
@@ -104,10 +105,127 @@ agent:
 - `/models current` - Show current model
 - `/models help` - Show model command help
 
+### Code Analysis & Self-Iteration Commands
+- `/code scan [path]` - Scan a codebase for analysis
+- `/code summary` - Show codebase summary (size, file types)
+- `/code find <pattern>` - Find files matching pattern
+- `/code read <file_path>` - Read and display a file
+- `/code analyze <file_path>` - Analyze file structure (imports, functions, classes)
+- `/code reason <file_path>` - Deep analysis using reasoning model (chain-of-thought)
+- `/code search <text>` - Search for text in code files
+- `/code changes` - Show pending code changes
+- `/code apply` - Apply pending changes (requires confirmation)
+- `/code clear` - Clear pending changes
+- `/code self-scan` - Scan agent's own codebase
+- `/code self-improve [target]` - Suggest improvements to agent's own code
+- `/code self-apply` - Apply vetted self-improvements with safety checks
+
+*Note:* The `/code reason` command automatically switches to the `deepseek-reasoner` model for chain-of-thought analysis (temporarily), providing deeper insights into code structure and potential improvements.
+
 ### Development Commands
 - `python main.py test` - Run development tests from command line
 - `python dev_test.py` - Standalone development test script
 - `python main.py --version` - Show version information
+
+## Self-Iteration Example
+
+The agent can analyze and improve its own code safely:
+
+1. Scan the agent's own codebase:
+   ```
+   /code self-scan
+   ```
+
+2. Suggest improvements (e.g., add docstrings, fix style):
+   ```
+   /code self-improve
+   ```
+
+3. Review proposed changes:
+   ```
+   /code changes
+   ```
+
+4. Apply changes with safety checks:
+   ```
+   /code self-apply
+   ```
+
+The self-iteration framework includes backups, validation, and rollback mechanisms.
+
+## Self-Iteration Tutorial
+
+This tutorial walks through using the agent's self-modification capabilities to improve its own code.
+
+### Step 1: Scan Your Agent's Codebase
+```
+/code self-scan
+```
+This scans the agent's own directory and provides a summary of files and structure.
+
+### Step 2: Suggest Improvements
+```
+/code self-improve
+```
+The agent analyzes its own Python files for common improvements: missing docstrings, style issues, potential bugs, and optimization opportunities. Suggestions are added to the pending changes list.
+
+### Step 3: Review Proposed Changes
+```
+/code changes
+```
+View all pending changes with descriptions and previews. Each change includes the old and new code snippets.
+
+### Step 4: Apply Changes with Safety Checks
+```
+/code self-apply
+```
+Applies all pending changes with comprehensive safety validation:
+1. Runs pre‑modification test suite
+2. Creates backups of each file
+3. Applies changes in dependency order (using the planner)
+4. Validates syntax and imports after each change
+5. Runs post‑modification tests
+6. Logs the change to the journal
+
+If any step fails, the rollback plan is executed and all changes are reverted.
+
+### Step 5: Verify and Iterate
+After applying changes, run the agent's test suite to ensure nothing is broken:
+```
+/test
+```
+You can repeat the cycle to iteratively improve the codebase.
+
+For more detailed examples and tutorials, see [EXAMPLES.md](EXAMPLES.md).
+
+## Safety Mechanisms
+
+The agent incorporates multiple safety layers to prevent accidental or malicious damage:
+
+### File System Safety
+- **Path Validation**: All file operations are checked against a safe workspace; attempts to access system directories or paths outside the workspace are blocked.
+- **Sandboxing**: Write operations are restricted to user-approved directories; critical system files are protected.
+- **Backup System**: Before modifying any file, a timestamped backup is created automatically.
+- **Audit Logging**: All safety-relevant events are logged to `.safety_audit.log` for review.
+
+### Command Safety
+- **Shell Command Validation**: The `/run` command validates commands against a allowlist of safe operations; dangerous commands (rm, mv, etc.) are blocked.
+- **Code Execution Sandbox**: Python code execution is limited to isolated subprocesses with resource constraints.
+
+### Self-Modification Safety
+- **Pre/Post Validation**: Each self-modification is validated for syntax, import integrity, and test suite compliance.
+- **Rollback Plans**: The planner automatically generates rollback steps that can revert changes if validation fails.
+- **Change Journal**: All modifications are logged with timestamps, descriptions, and backup paths.
+
+## DeepSeek-Reasoner Integration
+
+The agent can leverage DeepSeek's reasoning model (`deepseek-reasoner`) for complex analysis tasks:
+
+- **Automatic Model Switching**: The `/code reason` command automatically switches to `deepseek-reasoner` (temporarily) to perform chain‑of‑thought analysis of code files.
+- **Temporary Switching Utility**: The `with_model()` method allows any operation to be run with a different model without affecting the global configuration.
+- **Fallback Handling**: If the requested model is unavailable, the agent falls back to the current model gracefully.
+
+This integration enables deeper code understanding, multi‑step reasoning for refactoring suggestions, and more accurate analysis of complex codebases.
 
 ## Package Structure
 

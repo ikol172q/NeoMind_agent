@@ -4,6 +4,9 @@ import pathlib
 import fnmatch
 import hashlib
 import stat
+import shutil
+import datetime
+import time
 from typing import Set, Tuple, List, Dict, Any
 import warnings
 import re
@@ -13,8 +16,9 @@ import html
 class CodeAnalyzer:
     """Analyze and understand codebases, suggest fixes with permission"""
 
-    def __init__(self, root_path: str = None):
+    def __init__(self, root_path: str = None, safety_manager=None):
         self.root_path = root_path or os.getcwd()
+        self.safety_manager = safety_manager
         self.file_cache = {}  # Cache for file contents: {path: content}
         self.file_metadata = {}  # {path: {'size': size, 'ext': ext, 'lines': lines}}
         self.ignore_patterns = [
@@ -101,7 +105,7 @@ class CodeAnalyzer:
 
         return code_files
 
-    def smart_find_files(self, search_term: str, max_results: int = 20) -> List[Dict[str, Any]]:
+    def smart_find_files(self, search_term: str, max_results: int = 20, search_limit: int = 500) -> List[Dict[str, Any]]:
         """Intelligently find files based on search term"""
         results = []
         search_term_lower = search_term.lower()
@@ -116,7 +120,7 @@ class CodeAnalyzer:
             lambda f: search_term_lower in f.lower(),
         ]
         
-        all_files = self.find_code_files(limit=500)  # Quick scan
+        all_files = self.find_code_files(limit=search_limit)  # Quick scan
 
         for strategy in strategies:
             if len(results) >= max_results:
@@ -143,6 +147,24 @@ class CodeAnalyzer:
 
     def read_file_safe(self, file_path: str) -> Tuple[bool, str, str]:
         """Safely read a file with permission handling"""
+        # Use safety manager if available
+        if self.safety_manager:
+            success, message, content = self.safety_manager.safe_read_file(file_path, max_lines=1000000)
+            if success:
+                # Cache the content
+                self.file_cache[file_path] = content
+                # Store metadata
+                lines = content.count('\n') + 1
+                ext = os.path.splitext(file_path)[1]
+                self.file_metadata[file_path] = {
+                    'size': len(content.encode('utf-8')),
+                    'lines': lines,
+                    'ext': ext,
+                    'last_read': os.path.getmtime(file_path) if os.path.exists(file_path) else time.time()
+                }
+            return success, message, content
+
+        # Fallback to original implementation
         try:
             # Check if file exists
             if not os.path.exists(file_path):
@@ -261,11 +283,9 @@ class CodeAnalyzer:
 
                 # Count lines for text files
                 if ext in {'.py', '.js', '.java', '.cpp', '.c', '.h', '.txt', '.md'}:
-                    try:
-                        with open(file_path, 'r', encoding='utf-8') as f:
-                            total_lines += sum(1 for _ in f)
-                    except:
-                        pass
+                    success, msg, content = self.read_file_safe(file_path)
+                    if success:
+                        total_lines += content.count('\n') + 1
             except:
                 pass
 
@@ -276,3 +296,103 @@ class CodeAnalyzer:
             'total_size': f"{total_size/1024/1024:.2f} MB",
             'root_path': self.root_path
         }
+
+    def write_file_safe(self, file_path: str, content: str, backup: bool = True) -> Tuple[bool, str]:
+        """
+        Safely write content to a file with validation and optional backup.
+
+        Args:
+            file_path: Path to the file
+            content: Content to write
+            backup: Whether to create a backup before writing
+
+        Returns:
+            Tuple[bool, str]: (success, message)
+        """
+        # Use safety manager if available
+        if self.safety_manager:
+            success, message, backup_path = self.safety_manager.safe_write_file(
+                file_path, content, create_backup=backup
+            )
+            if success:
+                # Update cache
+                self.file_cache[file_path] = content
+                lines = content.count('\n') + 1
+                self.file_metadata[file_path] = {
+                    'size': len(content.encode('utf-8')),
+                    'lines': lines,
+                    'ext': os.path.splitext(file_path)[1],
+                    'last_read': os.path.getmtime(file_path) if os.path.exists(file_path) else time.time()
+                }
+            return success, message
+
+        # Fallback to original implementation
+        try:
+            # Normalize path
+            file_path = os.path.abspath(file_path)
+
+            # Check if file already exists
+            file_exists = os.path.exists(file_path)
+
+            # Safety: prevent writing to system directories or outside workspace
+            # Ensure file is within the codebase root (or subdirectory)
+            if self.root_path:
+                try:
+                    relative = os.path.relpath(file_path, self.root_path)
+                    if relative.startswith('..'):
+                        return False, f"File path is outside codebase root: {file_path}"
+                except ValueError:
+                    # Could not compute relative path (different drives on Windows)
+                    pass
+
+            # Check write permission
+            if file_exists:
+                if not os.access(file_path, os.W_OK):
+                    return False, "No write permission"
+            else:
+                # Check if parent directory is writable
+                parent_dir = os.path.dirname(file_path)
+                if parent_dir and not os.path.exists(parent_dir):
+                    # Create parent directories
+                    try:
+                        os.makedirs(parent_dir, exist_ok=True)
+                    except Exception as e:
+                        return False, f"Cannot create parent directories: {e}"
+                if parent_dir and not os.access(parent_dir, os.W_OK):
+                    return False, f"No write permission to parent directory: {parent_dir}"
+
+            # Limit content size (10MB)
+            if len(content.encode('utf-8')) > 10 * 1024 * 1024:
+                return False, "Content exceeds 10MB limit"
+
+            # Create backup if requested and file exists
+            backup_path = None
+            if backup and file_exists:
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                backup_path = file_path + f".backup_{timestamp}"
+                try:
+                    shutil.copy2(file_path, backup_path)
+                except Exception as e:
+                    return False, f"Failed to create backup: {e}"
+
+            # Write content
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+            # Update cache
+            self.file_cache[file_path] = content
+            lines = content.count('\n') + 1
+            self.file_metadata[file_path] = {
+                'size': len(content.encode('utf-8')),
+                'lines': lines,
+                'ext': os.path.splitext(file_path)[1],
+                'last_read': os.path.getmtime(file_path) if file_exists else time.time()
+            }
+
+            message = f"File written successfully: {file_path}"
+            if backup_path:
+                message += f" (backup: {backup_path})"
+            return True, message
+
+        except Exception as e:
+            return False, f"Error writing file: {str(e)}"
