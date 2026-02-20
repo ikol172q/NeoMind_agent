@@ -28,3 +28,34 @@ agent:
     For code-related tasks, wait for the user to use /code, /fix, or /analyze commands.
 
     '
+  auto_features:
+    enabled: true
+    auto_search:
+      enabled: true
+      triggers:
+      - today
+      - news
+      - weather
+      - latest
+      - current
+      - now
+      - recent
+      - '2026'
+      - '2025'
+      - '2024'
+      - yesterday
+      - tomorrow
+      - update
+      - breaking
+      - stock
+      - price
+      - score
+      - results
+      - announcement
+      - release
+    natural_language:
+      enabled: true
+      confidence_threshold: 0.8
+    safety:
+      confirm_file_operations: true
+      confirm_code_changes: true
