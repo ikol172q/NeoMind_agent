@@ -50,3 +50,6 @@ coverage.xml
 
 # DeepSeek Agent specific
 .claude/
+
+# Safety audit logs
+*.safety_audit.log
