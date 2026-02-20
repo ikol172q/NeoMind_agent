@@ -80,6 +80,7 @@ class AgentConfigManager:
         env_mappings = {
             "DEEPSEEK_MODEL": "agent.model",
             "DEEPSEEK_TEMPERATURE": "agent.temperature",
+            "DEEPSEEK_MAX_TOKENS": "agent.max_tokens",
         }
 
         for env_var, config_path in env_mappings.items():
@@ -87,16 +88,26 @@ class AgentConfigManager:
                 # Type conversions based on environment variable
                 if env_var == "DEEPSEEK_TEMPERATURE":
                     env_val = float(env_val)
+                elif env_var == "DEEPSEEK_MAX_TOKENS":
+                    env_val = int(env_val)
                 # Add more type conversions as needed
                 OmegaConf.update(self._cfg, config_path, env_val)
     
     def get(self, key: str, default: Any = None) -> Any:
-        """Get agent config value"""
+        """Get agent config value, supporting dot notation for nested keys"""
         # Strip "agent." prefix if present
         if key.startswith("agent."):
             key = key[6:]  # Remove "agent."
 
-        return self._agent_config.get(key, default)
+        # Handle dot notation for nested keys
+        parts = key.split('.')
+        current = self._agent_config
+        for part in parts:
+            if isinstance(current, dict) and part in current:
+                current = current[part]
+            else:
+                return default
+        return current
 
     @property
     def model(self) -> str:
@@ -117,6 +128,34 @@ class AgentConfigManager:
     @property
     def system_prompt(self) -> str:
         return self.get("system_prompt", "")
+
+    @property
+    def auto_features_enabled(self) -> bool:
+        return self.get("auto_features.enabled", True)
+
+    @property
+    def auto_search_enabled(self) -> bool:
+        return self.get("auto_features.auto_search.enabled", True)
+
+    @property
+    def auto_search_triggers(self) -> list:
+        return self.get("auto_features.auto_search.triggers", ["today", "news", "weather", "latest", "current"])
+
+    @property
+    def natural_language_enabled(self) -> bool:
+        return self.get("auto_features.natural_language.enabled", True)
+
+    @property
+    def natural_language_confidence_threshold(self) -> float:
+        return self.get("auto_features.natural_language.confidence_threshold", 0.8)
+
+    @property
+    def safety_confirm_file_operations(self) -> bool:
+        return self.get("auto_features.safety.confirm_file_operations", True)
+
+    @property
+    def safety_confirm_code_changes(self) -> bool:
+        return self.get("auto_features.safety.confirm_code_changes", True)
 
 
 
