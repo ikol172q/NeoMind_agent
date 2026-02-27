@@ -29,11 +29,13 @@ except ImportError:
     chardet = None
 from .code_analyzer import CodeAnalyzer
 from .self_iteration import SelfIteration
+from .task_manager import TaskManager
 from .formatter import Formatter, success, error, warning, info, header, code_block, command_help
 from .help_system import HelpSystem, get_help
 from .command_executor import CommandExecutor, execute_safe, execute_git_safe
 from .safety import SafetyManager, safe_read_file, safe_write_file, safe_delete_file, is_path_safe, log_operation
-from .planner import Planner, plan_changes
+from .planner import Planner, plan_changes, GoalPlanner
+from .context_manager import ContextManager, HAS_TIKTOKEN
 import difflib  # Add this line to your imports
 
 # Add to imports
@@ -86,6 +88,7 @@ class DeepSeekStreamingChat:
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.models_url = "https://api.deepseek.com/models"  # NEW: For listing models
         self.conversation_history = []
+        self.context_manager = ContextManager(self.conversation_history)
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
         # Searcher with configurable auto-search triggers
         self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
@@ -142,6 +145,11 @@ class DeepSeekStreamingChat:
         self.code_analyzer = None
         self.code_changes_pending = []  # Store proposed changes
 
+        # Task manager for task tracking
+        self.task_manager = TaskManager()
+        # Goal planner for generating and executing plans
+        self.goal_planner = GoalPlanner()
+
         # Command registry for unified routing
         self.command_handlers = {}
         self._setup_command_handlers()
@@ -153,6 +161,25 @@ class DeepSeekStreamingChat:
             "/search": (self.handle_search, True),
             "/auto": (self.handle_auto_command, True),
             "/models": (self.handle_models_command, False),
+            "/task": (self.handle_task_command, True),
+            "/plan": (self.handle_plan_command, True),
+            "/execute": (self.handle_execute_command, True),
+            "/switch": (self.handle_switch_command, True),
+            "/summarize": (self.handle_summarize_command, True),
+            "/translate": (self.handle_translate_command, True),
+            "/generate": (self.handle_generate_command, True),
+            "/reason": (self.handle_reason_command, True),
+            "/debug": (self.handle_debug_command, True),
+            "/explain": (self.handle_explain_command, True),
+            "/refactor": (self.handle_refactor_command, True),
+            "/grep": (self.handle_grep_command, True),
+            "/find": (self.handle_find_command, True),
+            "/clear": (self.handle_clear_command, True),
+            "/history": (self.handle_history_command, True),
+            "/context": (self.handle_context_command, True),
+            "/think": (self.handle_think_command, True),
+            "/quit": (self.handle_quit_command, True),
+            "/exit": (self.handle_exit_command, True),
             "/help": (self.handle_help_command, True),
             "/diff": (self.handle_diff_command, True),
             "/browse": (self.handle_browse_command, True),
@@ -406,6 +433,18 @@ Remember: Always ask for permission before making changes!
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.api_key}"
         }
+        # Context validation
+        temp_context = ContextManager(messages)
+        total_tokens = temp_context.count_conversation_tokens()
+        max_context = agent_config.max_context_tokens
+        if total_tokens + max_tokens > max_context:
+            # Reduce max_tokens to fit within limit, but keep at least 1
+            new_max = max(1, max_context - total_tokens)
+            print(f"⚠️  Context limit: reducing max_tokens from {max_tokens} to {new_max}")
+            max_tokens = new_max
+        elif total_tokens > agent_config.context_warning_threshold * max_context:
+            print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used")
+
         payload = {
             "model": self.model,
             "messages": messages,
@@ -583,8 +622,595 @@ Remember: Always ask for permission before making changes!
 
         return None
 
+    def handle_task_command(self, command: str) -> Optional[str]:
+        """
+        Handle /task command for task management.
+        Subcommands:
+          create <description> - Create a new task
+          list [status]        - List tasks (optional status filter: todo, in_progress, done)
+          update <id> <status> - Update task status
+          delete <id>          - Delete task
+          clear                - Delete all tasks
+        """
+        if not command.strip():
+            return self._show_task_help()
+
+        parts = command.strip().split()
+        subcommand = parts[0].lower()
+
+        if subcommand == "create":
+            if len(parts) < 2:
+                return "Usage: /task create <description>"
+            description = " ".join(parts[1:])
+            task = self.task_manager.create_task(description)
+            return f"✅ Task created with ID: {task.id}\nDescription: {task.description}"
+
+        elif subcommand == "list":
+            status_filter = None
+            if len(parts) > 1:
+                status_filter = parts[1].lower()
+                if status_filter not in ("todo", "in_progress", "done"):
+                    return f"Invalid status filter '{status_filter}'. Use: todo, in_progress, done"
+            tasks = self.task_manager.list_tasks(status_filter)
+            if not tasks:
+                return "📭 No tasks found." + (f" (filter: {status_filter})" if status_filter else "")
+
+            result = ["📋 Task List" + (f" (filter: {status_filter})" if status_filter else "")]
+            for task in tasks:
+                status_emoji = {"todo": "⭕", "in_progress": "🔄", "done": "✅"}.get(task.status, "❓")
+                result.append(f"  {status_emoji} [{task.id}] {task.description}")
+                result.append(f"     Status: {task.status}, Created: {task.created_at[:10]}")
+            return "\n".join(result)
+
+        elif subcommand == "update":
+            if len(parts) != 3:
+                return "Usage: /task update <task_id> <status>"
+            task_id, new_status = parts[1], parts[2].lower()
+            if new_status not in ("todo", "in_progress", "done"):
+                return f"Invalid status '{new_status}'. Use: todo, in_progress, done"
+            success = self.task_manager.update_task_status(task_id, new_status)
+            if success:
+                return f"✅ Task {task_id} updated to '{new_status}'"
+            else:
+                return f"❌ Task {task_id} not found"
+
+        elif subcommand == "delete":
+            if len(parts) != 2:
+                return "Usage: /task delete <task_id>"
+            task_id = parts[1]
+            success = self.task_manager.delete_task(task_id)
+            if success:
+                return f"✅ Task {task_id} deleted"
+            else:
+                return f"❌ Task {task_id} not found"
+
+        elif subcommand == "clear":
+            if len(parts) != 1:
+                return "Usage: /task clear"
+            count = self.task_manager.clear_all_tasks()
+            return f"✅ Cleared {count} tasks"
+
+        elif subcommand in ("help", "?"):
+            return self._show_task_help()
+
+        else:
+            return f"Unknown subcommand: {subcommand}\n{self._show_task_help()}"
+
+    def _show_task_help(self) -> str:
+        """Return help for /task command."""
+        help_lines = [
+            "📋 /task command usage:",
+            "  /task create <description>      - Create a new task",
+            "  /task list [status]             - List tasks (optional status filter)",
+            "  /task update <id> <status>      - Update task status (todo, in_progress, done)",
+            "  /task delete <id>               - Delete task",
+            "  /task clear                     - Delete all tasks",
+            "  /task help                      - Show this help",
+            "",
+            "Examples:",
+            "  /task create \"Refactor auth module\"",
+            "  /task list",
+            "  /task list in_progress",
+            "  /task update abc123 done",
+        ]
+        return "\n".join(help_lines)
+
+    def handle_plan_command(self, command: str) -> Optional[str]:
+        """
+        Handle /plan command for generating and managing plans.
+        Subcommands:
+          <goal>               - Generate a plan for a goal
+          list [status]        - List plans (optional status filter)
+          delete <id>          - Delete plan
+          show <id>            - Show plan details
+        """
+        if not command.strip():
+            return self._show_plan_help()
+
+        parts = command.strip().split()
+        # If first part is not a known subcommand, treat as goal
+        if parts[0].lower() not in ("list", "delete", "show", "help"):
+            goal = command.strip()
+            plan = self.goal_planner.generate_plan(goal, self)
+            steps_count = len(plan.get("steps", []))
+            return (
+                f"📋 Plan generated with ID: {plan['id']}\n"
+                f"Goal: {plan['goal']}\n"
+                f"Steps: {steps_count}\n"
+                f"Status: {plan['status']}\n"
+                f"Use /execute {plan['id']} to start execution."
+            )
+
+        subcommand = parts[0].lower()
+
+        if subcommand == "list":
+            status_filter = None
+            if len(parts) > 1:
+                status_filter = parts[1].lower()
+                if status_filter not in ("pending", "in_progress", "completed", "failed"):
+                    return f"Invalid status filter '{status_filter}'. Use: pending, in_progress, completed, failed"
+            plans = self.goal_planner.list_plans(status_filter)
+            if not plans:
+                return "📭 No plans found." + (f" (filter: {status_filter})" if status_filter else "")
+
+            result = ["📋 Plan List" + (f" (filter: {status_filter})" if status_filter else "")]
+            for plan in plans:
+                status_emoji = {"pending": "⭕", "in_progress": "🔄", "completed": "✅", "failed": "❌"}.get(plan.get("status"), "❓")
+                result.append(f"  {status_emoji} [{plan['id']}] {plan.get('goal', 'No goal')}")
+                result.append(f"     Steps: {len(plan.get('steps', []))}, Status: {plan.get('status')}, Created: {plan.get('created_at', '')[:10]}")
+            return "\n".join(result)
+
+        elif subcommand == "delete":
+            if len(parts) != 2:
+                return "Usage: /plan delete <plan_id>"
+            plan_id = parts[1]
+            success = self.goal_planner.delete_plan(plan_id)
+            if success:
+                return f"✅ Plan {plan_id} deleted"
+            else:
+                return f"❌ Plan {plan_id} not found"
+
+        elif subcommand == "show":
+            if len(parts) != 2:
+                return "Usage: /plan show <plan_id>"
+            plan_id = parts[1]
+            plan = self.goal_planner.get_plan(plan_id)
+            if not plan:
+                return f"❌ Plan {plan_id} not found"
+
+            result = [f"📋 Plan: {plan.get('goal', 'No goal')}"]
+            result.append(f"ID: {plan['id']}")
+            result.append(f"Status: {plan.get('status')}")
+            result.append(f"Created: {plan.get('created_at')}")
+            result.append(f"Steps ({len(plan.get('steps', []))}):")
+            for i, step in enumerate(plan.get("steps", [])):
+                current_mark = " →" if i == plan.get("current_step", 0) else "  "
+                result.append(f"{current_mark} {i+1}. {step.get('description', 'No description')}")
+                result.append(f"    Action: {step.get('action', 'N/A')}")
+                if step.get("details"):
+                    result.append(f"    Details: {step.get('details')}")
+                if step.get("dependencies"):
+                    result.append(f"    Depends on: {step.get('dependencies')}")
+            return "\n".join(result)
+
+        elif subcommand in ("help", "?"):
+            return self._show_plan_help()
+
+        else:
+            return f"Unknown subcommand: {subcommand}\n{self._show_plan_help()}"
+
+    def _show_plan_help(self) -> str:
+        """Return help for /plan command."""
+        help_lines = [
+            "📋 /plan command usage:",
+            "  /plan <goal>                 - Generate a plan for a goal",
+            "  /plan list [status]          - List plans (optional status filter)",
+            "  /plan delete <id>            - Delete plan",
+            "  /plan show <id>              - Show plan details",
+            "  /plan help                   - Show this help",
+            "",
+            "Status filters: pending, in_progress, completed, failed",
+            "",
+            "Examples:",
+            "  /plan \"Add user authentication\"",
+            "  /plan list",
+            "  /plan show abc123",
+        ]
+        return "\n".join(help_lines)
+
+    def handle_execute_command(self, command: str) -> Optional[str]:
+        """
+        Handle /execute command to execute a plan.
+        Usage: /execute <plan_id>
+        """
+        if not command.strip():
+            return "Usage: /execute <plan_id>"
+
+        parts = command.strip().split()
+        if len(parts) != 1:
+            return "Usage: /execute <plan_id>"
+
+        plan_id = parts[0]
+        plan = self.goal_planner.get_plan(plan_id)
+        if not plan:
+            return f"❌ Plan {plan_id} not found"
+
+        # Update plan status to in_progress if pending
+        if plan.get("status") == "pending":
+            self.goal_planner.update_plan_status(plan_id, "in_progress")
+
+        current_step = self.goal_planner.get_current_step(plan_id)
+        if not current_step:
+            # No more steps, plan completed
+            self.goal_planner.update_plan_status(plan_id, "completed")
+            return f"✅ Plan {plan_id} already completed!"
+
+        step_num = plan.get("current_step", 0) + 1
+        total_steps = len(plan.get("steps", []))
+
+        result = [
+            f"🚀 Executing Plan: {plan.get('goal', 'No goal')}",
+            f"Step {step_num}/{total_steps}: {current_step.get('description', 'No description')}",
+            f"Action: {current_step.get('action', 'N/A')}",
+        ]
+        if current_step.get("details"):
+            result.append(f"Details: {current_step.get('details')}")
+
+        result.append("\n📝 The AI will now help you execute this step.")
+        result.append("You can use commands like /write, /run, /git, etc.")
+        result.append(f"After completing, run /execute {plan_id} again to advance to next step.")
+        return "\n".join(result)
+
+    def handle_switch_command(self, command: str) -> Optional[str]:
+        """
+        Handle /switch command to switch model.
+        Usage: /switch <model_id>
+        """
+        if not command.strip():
+            return "Usage: /switch <model_id>"
+
+        model_id = command.strip()
+        success = self.set_model(model_id)
+        if success:
+            return f"✅ Switched model to {model_id}"
+        else:
+            return f"❌ Failed to switch model to {model_id}"
+
+    def handle_summarize_command(self, command: str) -> Optional[str]:
+        """
+        Handle /summarize command to summarize text or code.
+        Usage: /summarize <text>
+        """
+        if not command.strip():
+            return "Usage: /summarize <text>"
+
+        text = command.strip()
+        prompt = f"Summarize the following content concisely:\n\n{text}"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.3, max_tokens=1000)
+            return f"📝 Summary:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to generate summary: {e}"
+
+    def handle_translate_command(self, command: str) -> Optional[str]:
+        """
+        Handle /translate command to translate text.
+        Usage: /translate <text> [to <language>]
+        Default language: English
+        """
+        if not command.strip():
+            return "Usage: /translate <text> [to <language>]"
+
+        # Parse language (simple)
+        parts = command.strip().split()
+        text = command
+        target_language = "English"
+
+        # Look for "to" keyword
+        if " to " in command.lower():
+            # Simple split on " to "
+            import re
+            match = re.search(r'^(.*?) to (.+)$', command, re.IGNORECASE)
+            if match:
+                text = match.group(1).strip()
+                target_language = match.group(2).strip()
+
+        prompt = f"Translate the following text to {target_language}:\n\n{text}"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.3, max_tokens=1000)
+            return f"🌐 Translation to {target_language}:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to translate: {e}"
+
+    def handle_generate_command(self, command: str) -> Optional[str]:
+        """
+        Handle /generate command to generate content.
+        Usage: /generate <prompt>
+        """
+        if not command.strip():
+            return "Usage: /generate <prompt>"
+
+        prompt = command.strip()
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.7, max_tokens=2000)
+            return f"🎨 Generated content:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to generate content: {e}"
+
+    def handle_reason_command(self, command: str) -> Optional[str]:
+        """
+        Handle /reason command for chain-of-thought reasoning.
+        Usage: /reason <problem>
+        """
+        if not command.strip():
+            return "Usage: /reason <problem>"
+
+        problem = command.strip()
+        prompt = f"Solve the following problem using step-by-step reasoning:\n\n{problem}"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            # Temporarily switch to reasoning model if available
+            original_model = self.model
+            if "reason" not in original_model.lower():
+                # Try to switch to a reasoning model
+                self.set_model("deepseek-reasoner")
+                response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
+                # Switch back
+                self.set_model(original_model)
+            else:
+                response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
+            return f"🤔 Reasoning:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to reason: {e}"
+
+    def handle_debug_command(self, command: str) -> Optional[str]:
+        """
+        Handle /debug command to debug code.
+        Usage: /debug <file_path> or /debug <code snippet>
+        """
+        if not command.strip():
+            return "Usage: /debug <file_path> or /debug <code snippet>"
+
+        # Check if argument is a file path
+        import os
+        if os.path.exists(command.strip()):
+            # Read file
+            safe, reason, content = self.safety_manager.safe_read_file(command.strip())
+            if not safe:
+                return f"❌ Cannot read file: {reason}"
+            code = content
+            source = f"file: {command.strip()}"
+        else:
+            code = command.strip()
+            source = "provided code"
+
+        prompt = f"Debug the following code from {source}. Identify bugs, errors, and suggest fixes:\n\n```\n{code}\n```"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
+            return f"🐛 Debug analysis for {source}:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to debug: {e}"
+
+    def handle_explain_command(self, command: str) -> Optional[str]:
+        """
+        Handle /explain command to explain code.
+        Usage: /explain <file_path> or /explain <code snippet>
+        """
+        if not command.strip():
+            return "Usage: /explain <file_path> or /explain <code snippet>"
+
+        import os
+        if os.path.exists(command.strip()):
+            safe, reason, content = self.safety_manager.safe_read_file(command.strip())
+            if not safe:
+                return f"❌ Cannot read file: {reason}"
+            code = content
+            source = f"file: {command.strip()}"
+        else:
+            code = command.strip()
+            source = "provided code"
+
+        prompt = f"Explain the following code from {source} in simple terms:\n\n```\n{code}\n```"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
+            return f"📚 Explanation of {source}:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to explain: {e}"
+
+    def handle_refactor_command(self, command: str) -> Optional[str]:
+        """
+        Handle /refactor command to suggest refactoring improvements.
+        Usage: /refactor <file_path>
+        """
+        if not command.strip():
+            return "Usage: /refactor <file_path>"
+
+        file_path = command.strip()
+        import os
+        if not os.path.exists(file_path):
+            return f"❌ File not found: {file_path}"
+
+        safe, reason, content = self.safety_manager.safe_read_file(file_path)
+        if not safe:
+            return f"❌ Cannot read file: {reason}"
+
+        prompt = f"Suggest refactoring improvements for the following code. Focus on readability, performance, and maintainability:\n\n```\n{content}\n```"
+        messages = [{"role": "user", "content": prompt}]
+        try:
+            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
+            return f"🔧 Refactoring suggestions for {file_path}:\n{response}"
+        except Exception as e:
+            return f"❌ Failed to generate refactoring suggestions: {e}"
+
+    def handle_grep_command(self, command: str) -> Optional[str]:
+        """
+        Handle /grep command to search for text across files.
+        Usage: /grep <pattern> [path]
+        """
+        if not command.strip():
+            return "Usage: /grep <pattern> [path]"
+
+        parts = command.strip().split()
+        pattern = parts[0]
+        path = parts[1] if len(parts) > 1 else "."
+
+        # Use ripgrep if available, else Python regex
+        try:
+            import subprocess
+            result = subprocess.run(
+                ["rg", "-n", "-i", pattern, path],
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            if result.returncode == 0:
+                output = result.stdout
+                if not output.strip():
+                    return f"🔍 No matches for pattern '{pattern}' in {path}"
+                return f"🔍 Grep results for '{pattern}' in {path}:\n{output}"
+            else:
+                # Fallback to Python regex
+                return self._grep_fallback(pattern, path)
+        except (subprocess.SubprocessError, FileNotFoundError):
+            return self._grep_fallback(pattern, path)
+
+    def _grep_fallback(self, pattern: str, path: str) -> str:
+        """Fallback grep using Python regex."""
+        import os
+        import re
+        matches = []
+        pattern_re = re.compile(pattern, re.IGNORECASE)
+        for root, dirs, files in os.walk(path):
+            for file in files:
+                file_path = os.path.join(root, file)
+                try:
+                    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                        for line_num, line in enumerate(f, 1):
+                            if pattern_re.search(line):
+                                matches.append(f"{file_path}:{line_num}: {line.rstrip()}")
+                except:
+                    continue
+        if not matches:
+            return f"🔍 No matches for pattern '{pattern}' in {path}"
+        return f"🔍 Grep results for '{pattern}' in {path} (Python fallback):\n" + "\n".join(matches[:50])  # Limit output
+
+    def handle_find_command(self, command: str) -> Optional[str]:
+        """
+        Handle /find command to find files matching pattern.
+        Usage: /find <pattern> [path]
+        """
+        if not command.strip():
+            return "Usage: /find <pattern> [path]"
+
+        parts = command.strip().split()
+        pattern = parts[0]
+        path = parts[1] if len(parts) > 1 else "."
+
+        import os
+        import fnmatch
+        matches = []
+        for root, dirs, files in os.walk(path):
+            for name in files + dirs:
+                if fnmatch.fnmatch(name, pattern):
+                    full_path = os.path.join(root, name)
+                    matches.append(full_path)
+        if not matches:
+            return f"📭 No files/directories matching '{pattern}' in {path}"
+        return f"📂 Found {len(matches)} matches for '{pattern}' in {path}:\n" + "\n".join(matches[:50])
+
+    def handle_clear_command(self, command: str) -> Optional[str]:
+        """
+        Handle /clear command to clear conversation history.
+        Usage: /clear
+        """
+        self.clear_history()
+        return "🗑️ Conversation history cleared."
+
+    def handle_history_command(self, command: str) -> Optional[str]:
+        """
+        Handle /history command to show conversation history.
+        Usage: /history
+        """
+        if not self.conversation_history:
+            return "📭 No conversation history."
+
+        result = ["📜 Conversation History:"]
+        for i, msg in enumerate(self.conversation_history, 1):
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            preview = content[:100] + "..." if len(content) > 100 else content
+            result.append(f"{i}. [{role}] {preview}")
+        return "\n".join(result)
+
+    def handle_context_command(self, command: str) -> Optional[str]:
+        """
+        Handle /context command to manage conversation context.
+        Usage: /context [status|compress|clear|help]
+        """
+        command = command.strip().lower()
+        if not command or command == "status":
+            stats = self.context_manager.get_context_usage()
+            lines = [
+                "📊 Context Status:",
+                f"  • Tokens used: {stats['total_tokens']} / {stats['max_context_tokens']} ({stats['percent_used']:.1%})",
+                f"  • Warning threshold: {stats['warning_threshold']:.0%} ({stats['warning_tokens']} tokens)",
+                f"  • Break threshold: {stats['break_threshold']:.0%} ({stats['break_tokens']} tokens)",
+                f"  • Near limit: {stats['is_near_limit']}",
+                f"  • Over break threshold: {stats['is_over_break']}",
+            ]
+            if HAS_TIKTOKEN:
+                lines.append("  • Token counting: tiktoken (cl100k_base)")
+            else:
+                lines.append("  • Token counting: approximate (chars/4)")
+            return "\n".join(lines)
+        elif command == "compress":
+            result = self.context_manager.compress_history()
+            return f"✅ Compressed history: {result['original_tokens']} → {result['compressed_tokens']} tokens (-{result['token_reduction']})"
+        elif command == "clear":
+            self.conversation_history.clear()
+            self._ensure_system_prompt()
+            return "✅ Conversation history cleared. System prompt re-added."
+        elif command == "help":
+            return (
+                "/context commands:\n"
+                "  status    - Show token usage and limits\n"
+                "  compress  - Compress history to reduce tokens\n"
+                "  clear     - Clear conversation history\n"
+                "  help      - Show this help"
+            )
+        else:
+            return f"Unknown subcommand: {command}. Use /context help for usage."
+
+    def handle_think_command(self, command: str) -> Optional[str]:
+        """
+        Handle /think command to toggle thinking mode.
+        Usage: /think
+        """
+        self.toggle_thinking_mode()
+        status = "enabled" if self.thinking_enabled else "disabled"
+        return f"🤔 Thinking mode {status}."
+
+    def handle_quit_command(self, command: str) -> Optional[str]:
+        """
+        Handle /quit command to exit (signal to CLI).
+        Usage: /quit or /exit
+        """
+        # Return special message that CLI can interpret
+        return "🛑 Quit command received. Use Ctrl+C or type /quit in the CLI to exit."
+
+    def handle_exit_command(self, command: str) -> Optional[str]:
+        """
+        Handle /exit command (alias for /quit).
+        """
+        return self.handle_quit_command(command)
+
     # NEW: Webpage reading capabilities
-    
+
     def read_webpage(self, url: str, max_length: int = 20000) -> str:
         """
         Read webpage content using multiple strategies for maximum compatibility
@@ -1567,10 +2193,50 @@ Examples:
             except Exception as e:
                 return self.formatter.error(f"Error running git diff: {str(e)}")
         elif parts[0] == '--backup':
-            # Compare with backup (simplified)
+            # Compare with backup
             if len(parts) < 2:
                 return self.formatter.error("Please specify a file for backup comparison")
-            return "🔧 Backup comparison not yet implemented"
+            file_path = parts[1]
+            # Find latest backup
+            backup_dir = os.path.join(self.safety_manager.workspace_root, '.safety_backups')
+            if not os.path.exists(backup_dir):
+                return f"📭 No backup directory found at {backup_dir}"
+            base_name = os.path.basename(file_path)
+            import glob
+            pattern = os.path.join(backup_dir, f"{base_name}.backup_*")
+            backups = glob.glob(pattern)
+            if not backups:
+                return f"📭 No backups found for {file_path}"
+            # Extract timestamp from filename: {base}.backup_{timestamp}
+            def extract_timestamp(path):
+                import re
+                match = re.search(r'\.backup_(\d+)$', os.path.basename(path))
+                return int(match.group(1)) if match else 0
+            latest_backup = max(backups, key=extract_timestamp)
+            # Read backup content
+            safe, reason, backup_content = self.safety_manager.safe_read_file(latest_backup)
+            if not safe:
+                return f"❌ Cannot read backup file {latest_backup}: {reason}"
+            # Read current file
+            if not self.code_analyzer:
+                self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
+            success, msg, current_content = self.code_analyzer.read_file_safe(file_path)
+            if not success:
+                return self.formatter.error(f"Cannot read {file_path}: {msg}")
+            # Generate diff
+            lines1 = backup_content.splitlines(keepends=True)
+            lines2 = current_content.splitlines(keepends=True)
+            diff = difflib.unified_diff(
+                lines1, lines2,
+                fromfile=f"backup: {os.path.basename(latest_backup)}",
+                tofile=f"current: {file_path}",
+                lineterm=''
+            )
+            diff_result = ''.join(diff)
+            if diff_result:
+                return f"🔀 Diff between backup and current {file_path}:\n\n{diff_result}"
+            else:
+                return self.formatter.success(f"File {file_path} is identical to latest backup")
         else:
             # Compare two files
             if len(parts) < 2:
@@ -2963,6 +3629,18 @@ Please think step by step and provide your analysis:"""
         """Clear conversation history"""
         self.conversation_history = []
 
+    def _ensure_system_prompt(self):
+        """Ensure system prompt is present in conversation history."""
+        if not agent_config.system_prompt:
+            return
+        # Check if any system prompt already exists
+        system_prompt_text = agent_config.system_prompt
+        for msg in self.conversation_history:
+            if msg["role"] == "system" and msg["content"] == system_prompt_text:
+                return
+        # Add system prompt at the beginning
+        self.conversation_history.insert(0, {"role": "system", "content": system_prompt_text})
+
     def toggle_thinking_mode(self):
         """Toggle thinking mode on/off and save to config"""
         self.thinking_enabled = not self.thinking_enabled
@@ -3102,6 +3780,21 @@ Please think step by step and provide your analysis:"""
         if not skip_user_add:
             self.add_to_history("user", prompt)
 
+        # Context management check
+        actual_max_tokens = max_tokens or agent_config.max_tokens
+        should_continue = self.context_manager.interactive_context_management(additional_tokens=actual_max_tokens)
+        # Ensure system prompt is present regardless of choice (unless cancelled)
+        self._ensure_system_prompt()
+        # Re-add user prompt if it was removed during compression/clear
+        user_prompt_exists = any(
+            msg["role"] == "user" and msg["content"] == prompt
+            for msg in self.conversation_history
+        )
+        if not user_prompt_exists and not skip_user_add:
+            self.add_to_history("user", prompt)
+        if not should_continue:
+            return None
+
         print(f"🤖 Preparing to contact DeepSeek API...")
         print(f"📊 Current conversation has {len(self.conversation_history)} messages")
 
@@ -3116,12 +3809,24 @@ Please think step by step and provide your analysis:"""
             "Authorization": f"Bearer {self.api_key}"
         }
 
+        # Context validation after possible compression
+        total_tokens = self.context_manager.count_conversation_tokens()
+        max_context = agent_config.max_context_tokens
+        actual_max_tokens = max_tokens or agent_config.max_tokens
+        if total_tokens + actual_max_tokens > max_context:
+            # Reduce max_tokens to fit within limit, but keep at least 1
+            new_max = max(1, max_context - total_tokens)
+            print(f"⚠️  Context limit: reducing max_tokens from {actual_max_tokens} to {new_max}")
+            actual_max_tokens = new_max
+        elif total_tokens > agent_config.context_warning_threshold * max_context:
+            print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used")
+
         payload = {
             "model": self.model,
             "messages": self.conversation_history,
             "stream": True,
             "temperature": temperature or agent_config.temperature,
-            "max_tokens": max_tokens or agent_config.max_tokens,
+            "max_tokens": actual_max_tokens,
         }
 
         if self.thinking_enabled:

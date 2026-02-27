@@ -81,6 +81,12 @@ class AgentConfigManager:
             "DEEPSEEK_MODEL": "agent.model",
             "DEEPSEEK_TEMPERATURE": "agent.temperature",
             "DEEPSEEK_MAX_TOKENS": "agent.max_tokens",
+            "DEEPSEEK_MAX_CONTEXT_TOKENS": "agent.context.max_context_tokens",
+            "DEEPSEEK_CONTEXT_WARNING_THRESHOLD": "agent.context.warning_threshold",
+            "DEEPSEEK_CONTEXT_BREAK_THRESHOLD": "agent.context.break_threshold",
+            "DEEPSEEK_COMPRESSION_STRATEGY": "agent.context.compression_strategy",
+            "DEEPSEEK_KEEP_SYSTEM_MESSAGES": "agent.context.keep_system_messages",
+            "DEEPSEEK_KEEP_RECENT_MESSAGES": "agent.context.keep_recent_messages",
         }
 
         for env_var, config_path in env_mappings.items():
@@ -90,7 +96,14 @@ class AgentConfigManager:
                     env_val = float(env_val)
                 elif env_var == "DEEPSEEK_MAX_TOKENS":
                     env_val = int(env_val)
-                # Add more type conversions as needed
+                elif env_var in ("DEEPSEEK_MAX_CONTEXT_TOKENS", "DEEPSEEK_KEEP_RECENT_MESSAGES"):
+                    env_val = int(env_val)
+                elif env_var in ("DEEPSEEK_CONTEXT_WARNING_THRESHOLD", "DEEPSEEK_CONTEXT_BREAK_THRESHOLD"):
+                    env_val = float(env_val)
+                elif env_var == "DEEPSEEK_KEEP_SYSTEM_MESSAGES":
+                    # Accept "true", "false", "1", "0"
+                    env_val = env_val.lower() in ("true", "1", "yes", "on")
+                # Compression strategy is string, no conversion needed
                 OmegaConf.update(self._cfg, config_path, env_val)
     
     def get(self, key: str, default: Any = None) -> Any:
@@ -128,6 +141,30 @@ class AgentConfigManager:
     @property
     def system_prompt(self) -> str:
         return self.get("system_prompt", "")
+
+    @property
+    def max_context_tokens(self) -> int:
+        return self.get("context.max_context_tokens", 131072)
+
+    @property
+    def context_warning_threshold(self) -> float:
+        return self.get("context.warning_threshold", 0.8)
+
+    @property
+    def context_break_threshold(self) -> float:
+        return self.get("context.break_threshold", 0.6)
+
+    @property
+    def compression_strategy(self) -> str:
+        return self.get("context.compression_strategy", "truncate")
+
+    @property
+    def keep_system_messages(self) -> bool:
+        return self.get("context.keep_system_messages", True)
+
+    @property
+    def keep_recent_messages(self) -> int:
+        return self.get("context.keep_recent_messages", 5)
 
     @property
     def auto_features_enabled(self) -> bool:

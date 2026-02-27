@@ -29,6 +29,11 @@ class TestCommandHandlers(unittest.TestCase):
         self.agent.help_system = Mock()
         self.agent.searcher = Mock()
         self.agent.self_iteration = None
+        # Mock task manager and goal planner
+        self.agent.task_manager = Mock()
+        self.agent.goal_planner = Mock()
+        # Mock generate_completion for AI commands
+        self.agent.generate_completion = Mock(return_value="Mocked AI response")
         # Set up formatter methods to return strings
         self.agent.formatter.error = Mock(return_value="ERROR")
         self.agent.formatter.success = Mock(return_value="SUCCESS")
@@ -173,10 +178,13 @@ class TestCommandHandlers(unittest.TestCase):
             mock_run.assert_called_once()
             self.assertIn("Git diff for", result)
 
-    def test_handle_diff_command_backup_not_implemented(self):
-        """Test /diff --backup returns not implemented."""
-        result = self.agent.handle_diff_command("--backup file.py")
-        self.assertIn("not yet implemented", result)
+    def test_handle_diff_command_backup_no_backups(self):
+        """Test /diff --backup returns appropriate message when no backups exist."""
+        with patch('os.path.exists') as mock_exists:
+            mock_exists.return_value = False  # backup directory doesn't exist
+            self.agent.safety_manager.workspace_root = '/test/workspace'
+            result = self.agent.handle_diff_command("--backup file.py")
+            self.assertIn("No backup directory found", result)
 
     def test_handle_diff_command_missing_args(self):
         """Test /diff with missing arguments."""
@@ -429,6 +437,62 @@ class TestCommandHandlers(unittest.TestCase):
             self.assertEqual(call_count, 1)
             # Model should be restored
             self.assertEqual(self.agent.model, original_model)
+    def test_new_command_handlers_smoke(self):
+        """Smoke test for new command handlers."""
+        # Mock task manager
+        from unittest.mock import Mock
+        self.agent.task_manager.create_task = Mock(return_value=Mock(id="123", description="test"))
+        self.agent.task_manager.list_tasks = Mock(return_value=[])
+        self.agent.task_manager.update_task_status = Mock(return_value=True)
+        self.agent.task_manager.delete_task = Mock(return_value=True)
+        self.agent.task_manager.clear_all_tasks = Mock(return_value=0)
+
+        # Mock goal planner
+        self.agent.goal_planner.generate_plan = Mock(return_value={"id": "plan1", "goal": "test", "steps": [], "status": "pending"})
+        self.agent.goal_planner.list_plans = Mock(return_value=[])
+        self.agent.goal_planner.get_plan = Mock(return_value={"id": "plan1", "goal": "test", "steps": [], "status": "pending"})
+        self.agent.goal_planner.update_plan_status = Mock(return_value=True)
+        self.agent.goal_planner.delete_plan = Mock(return_value=True)
+        self.agent.goal_planner.get_current_step = Mock(return_value=None)
+
+        # Mock set_model for switch command
+        self.agent.set_model = Mock(return_value=True)
+        # Mock list_models for switch command
+        self.agent.list_models = Mock(return_value=[{"id": "deepseek-chat"}])
+
+        # Mock generate_completion for AI commands
+        self.agent.generate_completion.return_value = "Mocked AI response"
+
+        # Mock file existence for debug/explain/refactor
+        import os
+        with patch('os.path.exists', return_value=True):
+            # Mock safe_read_file for file operations
+            self.agent.safety_manager.safe_read_file.return_value = (True, "", "file content")
+
+            # Test each handler with minimal arguments
+            handlers = [
+                (self.agent.handle_task_command, "create test"),
+                (self.agent.handle_plan_command, "test goal"),
+                (self.agent.handle_execute_command, "plan1"),
+                (self.agent.handle_switch_command, "deepseek-chat"),
+                (self.agent.handle_summarize_command, "test text"),
+                (self.agent.handle_translate_command, "hello"),
+                (self.agent.handle_generate_command, "prompt"),
+                (self.agent.handle_reason_command, "problem"),
+                (self.agent.handle_debug_command, "test.py"),
+                (self.agent.handle_explain_command, "test.py"),
+                (self.agent.handle_refactor_command, "test.py"),
+                (self.agent.handle_grep_command, "pattern"),
+                (self.agent.handle_find_command, "*.py"),
+            ]
+
+            for handler, arg in handlers:
+                try:
+                    result = handler(arg)
+                    # Should return string or None
+                    self.assertIsInstance(result, (str, type(None)))
+                except Exception as e:
+                    self.fail(f"Handler {handler.__name__} failed with {e}")
 
     def test_with_model_invalid_model(self):
         """Test with_model raises ValueError for unavailable model."""
