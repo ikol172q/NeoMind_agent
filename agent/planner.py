@@ -5,8 +5,10 @@ Provides dependency analysis, change ordering, and rollback planning.
 import os
 import ast
 import re
-from typing import List, Dict, Any, Tuple, Set
+import json
 import logging
+from typing import List, Dict, Any, Tuple, Set, Optional
+from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +233,209 @@ class Planner:
                 'backup': None  # Could be filled later with actual backup path
             })
         return rollback
+
+
+class GoalPlanner:
+    """Generates and manages plans from natural language goals."""
+
+    def __init__(self, data_dir: Optional[str] = None):
+        self.data_dir = data_dir or os.getcwd()
+        self.plans_file = os.path.join(self.data_dir, ".plans.json")
+        self.plans: Dict[str, Dict] = {}
+        self._load_plans()
+
+    def _load_plans(self) -> None:
+        """Load plans from JSON file."""
+        if os.path.exists(self.plans_file):
+            try:
+                with open(self.plans_file, 'r', encoding='utf-8') as f:
+                    self.plans = json.load(f)
+            except (json.JSONDecodeError, IOError):
+                self.plans = {}
+        else:
+            self.plans = {}
+
+    def _save_plans(self) -> bool:
+        """Save plans to JSON file."""
+        try:
+            with open(self.plans_file, 'w', encoding='utf-8') as f:
+                json.dump(self.plans, f, indent=2)
+            return True
+        except (IOError, TypeError):
+            return False
+
+    def generate_plan(self, goal: str, agent: Any) -> Dict[str, Any]:
+        """
+        Generate a step-by-step plan from a goal using AI.
+
+        Args:
+            goal: Natural language goal description
+            agent: DeepSeekStreamingChat instance for AI completion
+
+        Returns:
+            Plan dictionary with id, goal, steps, status
+        """
+        import uuid
+        from datetime import datetime
+
+        prompt = f"""Create a step-by-step plan to achieve this goal: "{goal}"
+
+The plan should be a sequence of actionable steps. Each step should:
+1. Be clear and specific
+2. Have a single actionable task
+3. Include expected outcome or success criteria
+4. Be numbered sequentially
+
+Format the response as a JSON array of step objects, each with:
+- "description": string describing the step
+- "action": string suggesting the action (e.g., "write code", "run test", "create file")
+- "details": string with additional details or commands to execute
+- "dependencies": array of step indices that must complete before this step (empty if none)
+
+Example:
+[
+  {{
+    "description": "Set up project structure",
+    "action": "create directory",
+    "details": "Create src/ and tests/ directories",
+    "dependencies": []
+  }},
+  {{
+    "description": "Implement core functionality",
+    "action": "write code",
+    "details": "Write main.py with basic functionality",
+    "dependencies": [0]
+  }}
+]
+
+Now generate the plan for: "{goal}"
+"""
+        try:
+            # Use AI to generate plan
+            messages = [{"role": "user", "content": prompt}]
+            response = agent.generate_completion(messages, temperature=0.7, max_tokens=2000)
+
+            # Parse JSON from response
+            import re
+            json_match = re.search(r'\[\s*\{.*\}\s*\]', response, re.DOTALL)
+            if json_match:
+                steps_json = json_match.group(0)
+                steps = json.loads(steps_json)
+            else:
+                # Fallback: treat each line as a step
+                steps = []
+                for line in response.strip().split('\n'):
+                    line = line.strip()
+                    if line and line[0].isdigit() and '.' in line:
+                        desc = line.split('.', 1)[1].strip()
+                        steps.append({
+                            "description": desc,
+                            "action": "execute",
+                            "details": "",
+                            "dependencies": []
+                        })
+
+            # Create plan object
+            plan_id = str(uuid.uuid4())[:8]
+            plan = {
+                "id": plan_id,
+                "goal": goal,
+                "steps": steps,
+                "status": "pending",
+                "current_step": 0,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+
+            self.plans[plan_id] = plan
+            self._save_plans()
+            return plan
+
+        except Exception as e:
+            # Fallback plan
+            import uuid
+            from datetime import datetime
+            plan_id = str(uuid.uuid4())[:8]
+            plan = {
+                "id": plan_id,
+                "goal": goal,
+                "steps": [
+                    {
+                        "description": f"Analyze the goal: {goal}",
+                        "action": "analyze",
+                        "details": f"Understand what needs to be done to achieve: {goal}",
+                        "dependencies": []
+                    },
+                    {
+                        "description": "Implement the solution",
+                        "action": "execute",
+                        "details": "Carry out the necessary actions",
+                        "dependencies": [0]
+                    }
+                ],
+                "status": "pending",
+                "current_step": 0,
+                "created_at": datetime.now().isoformat(),
+                "updated_at": datetime.now().isoformat()
+            }
+            self.plans[plan_id] = plan
+            self._save_plans()
+            return plan
+
+    def get_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        """Get plan by ID."""
+        return self.plans.get(plan_id)
+
+    def list_plans(self, status_filter: Optional[str] = None) -> List[Dict[str, Any]]:
+        """List all plans, optionally filtered by status."""
+        plans = list(self.plans.values())
+        if status_filter:
+            plans = [plan for plan in plans if plan.get("status") == status_filter]
+        return sorted(plans, key=lambda p: p.get("created_at", ""), reverse=True)
+
+    def update_plan_status(self, plan_id: str, status: str) -> bool:
+        """Update plan status."""
+        plan = self.get_plan(plan_id)
+        if not plan:
+            return False
+        valid_statuses = {"pending", "in_progress", "completed", "failed"}
+        if status not in valid_statuses:
+            return False
+        plan["status"] = status
+        plan["updated_at"] = datetime.now().isoformat()
+        self._save_plans()
+        return True
+
+    def advance_step(self, plan_id: str) -> bool:
+        """Advance to next step in plan."""
+        plan = self.get_plan(plan_id)
+        if not plan:
+            return False
+        if plan["current_step"] >= len(plan["steps"]) - 1:
+            return False
+        plan["current_step"] += 1
+        plan["updated_at"] = datetime.now().isoformat()
+        self._save_plans()
+        return True
+
+    def get_current_step(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        """Get current step for plan."""
+        plan = self.get_plan(plan_id)
+        if not plan:
+            return None
+        steps = plan.get("steps", [])
+        current_idx = plan.get("current_step", 0)
+        if current_idx < len(steps):
+            return steps[current_idx]
+        return None
+
+    def delete_plan(self, plan_id: str) -> bool:
+        """Delete plan by ID."""
+        if plan_id in self.plans:
+            del self.plans[plan_id]
+            self._save_plans()
+            return True
+        return False
 
 
 # Convenience function
