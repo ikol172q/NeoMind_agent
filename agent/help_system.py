@@ -112,6 +112,120 @@ class HelpSystem:
                 usage="/auto search on|off\n/auto interpret on|off\n/auto status\n/auto help",
                 examples="/auto search on\n/auto interpret off\n/auto status"
             ),
+            "task": self.formatter.command_help(
+                command="/task",
+                description="Manage tasks (create, list, update, delete).",
+                usage="/task create <description>\n/task list [status]\n/task update <id> <status>\n/task delete <id>\n/task clear\n/task help",
+                examples="/task create \"Refactor auth module\"\n/task list\n/task update abc123 done"
+            ),
+            "plan": self.formatter.command_help(
+                command="/plan",
+                description="Generate and manage plans from goals.",
+                usage="/plan <goal>\n/plan list [status]\n/plan delete <id>\n/plan show <id>\n/plan help",
+                examples="/plan \"Add user authentication\"\n/plan list\n/plan show abc123"
+            ),
+            "execute": self.formatter.command_help(
+                command="/execute",
+                description="Execute a plan step by step.",
+                usage="/execute <plan_id>",
+                examples="/execute abc123"
+            ),
+            "switch": self.formatter.command_help(
+                command="/switch",
+                description="Switch to a different model.",
+                usage="/switch <model_id>",
+                examples="/switch deepseek-reasoner"
+            ),
+            "summarize": self.formatter.command_help(
+                command="/summarize",
+                description="Summarize text or code.",
+                usage="/summarize <text>",
+                examples="/summarize \"Long article text...\""
+            ),
+            "translate": self.formatter.command_help(
+                command="/translate",
+                description="Translate text to another language.",
+                usage="/translate <text> [to <language>]",
+                examples="/translate \"Hello world\" to spanish"
+            ),
+            "generate": self.formatter.command_help(
+                command="/generate",
+                description="Generate content based on prompt.",
+                usage="/generate <prompt>",
+                examples="/generate \"A poem about AI\""
+            ),
+            "reason": self.formatter.command_help(
+                command="/reason",
+                description="Use chain-of-thought reasoning to solve problems.",
+                usage="/reason <problem>",
+                examples="/reason \"If it takes 5 minutes to cook one egg, how long to cook 10 eggs?\""
+            ),
+            "debug": self.formatter.command_help(
+                command="/debug",
+                description="Debug code for bugs and issues.",
+                usage="/debug <file_path> or /debug <code snippet>",
+                examples="/debug my_script.py"
+            ),
+            "explain": self.formatter.command_help(
+                command="/explain",
+                description="Explain code functionality.",
+                usage="/explain <file_path> or /explain <code snippet>",
+                examples="/explain \"def factorial(n): ...\""
+            ),
+            "refactor": self.formatter.command_help(
+                command="/refactor",
+                description="Suggest refactoring improvements for code.",
+                usage="/refactor <file_path>",
+                examples="/refactor agent/core.py"
+            ),
+            "grep": self.formatter.command_help(
+                command="/grep",
+                description="Search for text across files.",
+                usage="/grep <pattern> [path]",
+                examples="/grep \"def handle_.*\" agent/"
+            ),
+            "find": self.formatter.command_help(
+                command="/find",
+                description="Find files matching pattern.",
+                usage="/find <pattern> [path]",
+                examples="/find *.py"
+            ),
+            "clear": self.formatter.command_help(
+                command="/clear",
+                description="Clear conversation history.",
+                usage="/clear",
+                examples="/clear"
+            ),
+            "history": self.formatter.command_help(
+                command="/history",
+                description="Show conversation history.",
+                usage="/history",
+                examples="/history"
+            ),
+            "context": self.formatter.command_help(
+                command="/context",
+                description="Manage conversation context (token usage, compression).",
+                usage="/context [status|compress|clear|help]",
+                examples="/context status\n/context compress\n/context clear"
+            ),
+            "think": self.formatter.command_help(
+                command="/think",
+                description="Toggle thinking mode.",
+                usage="/think",
+                examples="/think"
+            ),
+            "quit": self.formatter.command_help(
+                command="/quit",
+                description="Exit the chat.",
+                usage="/quit",
+                examples="/quit"
+            ),
+            "exit": self.formatter.command_help(
+                command="/exit",
+                description="Exit the chat (alias for /quit).",
+                usage="/exit",
+                examples="/exit"
+            ),
         }
 
     def get_help(self, command: str = "") -> str:

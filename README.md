@@ -105,6 +105,34 @@ agent:
 - `/models current` - Show current model
 - `/models help` - Show model command help
 
+### Task Management Commands
+- `/task create <description>` - Create a new task
+- `/task list [status]` - List tasks (optional status filter: todo, in_progress, done)
+- `/task update <id> <status>` - Update task status
+- `/task delete <id>` - Delete task
+- `/task clear` - Delete all tasks
+- `/task help` - Show task command help
+
+### Planning System Commands
+- `/plan <goal>` - Generate a plan for achieving a goal
+- `/plan list [status]` - List plans (optional status filter)
+- `/plan delete <id>` - Delete plan
+- `/plan show <id>` - Show plan details
+- `/plan help` - Show plan command help
+- `/execute <plan_id>` - Execute a plan step by step
+
+### Advanced Analysis Commands
+- `/summarize <text>` - Summarize text or code
+- `/translate <text> [to <language>]` - Translate text to another language
+- `/generate <prompt>` - Generate content based on prompt
+- `/reason <problem>` - Use chain-of-thought reasoning to solve problems
+- `/debug <file_path>` - Debug code for bugs and issues
+- `/explain <file_path>` - Explain code functionality
+- `/refactor <file_path>` - Suggest refactoring improvements for code
+- `/grep <pattern> [path]` - Search for text across files
+- `/find <pattern> [path]` - Find files matching pattern
+- `/switch <model_id>` - Switch to a different model (alternative to `/models switch`)
+
 ### Code Analysis & Self-Iteration Commands
 - `/code scan [path]` - Scan a codebase for analysis
 - `/code summary` - Show codebase summary (size, file types)
