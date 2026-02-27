@@ -279,6 +279,78 @@ The self-iteration framework provides:
 /test all
 ```
 
+### Task Management Examples
+
+```bash
+# Create a new task
+/task create "Refactor authentication module"
+
+# List all tasks
+/task list
+
+# List only in-progress tasks
+/task list in_progress
+
+# Update task status
+/task update abc123 done
+
+# Delete a task
+/task delete abc123
+
+# Clear all tasks
+/task clear
+```
+
+### Planning Examples
+
+```bash
+# Generate a plan for a goal
+/plan "Add user authentication to the app"
+
+# List generated plans
+/plan list
+
+# Show details of a specific plan
+/plan show abc123
+
+# Execute a plan step by step
+/execute abc123
+```
+
+### Advanced Analysis Examples
+
+```bash
+# Summarize text
+/summarize "Long article text about artificial intelligence and machine learning..."
+
+# Translate text to Spanish
+/translate "Hello world" to spanish
+
+# Generate content based on prompt
+/generate "Write a short poem about AI"
+
+# Use chain-of-thought reasoning
+/reason "If it takes 5 minutes to cook one egg, how long to cook 10 eggs?"
+
+# Debug a code file
+/debug my_script.py
+
+# Explain code functionality
+/explain "def factorial(n): return 1 if n == 0 else n * factorial(n-1)"
+
+# Suggest refactoring improvements
+/refactor agent/core.py
+
+# Search for text across files
+/grep "def handle_.*" agent/
+
+# Find files matching pattern
+/find *.py
+
+# Switch to a different model
+/switch deepseek-reasoner
+```
+
 ## Troubleshooting
 
 ### Common Issues

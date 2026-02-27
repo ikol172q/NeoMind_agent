@@ -70,6 +70,107 @@ class NaturalLanguageInterpreter:
                 (r"undo(?: last change)?$", "/undo", 0.9),
                 (r"revert(?: changes)?$", "/undo", 0.8),
             ],
+            'task': [
+                (r"create task (.+)$", "/task create {match}", 0.9),
+                (r"add task (.+)$", "/task create {match}", 0.9),
+                (r"list tasks$", "/task list", 0.9),
+                (r"show tasks$", "/task list", 0.9),
+                (r"what tasks are pending\??$", "/task list todo", 0.8),
+                (r"update task (\w+) to (\w+)$", "/task update {match} {content}", 0.8),
+                (r"mark task (\w+) as (\w+)$", "/task update {match} {content}", 0.8),
+                (r"delete task (\w+)$", "/task delete {match}", 0.9),
+                (r"remove task (\w+)$", "/task delete {match}", 0.9),
+                (r"clear all tasks$", "/task clear", 0.9),
+            ],
+            'plan': [
+                (r"create plan for (.+)$", "/plan {match}", 0.9),
+                (r"generate plan for (.+)$", "/plan {match}", 0.9),
+                (r"make a plan to (.+)$", "/plan {match}", 0.8),
+                (r"how can I (.+)$", "/plan {match}", 0.7),
+                (r"list plans$", "/plan list", 0.9),
+                (r"show plans$", "/plan list", 0.9),
+                (r"what plans are there\??$", "/plan list", 0.8),
+                (r"delete plan (\w+)$", "/plan delete {match}", 0.9),
+                (r"show plan (\w+)$", "/plan show {match}", 0.9),
+            ],
+            'execute': [
+                (r"execute plan (\w+)$", "/execute {match}", 0.9),
+                (r"run plan (\w+)$", "/execute {match}", 0.9),
+                (r"start plan (\w+)$", "/execute {match}", 0.8),
+                (r"continue plan (\w+)$", "/execute {match}", 0.8),
+                (r"next step for plan (\w+)$", "/execute {match}", 0.8),
+            ],
+            'switch': [
+                (r"switch model to (.+)$", "/switch {match}", 0.9),
+                (r"use model (.+)$", "/switch {match}", 0.9),
+                (r"change model to (.+)$", "/switch {match}", 0.8),
+                (r"set model to (.+)$", "/switch {match}", 0.8),
+            ],
+            'summarize': [
+                (r"summarize (.+)$", "/summarize {match}", 0.9),
+                (r"brief summary of (.+)$", "/summarize {match}", 0.8),
+                (r"sum up (.+)$", "/summarize {match}", 0.7),
+            ],
+            'translate': [
+                (r"translate (.+?) to (.+)$", "/translate {match} to {content}", 0.9),
+                (r"translate (.+)$", "/translate {match}", 0.8),
+                (r"how do you say (.+?) in (.+)$", "/translate {match} to {content}", 0.8),
+            ],
+            'generate': [
+                (r"generate (.+)$", "/generate {match}", 0.9),
+                (r"create (.+)$", "/generate {match}", 0.8),
+                (r"write (.+)$", "/generate {match}", 0.8),
+            ],
+            'reason': [
+                (r"reason about (.+)$", "/reason {match}", 0.9),
+                (r"solve (.+)$", "/reason {match}", 0.8),
+                (r"think through (.+)$", "/reason {match}", 0.7),
+            ],
+            'debug': [
+                (r"debug (.+\.\w+)$", "/debug {match}", 0.9),
+                (r"find bugs in (.+)$", "/debug {match}", 0.8),
+                (r"fix errors in (.+)$", "/debug {match}", 0.8),
+            ],
+            'explain': [
+                (r"explain (.+\.\w+)$", "/explain {match}", 0.9),
+                (r"explain code in (.+)$", "/explain {match}", 0.8),
+                (r"what does this code do\?? (.+)$", "/explain {match}", 0.7),
+            ],
+            'refactor': [
+                (r"refactor (.+\.\w+)$", "/refactor {match}", 0.9),
+                (r"improve code in (.+)$", "/refactor {match}", 0.8),
+                (r"clean up code in (.+)$", "/refactor {match}", 0.7),
+            ],
+            'grep': [
+                (r"search for (.+) in files$", "/grep {match}", 0.9),
+                (r"find text (.+) in code$", "/grep {match}", 0.8),
+                (r"grep for (.+)$", "/grep {match}", 0.9),
+            ],
+            'find': [
+                (r"find files matching (.+)$", "/find {match}", 0.9),
+                (r"locate files with pattern (.+)$", "/find {match}", 0.8),
+                (r"search for files named (.+)$", "/find {match}", 0.8),
+            ],
+            'clear': [
+                (r"clear history$", "/clear", 0.9),
+                (r"clear chat$", "/clear", 0.9),
+                (r"reset conversation$", "/clear", 0.8),
+            ],
+            'history': [
+                (r"show history$", "/history", 0.9),
+                (r"view history$", "/history", 0.9),
+                (r"chat history$", "/history", 0.8),
+            ],
+            'think': [
+                (r"toggle thinking$", "/think", 0.9),
+                (r"enable thinking mode$", "/think", 0.8),
+                (r"disable thinking mode$", "/think", 0.8),
+            ],
+            'quit': [
+                (r"quit$", "/quit", 0.9),
+                (r"exit$", "/exit", 0.9),
+                (r"bye$", "/quit", 0.7),
+            ],
         }
 
     def interpret(self, text: str) -> Tuple[Optional[str], float]:
@@ -108,5 +209,11 @@ class NaturalLanguageInterpreter:
             return False
         # Check for command-like keywords
         keywords = ['search', 'find', 'read', 'write', 'edit', 'fix', 'analyze',
-                   'scan', 'help', 'models', 'undo', 'show', 'list', 'open']
+                   'scan', 'help', 'models', 'undo', 'show', 'list', 'open',
+                   'task', 'create', 'update', 'delete', 'clear', 'add', 'remove', 'mark',
+                   'plan', 'execute', 'goal', 'generate', 'run', 'start', 'continue', 'next',
+                   'switch', 'model', 'use', 'change', 'set',
+                   'summarize', 'translate', 'reason', 'debug', 'explain', 'refactor', 'grep',
+                   'brief', 'summary', 'solve', 'bugs', 'errors', 'improve', 'clean', 'locate',
+                   'history', 'think', 'quit', 'exit', 'reset', 'toggle', 'enable', 'disable', 'bye']
         return any(keyword in text.lower() for keyword in keywords)
