@@ -84,6 +84,16 @@ class DeepSeekStreamingChat:
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         # CHANGED: Use agent_config instead of hardcoded values
         self.model = model if model != "deepseek-chat" else agent_config.model
+        # Mode configuration
+        self.mode = agent_config.mode  # chat or coding
+        self.workspace_manager = None  # Lazy initialization for coding mode
+        self.show_status_bar = agent_config.coding_mode_show_status_bar if agent_config.mode == "coding" else False
+        # Status display system for coding mode
+        self.verbose_mode = True if agent_config.mode == "coding" else False  # Show detailed debug messages in coding mode by default
+        self.status_buffer = []  # Store debug/info messages for later display
+        self.current_status = ""  # Current single-line status message
+        self.last_status_update = 0  # Timestamp of last status update
+        self._mcp_servers_cache = None  # Cache for MCP servers
         # https://api-docs.deepseek.com/quick_start/pricing
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.models_url = "https://api.deepseek.com/models"  # NEW: For listing models
@@ -106,6 +116,7 @@ class DeepSeekStreamingChat:
         # Auto-features configuration
         self.enable_auto_search = agent_config.auto_search_enabled
         self.auto_search_enabled = agent_config.auto_search_enabled
+        self.search_enabled = agent_config.search_enabled
         self.natural_language_enabled = agent_config.natural_language_enabled
         self.natural_language_confidence_threshold = agent_config.natural_language_confidence_threshold
         self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
@@ -119,7 +130,10 @@ class DeepSeekStreamingChat:
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
 
         # NEW: Add system prompt if provided
-        if agent_config.system_prompt:
+        # Use coding mode system prompt if mode is coding, otherwise default
+        if self.mode == "coding" and agent_config.coding_mode_system_prompt:
+            self.add_to_history("system", agent_config.coding_mode_system_prompt)
+        elif agent_config.system_prompt:
             self.add_to_history("system", agent_config.system_prompt)
 
         if not self.api_key:
@@ -159,6 +173,9 @@ class DeepSeekStreamingChat:
         # Mapping: prefix -> (handler, strip_prefix)
         self.command_handlers = {
             "/search": (self.handle_search, True),
+            "/mode": (self.handle_mode_command, True),
+            "/skills": (self.handle_skills_command, True),
+            "/skill": (self.handle_skill_command, True),
             "/auto": (self.handle_auto_command, True),
             "/models": (self.handle_models_command, False),
             "/task": (self.handle_task_command, True),
@@ -181,6 +198,7 @@ class DeepSeekStreamingChat:
             "/quit": (self.handle_quit_command, True),
             "/exit": (self.handle_exit_command, True),
             "/help": (self.handle_help_command, True),
+            "/verbose": (self.handle_verbose_command, True),
             "/diff": (self.handle_diff_command, True),
             "/browse": (self.handle_browse_command, True),
             "/undo": (self.handle_undo_command, True),
@@ -196,9 +214,96 @@ class DeepSeekStreamingChat:
             "/analyze": (self.handle_auto_fix_command, False),
         }
 
+    def _status_print(self, message: str, level: str = "info") -> None:
+        """
+        Print status message with verbosity control.
+
+        Args:
+            message: Message to print
+            level: Message level - "critical", "important", "info", "debug"
+        """
+        import time
+
+        # Store message in buffer for potential later display
+        self.status_buffer.append({
+            "timestamp": time.time(),
+            "message": message,
+            "level": level
+        })
+        # Keep buffer size manageable
+        if len(self.status_buffer) > 100:
+            self.status_buffer = self.status_buffer[-50:]
+
+        # In coding mode with verbose mode disabled
+        if self.mode == "coding" and not self.verbose_mode:
+            if level in ("critical", "important"):
+                # Show critical/important messages immediately
+                self._safe_print(message)
+            elif level == "info":
+                # For info messages, update single-line status
+                self.current_status = message
+                # Use carriage return to update line (if output is a tty)
+                import sys
+                if sys.stdout.isatty():
+                    # Clear line and print status
+                    sys.stdout.write(f"\r\033[K{message}")
+                    sys.stdout.flush()
+                else:
+                    # Non-interactive, just print
+                    self._safe_print(message)
+            # debug messages are silently stored in buffer
+            return
+
+        # In chat mode OR coding mode with verbose mode enabled
+        self._safe_print(message)
+
+    def add_status_message(self, message: str, level: str = "info") -> None:
+        """Add a status message to the buffer without printing."""
+        import time
+        self.status_buffer.append({
+            "timestamp": time.time(),
+            "message": message,
+            "level": level
+        })
+        # Keep buffer size manageable
+        if len(self.status_buffer) > 100:
+            self.status_buffer = self.status_buffer[-50:]
+
+    def get_status_messages(self, level: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Get status messages from buffer, optionally filtered by level and limited."""
+        messages = self.status_buffer
+        if level:
+            messages = [msg for msg in messages if msg["level"] == level]
+        # Reverse chronological order (most recent first)
+        messages = list(reversed(messages))
+        if limit:
+            messages = messages[:limit]
+        return messages
+
+    def clear_status_buffer(self) -> None:
+        """Clear all status messages from buffer."""
+        self.status_buffer = []
+
+    def update_current_status(self, status: str) -> None:
+        """Update the current single-line status display."""
+        import time
+        self.current_status = status
+        self.last_status_update = time.time()
+
+    def _clear_status_line(self) -> None:
+        """Clear the single-line status display if active."""
+        import sys
+        if self.current_status and sys.stdout.isatty():
+            # Move to beginning of line, clear it
+            sys.stdout.write("\r\033[K")
+            sys.stdout.flush()
+            self.current_status = ""
+
     def _safe_print(self, message: str) -> None:
         """Print message safely, handling Unicode encoding errors on Windows."""
         import sys
+        # Clear any active status line before printing
+        self._clear_status_line()
         try:
             print(message)
         except UnicodeEncodeError:
@@ -232,6 +337,95 @@ class DeepSeekStreamingChat:
             # Also strip any other non-ASCII characters
             safe_message = safe_message.encode('ascii', 'ignore').decode('ascii')
             print(safe_message)
+
+    def switch_mode(self, mode: str, persist: bool = True) -> bool:
+        """Switch between chat and coding modes.
+
+        Args:
+            mode: Target mode ('chat' or 'coding')
+            persist: Whether to save the mode change to config file (default: True)
+        """
+        if mode not in ("chat", "coding"):
+            self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat' or 'coding'.")
+            return False
+
+        if persist:
+            success = agent_config.update_mode(mode)
+            if not success:
+                self._safe_print("❌ Failed to update configuration.")
+                return False
+
+        old_mode = self.mode
+        self.mode = mode
+        self._safe_print(f"🔄 Switching from {old_mode} mode to {mode} mode.")
+
+        # Update mode-specific settings
+        if mode == "coding":
+            self._initialize_workspace_manager()
+            # Update system prompt to coding mode system prompt
+            coding_prompt = agent_config.coding_mode_system_prompt
+            if coding_prompt:
+                # Clear existing system prompts
+                self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
+                self.add_to_history("system", coding_prompt)
+            # Adjust natural language confidence threshold
+            if self.interpreter:
+                self.interpreter.confidence_threshold = agent_config.coding_mode_natural_language_confidence_threshold
+            # Adjust safety confirmations for file operations
+            self.safety_confirm_file_operations = agent_config.coding_mode_safety_confirm_file_operations
+            # Show status bar
+            self.show_status_bar = agent_config.coding_mode_show_status_bar
+            # Enable verbose mode in coding mode by default
+            self.verbose_mode = True
+        else:
+            # Restore default system prompt
+            default_prompt = agent_config.system_prompt
+            if default_prompt:
+                self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
+                self.add_to_history("system", default_prompt)
+            # Restore default natural language confidence threshold
+            if self.interpreter:
+                self.interpreter.confidence_threshold = agent_config.natural_language_confidence_threshold
+            # Restore default safety confirmations
+            self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
+            # Hide status bar
+            self.show_status_bar = False
+            # Disable verbose mode in chat mode (all messages shown anyway)
+            self.verbose_mode = False
+
+        return True
+
+    def toggle_verbose_mode(self) -> bool:
+        """Toggle verbose mode to show/hide detailed debug messages.
+        Returns new verbose mode status."""
+        self.verbose_mode = not self.verbose_mode
+        return self.verbose_mode
+
+    def get_status_info(self) -> Dict[str, any]:
+        """Get current status information for status bar."""
+        status = {
+            "mode": self.mode,
+            "token_usage": self.context_manager.count_conversation_tokens() if hasattr(self, 'context_manager') else 0,
+            "pending_changes": len(self.code_changes_pending),
+            "recent_files": []
+        }
+        if self.mode == "coding" and self.workspace_manager:
+            try:
+                status["recent_files"] = self.workspace_manager.get_recent_files(3)
+            except:
+                pass
+        return status
+
+    def _initialize_workspace_manager(self):
+        """Lazy initialization of workspace manager for coding mode."""
+        if self.workspace_manager is None:
+            try:
+                from .workspace_manager import WorkspaceManager
+                self.workspace_manager = WorkspaceManager()
+                self._safe_print("📁 Workspace manager initialized.")
+            except ImportError:
+                self._safe_print("⚠️  Workspace manager not available. Install optional dependencies.")
+                self.workspace_manager = None
 
     # Add get_code_change_instructions method here:
     def get_code_change_instructions(self) -> str:
@@ -440,10 +634,10 @@ Remember: Always ask for permission before making changes!
         if total_tokens + max_tokens > max_context:
             # Reduce max_tokens to fit within limit, but keep at least 1
             new_max = max(1, max_context - total_tokens)
-            print(f"⚠️  Context limit: reducing max_tokens from {max_tokens} to {new_max}")
+            self._status_print(f"⚠️  Context limit: reducing max_tokens from {max_tokens} to {new_max}", "info")
             max_tokens = new_max
         elif total_tokens > agent_config.context_warning_threshold * max_context:
-            print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used")
+            self._status_print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used", "info")
 
         payload = {
             "model": self.model,
@@ -470,6 +664,8 @@ Remember: Always ask for permission before making changes!
     # Updated stream_response to handle /models command
     def handle_search(self, query: str) -> str:
         """Procedddddss search command and return results"""
+        if not self.search_enabled:
+            return "Search is disabled. Enable it in config or use a different search method."
         if not query or query.strip() == "":
             return "Usage: /search <your query>"
 
@@ -554,6 +750,129 @@ Remember: Always ask for permission before making changes!
         help_lines.append("  /auto status            - Show current auto-feature settings")
         help_lines.append("  /auto help              - Show this help")
         return "\n".join(help_lines)
+
+    def handle_mode_command(self, command: str) -> Optional[str]:
+        """
+        Handle /mode command for switching between chat and coding modes.
+
+        Usage:
+          /mode chat      - Switch to chat mode
+          /mode coding    - Switch to coding mode
+          /mode status    - Show current mode
+          /mode help      - Show help
+        """
+        command = command.strip().lower()
+        if not command or command == "status":
+            return f"Current mode: {self.mode}"
+        elif command == "chat":
+            success = self.switch_mode("chat")
+            return "Switched to chat mode." if success else "Failed to switch to chat mode."
+        elif command == "coding":
+            success = self.switch_mode("coding")
+            return "Switched to coding mode." if success else "Failed to switch to coding mode."
+        elif command == "help":
+            return (
+                "/mode command usage:\n"
+                "  /mode chat      - Switch to chat mode\n"
+                "  /mode coding    - Switch to coding mode\n"
+                "  /mode status    - Show current mode\n"
+                "  /mode help      - Show this help"
+            )
+        else:
+            return "Invalid mode. Use 'chat', 'coding', 'status', or 'help'."
+
+    def handle_skills_command(self, command: str) -> Optional[str]:
+        """
+        Handle /skills command to list available skills/MCP servers.
+
+        Usage:
+          /skills list    - List available skills
+          /skills refresh - Refresh skill discovery
+          /skills help    - Show help
+        """
+        command = command.strip().lower()
+        if not command or command == "list":
+            skills = self.discover_mcp_servers()
+            if not skills:
+                return "No skills or MCP servers found."
+            result = ["Available skills:"]
+            for skill in skills:
+                result.append(f"  - {skill['name']} - {skill.get('description', 'No description')}")
+            return "\n".join(result)
+        elif command == "refresh":
+            # Force rediscovery
+            self._mcp_servers_cache = None
+            return "Skill cache cleared. Use /skills list to refresh."
+        elif command == "help":
+            return (
+                "/skills command usage:\n"
+                "  /skills list    - List available skills\n"
+                "  /skills refresh - Refresh skill discovery\n"
+                "  /skills help    - Show this help"
+            )
+        else:
+            return "Unknown subcommand. Use 'list', 'refresh', or 'help'."
+
+    def handle_skill_command(self, command: str) -> Optional[str]:
+        """
+        Handle /skill command to invoke a specific skill.
+
+        Usage:
+          /skill <skill_name> [args...]
+        """
+        parts = command.strip().split(maxsplit=1)
+        if not parts:
+            return "Usage: /skill <skill_name> [args...]"
+        skill_name = parts[0]
+        args = parts[1] if len(parts) > 1 else ""
+        # For now, just return a placeholder
+        return f"Skill '{skill_name}' invocation not yet implemented. Args: '{args}'"
+
+    def discover_mcp_servers(self) -> List[Dict[str, str]]:
+        """
+        Discover MCP servers in standard locations.
+
+        Returns:
+            List of server info dictionaries
+        """
+        # Placeholder implementation
+        # In a real implementation, this would scan ~/.claude/mcp-servers/
+        # and ./.claude/mcp-servers/ for server configurations
+        servers = []
+        # Check for common MCP server locations
+        import os
+        import json
+        from pathlib import Path
+
+        locations = [
+            Path.home() / ".claude" / "mcp-servers",
+            Path.cwd() / ".claude" / "mcp-servers",
+        ]
+
+        for location in locations:
+            if location.exists() and location.is_dir():
+                for item in location.iterdir():
+                    if item.is_file() and item.suffix == '.json':
+                        try:
+                            with open(item, 'r') as f:
+                                config = json.load(f)
+                            servers.append({
+                                'name': config.get('name', item.stem),
+                                'description': config.get('description', ''),
+                                'path': str(item)
+                            })
+                        except:
+                            pass
+
+        # Add built-in skills
+        builtin_skills = [
+            {'name': 'code_analyzer', 'description': 'Code analysis and refactoring'},
+            {'name': 'file_operations', 'description': 'File read/write/edit'},
+            {'name': 'web_search', 'description': 'Web search via DuckDuckGo'},
+        ]
+        servers.extend(builtin_skills)
+
+        return servers
 
     def handle_models_command(self, command: str) -> Optional[str]:
         """
@@ -1122,6 +1441,31 @@ Remember: Always ask for permission before making changes!
         if not matches:
             return f"📭 No files/directories matching '{pattern}' in {path}"
         return f"📂 Found {len(matches)} matches for '{pattern}' in {path}:\n" + "\n".join(matches[:50])
+
+    def handle_verbose_command(self, command: str) -> Optional[str]:
+        """
+        Handle /verbose command to toggle verbose debug output.
+        Usage: /verbose [on|off|toggle]
+        """
+        cmd = command.strip().lower()
+        if cmd == "on":
+            self.verbose_mode = True
+            status = "ENABLED"
+        elif cmd == "off":
+            self.verbose_mode = False
+            status = "DISABLED"
+        elif cmd == "toggle" or cmd == "":
+            self.toggle_verbose_mode()
+            status = "TOGGLED"
+        else:
+            return f"❌ Invalid option: {cmd}. Use /verbose [on|off|toggle]"
+
+        if self.verbose_mode and self.status_buffer:
+            result = [f"🔊 Verbose mode: {status}", "📋 Recent debug messages:"]
+            for entry in self.status_buffer[-10:]:  # Show last 10 messages
+                result.append(f"  [{entry['level']}] {entry['message']}")
+            return "\n".join(result)
+        return f"🔊 Verbose mode: {status}"
 
     def handle_clear_command(self, command: str) -> Optional[str]:
         """
@@ -1772,6 +2116,10 @@ Examples:
             """.strip()
             return help_text
 
+        # Auto-switch to coding mode for write command
+        if self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
+
         # Parse flags
         interactive = False
         parts = command.split()
@@ -1828,6 +2176,10 @@ Examples:
   /edit script.py "def old():" "def new():"
             """.strip()
             return help_text
+
+        # Auto-switch to coding mode for edit command
+        if self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
 
         # Parse flags
         parts = []
@@ -1904,6 +2256,10 @@ Examples:
             """.strip()
             return help_text
 
+        # Auto-switch to coding mode for run command
+        if self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
+
         # Determine working directory
         import os
         cwd = os.getcwd()
@@ -1968,6 +2324,10 @@ Examples:
   /git push origin main
             """.strip()
             return help_text
+
+        # Auto-switch to coding mode for git command
+        if self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
 
         # Determine working directory
         import os
@@ -2815,7 +3175,11 @@ Note: This is an alias for /code apply. See '/help code' for more details.
 
         parts = command.split()
         subcommand = parts[0].lower() if parts else ""
-        
+
+        # Auto-switch to coding mode for code commands (except help)
+        if subcommand != 'help' and self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
+
         if subcommand == 'help':
             return self._code_help()
         elif subcommand == 'scan':
@@ -3629,6 +3993,16 @@ Please think step by step and provide your analysis:"""
         """Clear conversation history"""
         self.conversation_history = []
 
+    def get_conversation_summary(self) -> str:
+        """Return a summary of the conversation history."""
+        total_messages = len(self.conversation_history)
+        token_count = self.context_manager.count_conversation_tokens()
+        return f"Conversation summary: {total_messages} messages, {token_count} tokens."
+
+    def get_token_count(self) -> int:
+        """Return total token count of conversation history."""
+        return self.context_manager.count_conversation_tokens()
+
     def _ensure_system_prompt(self):
         """Ensure system prompt is present in conversation history."""
         if not agent_config.system_prompt:
@@ -3682,16 +4056,16 @@ Please think step by step and provide your analysis:"""
         # Auto-detect if this is a code-related query
         if not prompt.startswith(('/fix', '/analyze', '/code', '/read', '/search', '/models')):
             if self.is_code_related_query(prompt):
-                self._safe_print(f"🔍 Detected code-related query. Adding code context...")
+                self._status_print(f"🔍 Detected code-related query. Adding code context...", "debug")
                 self.add_code_context_instructions()
 
-        self._safe_print(f"🔄 Processing command: {prompt[:50]}{'...' if len(prompt) > 50 else ''}")
+        self._status_print(f"🔄 Processing command: {prompt[:50]}{'...' if len(prompt) > 50 else ''}", "info")
 
         # Quick input classification (URLs, file paths, etc.)
         modified_prompt = prompt
         classified_cmd = self.classify_and_enhance_input(prompt)
         if classified_cmd:
-            self._safe_print(f"🎯 Classified as: {classified_cmd}")
+            self._status_print(f"🎯 Classified as: {classified_cmd}", "debug")
             modified_prompt = classified_cmd
             # Skip natural language interpretation since we already classified
             skip_natural_language = True
@@ -3700,9 +4074,9 @@ Please think step by step and provide your analysis:"""
 
         # Natural language interpretation (skip if already classified)
         if not skip_natural_language and self.natural_language_enabled and self.interpreter:
-            suggested_cmd, confidence = self.interpreter.interpret(prompt)
+            suggested_cmd, confidence = self.interpreter.interpret(prompt, self.mode)
             if suggested_cmd and confidence >= self.interpreter.confidence_threshold:
-                self._safe_print(f"🤖 Interpreting as: {suggested_cmd} (confidence: {confidence:.2f})")
+                self._status_print(f"🤖 Interpreting as: {suggested_cmd} (confidence: {confidence:.2f})", "debug")
                 log_operation("natural_language_interpretation", prompt, True,
                              f"interpreted_as={suggested_cmd}, confidence={confidence:.2f}")
                 modified_prompt = suggested_cmd
@@ -3711,7 +4085,7 @@ Please think step by step and provide your analysis:"""
         if (self.auto_search_enabled and
             not modified_prompt.startswith('/') and
             self.searcher.should_search(modified_prompt)):
-            self._safe_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...")
+            self._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
             log_operation("auto_search_triggered", modified_prompt, True,
                          f"query_length={len(modified_prompt)}")
             success, results = self.search_sync(modified_prompt)
@@ -3795,14 +4169,14 @@ Please think step by step and provide your analysis:"""
         if not should_continue:
             return None
 
-        print(f"🤖 Preparing to contact DeepSeek API...")
-        print(f"📊 Current conversation has {len(self.conversation_history)} messages")
+        self._status_print(f"🤖 Preparing to contact DeepSeek API...", "debug")
+        self._status_print(f"📊 Current conversation has {len(self.conversation_history)} messages", "debug")
 
         # Debug: Show last message
         if self.conversation_history:
             last_msg = self.conversation_history[-1]
-            print(f"📝 Last message role: {last_msg['role']}")
-            print(f"📝 Last message preview: {last_msg['content'][:100]}...")
+            self._status_print(f"📝 Last message role: {last_msg['role']}", "debug")
+            self._status_print(f"📝 Last message preview: {last_msg['content'][:100]}...", "debug")
 
         headers = {
             "Content-Type": "application/json",
@@ -3816,10 +4190,10 @@ Please think step by step and provide your analysis:"""
         if total_tokens + actual_max_tokens > max_context:
             # Reduce max_tokens to fit within limit, but keep at least 1
             new_max = max(1, max_context - total_tokens)
-            print(f"⚠️  Context limit: reducing max_tokens from {actual_max_tokens} to {new_max}")
+            self._status_print(f"⚠️  Context limit: reducing max_tokens from {actual_max_tokens} to {new_max}", "info")
             actual_max_tokens = new_max
         elif total_tokens > agent_config.context_warning_threshold * max_context:
-            print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used")
+            self._status_print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used", "info")
 
         payload = {
             "model": self.model,
@@ -3831,28 +4205,30 @@ Please think step by step and provide your analysis:"""
 
         if self.thinking_enabled:
             payload["thinking"] = {"type": "enabled"}
-            print(f"💭 Thinking mode: ENABLED")
+            self._status_print(f"💭 Thinking mode: ENABLED", "debug")
 
         try:
-            print(f"📡 Sending request to DeepSeek API...")
-            print(f"⏱️  Timeout set to: 60 seconds")
+            self._status_print(f"📡 Sending request to DeepSeek API...", "debug")
+            self._status_print(f"⏱️  Timeout set to: 60 seconds", "debug")
             
             # Start timing
             start_time = time.time()
 
-            # Add progress indicator in background
+            # Add progress indicator in background (only in chat mode)
             import threading
+            progress_thread = None
 
-            def show_progress():
-                dots = 0
-                while not getattr(self, '_request_complete', False):
-                    print(f"\r⏳ Waiting for AI response{'.' * dots}{' ' * (3-dots)}", end="", flush=True)
-                    dots = (dots + 1) % 4
-                    time.sleep(0.5)
-            
-            self._request_complete = False
-            progress_thread = threading.Thread(target=show_progress, daemon=True)
-            progress_thread.start()
+            if self.mode == "chat":
+                def show_progress():
+                    dots = 0
+                    while not getattr(self, '_request_complete', False):
+                        print(f"\r⏳ Waiting for AI response{'.' * dots}{' ' * (3-dots)}", end="", flush=True)
+                        dots = (dots + 1) % 4
+                        time.sleep(0.5)
+
+                self._request_complete = False
+                progress_thread = threading.Thread(target=show_progress, daemon=True)
+                progress_thread.start()
             
             response = requests.post(
                 self.base_url,
@@ -3862,19 +4238,22 @@ Please think step by step and provide your analysis:"""
                 timeout=60  # Increased timeout
             )
 
-            # Stop progress indicator
-            self._request_complete = True
-            elapsed_time = time.time() - start_time
+            # Stop progress indicator (only if it was started)
+            if self.mode == "chat":
+                self._request_complete = True
+                # Clear the progress line
+                print("\r" + " " * 60 + "\r", end="", flush=True)
 
-            print(f"\r✅ Request sent in {elapsed_time:.1f}s. Status: {response.status_code}")
+            elapsed_time = time.time() - start_time
+            self._status_print(f"✅ Request sent in {elapsed_time:.1f}s. Status: {response.status_code}", "debug")
 
             if response.status_code != 200:
-                print(f"❌ Error {response.status_code}: {response.text}")
+                self._status_print(f"❌ Error {response.status_code}: {response.text}", "critical")
                 self.conversation_history.pop()
                 return None
 
-            print(f"📥 Starting to receive stream...")
-            print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            self._status_print(f"📥 Starting to receive stream...", "debug")
+            self._status_print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "debug")
 
             full_response = ""
             reasoning_content = ""
@@ -3891,7 +4270,7 @@ Please think step by step and provide your analysis:"""
                         if line.startswith("data: "):
                             data = line[6:]
                             if data == "[DONE]":
-                                print(f"\n✅ Stream complete")
+                                self._status_print(f"✅ Stream complete", "debug")
                                 break
                             try:
                                 json_data = json.loads(data)
@@ -4328,6 +4707,10 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         cmd_type = parts[0]  # /fix or /analyze
         file_path = parts[1]
         description = " ".join(parts[2:]) if len(parts) > 2 else "Please analyze and fix any issues"
+
+        # Auto-switch to coding mode for fix/analyze commands
+        if self.mode != 'coding':
+            self.switch_mode('coding', persist=False)
 
         self._safe_print(f"🔧 {'Fixing' if cmd_type == '/fix' else 'Analyzing'}: {file_path}")
         self._safe_print(f"📝 Description: {description}")

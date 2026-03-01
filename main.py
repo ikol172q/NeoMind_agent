@@ -3,6 +3,11 @@
 
 import sys
 import os
+# Fix for Windows terminal detection in MINGW/Cygwin before any prompt_toolkit imports
+if sys.platform == "win32" and "xterm" in os.environ.get("TERM", ""):
+    # Force prompt_toolkit to use VT100 output instead of Win32 console API
+    os.environ["PROMPT_TOOLKIT_NO_WIN32_CONSOLE"] = "1"
+    os.environ["PROMPT_TOOLKIT_FORCE_VT100_OUTPUT"] = "1"
 import argparse
 from dotenv import load_dotenv
 
@@ -13,8 +18,28 @@ load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 
-def interactive_main():
-    """Interactive chat mode"""
+def interactive_main(mode: str = "chat"):
+    """Interactive chat mode
+
+    Args:
+        mode: Operation mode ('chat' or 'coding')
+    """
+    # Fix for Windows terminal detection in MINGW/Cygwin
+    import sys
+    import os
+    if sys.platform == "win32" and "xterm" in os.environ.get("TERM", ""):
+        # Force prompt_toolkit to use VT100 output instead of Win32 console API
+        os.environ["PROMPT_TOOLKIT_NO_WIN32_CONSOLE"] = "1"
+
+    # Update agent config mode if different from default
+    from agent_config import agent_config
+    if mode != agent_config.mode:
+        success = agent_config.update_mode(mode)
+        if success:
+            print(f"Mode set to: {mode}")
+        else:
+            print(f"Warning: Failed to set mode to {mode}, using current mode: {agent_config.mode}")
+
     # Check for prompt_toolkit availability
     try:
         from prompt_toolkit import PromptSession
@@ -27,10 +52,10 @@ def interactive_main():
     # Import based on availability
     if PROMPT_TOOLKIT_AVAILABLE:
         from cli.interface import interactive_chat_with_prompt_toolkit
-        interactive_chat_with_prompt_toolkit()
+        interactive_chat_with_prompt_toolkit(mode)
     else:
         from cli.interface import interactive_chat_fallback
-        interactive_chat_fallback()
+        interactive_chat_fallback(mode)
 
 
 def test_main():
@@ -52,11 +77,17 @@ def main():
         epilog="Use 'ikol1729-agent' without arguments for interactive chat."
     )
     parser.add_argument(
-        'mode',
+        'run_mode',
         nargs='?',
         default='interactive',
         choices=['interactive', 'test'],
         help="Run mode: interactive chat or development tests"
+    )
+    parser.add_argument(
+        '--mode',
+        default='chat',
+        choices=['chat', 'coding'],
+        help="Operation mode: chat or coding (default: chat)"
     )
     parser.add_argument(
         '--version',
@@ -71,10 +102,10 @@ def main():
         print(f"ikol1729-agent version {__version__}")
         return
 
-    if args.mode == 'test':
+    if args.run_mode == 'test':
         test_main()
     else:
-        interactive_main()
+        interactive_main(args.mode)
 
 
 if __name__ == "__main__":

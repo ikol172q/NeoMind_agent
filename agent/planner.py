@@ -163,30 +163,24 @@ class Planner:
             changes_by_file.setdefault(fp, []).append(change)
 
         file_paths = list(changes_by_file.keys())
-        # Build dependency graph among these files
-        graph = self.build_dependency_graph(file_paths)
-        # Topological order: files that are depended upon come first (so that dependents are applied later)
-        # Actually we want to apply dependencies before dependents. If A imports B, B is dependency.
-        # In graph, A -> B means A depends on B. So we need order where B before A (dependency first).
-        # Our graph adjacency is file -> set of files it depends on (imports). That's correct.
-        # Topological order from Kahn's algorithm gives dependents first? Let's test: indegree zero nodes have no incoming edges (no dependencies).
-        # Those are files that no other file in the set depends on. They can be applied first.
-        # That's actually the dependents (if no one depends on them). Wait.
-        # Let's just use the order returned; we can reverse if needed.
+        # Separate Python files for dependency analysis
+        py_files = [fp for fp in file_paths if fp.endswith('.py')]
+        # Build dependency graph among Python files
+        graph = self.build_dependency_graph(py_files)
+        # Topological order returns dependents first (zero indegree nodes are files with no incoming dependencies).
         order = self.topological_order(graph)
-        # We'll apply files in order of least dependencies first (i.e., files that don't depend on others).
-        # That's exactly the topological order from Kahn's algorithm (zero indegree first).
-        # So order is good.
+        # We need dependencies first, so reverse the order.
+        order.reverse()
+        # Now order has dependencies first (files that others depend on) before dependents.
 
         # Flatten changes according to file order
         ordered_changes = []
         for fp in order:
             ordered_changes.extend(changes_by_file[fp])
-        # Add files not in graph (non-Python files) at the end
+        # Add non-Python files at the end
         non_py_files = [fp for fp in file_paths if not fp.endswith('.py')]
         for fp in non_py_files:
-            if fp not in order:
-                ordered_changes.extend(changes_by_file[fp])
+            ordered_changes.extend(changes_by_file[fp])
 
         return ordered_changes
 
