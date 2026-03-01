@@ -521,7 +521,7 @@ class TestCommandHandlers(unittest.TestCase):
 
         # Test invalid mode
         result = self.agent.handle_mode_command("invalid")
-        self.assertEqual(result, "Invalid mode. Use 'chat', 'coding', 'status', or 'help'.")
+        self.assertEqual(result, "Invalid mode. Use 'chat', 'coding', 'tool', 'status', or 'help'.")
 
         # Test help
         result = self.agent.handle_mode_command("help")
