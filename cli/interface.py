@@ -221,8 +221,8 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
 
     while True:
         try:
-            # Clear completed tasks before displaying
-            progress.clear_completed()
+            # Clear completed tasks before displaying (keep for 30 seconds)
+            progress.clear_completed(retention_seconds=30.0)
 
             # Display interface
             display_interface()
@@ -257,12 +257,19 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
                 # Create task
                 task_id = progress.start_task(
                     title=task_title,
-                    description=user_input[:100] if len(user_input) > 50 else "",
+                    description=user_input[:100],
                     tool_uses=0,
                     tokens=0
                 )
                 # Store task ID for this command
                 task_registry[user_input] = task_id
+                chat.current_task_id = task_id
+
+                # Display progress for non-command inputs
+                if not command_name:
+                    progress_display = progress.display(clear_previous=False)
+                    if progress_display:
+                        print(progress_display)
 
             # Show executing status for commands (legacy)
             if command_name:
@@ -283,6 +290,9 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
                 # Remove from registry
                 if user_input in task_registry:
                     del task_registry[user_input]
+                # Clear current task ID from chat
+                if hasattr(chat, 'current_task_id'):
+                    del chat.current_task_id
 
             # Update status if command was handled by handle_command (legacy)
             if command_result is not None and command_name:
@@ -308,6 +318,9 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
                     progress.complete_task(task_id)
                     if user_input in task_registry:
                         del task_registry[user_input]
+                    # Clear current task ID from chat
+                    if hasattr(chat, 'current_task_id'):
+                        del chat.current_task_id
                 if command_name:
                     display_command_status(command_name, "completed")
             else:
@@ -319,12 +332,18 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
                         progress.fail_task(task_id)
                         if user_input in task_registry:
                             del task_registry[user_input]
+                        # Clear current task ID from chat
+                        if hasattr(chat, 'current_task_id'):
+                            del chat.current_task_id
                     raise
 
                 if task_id:
                     progress.complete_task(task_id)
                     if user_input in task_registry:
                         del task_registry[user_input]
+                    # Clear current task ID from chat
+                    if hasattr(chat, 'current_task_id'):
+                        del chat.current_task_id
                 if command_name:
                     display_command_status(command_name, "completed")
 
@@ -397,8 +416,8 @@ def interactive_chat_fallback(mode: str = "chat"):
 
     while True:
         try:
-            # Clear completed tasks before displaying
-            progress.clear_completed()
+            # Clear completed tasks before displaying (keep for 30 seconds)
+            progress.clear_completed(retention_seconds=30.0)
 
             # Display interface
             display_interface()
@@ -433,12 +452,19 @@ def interactive_chat_fallback(mode: str = "chat"):
                 # Create task
                 task_id = progress.start_task(
                     title=task_title,
-                    description=user_input[:100] if len(user_input) > 50 else "",
+                    description=user_input[:100],
                     tool_uses=0,
                     tokens=0
                 )
                 # Store task ID for this command
                 task_registry[user_input] = task_id
+                chat.current_task_id = task_id
+
+                # Display progress for non-command inputs
+                if not command_name:
+                    progress_display = progress.display(clear_previous=False)
+                    if progress_display:
+                        print(progress_display)
 
             # Show executing status for commands (legacy)
             if command_name:
@@ -459,6 +485,9 @@ def interactive_chat_fallback(mode: str = "chat"):
                 # Remove from registry
                 if user_input in task_registry:
                     del task_registry[user_input]
+                # Clear current task ID from chat
+                if hasattr(chat, 'current_task_id'):
+                    del chat.current_task_id
 
             # Update status if command was handled by handle_command (legacy)
             if command_result is not None and command_name:

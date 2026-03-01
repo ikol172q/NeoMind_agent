@@ -431,7 +431,7 @@ class TestProgressDisplayDisplay(unittest.TestCase):
         # Should contain status indicator and ellipsis
         self.assertIn("...", result)
         self.assertIn("->", result)
-        self.assertNotIn("Description", result)  # Not expanded by default
+        self.assertIn("Description", result)  # Shown for in-progress tasks
 
     def test_display_completed_task(self):
         """Test display with completed task."""
@@ -535,7 +535,7 @@ class TestProgressDisplayTaskManagement(unittest.TestCase):
         self.pd.fail_task(task2)
         # task3 remains in progress
 
-        cleared = self.pd.clear_completed()
+        cleared = self.pd.clear_completed(retention_seconds=0.0)
 
         self.assertEqual(cleared, 2)
         self.assertNotIn(task1, self.pd.tasks)
@@ -547,7 +547,7 @@ class TestProgressDisplayTaskManagement(unittest.TestCase):
         """Test clearing completed when none exist."""
         task_id = self.pd.start_task("Task")  # Still in progress
 
-        cleared = self.pd.clear_completed()
+        cleared = self.pd.clear_completed(retention_seconds=0.0)
 
         self.assertEqual(cleared, 0)
         self.assertIn(task_id, self.pd.tasks)
