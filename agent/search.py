@@ -15,10 +15,11 @@ class OptimizedDuckDuckGoSearch:
     
     def __init__(self, triggers=None):
         self.cache = {}
+        self.cache_expiration = 300  # 5 minutes
         self.min_interval = 0.5
         self.last_search = 0
         # Default triggers for auto-search detection
-        self.triggers = triggers or {"today", "news", "weather", "latest", "current", "now", "recent",
+        self.triggers = triggers if triggers is not None else {"today", "news", "weather", "latest", "current", "now", "recent",
                                      "2026", "2025", "2024", "yesterday", "tomorrow", "update", "breaking",
                                      "stock", "price", "score", "results", "announcement", "release"}
         # Time-sensitive patterns
@@ -46,6 +47,34 @@ class OptimizedDuckDuckGoSearch:
         if any(re.search(pattern, query_lower) for pattern in self.time_patterns):
             return True
         return False
+
+    def cache_result(self, query: str, results):
+        """Cache search results with current timestamp."""
+        self.cache[query] = {
+            "results": results,
+            "timestamp": time.time()
+        }
+
+    def get_cached_result(self, query: str):
+        """Retrieve cached results if not expired."""
+        if query not in self.cache:
+            return None
+        entry = self.cache[query]
+        if time.time() - entry["timestamp"] > self.cache_expiration:
+            # Expired, remove from cache
+            del self.cache[query]
+            return None
+        return entry["results"]
+
+    def clear_expired_cache(self):
+        """Remove all expired cache entries."""
+        current_time = time.time()
+        expired = []
+        for query, entry in self.cache.items():
+            if current_time - entry["timestamp"] > self.cache_expiration:
+                expired.append(query)
+        for query in expired:
+            del self.cache[query]
 
     async def _fetch_html(self, query: str) -> str:
         """Async fetch with connection pooling"""
@@ -161,3 +190,67 @@ class DuckDuckGoSearch:
 
         except Exception as e:
             return False, f"Search failed: {str(e)}"
+
+
+def clean_search_results(raw_results: List[Dict]) -> List[Dict]:
+    """Clean and format search results.
+
+    Args:
+        raw_results: List of dictionaries with keys 'title', 'url', 'snippet'.
+
+    Returns:
+        Cleaned list with empty results filtered out, whitespace stripped,
+        and None values converted to empty strings.
+    """
+    if not raw_results:
+        return []
+
+    cleaned = []
+    for result in raw_results:
+        # Skip empty results
+        if not result.get('title') and not result.get('url') and not result.get('snippet'):
+            continue
+
+        cleaned_result = {}
+        cleaned_result['title'] = result.get('title', '').strip()
+        cleaned_result['url'] = result.get('url', '').strip()
+        snippet = result.get('snippet')
+        if snippet is None:
+            cleaned_result['snippet'] = ''
+        else:
+            cleaned_result['snippet'] = snippet.strip()
+
+        cleaned.append(cleaned_result)
+
+    return cleaned
+
+
+def extract_main_content(html_content: str) -> str:
+    """Extract main content from HTML.
+
+    Args:
+        html_content: HTML string.
+
+    Returns:
+        Extracted main text content.
+    """
+    if not html_content:
+        return ""
+
+    try:
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        # Remove script and style tags
+        for script in soup(["script", "style"]):
+            script.decompose()
+
+        # Get text
+        text = soup.get_text(separator='\n', strip=True)
+        return text
+    except ImportError:
+        # BeautifulSoup not available, return empty string
+        return ""
+    except Exception:
+        # Any other error
+        return ""

@@ -83,28 +83,31 @@ class CommandExecutor:
         """
         cmd_lower = command.lower()
 
+        if not command.strip():
+            return False, "Empty command"
+
         # Check dangerous patterns
         dangerous_patterns = self.DANGEROUS_PATTERNS
         if is_git:
             dangerous_patterns = dangerous_patterns + self.DANGEROUS_GIT_PATTERNS
 
         for pattern in dangerous_patterns:
-            if pattern in cmd_lower:
+            if pattern.lower() in cmd_lower:
                 return False, f"Contains dangerous pattern: '{pattern}'"
+
+        # Validate command syntax (basic)
+        try:
+            parts = shlex.split(command)
+        except ValueError:
+            return False, "Invalid command syntax"
 
         # Allowlist check
         if self.allowlist_mode:
-            # Extract first token (command name)
-            try:
-                parts = shlex.split(command)
-                if not parts:
-                    return False, "Empty command"
-                cmd_name = parts[0].lower()
-                # Check if command is in allowed list
-                if cmd_name not in self.ALLOWED_COMMANDS:
-                    return False, f"Command '{cmd_name}' not in allowlist"
-            except ValueError:
-                return False, "Invalid command syntax"
+            if not parts:
+                return False, "Empty command"
+            cmd_name = parts[0].lower()
+            if cmd_name not in self.ALLOWED_COMMANDS:
+                return False, f"Command '{cmd_name}' not in allowlist"
 
         # Additional safety: prevent changing directory outside workspace
         if 'cd ' in cmd_lower and '..' in cmd_lower:

@@ -8,7 +8,7 @@ import tempfile
 import shutil
 
 # Add agent to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.safety import SafetyManager
 from agent.code_analyzer import CodeAnalyzer

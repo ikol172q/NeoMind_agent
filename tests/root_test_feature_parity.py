@@ -4,7 +4,7 @@ Quick test to verify feature parity implementation.
 """
 import sys
 import os
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.core import DeepSeekStreamingChat
 
@@ -21,7 +21,8 @@ def test_instantiation():
             "/debug", "/explain", "/refactor", "/grep", "/find", "/clear",
             "/history", "/think", "/quit", "/exit", "/help", "/diff",
             "/browse", "/undo", "/test", "/apply", "/read", "/write",
-            "/edit", "/run", "/git", "/code", "/fix", "/analyze"
+            "/edit", "/run", "/git", "/code", "/fix", "/analyze",
+            "/mode", "/skills", "/skill"
         ]
         missing = []
         for cmd in expected_commands:
