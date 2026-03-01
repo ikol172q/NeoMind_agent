@@ -34,7 +34,7 @@ class CommandCompleter(Completer):
             "mode", "fix", "analyze", "diff", "browse", "undo", "test", "apply",
             "auto", "task", "plan", "execute", "switch", "summarize", "translate",
             "generate", "reason", "debug", "explain", "refactor", "grep", "find",
-            "clear", "history", "context", "think", "quit", "exit", "help"
+            "clear", "history", "context", "compact", "think", "quit", "exit", "help"
         ]
 
     def _build_param_suggestions(self) -> Dict[str, List[str]]:

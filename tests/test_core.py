@@ -179,7 +179,7 @@ class TestCoreInitialization(unittest.TestCase):
         self.assertEqual(agent.conversation_history[0]["content"], "You are a coding assistant.")
         # Should have coding mode properties
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        self.assertFalse(agent.verbose_mode)  # verbose_mode defaults to False in coding mode
 
     def test_initialization_html_converter(self):
         """Test HTML converter initialization based on dependencies."""
@@ -374,7 +374,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.assertEqual(agent.mode, "coding")
         # Properties should be updated for coding mode
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        self.assertFalse(agent.verbose_mode)  # verbose_mode defaults to False in coding mode
         # Workspace manager should be initialized
         self.assertIsNotNone(agent.workspace_manager)
 
@@ -399,7 +399,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         # Initial state should be coding mode
         self.assertEqual(agent.mode, "coding")
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        self.assertFalse(agent.verbose_mode)  # verbose_mode defaults to False in coding mode
 
         # Initialize workspace manager
         agent._initialize_workspace_manager()
