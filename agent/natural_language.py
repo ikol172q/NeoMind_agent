@@ -14,18 +14,10 @@ class NaturalLanguageInterpreter:
         """Build regex patterns for natural language interpretation."""
         return {
             'search': [
-                (r"search (?:the )?code(?:base)? for (.+)$", "/code search {match}", 0.95),
-                (r"search for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
-                (r"find (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
-                (r"look for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
-                (r"search source code for (.+)", "/code search {match}", 0.95),
-                (r"look for (.+) in source code", "/code search {match}", 0.95),
-                (r"find (.+) in source code", "/code search {match}", 0.95),
-                (r"find (.+) in source files", "/code search {match}", 0.95),
                 (r"(?:search|look up|find)(?: for)? (.+)$", "/search {match}", 0.9),
                 (r"what (?:is|are) (?:the )?(?:latest|current) (.+)$", "/search latest {match}", 0.8),
                 (r"(?:tell me about|get info on|info about) (.+)$", "/search {match}", 0.7),
-                (r"what's (?:the )?(?:latest|current|news about) (.+)$", "/search {match}", 0.8),
+                (r"what's (?:the )?(?:latest|current(?: news about)?|news about) (.+)$", "/search {match}", 0.8),
             ],
             'file_read': [
                 (r"(?:read|show|open) (?:file )?(.+\.\w+)$", "/read {match}", 0.9),
@@ -41,21 +33,23 @@ class NaturalLanguageInterpreter:
                 (r"(?:change|update) (.+\.\w+) (?:to|with) (.+)$", "/edit {match} {content}", 0.7),
             ],
             'code_analyze': [
-                (r"(?:analyze|scan) code(?:base)?(?: in )?(.+)$", "/code scan {match}", 0.9),
-                (r"(?:scan|inspect) (?:the )?code(?:base)?(?: in )?(.+)$", "/code scan {match}", 0.8),
-                (r"(?:find|detect) (?:code )?issues(?: in )?(.+)$", "/code scan {match}", 0.7),
+                (r"(?:analyze|scan) code(?:base)?(?: in )?(.+)$", "/code scan {match}", 0.95),
+                (r"(?:scan|inspect) (?:the )?code(?:base)?(?: in )?(.+)$", "/code scan {match}", 0.9),
+                (r"(?:find|detect) (?:code )?issues(?: in )?(.+)$", "/code scan {match}", 0.95),
             ],
             'code_search': [
-                (r"search (?:the )?code(?:base)? for (.+)$", "/code search {match}", 0.9),
-                (r"search for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.9),
-                (r"find (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.8),
-                (r"look for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.8),
+                (r"search (?:the )?code(?:base)? for (.+)$", "/code search {match}", 0.95),
+                (r"search for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
+                (r"find (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
+                (r"look for (.+) in (?:the )?code(?:base)?", "/code search {match}", 0.95),
+                (r"look for (.+) in source code", "/code search {match}", 0.95),
+                (r"find (.+) in source code", "/code search {match}", 0.95),
                 (r"find (.+) in source files", "/code search {match}", 0.7),
-                (r"search source code for (.+)", "/code search {match}", 0.9),
+                (r"search source code for (.+)", "/code search {match}", 0.95),
             ],
             'code_fix': [
-                (r"(?:fix|repair) (?:code in )?(.+\.\w+)$", "/fix {match}", 0.9),
-                (r"(?:debug|correct) (.+\.\w+)$", "/fix {match}", 0.8),
+                (r"(?:fix|repair) (?:code in |errors in )?(.+\.\w+)$", "/fix {match}", 0.9),
+                (r"(?:debug|correct) (?:errors in )?(.+\.\w+)$", "/fix {match}", 0.8),
             ],
             'help': [
                 (r"(?:show|display|list) commands$", "/help", 0.9),
@@ -127,9 +121,9 @@ class NaturalLanguageInterpreter:
                 (r"think through (.+)$", "/reason {match}", 0.7),
             ],
             'debug': [
-                (r"debug (.+\.\w+)$", "/debug {match}", 0.9),
-                (r"find bugs in (.+)$", "/debug {match}", 0.8),
-                (r"fix errors in (.+)$", "/debug {match}", 0.8),
+                (r"debug (.+\.\w+)$", "/debug {match}", 0.7),
+                (r"find bugs in (.+)$", "/debug {match}", 0.7),
+                (r"fix errors in (.+)$", "/debug {match}", 0.7),
             ],
             'explain': [
                 (r"explain (.+\.\w+)$", "/explain {match}", 0.9),
@@ -173,32 +167,102 @@ class NaturalLanguageInterpreter:
             ],
         }
 
-    def interpret(self, text: str) -> Tuple[Optional[str], float]:
+    def _build_coding_patterns(self):
+        """Build coding-specific patterns for natural language interpretation."""
+        return {
+            'file_read_coding': [
+                (r"show me (?:the )?file (.+)$", "/read {match}", 0.9),
+                (r"open (?:the )?file (.+)$", "/read {match}", 0.9),
+                (r"display (?:the )?file (.+)$", "/read {match}", 0.8),
+                (r"what's in (?:the )?file (.+)$", "/read {match}", 0.8),
+                (r"look at (?:the )?file (.+)$", "/read {match}", 0.7),
+                (r"view (?:the )?file (.+)$", "/read {match}", 0.7),
+            ],
+            'file_list_coding': [
+                (r"list files(?: in (?:the )?project)?$", "/browse", 0.9),
+                (r"show files(?: in (?:the )?project)?$", "/browse", 0.9),
+                (r"what files are in (?:the )?project\??$", "/browse", 0.8),
+                (r"directory structure$", "/browse", 0.8),
+                (r"project structure$", "/browse", 0.8),
+                (r"browse project$", "/browse", 0.9),
+            ],
+            'code_navigation': [
+                (r"find definition of (.+)$", "/code search {match}", 0.95),
+                (r"where is (.+) defined\??$", "/code search {match}", 0.95),
+                (r"search for definition of (.+)$", "/code search {match}", 0.95),
+                (r"go to (.+)$", "/code search {match}", 0.9),
+            ],
+            'code_analysis': [
+                (r"analyze (?:the )?code(?:base)?$", "/code scan .", 0.9),
+                (r"scan (?:the )?code(?:base)?$", "/code scan .", 0.9),
+                (r"inspect (?:the )?code(?:base)?$", "/code scan .", 0.8),
+                (r"review code$", "/code scan .", 0.7),
+            ],
+            'file_search': [
+                (r"find file (?:named )?(.+)$", "/find {match}", 0.9),
+                (r"search for file (?:named )?(.+)$", "/find {match}", 0.9),
+                (r"locate file (?:named )?(.+)$", "/find {match}", 0.8),
+                (r"where is file (?:named )?(.+)\??$", "/find {match}", 0.8),
+            ],
+        }
+
+    def interpret(self, text: str, mode: str = "chat") -> Tuple[Optional[str], float]:
         """
         Interpret natural language and return suggested command with confidence.
+
+        Args:
+            text: User input text
+            mode: Operation mode ("chat" or "coding")
 
         Returns:
             Tuple of (suggested_command, confidence_score) or (None, 0.0)
         """
         text = text.strip()
+        # Adjust confidence threshold based on mode
+        threshold = self.confidence_threshold
+        if mode == "coding":
+            # Lower threshold for coding mode (more aggressive interpretation)
+            threshold = max(0.5, threshold - 0.1)  # At least 0.5
+
+        best_cmd = None
+        best_confidence = 0.0
+
+        # Check coding-specific patterns first if mode is coding
+        if mode == "coding":
+            coding_patterns = self._build_coding_patterns()
+            for intent, patterns in coding_patterns.items():
+                for pattern, command_template, confidence in patterns:
+                    match = re.search(pattern, text, re.IGNORECASE)
+                    if match and confidence >= threshold:
+                        if confidence > best_confidence:
+                            cmd = self._format_command(command_template, match.groups())
+                            best_cmd = cmd
+                            best_confidence = confidence
+
         for intent, patterns in self.patterns.items():
             for pattern, command_template, confidence in patterns:
                 match = re.search(pattern, text, re.IGNORECASE)
-                if match and confidence >= self.confidence_threshold:
-                    # Extract matched groups
-                    groups = match.groups()
-                    # Replace placeholders
-                    if '{match}' in command_template and groups:
-                        # Simple replacement - use first group, stripped
-                        matched_text = groups[0].strip()
-                        cmd = command_template.format(match=matched_text)
-                        # If there's a {content} placeholder and second group exists
-                        if '{content}' in cmd and len(groups) > 1:
-                            cmd = cmd.replace('{content}', groups[1].strip())
-                    else:
-                        cmd = command_template
-                    return cmd, confidence
+                if match and confidence >= threshold:
+                    if confidence > best_confidence:
+                        cmd = self._format_command(command_template, match.groups())
+                        best_cmd = cmd
+                        best_confidence = confidence
+
+        if best_cmd is not None:
+            return best_cmd, best_confidence
         return None, 0.0
+
+    def _format_command(self, command_template: str, groups: tuple) -> str:
+        """Format command template with matched groups."""
+        if '{match}' in command_template and groups:
+            # Replace {match} with first group
+            cmd = command_template.replace('{match}', groups[0].strip())
+            # If there's a {content} placeholder and second group exists
+            if '{content}' in cmd and len(groups) > 1:
+                cmd = cmd.replace('{content}', groups[1].strip())
+            return cmd
+        else:
+            return command_template
 
     def should_suggest(self, text: str) -> bool:
         """Quick check if text might be a natural language command."""
@@ -207,6 +271,12 @@ class NaturalLanguageInterpreter:
             return False
         if len(text.split()) > 10:  # Too long for simple command
             return False
+        # Filter out polite requests that aren't commands
+        polite_prefixes = ['can you', 'could you', 'would you', 'please', 'i need', 'i want', 'tell me', 'show me', 'give me']
+        lower_text = text.lower()
+        for prefix in polite_prefixes:
+            if lower_text.startswith(prefix):
+                return False
         # Check for command-like keywords
         keywords = ['search', 'find', 'read', 'write', 'edit', 'fix', 'analyze',
                    'scan', 'help', 'models', 'undo', 'show', 'list', 'open',
@@ -216,4 +286,5 @@ class NaturalLanguageInterpreter:
                    'summarize', 'translate', 'reason', 'debug', 'explain', 'refactor', 'grep',
                    'brief', 'summary', 'solve', 'bugs', 'errors', 'improve', 'clean', 'locate',
                    'history', 'think', 'quit', 'exit', 'reset', 'toggle', 'enable', 'disable', 'bye']
-        return any(keyword in text.lower() for keyword in keywords)
+        pattern = r'\b(' + '|'.join(keywords) + r')\b'
+        return re.search(pattern, lower_text) is not None

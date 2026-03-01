@@ -4,7 +4,7 @@ Quick test of command router refactoring.
 """
 import os
 import sys
-sys.path.insert(0, os.path.dirname(__file__))
+sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
 from agent.core import DeepSeekStreamingChat
 

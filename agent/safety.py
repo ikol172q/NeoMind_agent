@@ -211,6 +211,16 @@ class SafetyManager:
             self._log_audit('backup', file_path, False, f"Backup failed: {str(e)}")
             return None
 
+    def get_file_hash(self, file_path: str) -> str:
+        """Calculate SHA256 hash of file."""
+        try:
+            with open(file_path, 'rb') as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+                return file_hash
+        except Exception as e:
+            self._log_audit('hash', file_path, False, f"Hash calculation failed: {str(e)}")
+            raise
+
     def safe_read_file(self, file_path: str, max_lines: int = 1000) -> Tuple[bool, str, str]:
         """
         Safely read a file with safety checks.
@@ -395,3 +405,11 @@ def is_path_safe(path: str, operation: str = 'read') -> Tuple[bool, str]:
 def log_operation(action: str, target: str, success: bool, details: str = "") -> None:
     """Log any operation to audit log."""
     _default_safety.log_operation(action, target, success, details)
+
+def get_file_hash(file_path: str) -> str:
+    """Calculate SHA256 hash of file."""
+    return _default_safety.get_file_hash(file_path)
+
+def create_backup(file_path: str) -> Optional[str]:
+    """Create a backup of a file."""
+    return _default_safety.create_backup(file_path)
