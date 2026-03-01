@@ -95,7 +95,7 @@ class CodeAnalyzer:
                                 '.txt', '.md', '.rst', '.html', '.css', '.scss',
                                 '.sql', '.graphql', '.proto', '.thrift', '.xml'}
 
-                    if ext in code_exts or (pattern and fnmatch.fnmatch(file, pattern)):
+                    if ext in code_exts and (not pattern or fnmatch.fnmatch(file, pattern)):
                         code_files.append(file_path)
 
                         if limit and len(code_files) >= limit:

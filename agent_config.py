@@ -87,6 +87,7 @@ class AgentConfigManager:
             "DEEPSEEK_COMPRESSION_STRATEGY": "agent.context.compression_strategy",
             "DEEPSEEK_KEEP_SYSTEM_MESSAGES": "agent.context.keep_system_messages",
             "DEEPSEEK_KEEP_RECENT_MESSAGES": "agent.context.keep_recent_messages",
+            "DEEPSEEK_DEBUG": "agent.debug",
         }
 
         for env_var, config_path in env_mappings.items():
@@ -101,6 +102,9 @@ class AgentConfigManager:
                 elif env_var in ("DEEPSEEK_CONTEXT_WARNING_THRESHOLD", "DEEPSEEK_CONTEXT_BREAK_THRESHOLD"):
                     env_val = float(env_val)
                 elif env_var == "DEEPSEEK_KEEP_SYSTEM_MESSAGES":
+                    # Accept "true", "false", "1", "0"
+                    env_val = env_val.lower() in ("true", "1", "yes", "on")
+                elif env_var == "DEEPSEEK_DEBUG":
                     # Accept "true", "false", "1", "0"
                     env_val = env_val.lower() in ("true", "1", "yes", "on")
                 # Compression strategy is string, no conversion needed
@@ -133,7 +137,15 @@ class AgentConfigManager:
     @property
     def max_tokens(self) -> int:
         return self.get("max_tokens", 8192)
-    
+
+    @property
+    def debug(self) -> bool:
+        return self.get("debug", False)
+
+    @property
+    def search_enabled(self) -> bool:
+        return self.get("search_enabled", True)
+
     @property
     def thinking_enabled(self) -> bool:
         return self.get("thinking_enabled", False)
@@ -193,6 +205,56 @@ class AgentConfigManager:
     @property
     def safety_confirm_code_changes(self) -> bool:
         return self.get("auto_features.safety.confirm_code_changes", True)
+
+    @property
+    def mode(self) -> str:
+        return self.get("mode", "chat")
+
+    @property
+    def coding_mode_auto_file_operations(self) -> bool:
+        return self.get("coding_mode.auto_file_operations", True)
+
+    @property
+    def coding_mode_workspace_scan(self) -> bool:
+        return self.get("coding_mode.workspace_scan", True)
+
+    @property
+    def coding_mode_system_prompt(self) -> str:
+        return self.get("coding_mode.system_prompt", "")
+
+    @property
+    def coding_mode_natural_language_confidence_threshold(self) -> float:
+        return self.get("coding_mode.natural_language_confidence_threshold", 0.7)
+
+    @property
+    def coding_mode_safety_confirm_file_operations(self) -> bool:
+        return self.get("coding_mode.safety_confirm_file_operations", False)
+
+    @property
+    def coding_mode_auto_read_files(self) -> bool:
+        return self.get("coding_mode.auto_read_files", True)
+
+    @property
+    def coding_mode_auto_analyze_references(self) -> bool:
+        return self.get("coding_mode.auto_analyze_references", True)
+
+    @property
+    def coding_mode_show_status_bar(self) -> bool:
+        return self.get("coding_mode.show_status_bar", True)
+
+    @property
+    def coding_mode_enable_auto_complete(self) -> bool:
+        return self.get("coding_mode.enable_auto_complete", True)
+
+    @property
+    def coding_mode_enable_mcp_support(self) -> bool:
+        return self.get("coding_mode.enable_mcp_support", True)
+
+    def update_mode(self, mode: str) -> bool:
+        """Update agent mode and save configuration."""
+        if mode not in ("chat", "coding"):
+            return False
+        return self.update_value("agent.mode", mode)
 
 
 

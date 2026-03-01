@@ -10,7 +10,8 @@ import shutil
 import unittest
 from unittest.mock import Mock, patch, MagicMock
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# Add project root to path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.self_iteration import SelfIteration
 from agent.core import DeepSeekStreamingChat

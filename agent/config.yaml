@@ -1,4 +1,5 @@
 agent:
+  mode: chat
   model: deepseek-chat
   temperature: 0.7
   max_tokens: 8192
@@ -6,6 +7,8 @@ agent:
   stream: true
   timeout: 30
   max_retries: 3
+  debug: false
+  search_enabled: true
   system_prompt: 'You are DeepSeek AI, a helpful and versatile AI assistant. You can
     help with:
 
@@ -38,7 +41,7 @@ agent:
   auto_features:
     enabled: true
     auto_search:
-      enabled: true
+      enabled: false
       triggers:
       - today
       - news
@@ -61,8 +64,32 @@ agent:
       - announcement
       - release
     natural_language:
-      enabled: true
+      enabled: false
       confidence_threshold: 0.8
     safety:
       confirm_file_operations: true
       confirm_code_changes: true
+  coding_mode:
+    auto_file_operations: true
+    workspace_scan: true
+    system_prompt: 'You are Claude Code, Anthropic''s official CLI for Claude. You
+      are an interactive CLI tool that helps users with software engineering tasks.
+
+      You automatically read files when they are mentioned, suggest edits, and provide
+      coding assistance. You are aware of the workspace context and can navigate project
+      files.
+
+      Key behaviors: - Auto-detect file references and read them automatically - Suggest
+      code changes with clear old/new code blocks - Use workspace scanning to understand
+      project structure - Provide concise, actionable responses focused on coding
+      - Support natural language commands for file operations and code navigation
+
+      You operate in "coding mode" with reduced verbosity and increased automation.
+      Remember to always ask for confirmation before making destructive changes.'
+    natural_language_confidence_threshold: 0.7
+    safety_confirm_file_operations: false
+    auto_read_files: true
+    auto_analyze_references: true
+    show_status_bar: true
+    enable_auto_complete: true
+    enable_mcp_support: true

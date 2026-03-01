@@ -64,6 +64,12 @@ class HelpSystem:
                 usage="/models list\n/models switch <model>",
                 examples="/models list\n/models switch deepseek-reasoner"
             ),
+            "mode": self.formatter.command_help(
+                command="/mode",
+                description="Switch between chat and coding modes.",
+                usage="/mode chat\n/mode coding\n/mode status\n/mode help",
+                examples="/mode coding\n/mode status"
+            ),
             "fix": self.formatter.command_help(
                 command="/fix",
                 description="Automatically fix code issues.",
