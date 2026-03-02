@@ -434,6 +434,23 @@ class ProgressDisplay:
 
             return len(to_remove)
 
+    def toggle_task_expansion(self, task_id: str = None) -> bool:
+        """Toggle expansion of a task. If no task_id provided, toggles most recent task."""
+        with self.lock:
+            if task_id is None:
+                # Find most recent task with description
+                for tid in reversed(self.task_order):
+                    if tid in self.tasks and self.tasks[tid].get("description"):
+                        task_id = tid
+                        break
+            if task_id not in self.tasks:
+                return False
+            task = self.tasks[task_id]
+            if not task.get("description"):
+                return False
+            task["expanded"] = not task.get("expanded", False)
+            return True
+
     def get_task(self, task_id: str) -> Optional[Dict]:
         """Get task by ID."""
         with self.lock:
