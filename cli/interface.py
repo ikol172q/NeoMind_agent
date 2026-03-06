@@ -211,50 +211,142 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
     # Initialize progress display system
     progress = get_global_progress(language="en")
     task_registry = {}  # Map command -> task_id
+    last_progress_lines = 0  # Track lines of last progress display for refresh
+    last_ctrl_o_time = 0  # Track last Ctrl+O press time for debouncing
+
+    # Helper function to display progress and status bar
+    def display_interface():
+        """Display progress and status bar."""
+        nonlocal last_progress_lines
+        # Clear previous display area if any
+        total_previous_lines = last_progress_lines + (1 if chat.show_status_bar else 0)
+        if total_previous_lines > 0:
+            # Move cursor up total_previous_lines lines
+            sys.stdout.write(f"\033[{total_previous_lines}A")
+            # Clear each line
+            for _ in range(total_previous_lines):
+                sys.stdout.write("\033[2K")  # Clear entire line
+                sys.stdout.write("\033[1B")  # Move down one line
+            # Move back up to original position
+            sys.stdout.write(f"\033[{total_previous_lines}A")
+            sys.stdout.flush()
+
+        # Get and display new progress
+        progress_display = progress.display_with_refresh(clear_previous=False)
+        if progress_display:
+            print(progress_display)
+            last_progress_lines = progress.last_display_lines
+        else:
+            last_progress_lines = 0
+        display_status_bar(chat)
+
+    def refresh_interface():
+        """Refresh the interface (progress display and status bar) in place."""
+        nonlocal last_progress_lines
+        # Debug: print to stderr
+        sys.stderr.write(f"[DEBUG refresh_interface] last_progress_lines={last_progress_lines}, show_status_bar={chat.show_status_bar}\n")
+        sys.stderr.flush()
+
+        # Simply call display_interface which now handles clearing
+        display_interface()
+
+    # Set callback for auto-refresh when thinking task description updates
+    progress.on_display_refresh = refresh_interface
 
     # Create key bindings for ctrl+o to toggle task expansion
     kb = KeyBindings()
 
     @kb.add('c-o')
     def _(event):
-        # Debug: print to see if binding fires
+        nonlocal last_progress_lines, last_ctrl_o_time
         import sys
-        sys.stderr.write("\n[Ctrl+O pressed]\n")
-        sys.stderr.flush()
-        # Get most recent task with description
-        task_id = progress.get_most_recent_task_with_description()
-        if task_id is None:
-            sys.stderr.write("[No task with description found]\n")
-            sys.stderr.flush()
-            return
-        # Toggle expansion for this specific task
-        if progress.toggle_task_expansion(task_id):
-            task = progress.get_task(task_id)
-            if task and task.get("expanded"):
-                # Task is now expanded - show description
-                desc = task.get("description", "")
-                if desc:
-                    # Print description directly
-                    sys.stderr.write(f"\n--- Expanded thinking content ---\n")
-                    sys.stderr.write(desc[:2000])  # Limit length
-                    if len(desc) > 2000:
-                        sys.stderr.write("\n[... truncated]\n")
-                    sys.stderr.write("\n--------------------------------\n")
-                    sys.stderr.flush()
-            else:
-                sys.stderr.write("[Task collapsed]\n")
-                sys.stderr.flush()
-        else:
-            sys.stderr.write("[Failed to toggle expansion]\n")
-            sys.stderr.flush()
+        import os
+        # Provide minimal feedback
+        print("\n[Ctrl+O]", flush=True)
 
-    # Helper function to display progress and status bar
-    def display_interface():
-        """Display progress and status bar."""
-        progress_display = progress.display(clear_previous=False)
-        if progress_display:
-            print(progress_display)
-        display_status_bar(chat)
+        # Debounce: ignore if less than 0.3 seconds since last toggle
+        import time
+        current_time = time.time()
+        if current_time - last_ctrl_o_time < 0.3:
+            return
+        last_ctrl_o_time = current_time
+
+        # Determine colors enabled
+        colors_enabled = sys.stdout.isatty() and os.getenv('TERM') not in ('dumb', '')
+
+        # Try to get most recent thinking task (completed or in-progress)
+        task_id = progress.get_most_recent_thinking_task()
+        # If no thinking task, try current task from chat
+        if task_id is None and hasattr(chat, 'current_task_id') and chat.current_task_id:
+            task = progress.get_task(chat.current_task_id)
+            if task and task["status"] == TaskStatus.IN_PROGRESS:
+                task_id = chat.current_task_id
+
+        if agent_config.debug:
+            sys.stderr.write(f"[DEBUG Ctrl+O] is_reasoning_active={chat.is_reasoning_active}, task_id={task_id}, show_thinking_realtime={chat.show_thinking_realtime}\n")
+
+        # Decide behavior based on context
+        if chat.is_reasoning_active:
+            # Active thinking stream - toggle real-time display
+            was_enabled = chat.show_thinking_realtime
+            chat.toggle_thinking_display()
+            is_enabled = chat.show_thinking_realtime
+
+            # Handle buffer display/clearing
+            if was_enabled and not is_enabled:
+                # Turning OFF - clear buffer if displayed
+                chat._clear_thinking_buffer(force=True)
+                try:
+                    print(f"\n💭 Thinking display: OFF")
+                except UnicodeEncodeError:
+                    print(f"\n[THINK] Thinking display: OFF")
+            elif not was_enabled and is_enabled:
+                # Turning ON - show existing thinking content
+                if chat.thinking_buffer_content:
+                    chat._display_thinking_buffer(colors_enabled=colors_enabled)
+                else:
+                    try:
+                        print(f"\n💭 Thinking display: ON (waiting for thinking...)")
+                    except UnicodeEncodeError:
+                        print(f"\n[THINK] Thinking display: ON (waiting for thinking...)")
+            # Refresh interface to update status
+            refresh_interface()
+
+        elif task_id is not None:
+            # Thinking task exists but not actively streaming - toggle expansion
+            task = progress.get_task(task_id)
+            if task and task.get("title") == "Thinking":
+                status = task.get("status")
+                if status in [TaskStatus.IN_PROGRESS, TaskStatus.COMPLETED]:
+                    if progress.toggle_task_expansion(task_id):
+                        # Refresh the interface in place
+                        refresh_interface()
+                        return
+            # If not a thinking task or can't toggle, fall through to default
+            sys.stderr.write(f"[Thinking task not expandable: {task_id}]\n")
+            sys.stderr.flush()
+            # Fall through to default behavior
+
+        # Default: toggle real-time thinking display
+        was_enabled = chat.show_thinking_realtime
+        chat.toggle_thinking_display()
+        is_enabled = chat.show_thinking_realtime
+
+        # Handle buffer display/clearing for default case
+        if was_enabled and not is_enabled:
+            # Turning OFF - clear buffer if displayed
+            chat._clear_thinking_buffer(force=True)
+            try:
+                print(f"\n💭 Thinking display: OFF")
+            except UnicodeEncodeError:
+                print(f"\n[THINK] Thinking display: OFF")
+        elif not was_enabled and is_enabled:
+            # Turning ON
+            try:
+                print(f"\n💭 Thinking display: ON")
+            except UnicodeEncodeError:
+                print(f"\n[THINK] Thinking display: ON")
+        # No refresh needed for simple message
 
     while True:
         try:
@@ -270,6 +362,13 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
                 break
 
             user_input = user_input.strip()
+
+            # Echo user input for visibility
+            if user_input:
+                if chat.mode == "coding":
+                    print(f"> {user_input}")
+                else:
+                    print(f"User: {user_input}")
 
             # Handle commands
             command_name = None
@@ -304,9 +403,10 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
 
                 # Display progress for non-command inputs
                 if not command_name:
-                    progress_display = progress.display(clear_previous=False)
+                    progress_display = progress.display_with_refresh(clear_previous=False)
                     if progress_display:
                         print(progress_display)
+                        last_progress_lines = progress.last_display_lines
 
             # Show executing status for commands (legacy)
             if command_name:
@@ -442,14 +542,42 @@ def interactive_chat_fallback(mode: str = "chat"):
     # Initialize progress display system
     progress = get_global_progress(language="en")
     task_registry = {}  # Map command -> task_id
+    last_progress_lines = 0  # Track lines of last progress display for refresh
+    last_ctrl_o_time = 0  # Track last Ctrl+O press time for debouncing
 
     # Helper function to display progress and status bar
     def display_interface():
         """Display progress and status bar."""
-        progress_display = progress.display(clear_previous=False)
+        nonlocal last_progress_lines
+        # Clear previous display area if any
+        total_previous_lines = last_progress_lines + (1 if chat.show_status_bar else 0)
+        if total_previous_lines > 0:
+            # Move cursor up total_previous_lines lines
+            sys.stdout.write(f"\033[{total_previous_lines}A")
+            # Clear each line
+            for _ in range(total_previous_lines):
+                sys.stdout.write("\033[2K")  # Clear entire line
+                sys.stdout.write("\033[1B")  # Move down one line
+            # Move back up to original position
+            sys.stdout.write(f"\033[{total_previous_lines}A")
+            sys.stdout.flush()
+
+        # Get and display new progress
+        progress_display = progress.display_with_refresh(clear_previous=False)
         if progress_display:
             print(progress_display)
+            last_progress_lines = progress.last_display_lines
+        else:
+            last_progress_lines = 0
         display_status_bar(chat)
+
+    def refresh_interface():
+        """Refresh the interface (progress display and status bar) in place."""
+        nonlocal last_progress_lines
+        display_interface()
+
+    # Set callback for auto-refresh when thinking task description updates
+    progress.on_display_refresh = refresh_interface
 
     while True:
         try:
@@ -465,6 +593,13 @@ def interactive_chat_fallback(mode: str = "chat"):
                 break
 
             user_input = user_input.strip()
+
+            # Echo user input for visibility
+            if user_input:
+                if chat.mode == "coding":
+                    print(f"> {user_input}")
+                else:
+                    print(f"User: {user_input}")
 
             # Handle commands
             command_name = None
@@ -499,9 +634,10 @@ def interactive_chat_fallback(mode: str = "chat"):
 
                 # Display progress for non-command inputs
                 if not command_name:
-                    progress_display = progress.display(clear_previous=False)
+                    progress_display = progress.display_with_refresh(clear_previous=False)
                     if progress_display:
                         print(progress_display)
+                        last_progress_lines = progress.last_display_lines
 
             # Show executing status for commands (legacy)
             if command_name:
