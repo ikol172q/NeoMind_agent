@@ -454,7 +454,7 @@ class TestProgressDisplayDisplay(unittest.TestCase):
         self.assertIn("Failed", result)
 
     def test_display_expanded_task(self):
-        """Test display with expanded task shows description."""
+        """Test display with expanded task shows description (up to 10 lines)."""
         task_id = self.pd.start_task("Test Task", "Line 1\nLine 2\nLine 3\nLine 4")
         self.pd.tasks[task_id]["expanded"] = True
 
@@ -464,7 +464,7 @@ class TestProgressDisplayDisplay(unittest.TestCase):
         self.assertIn("Line 1", result)
         self.assertIn("Line 2", result)
         self.assertIn("Line 3", result)
-        self.assertNotIn("Line 4", result)  # Limited to 3 lines
+        self.assertIn("Line 4", result)  # Expanded shows up to 10 lines
 
     def test_display_with_statistics(self):
         """Test display includes statistics when enabled."""
@@ -560,6 +560,94 @@ class TestProgressDisplayTaskManagement(unittest.TestCase):
         result = self.pd.display()
 
         self.assertEqual(result, "")  # Hidden task not displayed
+
+
+class TestProgressDisplayThinkingTasks(unittest.TestCase):
+    """Test thinking task specific methods."""
+
+    def setUp(self):
+        """Set up test environment."""
+        self.pd = ProgressDisplay()
+
+    def test_get_most_recent_thinking_task(self):
+        """Test finding most recent thinking task."""
+        # Create some tasks
+        task1 = self.pd.start_task("Task 1")
+        task2 = self.pd.start_task("Thinking")
+        task3 = self.pd.start_task("Task 3")
+        task4 = self.pd.start_task("Thinking")
+
+        # Should return the most recent thinking task (task4)
+        result = self.pd.get_most_recent_thinking_task()
+        self.assertEqual(result, task4)
+
+        # Complete task4, should still return task4 (most recent thinking)
+        self.pd.complete_task(task4)
+        result = self.pd.get_most_recent_thinking_task()
+        self.assertEqual(result, task4)
+
+        # Remove thinking tasks, should return None
+        self.pd.tasks.clear()
+        self.pd.task_order.clear()
+        result = self.pd.get_most_recent_thinking_task()
+        self.assertIsNone(result)
+
+    def test_toggle_task_expansion_with_task_id(self):
+        """Test toggling expansion with specific task ID."""
+        task_id = self.pd.start_task("Thinking", "Some thinking content")
+        self.assertFalse(self.pd.tasks[task_id].get("expanded", False))
+
+        # First toggle should expand
+        success = self.pd.toggle_task_expansion(task_id)
+        self.assertTrue(success)
+        self.assertTrue(self.pd.tasks[task_id]["expanded"])
+
+        # Second toggle should collapse
+        success = self.pd.toggle_task_expansion(task_id)
+        self.assertTrue(success)
+        self.assertFalse(self.pd.tasks[task_id]["expanded"])
+
+    def test_toggle_task_expansion_without_task_id(self):
+        """Test toggling expansion without task ID finds thinking task."""
+        task1 = self.pd.start_task("Task 1")
+        thinking_task = self.pd.start_task("Thinking", "Thinking content")
+        self.assertFalse(self.pd.tasks[thinking_task]["expanded"])
+
+        # Toggle without ID should expand thinking task
+        success = self.pd.toggle_task_expansion()
+        self.assertTrue(success)
+        self.assertTrue(self.pd.tasks[thinking_task]["expanded"])
+        # Other tasks should not be expanded
+        self.assertFalse(self.pd.tasks[task1].get("expanded", False))
+
+        # Toggle again should collapse
+        success = self.pd.toggle_task_expansion()
+        self.assertTrue(success)
+        self.assertFalse(self.pd.tasks[thinking_task]["expanded"])
+
+    def test_toggle_task_expansion_collapses_others(self):
+        """Test expanding one task collapses others."""
+        task1 = self.pd.start_task("Thinking", "Content 1")
+        task2 = self.pd.start_task("Thinking", "Content 2")
+        # Manually expand task1
+        self.pd.tasks[task1]["expanded"] = True
+
+        # Expanding task2 should collapse task1
+        success = self.pd.toggle_task_expansion(task2)
+        self.assertTrue(success)
+        self.assertTrue(self.pd.tasks[task2]["expanded"])
+        self.assertFalse(self.pd.tasks[task1]["expanded"])
+
+    def test_toggle_task_expansion_no_thinking_task(self):
+        """Test toggle when no thinking task exists."""
+        task_id = self.pd.start_task("Not Thinking")
+        success = self.pd.toggle_task_expansion()
+        self.assertFalse(success)
+
+    def test_toggle_task_expansion_nonexistent_task(self):
+        """Test toggle with non-existent task ID."""
+        success = self.pd.toggle_task_expansion("nonexistent")
+        self.assertFalse(success)
 
 
 class TestProgressDisplayConcurrency(unittest.TestCase):

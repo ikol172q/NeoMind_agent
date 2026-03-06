@@ -95,6 +95,10 @@ class ProgressDisplay:
         self.show_time = True
         self.compact_mode = False
 
+        # For display refresh tracking
+        self.last_display_lines = 0
+        self.on_display_refresh: Optional[Callable[[], None]] = None
+
     def _generate_task_id(self) -> str:
         """Generate a unique task ID."""
         with self.lock:
@@ -186,15 +190,25 @@ class ProgressDisplay:
             True if task was updated
         """
         with self.lock:
+            # sys.stderr.write(f"[DEBUG update_task] task_id={task_id}, status={status}, title={title}, desc_len={len(description) if description else 0}\n")
             if task_id not in self.tasks:
+                # sys.stderr.write(f"[DEBUG update_task] task_id {task_id} not found\n")
                 return False
 
             task = self.tasks[task_id]
+            old_status = task["status"]
+            old_expanded = task.get("expanded", False)
+            # sys.stderr.write(f"[DEBUG update_task] old_status={old_status}, old_expanded={old_expanded}\n")
 
             if status is not None:
                 task["status"] = status
                 if status in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
                     task["end_time"] = time.time()
+                    old_expanded = task.get("expanded", False)
+                    task["expanded"] = False  # Collapse completed tasks
+                    if old_expanded != False:
+                        # sys.stderr.write(f"[DEBUG update_task] task {task_id} expanded changed from {old_expanded} to False due to completion\n")
+                        sys.stderr.flush()
                 elif status == TaskStatus.IN_PROGRESS:
                     task["status_index"] = (task["status_index"] + 1) % 20  # Cycle status words
 
@@ -212,7 +226,13 @@ class ProgressDisplay:
                 task["title"] = title
 
             if description is not None:
+                old_description = task.get("description", "")
                 task["description"] = description
+                # If task is expanded or is a thinking task and description changed, trigger refresh
+                if self.on_display_refresh and description != old_description:
+                    if task.get("expanded", False) or task.get("title") == "Thinking":
+                        # sys.stderr.write(f"[DEBUG update_task] task expanded/thinking and description changed, triggering refresh\n")
+                        self.on_display_refresh()
 
             return True
 
@@ -286,14 +306,28 @@ class ProgressDisplay:
             Formatted display string
         """
         with self.lock:
-            # Filter visible tasks
+            # Filter visible tasks, deduplicate by task_id (safety)
             visible_tasks = []
+            seen_ids = set()
             for task_id in self.task_order:
                 if task_id in self.tasks and self.tasks[task_id].get("visible", True):
-                    visible_tasks.append((task_id, self.tasks[task_id]))
+                    if task_id not in seen_ids:
+                        seen_ids.add(task_id)
+                        visible_tasks.append((task_id, self.tasks[task_id]))
+                    else:
+                        import sys
+                        # sys.stderr.write(f"[WARNING] Duplicate task_id in task_order: {task_id}\n")
+                        sys.stderr.flush()
 
             if not visible_tasks:
                 return ""
+
+            # Debug: print to stderr (commented out for cleaner output)
+            # import sys
+            # sys.stderr.write(f"[DEBUG display] visible_tasks: {len(visible_tasks)}\n")
+            # for tid, task in visible_tasks:
+            #     sys.stderr.write(f"  - {tid}: '{task['title']}' status={task['status'].value} expanded={task.get('expanded', False)} desc_len={len(task.get('description', ''))}\n")
+            # sys.stderr.flush()
 
             lines = []
 
@@ -329,7 +363,10 @@ class ProgressDisplay:
                 # Colors
                 if status == TaskStatus.IN_PROGRESS:
                     color = "\033[93m"  # Yellow
-                    status_word = self._get_status_word(status, task["status_index"])
+                    if task.get("title") == "Thinking":
+                        status_word = "Thinking"
+                    else:
+                        status_word = self._get_status_word(status, task["status_index"])
                 elif status == TaskStatus.COMPLETED:
                     color = "\033[92m"  # Green
                     status_word = self._get_status_word(status, task["status_index"])
@@ -354,10 +391,25 @@ class ProgressDisplay:
                 title_line = f"{color}{icon} {task['title']}{reset}"
 
                 # Add description if available and (expanded or still in progress)
-                if task.get("description") and (task.get("expanded") or status == TaskStatus.IN_PROGRESS):
-                    desc_lines = task["description"].split('\n')
-                    for desc_line in desc_lines[:3]:  # Limit description lines
-                        lines.append(f"  {desc_line}")
+                expanded = task.get("expanded", False)
+                if task.get("description") and (expanded or status == TaskStatus.IN_PROGRESS):
+                    # Show thinking block with delimiters and light color when expanded
+                    if expanded:
+                        # Light gray background effect using ANSI dim color
+                        lines.append("  \033[90m--------------thinking--------------------\033[0m")
+                        desc_lines = task["description"].split('\n')
+                        max_desc_lines = 10
+                        for i, desc_line in enumerate(desc_lines):
+                            if i >= max_desc_lines:
+                                lines.append("  \033[90m[... truncated]\033[0m")
+                                break
+                            lines.append(f"  \033[90m{desc_line}\033[0m")
+                        lines.append("  \033[90m--------------thinking end----------------\033[0m")
+                    else:
+                        # In progress but not expanded: show limited preview
+                        desc_lines = task["description"].split('\n')
+                        for desc_line in desc_lines[:3]:  # Limit description lines
+                            lines.append(f"  {desc_line}")
 
                 # Build status line
                 stats = self._format_statistics(task)
@@ -372,9 +424,12 @@ class ProgressDisplay:
                     else:
                         status_line = f"  {color}{prefix} {status_word}{reset}"
 
-                # Add expand/collapse hint for tasks with description
-                if task.get("description") and not task.get("expanded"):
-                    status_line += f" {color}(ctrl+o to expand){reset}"
+                # Add expand/collapse hint for thinking tasks with description
+                if task.get("description") and task.get("title") == "Thinking":
+                    if expanded:
+                        status_line += f" {color}(ctrl+o to close){reset}"
+                    else:
+                        status_line += f" {color}(ctrl+o to expand){reset}"
 
                 # Add background run hint for long-running tasks
                 if status == TaskStatus.IN_PROGRESS and task.get("start_time"):
@@ -442,29 +497,49 @@ class ProgressDisplay:
                     return tid
             return None
 
-    def toggle_task_expansion(self, task_id: str = None) -> bool:
-        """Toggle expansion of a task. If no task_id provided, toggles most recent task."""
+    def get_most_recent_thinking_task(self) -> Optional[str]:
+        """Get the most recent thinking task ID (title 'Thinking', any status)."""
         with self.lock:
-            sys.stderr.write(f"[DEBUG] toggle_task_expansion called, task_id={task_id}\n")
-            sys.stderr.write(f"[DEBUG] task_order: {self.task_order}\n")
-            sys.stderr.write(f"[DEBUG] tasks keys: {list(self.tasks.keys())}\n")
+            for tid in reversed(self.task_order):
+                if tid in self.tasks:
+                    task = self.tasks[tid]
+                    if task.get("title") == "Thinking":
+                        return tid
+            return None
+
+    def toggle_task_expansion(self, task_id: str = None) -> bool:
+        """Toggle expansion of a thinking task. If no task_id provided, toggles most recent thinking task."""
+        with self.lock:
+            # sys.stderr.write(f"[DEBUG] toggle_task_expansion called, task_id={task_id}\n")
+            # sys.stderr.write(f"[DEBUG] task_order: {self.task_order}\n")
+            # sys.stderr.write(f"[DEBUG] tasks keys: {list(self.tasks.keys())}\n")
+
             if task_id is None:
-                # Find most recent task with description
-                for tid in reversed(self.task_order):
-                    if tid in self.tasks and self.tasks[tid].get("description"):
-                        task_id = tid
-                        sys.stderr.write(f"[DEBUG] found task_id={task_id}\n")
-                        break
+                # Find most recent thinking task
+                task_id = self.get_most_recent_thinking_task()
+                if task_id is None:
+                    # sys.stderr.write(f"[DEBUG] no thinking task found\n")
+                    return False
+                # sys.stderr.write(f"[DEBUG] found thinking task_id={task_id}\n")
+
             if task_id not in self.tasks:
-                sys.stderr.write(f"[DEBUG] task_id {task_id} not in tasks\n")
+                # sys.stderr.write(f"[DEBUG] task_id {task_id} not in tasks\n")
                 return False
+
             task = self.tasks[task_id]
-            if not task.get("description"):
-                sys.stderr.write(f"[DEBUG] task {task_id} has no description\n")
-                return False
+
             old_expanded = task.get("expanded", False)
-            task["expanded"] = not old_expanded
-            sys.stderr.write(f"[DEBUG] toggled expansion for {task_id}: {old_expanded} -> {task['expanded']}\n")
+            new_expanded = not old_expanded
+
+            # If we're expanding this task, collapse all other tasks
+            if new_expanded:
+                for other_id, other_task in self.tasks.items():
+                    if other_id != task_id and other_task.get("expanded", False):
+                        other_task["expanded"] = False
+                        # sys.stderr.write(f"[DEBUG] collapsed other task {other_id}\n")
+
+            task["expanded"] = new_expanded
+            # sys.stderr.write(f"[DEBUG] toggled expansion for {task_id}: {old_expanded} -> {task['expanded']}\n")
             return True
 
     def get_task(self, task_id: str) -> Optional[Dict]:
@@ -479,6 +554,21 @@ class ProgressDisplay:
                 task for task in self.tasks.values()
                 if task["status"] == TaskStatus.IN_PROGRESS
             ]
+
+    def _count_lines(self, text: str) -> int:
+        """Count lines in display text."""
+        if not text:
+            return 0
+        return text.count('\n') + 1  # +1 for last line without newline
+
+    def display_with_refresh(self, clear_previous: bool = True) -> str:
+        """
+        Display current tasks and update line count for refresh.
+        Returns formatted string and line count.
+        """
+        display_text = self.display(clear_previous=clear_previous)
+        self.last_display_lines = self._count_lines(display_text)
+        return display_text
 
 
 # Global instance for easy access
