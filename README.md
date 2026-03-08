@@ -1,6 +1,6 @@
-# ikol1729_agent - Advanced AI Agent
+# ikol1729_agent - DeepSeek AI Agent
 
-A Python package for interacting with AI models through a CLI interface with web search capabilities, thinking mode, and conversation history.
+A Python package for interacting with DeepSeek AI models through a CLI interface with web search capabilities, thinking mode, and conversation history.
 
 ## Features
 

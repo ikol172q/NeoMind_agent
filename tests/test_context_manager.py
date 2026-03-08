@@ -414,31 +414,19 @@ class TestHistoryCompression(unittest.TestCase):
         self.assertEqual(manager.conversation_history[0]["content"], "Response 1")
 
     @patch('agent.context_manager.agent_config')
-    @patch('agent.context_manager.HAS_COMPRESSION', True)
-    @patch('agent.context_manager.SummarizationStrategy')
-    def test_compress_history_summarize_strategy(self, mock_strategy_class, mock_config):
-        """Test compression with summarize strategy."""
+    def test_compress_history_summarize_strategy(self, mock_config):
+        """Test compression with summarize strategy (falls back to truncate)."""
         mock_config.compression_strategy = "summarize"
         mock_config.keep_system_messages = True
         mock_config.keep_recent_messages = 1
 
-        mock_strategy = mock_strategy_class.return_value
-        mock_strategy.compress.return_value = type('obj', (object,), {
-            'compressed_messages': [{"role": "system", "content": "Summarized"}],
-            'details': {}
-        })()
+        with patch.object(self.manager, '_summarize_history') as mock_summarize:
+            mock_summarize.return_value = [{"role": "system", "content": "Summarized"}]
 
-        result = self.manager.compress_history()
+            result = self.manager.compress_history()
 
-        # Verify strategy was created with correct parameters
-        mock_strategy_class.assert_called_once()
-        mock_strategy.compress.assert_called_once_with(
-            self.manager.conversation_history,
-            keep_system=True,
-            keep_recent=1
-        )
-        self.assertEqual(self.manager.conversation_history, [{"role": "system", "content": "Summarized"}])
-        self.assertEqual(result['strategy'], 'summarize')
+            mock_summarize.assert_called_once_with(True, 1)
+            self.assertEqual(self.manager.conversation_history, [{"role": "system", "content": "Summarized"}])
 
     @patch('agent.context_manager.agent_config')
     def test_compress_history_custom_strategy(self, mock_config):

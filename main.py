@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - Entry point for Advanced AI Agent
+# main.py - Entry point for DeepSeek Agent
 
 import sys
 import os
@@ -73,7 +73,7 @@ def test_main():
 def main():
     """Main entry point with argument parsing"""
     parser = argparse.ArgumentParser(
-        description="Advanced AI Agent",
+        description="DeepSeek AI Agent",
         epilog="Use 'ikol1729-agent' without arguments for interactive chat."
     )
     parser.add_argument(
