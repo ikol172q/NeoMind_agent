@@ -148,7 +148,6 @@ class DeepSeekStreamingChat:
         self.search_loop = None
         self.available_models_cache = None  # NEW: Cache for available models
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
-        self.thinking_cache = []  # Cache for thinking content from reasoning models
 
         # NEW: Add system prompt if provided
         # Use coding mode system prompt if mode is coding, otherwise default
@@ -198,22 +197,6 @@ class DeepSeekStreamingChat:
         self._setup_tools()
         self._setup_simple_tools()
 
-    def _save_thinking_to_cache(self, prompt: str, reasoning_content: str, task_id: str = None):
-        """Save thinking content to cache for later retrieval."""
-        if not reasoning_content:
-            return
-        import time
-        self.thinking_cache.append({
-            'timestamp': time.time(),
-            'prompt': prompt,
-            'thinking_content': reasoning_content,
-            'task_id': task_id,
-            'length': len(reasoning_content)
-        })
-        # Keep only last 50 entries to avoid memory issues
-        if len(self.thinking_cache) > 50:
-            self.thinking_cache.pop(0)
-
     def _setup_command_handlers(self) -> None:
         """Initialize command handler registry."""
         # Mapping: prefix -> (handler, strip_prefix)
@@ -242,7 +225,6 @@ class DeepSeekStreamingChat:
             "/context": (self.handle_context_command, True),
             "/compact": (self.handle_compact_command, True),
             "/think": (self.handle_think_command, True),
-            "/thoughts": (self.handle_thoughts_command, True),
             "/quit": (self.handle_quit_command, True),
             "/exit": (self.handle_exit_command, True),
             "/help": (self.handle_help_command, True),
@@ -2288,38 +2270,6 @@ Remember: Always ask for permission before making changes!
         self.toggle_thinking_mode()
         status = "enabled" if self.thinking_enabled else "disabled"
         return f"🤔 Thinking mode {status}."
-
-    def handle_thoughts_command(self, command: str) -> Optional[str]:
-        """
-        Handle /thoughts command to view cached thinking content.
-        Usage: /thoughts [index] or /thoughts list
-        """
-        import time
-        if not self.thinking_cache:
-            return "💭 No thinking content cached yet."
-
-        # Parse command
-        parts = command.strip().split()
-        if len(parts) == 0 or parts[0] == "list":
-            # List all cached thoughts
-            lines = ["💭 Cached thinking content (most recent first):"]
-            for i, entry in enumerate(reversed(self.thinking_cache)):
-                timestamp = time.strftime("%H:%M:%S", time.localtime(entry['timestamp']))
-                preview = entry['thinking_content'][:100].replace('\n', ' ')
-                lines.append(f"{i+1}. [{timestamp}] '{entry['prompt'][:50]}...' - {preview}... ({entry['length']} chars)")
-            return "\n".join(lines)
-        else:
-            # Show specific thought by index (1-based from most recent)
-            try:
-                idx = int(parts[0])
-                if idx < 1 or idx > len(self.thinking_cache):
-                    return f"❌ Index must be between 1 and {len(self.thinking_cache)}"
-                # Reverse index: 1 = most recent
-                entry = self.thinking_cache[-idx]
-                timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(entry['timestamp']))
-                return f"💭 Thinking for: '{entry['prompt']}'\n⏰ {timestamp}\n📝 Length: {entry['length']} characters\n\n{entry['thinking_content']}"
-            except ValueError:
-                return "❌ Invalid index. Use /thoughts list or /thoughts <number>"
 
     def handle_quit_command(self, command: str) -> Optional[str]:
         """
@@ -4836,7 +4786,6 @@ Please think step by step and provide your analysis:"""
         COLOR_RESET = '\033[0m'
 
         skip_early_processing = is_tool_continuation
-        original_prompt = prompt  # Save original prompt for thinking cache
 
         # Limit recursion depth for tool calls
         if tool_call_depth > 10:
@@ -5087,7 +5036,6 @@ Please think step by step and provide your analysis:"""
             has_seen_reasoning = False
             chars_received = 0
             last_update_time = time.time()
-            last_status_update_time = time.time()
             thinking_task_id = processing_task_id
             thinking_start_time = 0
 
@@ -5156,13 +5104,6 @@ Please think step by step and provide your analysis:"""
                                         if reasoning_chunk:
                                             # Accumulate thinking content
                                             reasoning_content += reasoning_chunk
-                                            # Show status update every 10 seconds during thinking
-                                            current_time = time.time()
-                                            if current_time - last_status_update_time > 10:
-                                                elapsed = current_time - start_time
-                                                status_msg = f"⏱️ Thinking: {elapsed:.1f}s, {len(reasoning_content)} thinking chars"
-                                                print(f"\n{status_msg}")
-                                                last_status_update_time = current_time
                                             # Display thinking if progress display not available
                                             if not (HAS_PROGRESS_DISPLAY and get_global_progress) or not self.thinking_enabled:
                                                 if COLORS_ENABLED and is_reasoning_active:
@@ -5208,16 +5149,6 @@ Please think step by step and provide your analysis:"""
                                         full_response += content
                                         chars_received += len(content)
 
-                                        # Show status update every 10 seconds
-                                        current_time = time.time()
-                                        if current_time - last_status_update_time > 10:
-                                            elapsed = current_time - start_time
-                                            status_msg = f"⏱️ Streaming: {elapsed:.1f}s, {chars_received} chars received"
-                                            if reasoning_content:
-                                                status_msg += f", {len(reasoning_content)} thinking chars"
-                                            print(f"\n{status_msg}")
-                                            last_status_update_time = current_time
-
                                         # Show progress every 500 characters
                                         if chars_received % 500 == 0:
                                             print(f"\n📊 Received: {chars_received} chars")
@@ -5244,10 +5175,6 @@ Please think step by step and provide your analysis:"""
                         description=description
                     )
 
-                # Save thinking content to cache if any (even if interrupted)
-                if reasoning_content:
-                    self._save_thinking_to_cache(original_prompt, reasoning_content, thinking_task_id)
-
                 save_partial = input("\n💾 Save partial response? (y/n): ").strip().lower()
                 if save_partial == 'y' and full_response:
                     self.add_to_history("assistant", full_response + "\n[Response interrupted by user]")
@@ -5271,10 +5198,6 @@ Please think step by step and provide your analysis:"""
                     status=TaskStatus.COMPLETED,
                     description=description
                 )
-
-            # Save thinking content to cache if any
-            if reasoning_content:
-                self._save_thinking_to_cache(original_prompt, reasoning_content, thinking_task_id)
 
             # Handle tool calls if any
             if tool_calls:
