@@ -217,36 +217,14 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
 
     @kb.add('c-o')
     def _(event):
-        # Debug: print to see if binding fires
-        import sys
-        sys.stderr.write("\n[Ctrl+O pressed]\n")
-        sys.stderr.flush()
-        # Get most recent task with description
-        task_id = progress.get_most_recent_task_with_description()
-        if task_id is None:
-            sys.stderr.write("[No task with description found]\n")
-            sys.stderr.flush()
-            return
-        # Toggle expansion for this specific task
-        if progress.toggle_task_expansion(task_id):
-            task = progress.get_task(task_id)
-            if task and task.get("expanded"):
-                # Task is now expanded - show description
-                desc = task.get("description", "")
-                if desc:
-                    # Print description directly
-                    sys.stderr.write(f"\n--- Expanded thinking content ---\n")
-                    sys.stderr.write(desc[:2000])  # Limit length
-                    if len(desc) > 2000:
-                        sys.stderr.write("\n[... truncated]\n")
-                    sys.stderr.write("\n--------------------------------\n")
-                    sys.stderr.flush()
-            else:
-                sys.stderr.write("[Task collapsed]\n")
-                sys.stderr.flush()
+        # Toggle expansion of most recent task
+        if progress.toggle_task_expansion():
+            # Clear screen and redisplay interface
+            print("\033[2J\033[H")  # Clear screen and move cursor to top
+            display_interface()
         else:
-            sys.stderr.write("[Failed to toggle expansion]\n")
-            sys.stderr.flush()
+            # No task to expand
+            pass
 
     # Helper function to display progress and status bar
     def display_interface():
