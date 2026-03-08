@@ -149,11 +149,6 @@ class DeepSeekStreamingChat:
         self.available_models_cache = None  # NEW: Cache for available models
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
         self.thinking_cache = []  # Cache for thinking content from reasoning models
-        self.is_reasoning_active = False  # Track if reasoning content is currently streaming
-        self.show_thinking_realtime = False  # Toggle state for real-time thinking display
-        self.thinking_buffer_lines = 0  # Track displayed lines of thinking buffer
-        self.thinking_buffer_content = ""  # Current buffer content
-        self.is_thinking_displayed = False  # Whether thinking buffer is currently displayed
 
         # NEW: Add system prompt if provided
         # Use coding mode system prompt if mode is coding, otherwise default
@@ -218,191 +213,6 @@ class DeepSeekStreamingChat:
         # Keep only last 50 entries to avoid memory issues
         if len(self.thinking_cache) > 50:
             self.thinking_cache.pop(0)
-
-    def _check_ctrl_o_pressed(self):
-        """Check if Ctrl+O is pressed (non-blocking). Returns True if pressed."""
-        import sys
-        try:
-            if sys.platform == 'win32':
-                import msvcrt
-                if msvcrt.kbhit():
-                    key = msvcrt.getch()
-                    # Ctrl+O is 0x0F (15)
-                    if key == b'\x0f' or key == 15:
-                        return True
-            else:
-                import select
-                import termios
-                import tty
-                # Non-blocking check
-                if select.select([sys.stdin], [], [], 0)[0]:
-                    key = sys.stdin.read(1)
-                    if key == '\x0f':
-                        return True
-        except Exception:
-            pass
-        return False
-
-    def toggle_thinking_display(self):
-        """Toggle real-time thinking display during streaming."""
-        old_value = self.show_thinking_realtime
-        self.show_thinking_realtime = not self.show_thinking_realtime
-        return self.show_thinking_realtime
-
-    def _display_thinking_chunk(self, chunk, colors_enabled=True):
-        """Display thinking chunk with buffer management."""
-        import sys
-        if not self.is_thinking_displayed:
-            # First chunk in buffer - print header
-            thinking_color = '\033[90m' if colors_enabled else ''
-            reset_color = '\033[0m' if colors_enabled else ''
-            try:
-                print(f"\n{thinking_color}💭 THINKING BUFFER:{reset_color}")
-                print(f"{thinking_color}{'━'*60}{reset_color}")
-            except UnicodeEncodeError:
-                # Fallback to ASCII for Windows compatibility
-                print(f"\n{thinking_color}[THINK] THINKING BUFFER:{reset_color}")
-                print(f"{thinking_color}{'-'*60}{reset_color}")
-            self.is_thinking_displayed = True
-            content_lines = self._count_thinking_content_lines()
-            self.thinking_buffer_lines = 2 + content_lines  # Header (2 lines) + content
-
-        # Print chunk
-        thinking_color = '\033[90m' if colors_enabled else ''
-        reset_color = '\033[0m' if colors_enabled else ''
-        try:
-            print(f"{thinking_color}{chunk}{reset_color}", end="", flush=True)
-        except UnicodeEncodeError:
-            # Fallback: remove non-ASCII characters from chunk
-            chunk_ascii = chunk.encode('ascii', 'ignore').decode('ascii')
-            print(f"{thinking_color}{chunk_ascii}{reset_color}", end="", flush=True)
-
-        # Update line count based on entire content
-        content_lines = self._count_thinking_content_lines()
-        self.thinking_buffer_lines = 2 + content_lines  # Header (2 lines) + content
-
-    def _count_thinking_content_lines(self) -> int:
-        """Count number of lines in thinking_buffer_content."""
-        if not self.thinking_buffer_content:
-            return 0
-        lines = self.thinking_buffer_content.count('\n')
-        if self.thinking_buffer_content and not self.thinking_buffer_content.endswith('\n'):
-            lines += 1  # Partial line
-        return lines
-
-    def _clear_thinking_buffer(self, force=False):
-        """Clear thinking buffer from terminal.
-
-        Args:
-            force: If True, try to clear even if is_thinking_displayed is False
-        """
-        import sys
-        import os
-        if not self.is_thinking_displayed and not force:
-            return
-
-        # If buffer is not displayed and we have no line count, nothing to clear
-        # (content may exist in memory but not on screen)
-        if not self.is_thinking_displayed and self.thinking_buffer_lines == 0:
-            # Already cleared or never displayed, just ensure state is reset
-            self.is_thinking_displayed = False
-            self.thinking_buffer_lines = 0
-            return
-
-        # Check for inconsistent state: not displayed but line count > 0
-        if not self.is_thinking_displayed and self.thinking_buffer_lines > 0:
-            # Inconsistent state - line count without display
-            # This shouldn't happen, but reset to safe state
-            self.is_thinking_displayed = False
-            self.thinking_buffer_lines = 0
-            return
-
-        # Check for inconsistent state: displayed but no line count
-        if self.is_thinking_displayed and self.thinking_buffer_lines <= 0:
-            # Inconsistent state - buffer marked as displayed but no lines counted
-            # This shouldn't happen, but reset to safe state
-            self.is_thinking_displayed = False
-            self.thinking_buffer_lines = 0
-            return
-
-        # Determine how many lines to clear
-        lines_to_clear = self.thinking_buffer_lines
-        if lines_to_clear <= 0:
-            # Estimate from content if line count is invalid
-            content_lines = self._count_thinking_content_lines()
-            lines_to_clear = 2 + content_lines  # Header + content
-
-        # Add safety margin for line wrapping and rapid toggling
-        # Be conservative to avoid clearing unrelated content
-        lines_to_clear = lines_to_clear + 2  # Add 2-line safety margin
-        # Ensure minimum and maximum bounds
-        lines_to_clear = max(3, lines_to_clear)  # At least header size (2) + 1
-        lines_to_clear = min(lines_to_clear, 30)  # Cap at 30 lines max
-
-        # Flush both streams to ensure all output is written
-        sys.stderr.flush()
-        sys.stdout.flush()
-
-        # Method 1: Move up and clear lines (works if ANSI codes work)
-        try:
-            # Move cursor up to start of buffer area
-            sys.stdout.write(f"\033[{lines_to_clear}A")
-
-            # Clear each line
-            for _ in range(lines_to_clear):
-                sys.stdout.write("\033[2K")  # Clear line
-                sys.stdout.write("\033[1B")  # Move down
-
-            # Move cursor back up to original position
-            sys.stdout.write(f"\033[{lines_to_clear}A")
-            sys.stdout.flush()
-
-        except Exception as e:
-            # ANSI codes failed, try alternative method
-            # Print enough newlines to push buffer off visible area
-            for _ in range(lines_to_clear):
-                sys.stdout.write("\n")
-            sys.stdout.flush()
-
-        # Reset state
-        self.is_thinking_displayed = False
-        self.thinking_buffer_lines = 0
-
-    def _display_thinking_buffer(self, colors_enabled=True):
-        """Redisplay accumulated thinking content."""
-        import sys
-        if not self.thinking_buffer_content:
-            return
-
-        # Clear any existing displayed buffer first
-        if self.is_thinking_displayed:
-            self._clear_thinking_buffer(force=True)
-
-        thinking_color = '\033[90m' if colors_enabled else ''
-        reset_color = '\033[0m' if colors_enabled else ''
-        try:
-            print(f"\n{thinking_color}💭 THINKING BUFFER:{reset_color}")
-            print(f"{thinking_color}{'━'*60}{reset_color}")
-        except UnicodeEncodeError:
-            # Fallback to ASCII for Windows compatibility
-            print(f"\n{thinking_color}[THINK] THINKING BUFFER:{reset_color}")
-            print(f"{thinking_color}{'-'*60}{reset_color}")
-
-        # Display content
-        try:
-            print(f"{thinking_color}{self.thinking_buffer_content}{reset_color}", end="", flush=True)
-        except UnicodeEncodeError:
-            # Fallback: remove non-ASCII characters from content
-            content_ascii = self.thinking_buffer_content.encode('ascii', 'ignore').decode('ascii')
-            print(f"{thinking_color}{content_ascii}{reset_color}", end="", flush=True)
-
-        # Count total lines (header + content)
-        content_lines = self._count_thinking_content_lines()
-        total_lines = 2 + content_lines
-
-        self.is_thinking_displayed = True
-        self.thinking_buffer_lines = total_lines
-
 
     def _setup_command_handlers(self) -> None:
         """Initialize command handler registry."""
@@ -1096,8 +906,6 @@ class DeepSeekStreamingChat:
                 "🔄": "[GIT]",
                 "🧪": "[TEST]",
                 "🤖": "[BOT]",
-                "💭": "[THINK]",
-                "⏰": "[TIME]",
             }
             safe_message = message
             for emoji, ascii_repl in replacements.items():
@@ -5273,13 +5081,8 @@ Please think step by step and provide your analysis:"""
 
             full_response = ""
             reasoning_content = ""
-            self._clear_thinking_buffer(force=True)  # Clear any previous buffer display
-            self.thinking_buffer_content = ""
-            self.is_thinking_displayed = False
-            self.thinking_buffer_lines = 0
             tool_calls = []
             is_reasoning_active = False
-            self.is_reasoning_active = False
             is_final_response_active = False
             has_seen_reasoning = False
             chars_received = 0
@@ -5289,27 +5092,7 @@ Please think step by step and provide your analysis:"""
             thinking_start_time = 0
 
             try:
-                last_ctrl_o_time = 0
                 for line in response.iter_lines():
-                    # Check for Ctrl+O press to toggle thinking display
-                    current_time = time.time()
-                    if current_time - last_ctrl_o_time > 0.3 and self._check_ctrl_o_pressed():
-                        last_ctrl_o_time = current_time
-                        was_enabled = self.show_thinking_realtime
-                        self.toggle_thinking_display()
-                        is_enabled = self.show_thinking_realtime
-
-                        # Only handle buffer display/clearing if we're in reasoning mode
-                        # or if turning OFF (always clear if displayed)
-                        if was_enabled and not is_enabled:
-                            # Turning OFF - clear buffer if displayed
-                            self._clear_thinking_buffer(force=True)
-                        elif not was_enabled and is_enabled and is_reasoning_active and chars_received == 0:
-                            # Turning ON during active thinking BEFORE any response content - show buffer
-                            if self.thinking_buffer_content:
-                                self._display_thinking_buffer(colors_enabled=COLORS_ENABLED)
-                        # If turning ON but not in reasoning mode or after response started,
-                        # just set the flag (buffer might be displayed if thinking restarts)
                     if line:
                         line = line.decode('utf-8')
                         if line.startswith("data: "):
@@ -5346,7 +5129,7 @@ Please think step by step and provide your analysis:"""
                                             if HAS_PROGRESS_DISPLAY and get_global_progress and self.thinking_enabled:
                                                 if thinking_task_id:
                                                     # Update existing task to show thinking
-                                                    get_global_progress().update_task(thinking_task_id, title="Thinking", description="")
+                                                    get_global_progress().update_task(thinking_task_id, title="Thinking")
                                                 else:
                                                     # Create new thinking task
                                                     thinking_task_id = get_global_progress().start_task(
@@ -5359,58 +5142,33 @@ Please think step by step and provide your analysis:"""
                                             else:
                                                 # Fallback: show thinking header
                                                 if COLORS_ENABLED:
-                                                    try:
-                                                        print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
-                                                    except UnicodeEncodeError:
-                                                        print(f"\n{COLOR_THINKING}[THINK] THINKING:{COLOR_RESET}")
+                                                    print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
                                                 else:
-                                                    try:
-                                                        print(f"\n💭 THINKING:")
-                                                    except UnicodeEncodeError:
-                                                        print(f"\n[THINK] THINKING:")
+                                                    print(f"\n💭 THINKING:")
                                                 if COLORS_ENABLED:
-                                                    try:
-                                                        print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
-                                                    except UnicodeEncodeError:
-                                                        print(f"{COLOR_THINKING}-------------------------------------------------------------------------------{COLOR_RESET}")
+                                                    print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
                                                 else:
-                                                    try:
-                                                        print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                                                    except UnicodeEncodeError:
-                                                        print(f"-------------------------------------------------------------------------------")
+                                                    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                                             is_reasoning_active = True
-                                            self.is_reasoning_active = True
                                             is_final_response_active = False
                                             has_seen_reasoning = True
 
                                         if reasoning_chunk:
                                             # Accumulate thinking content
                                             reasoning_content += reasoning_chunk
-                                            self.thinking_buffer_content += reasoning_chunk
-
                                             # Show status update every 10 seconds during thinking
-                                            # Only show if no response content has been shown yet
                                             current_time = time.time()
-                                            if current_time - last_status_update_time > 10 and chars_received == 0:
+                                            if current_time - last_status_update_time > 10:
                                                 elapsed = current_time - start_time
                                                 status_msg = f"⏱️ Thinking: {elapsed:.1f}s, {len(reasoning_content)} thinking chars"
                                                 print(f"\n{status_msg}")
                                                 last_status_update_time = current_time
-
-                                            # Display thinking based on real-time toggle and progress display
-                                            # Only display thinking if no response content has been shown yet
-                                            if self.show_thinking_realtime and is_reasoning_active and chars_received == 0:
-                                                # Display via buffer
-                                                self._display_thinking_chunk(reasoning_chunk, colors_enabled=COLORS_ENABLED)
-                                            elif not (HAS_PROGRESS_DISPLAY and get_global_progress) or not self.thinking_enabled:
-                                                # Fallback: original direct printing
-                                                # Only display thinking if no response content has been shown yet
-                                                if COLORS_ENABLED and is_reasoning_active and chars_received == 0:
+                                            # Display thinking if progress display not available
+                                            if not (HAS_PROGRESS_DISPLAY and get_global_progress) or not self.thinking_enabled:
+                                                if COLORS_ENABLED and is_reasoning_active:
                                                     print(f"{COLOR_THINKING}{reasoning_chunk}{COLOR_RESET}", end="", flush=True)
-                                                elif chars_received == 0:
-                                                    # Only display if no response content yet
+                                                else:
                                                     print(f"{reasoning_chunk}", end="", flush=True)
-
 
                                     content = delta.get("content", "")
                                     if content:
@@ -5422,41 +5180,29 @@ Please think step by step and provide your analysis:"""
                                                 print(f"\n🤖 Assistant: ", end="", flush=True)
                                             is_final_response_active = True
                                             is_reasoning_active = False
-                                            self.is_reasoning_active = False
 
-                                            # Clear thinking buffer if displayed when response starts
-                                            if self.is_thinking_displayed:
-                                                self._clear_thinking_buffer(force=True)
+                                            # Update progress task when response starts
+                                            if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress:
+                                                processing_time = time.time() - start_time
+                                                # Estimate token count from thinking content if available, otherwise from chars_received
+                                                if reasoning_content:
+                                                    token_estimate = len(reasoning_content) // 4
+                                                    # Truncate thinking content for display
+                                                    if len(reasoning_content) > 1000:
+                                                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
+                                                    else:
+                                                        display_content = reasoning_content
+                                                    description = f"Thinking completed in {processing_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
+                                                else:
+                                                    # No thinking content, estimate from response so far
+                                                    token_estimate = chars_received // 4
+                                                    description = f"Processing completed in {processing_time:.1f}s, ~{token_estimate} tokens"
 
-                                            # Update progress task when response starts (commented out to avoid refresh interference)
-                                            # if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress:
-                                            #     if not self.show_thinking_realtime:
-                                            #         processing_time = time.time() - start_time
-                                            #         # Estimate token count from thinking content if available, otherwise from chars_received
-                                            #         if reasoning_content:
-                                            #             token_estimate = len(reasoning_content) // 4
-                                            #             # Truncate thinking content for display
-                                            #             if len(reasoning_content) > 1000:
-                                            #                 display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                                            #             else:
-                                            #                 display_content = reasoning_content
-                                            #             description = f"Thinking completed in {processing_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                                            #         else:
-                                            #             # No thinking content, estimate from response so far
-                                            #             token_estimate = chars_received // 4
-                                            #             description = f"Processing completed in {processing_time:.1f}s, ~{token_estimate} tokens"
-                                            #
-                                            #         get_global_progress().update_task(
-                                            #             thinking_task_id,
-                                            #             status=None,  # Keep task in progress during streaming
-                                            #             description=description
-                                            #         )
-                                            #     else:
-                                            #         # Real-time display is active, just update status without description
-                                            #         get_global_progress().update_task(
-                                            #             thinking_task_id,
-                                            #             status=None
-                                            #         )
+                                                get_global_progress().update_task(
+                                                    thinking_task_id,
+                                                    status=None,  # Keep task in progress during streaming
+                                                    description=description
+                                                )
 
                                         print(content, end="", flush=True)
                                         full_response += content
@@ -5485,39 +5231,22 @@ Please think step by step and provide your analysis:"""
                 # Update thinking task if active
                 if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress and is_reasoning_active:
                     thinking_time = time.time() - thinking_start_time
-                    if not self.show_thinking_realtime:
-                        token_estimate = len(reasoning_content) // 4
-                        # Truncate thinking content for display
-                        if len(reasoning_content) > 1000:
-                            display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                        else:
-                            display_content = reasoning_content
-                        description = f"Thinking interrupted after {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                        get_global_progress().update_task(
-                            thinking_task_id,
-                            status=TaskStatus.FAILED,
-                            description=description
-                        )
+                    token_estimate = len(reasoning_content) // 4
+                    # Truncate thinking content for display
+                    if len(reasoning_content) > 1000:
+                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
                     else:
-                        # Real-time display active, update with description
-                        token_estimate = len(reasoning_content) // 4
-                        # Truncate thinking content for display
-                        if len(reasoning_content) > 1000:
-                            display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                        else:
-                            display_content = reasoning_content
-                        description = f"Thinking interrupted after {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                        get_global_progress().update_task(
-                            thinking_task_id,
-                            status=TaskStatus.FAILED,
-                            description=description
-                        )
+                        display_content = reasoning_content
+                    description = f"Thinking interrupted after {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
+                    get_global_progress().update_task(
+                        thinking_task_id,
+                        status=TaskStatus.FAILED,
+                        description=description
+                    )
 
                 # Save thinking content to cache if any (even if interrupted)
                 if reasoning_content:
                     self._save_thinking_to_cache(original_prompt, reasoning_content, thinking_task_id)
-
-                self.is_reasoning_active = False
 
                 save_partial = input("\n💾 Save partial response? (y/n): ").strip().lower()
                 if save_partial == 'y' and full_response:
@@ -5530,34 +5259,18 @@ Please think step by step and provide your analysis:"""
             # Update thinking task if still active (thinking-only response)
             if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress and is_reasoning_active:
                 thinking_time = time.time() - thinking_start_time
-                if not self.show_thinking_realtime:
-                    token_estimate = len(reasoning_content) // 4
-                    # Truncate thinking content for display
-                    if len(reasoning_content) > 1000:
-                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                    else:
-                        display_content = reasoning_content
-                    description = f"Thinking completed in {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                    get_global_progress().update_task(
-                        thinking_task_id,
-                        status=TaskStatus.COMPLETED,
-                        description=description
-                    )
+                token_estimate = len(reasoning_content) // 4
+                # Truncate thinking content for display
+                if len(reasoning_content) > 1000:
+                    display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
                 else:
-                    # Real-time display active, update with description
-                    token_estimate = len(reasoning_content) // 4
-                    # Truncate thinking content for display
-                    if len(reasoning_content) > 1000:
-                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                    else:
-                        display_content = reasoning_content
-                    description = f"Thinking completed in {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                    get_global_progress().update_task(
-                        thinking_task_id,
-                        status=TaskStatus.COMPLETED,
-                        description=description
-                    )
-                self.is_reasoning_active = False
+                    display_content = reasoning_content
+                description = f"Thinking completed in {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
+                get_global_progress().update_task(
+                    thinking_task_id,
+                    status=TaskStatus.COMPLETED,
+                    description=description
+                )
 
             # Save thinking content to cache if any
             if reasoning_content:
