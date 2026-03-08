@@ -29,25 +29,13 @@ except ImportError:
     chardet = None
 from .code_analyzer import CodeAnalyzer
 from .self_iteration import SelfIteration
-from .tasks.persistence import EnhancedTaskManager
-from .tasks.visualization import TaskVisualizer
+from .task_manager import TaskManager
 from .formatter import Formatter, success, error, warning, info, header, code_block, command_help
 from .help_system import HelpSystem, get_help
 from .command_executor import CommandExecutor, execute_safe, execute_git_safe
 from .safety import SafetyManager, safe_read_file, safe_write_file, safe_delete_file, is_path_safe, log_operation
 from .planner import Planner, plan_changes, GoalPlanner
 from .context_manager import ContextManager, HAS_TIKTOKEN
-from .tools.registry import ToolRegistry, get_default_registry
-from .tools.base import CommandTool, Tool, AsyncTool, ToolMetadata
-from .tools.plan_mode_tool import create_enter_plan_mode_tool
-from .tools.exit_plan_mode_tool import create_exit_plan_mode_tool
-from .tools.task_tool import create_task_tool
-from .tools.skill_tool import create_skill_tool
-from .tools.todo_write_tool import create_todo_write_tool
-from .tools.background import get_global_task_queue, get_global_task_monitor, shutdown_global_task_queue
-from .tools.background_tool import BackgroundSubmitTool, BackgroundMonitorTool
-from .skills.registry import SkillRegistry, get_default_skill_registry
-from .skills.examples import create_python_api_skill, create_web_api_skill, create_codebase_skill
 import difflib  # Add this line to your imports
 
 # Add to imports
@@ -63,14 +51,6 @@ except ImportError:
 from .search import OptimizedDuckDuckGoSearch
 from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
-
-# Progress display for tool call visualization
-try:
-    from cli.progress_display import get_global_progress, TaskStatus
-    HAS_PROGRESS_DISPLAY = True
-except ImportError:
-    HAS_PROGRESS_DISPLAY = False
-    get_global_progress = None
 
 try:
     from requests_html import HTMLSession
@@ -109,7 +89,7 @@ class DeepSeekStreamingChat:
         self.workspace_manager = None  # Lazy initialization for coding mode
         self.show_status_bar = agent_config.coding_mode_show_status_bar if agent_config.mode == "coding" else False
         # Status display system for coding mode
-        self.verbose_mode = False if agent_config.mode == "coding" else False  # Hide detailed debug messages in coding mode by default
+        self.verbose_mode = True if agent_config.mode == "coding" else False  # Show detailed debug messages in coding mode by default
         self.status_buffer = []  # Store debug/info messages for later display
         self.current_status = ""  # Current single-line status message
         self.last_status_update = 0  # Timestamp of last status update
@@ -118,7 +98,7 @@ class DeepSeekStreamingChat:
         self.base_url = "https://api.deepseek.com/chat/completions"
         self.models_url = "https://api.deepseek.com/models"  # NEW: For listing models
         self.conversation_history = []
-        self.context_manager = ContextManager(self.conversation_history, api_key=self.api_key, model=self.model)
+        self.context_manager = ContextManager(self.conversation_history)
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
         # Searcher with configurable auto-search triggers
         self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
@@ -180,22 +160,13 @@ class DeepSeekStreamingChat:
         self.code_changes_pending = []  # Store proposed changes
 
         # Task manager for task tracking
-        self.task_manager = EnhancedTaskManager()
+        self.task_manager = TaskManager()
         # Goal planner for generating and executing plans
         self.goal_planner = GoalPlanner()
 
         # Command registry for unified routing
         self.command_handlers = {}
         self._setup_command_handlers()
-
-        # Tool registry for LLM tool-calling
-        self.tool_registry = ToolRegistry(safety_manager=self.safety_manager)
-        self.simple_tool_handlers = {}
-        self.skill_registry = get_default_skill_registry()
-        # Register default skills
-        self._register_default_skills()
-        self._setup_tools()
-        self._setup_simple_tools()
 
     def _setup_command_handlers(self) -> None:
         """Initialize command handler registry."""
@@ -223,7 +194,6 @@ class DeepSeekStreamingChat:
             "/clear": (self.handle_clear_command, True),
             "/history": (self.handle_history_command, True),
             "/context": (self.handle_context_command, True),
-            "/compact": (self.handle_compact_command, True),
             "/think": (self.handle_think_command, True),
             "/quit": (self.handle_quit_command, True),
             "/exit": (self.handle_exit_command, True),
@@ -243,540 +213,6 @@ class DeepSeekStreamingChat:
             "/fix": (self.handle_auto_fix_command, False),
             "/analyze": (self.handle_auto_fix_command, False),
         }
-
-    def _setup_tools(self) -> None:
-        """Initialize tool registry with essential tools."""
-        # Register command wrappers for essential tools
-        # ReadTool - wrap handle_read_command
-        read_metadata = ToolMetadata(
-            name="read",
-            description="Read a file or webpage. Supports line ranges for files (file.py:10-20). For webpages, extracts content and adds to AI memory.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "description": "File path or URL to read. For files, can include line range: file.py:10-20"
-                    },
-                    "no_ai": {
-                        "type": "boolean",
-                        "description": "If true, don't add content to AI memory",
-                        "default": False
-                    },
-                    "strategy": {
-                        "type": "integer",
-                        "description": "Extraction strategy for webpages (0-4)",
-                        "minimum": 0,
-                        "maximum": 4
-                    },
-                    "debug": {
-                        "type": "boolean",
-                        "description": "Show debugging information",
-                        "default": False
-                    }
-                },
-                "required": ["target"]
-            },
-            returns={
-                "type": "string",
-                "description": "File content or webpage extraction result"
-            },
-            categories=["file_operations", "web"],
-            dangerous=False
-        )
-
-        # Create a wrapper function that adapts tool parameters to command string
-        def read_argument_parser(params: Dict[str, Any]) -> str:
-            parts = []
-            if params.get("debug"):
-                parts.append("--debug")
-            if "strategy" in params:
-                parts.append("--strategy")
-                parts.append(str(params["strategy"]))
-            if params.get("no_ai"):
-                parts.append("--no-ai")
-            parts.append(params["target"])
-            return " ".join(parts)
-
-        read_tool = CommandTool(
-            handler=self.handle_read_command,
-            metadata=read_metadata,
-            argument_parser=read_argument_parser
-        )
-        self.tool_registry.register(read_tool, "read")
-
-        # WriteTool - wrap handle_write_command
-        write_metadata = ToolMetadata(
-            name="write",
-            description="Write content to a file. Supports interactive mode for entering content.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "file_path": {
-                        "type": "string",
-                        "description": "Path to file to write"
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "Content to write (optional, if not provided, interactive mode)"
-                    },
-                    "interactive": {
-                        "type": "boolean",
-                        "description": "Enter content interactively",
-                        "default": False
-                    }
-                },
-                "required": ["file_path"]
-            },
-            returns={
-                "type": "string",
-                "description": "Write operation result message"
-            },
-            categories=["file_operations"],
-            dangerous=True  # Writing files can be dangerous
-        )
-
-        def write_argument_parser(params: Dict[str, Any]) -> str:
-            parts = []
-            if params.get("interactive"):
-                parts.append("--interactive")
-            parts.append(params["file_path"])
-            if "content" in params and params["content"]:
-                parts.append(params["content"])
-            return " ".join(parts)
-
-        write_tool = CommandTool(
-            handler=self.handle_write_command,
-            metadata=write_metadata,
-            argument_parser=write_argument_parser
-        )
-        self.tool_registry.register(write_tool, "write")
-
-        # TODO: Add more tools in Phase 1
-        # ExecuteTool - wrap handle_run_command
-        execute_metadata = ToolMetadata(
-            name="execute",
-            description="Execute a shell command safely.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Shell command to execute"
-                    }
-                },
-                "required": ["command"]
-            },
-            returns={
-                "type": "string",
-                "description": "Command output"
-            },
-            categories=["system"],
-            dangerous=True  # Executing commands can be dangerous
-        )
-
-        def execute_argument_parser(params: Dict[str, Any]) -> str:
-            return params["command"]
-
-        execute_tool = CommandTool(
-            handler=self.handle_run_command,
-            metadata=execute_metadata,
-            argument_parser=execute_argument_parser
-        )
-        self.tool_registry.register(execute_tool, "execute")
-
-        # SearchTool - wrap handle_search_command
-        search_metadata = ToolMetadata(
-            name="search",
-            description="Search the web using DuckDuckGo.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query"
-                    }
-                },
-                "required": ["query"]
-            },
-            returns={
-                "type": "string",
-                "description": "Search results"
-            },
-            categories=["web"],
-            dangerous=False
-        )
-
-        def search_argument_parser(params: Dict[str, Any]) -> str:
-            return params["query"]
-
-        search_tool = CommandTool(
-            handler=self.handle_search,
-            metadata=search_metadata,
-            argument_parser=search_argument_parser
-        )
-        self.tool_registry.register(search_tool, "search")
-
-        # GitTool - wrap handle_git_command
-        git_metadata = ToolMetadata(
-            name="git",
-            description="Execute git operations safely.",
-            parameters={
-                "type": "object",
-                "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "Git command (e.g., 'status', 'add .', 'commit -m \"msg\"')"
-                    }
-                },
-                "required": ["command"]
-            },
-            returns={
-                "type": "string",
-                "description": "Git command output"
-            },
-            categories=["version_control"],
-            dangerous=False
-        )
-
-        def git_argument_parser(params: Dict[str, Any]) -> str:
-            return params["command"]
-
-        git_tool = CommandTool(
-            handler=self.handle_git_command,
-            metadata=git_metadata,
-            argument_parser=git_argument_parser
-        )
-        self.tool_registry.register(git_tool, "git")
-
-        # Phase 1 tools complete
-
-        # Phase 2: Plan mode and subagent tools
-        # Plan mode tools
-        enter_plan_mode_tool = create_enter_plan_mode_tool(self)
-        self.tool_registry.register(enter_plan_mode_tool, "enter_plan_mode")
-
-        exit_plan_mode_tool = create_exit_plan_mode_tool(self)
-        self.tool_registry.register(exit_plan_mode_tool, "exit_plan_mode")
-
-        # Task tool for subagent delegation
-        task_tool = create_task_tool(self)
-        self.tool_registry.register(task_tool, "task")
-
-        # Skill tool for knowledge loading
-        skill_tool = create_skill_tool()
-        self.tool_registry.register(skill_tool, "skill")
-
-        # TodoWrite tool for progress tracking
-        if agent_config.enable_todo_write:
-            todo_write_tool = create_todo_write_tool()
-            self.tool_registry.register(todo_write_tool, "todo_write")
-
-        # Phase 3: Background task system (Session 8)
-        # Background submit tool
-        background_submit_tool = BackgroundSubmitTool(tool_registry=self.tool_registry)
-        self.tool_registry.register(background_submit_tool, "background_submit")
-
-        # Background monitor tool
-        background_monitor_tool = BackgroundMonitorTool()
-        self.tool_registry.register(background_monitor_tool, "background_monitor")
-
-    def _setup_simple_tools(self) -> None:
-        """Setup simple tool handlers for lightweight dispatch."""
-        # Compact tool
-        self.simple_tool_handlers["compact"] = lambda **kwargs: self.context_manager.compress_history()
-        # TodoWrite tool (delegate to global TODO_MANAGER)
-        from .tasks.todo_manager import TODO_MANAGER
-        self.simple_tool_handlers["todo_write"] = lambda **kwargs: TODO_MANAGER.update(kwargs["items"])
-        # Load skill tool (placeholder)
-        # self.simple_tool_handlers["load_skill"] = lambda **kwargs: ...
-
-    def _get_simple_tool_schemas(self) -> List[Dict[str, Any]]:
-        """Get OpenAI-compatible schemas for simple tools."""
-        schemas = []
-        # Compact tool: no parameters, returns string
-        if "compact" in self.simple_tool_handlers:
-            schemas.append({
-                "type": "function",
-                "function": {
-                    "name": "compact",
-                    "description": "Compact conversation history to reduce token usage.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {},
-                        "required": []
-                    }
-                }
-            })
-        # TodoWrite tool schema (same as registered tool)
-        if "todo_write" in self.simple_tool_handlers:
-            # Use the same schema as the registered TodoWriteTool
-            schemas.append({
-                "type": "function",
-                "function": {
-                    "name": "todo_write",
-                    "description": "Update a simple todo list to track LLM progress. Enforces constraints: max 20 items, only one in_progress item. Each item must have content, status (pending/in_progress/completed), and activeForm (present continuous description).",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "items": {
-                                "type": "array",
-                                "description": "List of todo items",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "content": {"type": "string", "description": "Description of the task"},
-                                        "status": {"type": "string", "enum": ["pending", "in_progress", "completed"], "description": "Status of the task"},
-                                        "activeForm": {"type": "string", "description": "Present continuous description shown when status is in_progress (e.g., 'Writing tests')"}
-                                    },
-                                    "required": ["content", "status", "activeForm"]
-                                }
-                            }
-                        },
-                        "required": ["items"]
-                    }
-                }
-            })
-        return schemas
-
-    def _get_tools_for_openai(self) -> List[Dict[str, Any]]:
-        """Get tools in OpenAI format based on dispatch mode."""
-        mode = agent_config.tool_dispatch_mode
-        registry_tools = self.tool_registry.to_openai_format()
-        simple_tools = self._get_simple_tool_schemas()
-
-        if mode == "registry_only":
-            return registry_tools
-        elif mode == "simple_only":
-            return simple_tools
-        else:  # "auto" or any other
-            # Merge: start with registry tools, add simple tools if not already present
-            merged = registry_tools.copy()
-            existing_names = {tool["function"]["name"] for tool in merged}
-            for tool in simple_tools:
-                name = tool["function"]["name"]
-                if name not in existing_names:
-                    merged.append(tool)
-                    existing_names.add(name)
-            return merged
-
-    def _register_default_skills(self) -> None:
-        """Register default skills (Python API, Web API, Codebase)."""
-        try:
-            # Register Python API skill
-            python_skill = create_python_api_skill()
-            self.skill_registry.register(python_skill)
-            # Register Web API skill
-            web_skill = create_web_api_skill()
-            self.skill_registry.register(web_skill)
-            # Register Codebase skill
-            codebase_skill = create_codebase_skill()
-            self.skill_registry.register(codebase_skill)
-        except Exception as e:
-            # Log but don't crash
-            self._status_print(f"⚠️ Failed to register default skills: {e}", "warning")
-
-        # Load skills from configured directories if enabled
-        if agent_config.enable_skill_loader:
-            from pathlib import Path
-            for directory_str in agent_config.skill_directories:
-                directory = Path(directory_str).expanduser().resolve()
-                if directory.exists():
-                    try:
-                        loaded = self.skill_registry.load_from_directory(directory)
-                        if loaded:
-                            self._status_print(f"✅ Loaded {len(loaded)} skills from {directory}", "success")
-                    except Exception as e:
-                        self._status_print(f"⚠️ Failed to load skills from {directory}: {e}", "warning")
-                else:
-                    self._status_print(f"⚠️ Skill directory does not exist: {directory}", "warning")
-
-    def _handle_tool_calls(self, tool_calls: list, assistant_content: str = "") -> bool:
-        """
-        Execute tool calls and add results to conversation history.
-
-        Args:
-            tool_calls: List of tool call objects from LLM response
-            assistant_content: Text content from assistant (if any)
-
-        Returns:
-            bool: True if all tool calls executed successfully, False otherwise
-        """
-        import json
-        import time
-
-        # Add assistant message with tool_calls to history
-        assistant_message = {"role": "assistant", "content": assistant_content or ""}
-        if tool_calls:
-            assistant_message["tool_calls"] = tool_calls
-        self.conversation_history.append(assistant_message)
-
-        # Execute each tool call
-        all_success = True
-        for tool_call in tool_calls:
-            tool_name = tool_call["function"]["name"]
-            try:
-                arguments = json.loads(tool_call["function"]["arguments"])
-            except json.JSONDecodeError as e:
-                self._status_print(f"❌ Failed to parse arguments for tool {tool_name}: {e}", "critical")
-                # Add error as tool result
-                tool_result = {
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": f"Error: Invalid JSON arguments: {e}"
-                }
-                self.conversation_history.append(tool_result)
-                all_success = False
-                continue
-
-            # Create progress display task for tool execution
-            task_id = None
-            if HAS_PROGRESS_DISPLAY and get_global_progress:
-                # Format tool call for display
-                # Show key arguments (limit to 2-3 for readability)
-                display_args = []
-                for key, value in arguments.items():
-                    if isinstance(value, str) and len(value) > 50:
-                        display_args.append(f"{key}: {value[:50]}...")
-                    else:
-                        display_args.append(f"{key}: {value}")
-                    if len(display_args) >= 3:  # Limit to 3 args for display
-                        if len(arguments) > 3:
-                            display_args.append(f"... (+{len(arguments)-3} more)")
-                        break
-
-                args_str = ", ".join(display_args)
-                task_title = f"{tool_name}({args_str})"
-                task_id = get_global_progress().start_task(
-                    title=task_title,
-                    description="",
-                    tool_uses=0,
-                    tokens=0
-                )
-
-            start_time = time.time()
-
-            try:
-                # Execute based on dispatch mode
-                mode = agent_config.tool_dispatch_mode
-                if mode == "simple_only" and tool_name in self.simple_tool_handlers:
-                    # Use simple handler
-                    handler = self.simple_tool_handlers[tool_name]
-                    result = handler(**arguments)
-                elif mode == "registry_only" or tool_name not in self.simple_tool_handlers:
-                    # Use registry
-                    result = self.tool_registry.execute(tool_name, arguments)
-                else:  # auto mode and tool in simple_tool_handlers
-                    # Try simple handler first, fallback to registry
-                    if tool_name in self.simple_tool_handlers:
-                        handler = self.simple_tool_handlers[tool_name]
-                        result = handler(**arguments)
-                    else:
-                        result = self.tool_registry.execute(tool_name, arguments)
-                execution_time = time.time() - start_time
-
-                # Convert result to string if not already
-                if not isinstance(result, str):
-                    result = str(result)
-
-                # Add tool result to conversation history
-                tool_result = {
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": result
-                }
-                self.conversation_history.append(tool_result)
-
-                # Update progress task with result
-                if task_id and HAS_PROGRESS_DISPLAY and get_global_progress:
-                    # Extract summary from result for display
-                    summary = self._extract_tool_result_summary(tool_name, result, arguments)
-                    get_global_progress().update_task(task_id, status=TaskStatus.COMPLETED, description=summary)
-
-            except Exception as e:
-                execution_time = time.time() - start_time
-                self._status_print(f"❌ Tool {tool_name} failed: {e}", "critical")
-                tool_result = {
-                    "role": "tool",
-                    "tool_call_id": tool_call["id"],
-                    "content": f"Error: {e}"
-                }
-                self.conversation_history.append(tool_result)
-                all_success = False
-
-                # Update progress task with error
-                if task_id and HAS_PROGRESS_DISPLAY and get_global_progress:
-                    get_global_progress().update_task(task_id, status=TaskStatus.FAILED, description=f"Error: {e}")
-
-        return all_success
-
-    def _extract_tool_result_summary(self, tool_name: str, result: str, arguments: dict) -> str:
-        """
-        Extract a human-readable summary from tool execution result.
-
-        Args:
-            tool_name: Name of the tool
-            result: Tool execution result string
-            arguments: Tool arguments
-
-        Returns:
-            Summary string for display
-        """
-        # Handle common tools
-        if tool_name == "Read":
-            # Count lines in result
-            lines = result.split('\n')
-            line_count = len([line for line in lines if line.strip()])
-            return f"Read {line_count} lines"
-
-        elif tool_name == "Edit":
-            # Try to parse edit summary from result
-            if "Added" in result and "removed" in result:
-                # Extract numbers
-                import re
-                added_match = re.search(r'Added (\d+)', result)
-                removed_match = re.search(r'removed (\d+)', result)
-                if added_match and removed_match:
-                    return f"Added {added_match.group(1)} line(s), removed {removed_match.group(1)} line(s)"
-            return "File updated"
-
-        elif tool_name == "Write":
-            # Count lines in content if available
-            if "content" in arguments:
-                content = arguments["content"]
-                lines = content.split('\n')
-                line_count = len([line for line in lines if line.strip()])
-                return f"Wrote {line_count} lines"
-            return "File written"
-
-        elif tool_name == "Grep":
-            # Extract count from result
-            if "Found" in result and "files" in result:
-                return result.split('\n')[0]
-            # Try to count matches
-            lines = result.split('\n')
-            if len(lines) > 1:
-                return f"Found {len(lines)-1} matches"
-            return "Search completed"
-
-        elif tool_name == "Glob":
-            # Count files
-            lines = result.split('\n')
-            file_count = len([line for line in lines if line.strip() and not line.startswith('Found')])
-            return f"Found {file_count} files"
-
-        elif tool_name == "Search":
-            # Web search result
-            if "Found" in result:
-                return result.split('\n')[0]
-            return "Search completed"
-
-        # Generic fallback
-        # Take first line or truncate
-        first_line = result.split('\n')[0].strip()
-        if len(first_line) > 60:
-            return first_line[:57] + "..."
-        return first_line if first_line else "Completed"
 
     def _status_print(self, message: str, level: str = "info") -> None:
         """
@@ -804,11 +240,17 @@ class DeepSeekStreamingChat:
                 # Show critical/important messages immediately
                 self._safe_print(message)
             elif level == "info":
-                # For info messages, store in buffer but don't show
-                # (they will be shown via progress display for tool calls)
+                # For info messages, update single-line status
                 self.current_status = message
-                # Store in buffer for potential later display
-                pass
+                # Use carriage return to update line (if output is a tty)
+                import sys
+                if sys.stdout.isatty():
+                    # Clear line and print status
+                    sys.stdout.write(f"\r\033[K{message}")
+                    sys.stdout.flush()
+                else:
+                    # Non-interactive, just print
+                    self._safe_print(message)
             # debug messages are silently stored in buffer
             return
 
@@ -903,8 +345,8 @@ class DeepSeekStreamingChat:
             mode: Target mode ('chat' or 'coding')
             persist: Whether to save the mode change to config file (default: True)
         """
-        if mode not in ("chat", "coding", "tool"):
-            self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat', 'coding', or 'tool'.")
+        if mode not in ("chat", "coding"):
+            self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat' or 'coding'.")
             return False
 
         if persist:
@@ -933,27 +375,9 @@ class DeepSeekStreamingChat:
             self.safety_confirm_file_operations = agent_config.coding_mode_safety_confirm_file_operations
             # Show status bar
             self.show_status_bar = agent_config.coding_mode_show_status_bar
-            # Disable verbose mode in coding mode by default (cleaner output)
-            self.verbose_mode = False
-        elif mode == "tool":
-            # Tool mode: enable tool-calling with LLM
-            self._initialize_workspace_manager()
-            # Use tool mode system prompt if available, otherwise coding mode prompt
-            tool_prompt = getattr(agent_config, 'tool_mode_system_prompt', None) or agent_config.coding_mode_system_prompt
-            if tool_prompt:
-                # Clear existing system prompts
-                self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
-                self.add_to_history("system", tool_prompt)
-            # Adjust natural language confidence threshold for tool mode
-            if self.interpreter:
-                self.interpreter.confidence_threshold = agent_config.coding_mode_natural_language_confidence_threshold
-            # Safety confirmations - similar to coding mode
-            self.safety_confirm_file_operations = agent_config.coding_mode_safety_confirm_file_operations
-            # Show status bar
-            self.show_status_bar = agent_config.coding_mode_show_status_bar
-            # Disable verbose mode for cleaner output in tool mode
-            self.verbose_mode = False
-        else:  # chat mode
+            # Enable verbose mode in coding mode by default
+            self.verbose_mode = True
+        else:
             # Restore default system prompt
             default_prompt = agent_config.system_prompt
             if default_prompt:
@@ -1204,7 +628,7 @@ Remember: Always ask for permission before making changes!
             "Authorization": f"Bearer {self.api_key}"
         }
         # Context validation
-        temp_context = ContextManager(messages, api_key=self.api_key, model=self.model)
+        temp_context = ContextManager(messages)
         total_tokens = temp_context.count_conversation_tokens()
         max_context = agent_config.max_context_tokens
         if total_tokens + max_tokens > max_context:
@@ -1245,7 +669,7 @@ Remember: Always ask for permission before making changes!
         if not query or query.strip() == "":
             return "Usage: /search <your query>"
 
-        success, result = self.search_sync(query.strip())
+        success, result = self.searcher.search(query.strip())
         if success:
             self.add_search_results_to_history('web', query.strip(), result)
         else:
@@ -1329,12 +753,11 @@ Remember: Always ask for permission before making changes!
 
     def handle_mode_command(self, command: str) -> Optional[str]:
         """
-        Handle /mode command for switching between chat, coding, and tool modes.
+        Handle /mode command for switching between chat and coding modes.
 
         Usage:
           /mode chat      - Switch to chat mode
           /mode coding    - Switch to coding mode
-          /mode tool      - Switch to tool mode (tool-calling)
           /mode status    - Show current mode
           /mode help      - Show help
         """
@@ -1347,20 +770,16 @@ Remember: Always ask for permission before making changes!
         elif command == "coding":
             success = self.switch_mode("coding")
             return "Switched to coding mode." if success else "Failed to switch to coding mode."
-        elif command == "tool":
-            success = self.switch_mode("tool")
-            return "Switched to tool mode." if success else "Failed to switch to tool mode."
         elif command == "help":
             return (
                 "/mode command usage:\n"
                 "  /mode chat      - Switch to chat mode\n"
                 "  /mode coding    - Switch to coding mode\n"
-                "  /mode tool      - Switch to tool mode (tool-calling)\n"
                 "  /mode status    - Show current mode\n"
                 "  /mode help      - Show this help"
             )
         else:
-            return "Invalid mode. Use 'chat', 'coding', 'tool', 'status', or 'help'."
+            return "Invalid mode. Use 'chat', 'coding', 'status', or 'help'."
 
     def handle_skills_command(self, command: str) -> Optional[str]:
         """
@@ -1531,14 +950,6 @@ Remember: Always ask for permission before making changes!
           update <id> <status> - Update task status
           delete <id>          - Delete task
           clear                - Delete all tasks
-          deps                 - Manage task dependencies
-          graph                - Show dependency graph
-          order                - Show execution order
-          ready                - Show ready tasks
-          critical             - Show critical path
-          visualize            - Show all visualization views
-          plan <goal>          - Create tasks from a goal plan
-          validate             - Validate dependencies
         """
         if not command.strip():
             return self._show_task_help()
@@ -1598,129 +1009,6 @@ Remember: Always ask for permission before making changes!
             count = self.task_manager.clear_all_tasks()
             return f"✅ Cleared {count} tasks"
 
-        elif subcommand == "deps":
-            if len(parts) < 2:
-                return "Usage: /task deps <add|remove|show> [task] [dep]"
-            dep_subcommand = parts[1].lower()
-            if dep_subcommand == "add":
-                if len(parts) != 4:
-                    return "Usage: /task deps add <task_id> <dependency_id>"
-                task_id, dep_id = parts[2], parts[3]
-                success = self.task_manager.add_dependency(task_id, dep_id)
-                if success:
-                    return f"✅ Dependency added: {task_id} depends on {dep_id}"
-                else:
-                    return f"❌ Failed to add dependency. Check task IDs exist."
-            elif dep_subcommand == "remove":
-                if len(parts) != 4:
-                    return "Usage: /task deps remove <task_id> <dependency_id>"
-                task_id, dep_id = parts[2], parts[3]
-                success = self.task_manager.remove_dependency(task_id, dep_id)
-                if success:
-                    return f"✅ Dependency removed: {task_id} no longer depends on {dep_id}"
-                else:
-                    return f"❌ Failed to remove dependency."
-            elif dep_subcommand == "show":
-                if len(parts) != 3:
-                    return "Usage: /task deps show <task_id>"
-                task_id = parts[2]
-                deps = self.task_manager.get_task_dependencies(task_id)
-                trans_deps = self.task_manager.get_task_dependencies(task_id, transitive=True)
-                dependents = self.task_manager.get_task_dependents(task_id)
-                trans_dependents = self.task_manager.get_task_dependents(task_id, transitive=True)
-                result = [f"📋 Dependencies for task {task_id}:"]
-                result.append(f"  Direct dependencies ({len(deps)}): {', '.join(deps) if deps else 'none'}")
-                result.append(f"  Transitive dependencies ({len(trans_deps)}): {', '.join(trans_deps) if trans_deps else 'none'}")
-                result.append(f"  Direct dependents ({len(dependents)}): {', '.join(dependents) if dependents else 'none'}")
-                result.append(f"  Transitive dependents ({len(trans_dependents)}): {', '.join(trans_dependents) if trans_dependents else 'none'}")
-                return "\n".join(result)
-            else:
-                return f"Unknown deps subcommand: {dep_subcommand}. Use add, remove, show"
-
-        elif subcommand == "graph":
-            # ASCII tree visualization
-            try:
-                visualizer = TaskVisualizer(self.task_manager)
-                return visualizer.ascii_tree(max_depth=5)
-            except Exception as e:
-                return f"❌ Error generating graph: {e}"
-
-        elif subcommand == "order":
-            try:
-                order = self.task_manager.get_execution_order()
-                if not order:
-                    return "📭 No tasks"
-                result = ["📋 Execution order (topological):"]
-                for i, task_id in enumerate(order, 1):
-                    task = self.task_manager.get_task(task_id)
-                    status = task.status if task else "?"
-                    result.append(f"  {i}. {task_id}: {task.description if task else '?'} [{status}]")
-                return "\n".join(result)
-            except ValueError as e:
-                return f"❌ Cannot compute order: {e}"
-
-        elif subcommand == "ready":
-            ready = self.task_manager.get_ready_tasks()
-            if not ready:
-                return "📭 No tasks ready to execute"
-            result = ["📋 Ready tasks (dependencies satisfied):"]
-            for task_id in ready:
-                task = self.task_manager.get_task(task_id)
-                result.append(f"  • {task_id}: {task.description if task else '?'}")
-            return "\n".join(result)
-
-        elif subcommand == "critical":
-            try:
-                path = self.task_manager.get_critical_path()
-                if not path:
-                    return "📭 No critical path (empty graph)"
-                result = ["📋 Critical path (longest dependency chain):"]
-                for i, task_id in enumerate(path, 1):
-                    task = self.task_manager.get_task(task_id)
-                    result.append(f"  {i}. {task_id}: {task.description if task else '?'}")
-                return "\n".join(result)
-            except ValueError as e:
-                return f"❌ Cannot compute critical path: {e}"
-
-        elif subcommand == "visualize":
-            try:
-                visualizer = TaskVisualizer(self.task_manager)
-                # Collect all views
-                views = []
-                views.append(visualizer.progress_summary())
-                views.append("\n" + "="*60 + "\n")
-                views.append(visualizer.execution_timeline())
-                views.append("\n" + "="*60 + "\n")
-                views.append(visualizer.critical_path_chart())
-                views.append("\n" + "="*60 + "\n")
-                views.append(visualizer.ascii_tree(max_depth=5))
-                return "\n".join(views)
-            except Exception as e:
-                return f"❌ Error during visualization: {e}"
-
-        elif subcommand == "plan":
-            if len(parts) < 2:
-                return "Usage: /task plan <goal>"
-            goal = " ".join(parts[1:])
-            try:
-                result = self.task_manager.plan_from_goal(goal, self.goal_planner, self)
-                task_ids = result.get("task_ids", [])
-                return f"✅ Plan created with {len(task_ids)} tasks from goal: {goal}\nTask IDs: {', '.join(task_ids)}"
-            except Exception as e:
-                return f"❌ Failed to create plan: {e}"
-
-        elif subcommand == "validate":
-            try:
-                is_valid, errors = self.task_manager.validate_dependencies()
-                if is_valid:
-                    return "✅ Dependency graph is valid (no cycles, missing tasks)"
-                else:
-                    result = ["❌ Dependency graph validation failed:"]
-                    result.extend(f"  • {err}" for err in errors)
-                    return "\n".join(result)
-            except Exception as e:
-                return f"❌ Validation error: {e}"
-
         elif subcommand in ("help", "?"):
             return self._show_task_help()
 
@@ -1737,18 +1025,6 @@ Remember: Always ask for permission before making changes!
             "  /task delete <id>               - Delete task",
             "  /task clear                     - Delete all tasks",
             "  /task help                      - Show this help",
-            "",
-            "Enhanced features (dependency graph):",
-            "  /task deps add <task> <dep>     - Add dependency between tasks",
-            "  /task deps remove <task> <dep>  - Remove dependency",
-            "  /task deps show <task>          - Show task dependencies",
-            "  /task graph                     - Show dependency graph (ASCII tree)",
-            "  /task order                     - Show execution order (topological)",
-            "  /task ready                     - Show tasks ready to execute",
-            "  /task critical                  - Show critical path",
-            "  /task visualize                 - Show all visualization views",
-            "  /task plan <goal>               - Create tasks from a goal plan",
-            "  /task validate                  - Validate dependencies (no cycles)",
             "",
             "Examples:",
             "  /task create \"Refactor auth module\"",
@@ -2253,14 +1529,6 @@ Remember: Always ask for permission before making changes!
             )
         else:
             return f"Unknown subcommand: {command}. Use /context help for usage."
-
-    def handle_compact_command(self, command: str) -> Optional[str]:
-        """
-        Handle /compact command to compress conversation history.
-        Usage: /compact
-        """
-        result = self.context_manager.compress_history()
-        return f"✅ Compressed history: {result['original_tokens']} → {result['compressed_tokens']} tokens (-{result['token_reduction']})"
 
     def handle_think_command(self, command: str) -> Optional[str]:
         """
@@ -4689,7 +3957,7 @@ Please think step by step and provide your analysis:"""
         
         return result
     
-    def search_sync(self, query: str) -> Tuple[bool, str]:
+    def search_sync(self, query: str) -> str:
         """Run async search from sync code"""
         if not self.search_loop:
             self.search_loop = asyncio.new_event_loop()
@@ -4774,7 +4042,7 @@ Please think step by step and provide your analysis:"""
         
         print(f"  • Pending changes: {len(self.code_changes_pending)}")
 
-    def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4, is_tool_continuation: bool = False, tool_call_depth: int = 0):
+    def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4):
         """Stream response with auto-file detection, analysis, and auto-fix capabilities"""
         import re
         import sys
@@ -4784,13 +4052,6 @@ Please think step by step and provide your analysis:"""
         COLORS_ENABLED = sys.stdout.isatty() and os.getenv('TERM') not in ('dumb', '')
         COLOR_THINKING = '\033[90m'  # Light gray
         COLOR_RESET = '\033[0m'
-
-        skip_early_processing = is_tool_continuation
-
-        # Limit recursion depth for tool calls
-        if tool_call_depth > 10:
-            self._status_print("❌ Maximum tool call recursion depth (10) exceeded", "critical")
-            return None
 
         # Auto-detect if this is a code-related query
         if not prompt.startswith(('/fix', '/analyze', '/code', '/read', '/search', '/models')):
@@ -4820,82 +4081,78 @@ Please think step by step and provide your analysis:"""
                              f"interpreted_as={suggested_cmd}, confidence={confidence:.2f}")
                 modified_prompt = suggested_cmd
 
-        if not skip_early_processing:
-            # Auto-search detection (skip if already a command)
-            if (self.auto_search_enabled and
-                not modified_prompt.startswith('/') and
-                self.searcher.should_search(modified_prompt)):
-                self._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
-                log_operation("auto_search_triggered", modified_prompt, True,
-                             f"query_length={len(modified_prompt)}")
-                success, results = self.search_sync(modified_prompt)
-                if success:
-                    log_operation("auto_search_results", modified_prompt, True,
-                                 f"results_length={len(results)}")
-                    self.add_search_results_to_history('web', modified_prompt, results)
-                    modified_prompt = f"Web search results:\n{results}\n\nUser question: {modified_prompt}"
-                else:
-                    log_operation("auto_search_failed", modified_prompt, False,
-                                 "search returned no results or error")
-                    self.add_to_history("system", f"Web search failed for '{modified_prompt}': {results}")
+        # Auto-search detection (skip if already a command)
+        if (self.auto_search_enabled and
+            not modified_prompt.startswith('/') and
+            self.searcher.should_search(modified_prompt)):
+            self._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
+            log_operation("auto_search_triggered", modified_prompt, True,
+                         f"query_length={len(modified_prompt)}")
+            success, results = self.search_sync(modified_prompt)
+            if success:
+                log_operation("auto_search_results", modified_prompt, True,
+                             f"results_length={len(results)}")
+                self.add_search_results_to_history('web', modified_prompt, results)
+                modified_prompt = f"Web search results:\n{results}\n\nUser question: {modified_prompt}"
+            else:
+                log_operation("auto_search_failed", modified_prompt, False,
+                             "search returned no results or error")
+                self.add_to_history("system", f"Web search failed for '{modified_prompt}': {results}")
 
-            # Update prompt with modifications
-            prompt = modified_prompt
+        # Update prompt with modifications
+        prompt = modified_prompt
 
-            # Auto-detect file paths before handling commands (skip if already a read command)
-            file_content = None
-            if not prompt.startswith(('/read', '/code read', '/fix', '/analyze')):
-                file_content = self.auto_detect_and_read_file(prompt)
-            if file_content:
-                # Extract just the filename from path
-                file_match = re.search(r'([^\\/]+\.\w+)$', prompt)
-                if file_match:
-                    filename = file_match.group(1)
-                    self._safe_print(f"🔍 Detected file reference: {filename}")
-                    self._safe_print(f"📄 Auto-loaded file content into conversation")
+        # Auto-detect file paths before handling commands (skip if already a read command)
+        file_content = None
+        if not prompt.startswith(('/read', '/code read', '/fix', '/analyze')):
+            file_content = self.auto_detect_and_read_file(prompt)
+        if file_content:
+            # Extract just the filename from path
+            file_match = re.search(r'([^\\/]+\.\w+)$', prompt)
+            if file_match:
+                filename = file_match.group(1)
+                self._safe_print(f"🔍 Detected file reference: {filename}")
+                self._safe_print(f"📄 Auto-loaded file content into conversation")
 
-            # Handle commands using registry
-            skip_user_add = False
-            command_handled = False
-            # Sort prefixes by length descending to match longest first
-            for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
-                if prompt.startswith(prefix):
-                    handler, strip_prefix = self.command_handlers[prefix]
-                    arg = prompt[len(prefix):].strip() if strip_prefix else prompt
-                    response = handler(arg)
-                    command_handled = True
+        # Handle commands using registry
+        skip_user_add = False
+        command_handled = False
+        # Sort prefixes by length descending to match longest first
+        for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
+            if prompt.startswith(prefix):
+                handler, strip_prefix = self.command_handlers[prefix]
+                arg = prompt[len(prefix):].strip() if strip_prefix else prompt
+                response = handler(arg)
+                command_handled = True
 
-                    # Special handling for /fix and /analyze
-                    if prefix in ["/fix", "/analyze"]:
-                        skip_user_add = True
-                        if response is not None:
-                            self._safe_print(f"\n{response}\n")
-                        # Continue to API call
-                        break
-
-                    # Special handling for /code apply confirm
-                    if prefix == "/code":
-                        subcommand = arg
-                        if subcommand.startswith("apply confirm") or subcommand == "apply force":
-                            force = "force" in subcommand
-                            response = self._code_apply_changes_confirm(force)
-
-                    # For other commands, print response and return
+                # Special handling for /fix and /analyze
+                if prefix in ["/fix", "/analyze"]:
+                    skip_user_add = True
                     if response is not None:
                         self._safe_print(f"\n{response}\n")
-                    return None
+                    # Continue to API call
+                    break
 
-            # If no command matched
-            if not command_handled:
-                skip_user_add = False
-                skip_user_add = False
+                # Special handling for /code apply confirm
+                if prefix == "/code":
+                    subcommand = arg
+                    if subcommand.startswith("apply confirm") or subcommand == "apply force":
+                        force = "force" in subcommand
+                        response = self._code_apply_changes_confirm(force)
 
-            # Regular chat processing (skip if we already added in handle_auto_fix_command)
-            if not skip_user_add:
-                self.add_to_history("user", prompt)
-        else:
-            # Skip early processing, no user message to add
-            skip_user_add = True
+                # For other commands, print response and return
+                if response is not None:
+                    self._safe_print(f"\n{response}\n")
+                return None
+
+        # If no command matched
+        if not command_handled:
+            skip_user_add = False
+            skip_user_add = False
+
+        # Regular chat processing (skip if we already added in handle_auto_fix_command)
+        if not skip_user_add:
+            self.add_to_history("user", prompt)
 
         # Context management check
         actual_max_tokens = max_tokens or agent_config.max_tokens
@@ -4946,13 +4203,6 @@ Please think step by step and provide your analysis:"""
             "max_tokens": actual_max_tokens,
         }
 
-        # Add tools for tool mode
-        if self.mode == "tool":
-            tools = self._get_tools_for_openai()
-            if tools:
-                payload["tools"] = tools
-                self._status_print(f"🔧 Tool mode: added {len(tools)} tools to request", "debug")
-
         if self.thinking_enabled:
             payload["thinking"] = {"type": "enabled"}
             self._status_print(f"💭 Thinking mode: ENABLED", "debug")
@@ -4963,29 +4213,6 @@ Please think step by step and provide your analysis:"""
             
             # Start timing
             start_time = time.time()
-
-            # Create progress task for AI processing
-            processing_task_id = None
-            if HAS_PROGRESS_DISPLAY and get_global_progress:
-                # Use existing task from interface if available
-                if hasattr(self, 'current_task_id') and self.current_task_id:
-                    task = get_global_progress().get_task(self.current_task_id)
-                    if task and task.get("status") == TaskStatus.IN_PROGRESS:
-                        processing_task_id = self.current_task_id
-                    else:
-                        processing_task_id = get_global_progress().start_task(
-                            title="Processing...",
-                            description="",
-                            tool_uses=0,
-                            tokens=0
-                        )
-                else:
-                    processing_task_id = get_global_progress().start_task(
-                        title="Processing...",
-                        description="",
-                        tool_uses=0,
-                        tokens=0
-                    )
 
             # Add progress indicator in background (only in chat mode)
             import threading
@@ -5030,14 +4257,11 @@ Please think step by step and provide your analysis:"""
 
             full_response = ""
             reasoning_content = ""
-            tool_calls = []
             is_reasoning_active = False
             is_final_response_active = False
             has_seen_reasoning = False
             chars_received = 0
             last_update_time = time.time()
-            thinking_task_id = processing_task_id
-            thinking_start_time = 0
 
             try:
                 for line in response.iter_lines():
@@ -5052,64 +4276,28 @@ Please think step by step and provide your analysis:"""
                                 json_data = json.loads(data)
                                 if "choices" in json_data and json_data["choices"]:
                                     delta = json_data["choices"][0].get("delta", {})
-                                    # Check for tool calls
-                                    if "tool_calls" in delta:
-                                        tool_call_deltas = delta["tool_calls"]
-                                        for tool_call_delta in tool_call_deltas:
-                                            # Initialize or update tool call
-                                            index = tool_call_delta.get("index")
-                                            if index is not None:
-                                                while len(tool_calls) <= index:
-                                                    tool_calls.append({"id": "", "type": "function", "function": {"name": "", "arguments": ""}})
-                                                if "id" in tool_call_delta:
-                                                    tool_calls[index]["id"] = tool_call_delta["id"]
-                                                if "function" in tool_call_delta:
-                                                    func_delta = tool_call_delta["function"]
-                                                    if "name" in func_delta:
-                                                        tool_calls[index]["function"]["name"] = func_delta["name"]
-                                                    if "arguments" in func_delta:
-                                                        tool_calls[index]["function"]["arguments"] += func_delta["arguments"]
                                     reasoning_chunk = delta.get("reasoning_content")
 
                                     if reasoning_chunk is not None:
                                         if reasoning_chunk and not is_reasoning_active:
-                                            # Update or create progress task for thinking
-                                            if HAS_PROGRESS_DISPLAY and get_global_progress and self.thinking_enabled:
-                                                if thinking_task_id:
-                                                    # Update existing task to show thinking
-                                                    get_global_progress().update_task(thinking_task_id, title="Thinking")
-                                                else:
-                                                    # Create new thinking task
-                                                    thinking_task_id = get_global_progress().start_task(
-                                                        title="Thinking",
-                                                        description="",
-                                                        tool_uses=0,
-                                                        tokens=0
-                                                    )
-                                                thinking_start_time = time.time()
+                                            if COLORS_ENABLED:
+                                                print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
                                             else:
-                                                # Fallback: show thinking header
-                                                if COLORS_ENABLED:
-                                                    print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
-                                                else:
-                                                    print(f"\n💭 THINKING:")
-                                                if COLORS_ENABLED:
-                                                    print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
-                                                else:
-                                                    print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                                print(f"\n💭 THINKING:")
+                                            if COLORS_ENABLED:
+                                                print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
+                                            else:
+                                                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
                                             is_reasoning_active = True
                                             is_final_response_active = False
                                             has_seen_reasoning = True
 
                                         if reasoning_chunk:
-                                            # Accumulate thinking content
+                                            if COLORS_ENABLED and is_reasoning_active:
+                                                print(f"{COLOR_THINKING}{reasoning_chunk}{COLOR_RESET}", end="", flush=True)
+                                            else:
+                                                print(f"{reasoning_chunk}", end="", flush=True)
                                             reasoning_content += reasoning_chunk
-                                            # Display thinking if progress display not available
-                                            if not (HAS_PROGRESS_DISPLAY and get_global_progress) or not self.thinking_enabled:
-                                                if COLORS_ENABLED and is_reasoning_active:
-                                                    print(f"{COLOR_THINKING}{reasoning_chunk}{COLOR_RESET}", end="", flush=True)
-                                                else:
-                                                    print(f"{reasoning_chunk}", end="", flush=True)
 
                                     content = delta.get("content", "")
                                     if content:
@@ -5121,29 +4309,6 @@ Please think step by step and provide your analysis:"""
                                                 print(f"\n🤖 Assistant: ", end="", flush=True)
                                             is_final_response_active = True
                                             is_reasoning_active = False
-
-                                            # Update progress task when response starts
-                                            if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress:
-                                                processing_time = time.time() - start_time
-                                                # Estimate token count from thinking content if available, otherwise from chars_received
-                                                if reasoning_content:
-                                                    token_estimate = len(reasoning_content) // 4
-                                                    # Truncate thinking content for display
-                                                    if len(reasoning_content) > 1000:
-                                                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                                                    else:
-                                                        display_content = reasoning_content
-                                                    description = f"Thinking completed in {processing_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                                                else:
-                                                    # No thinking content, estimate from response so far
-                                                    token_estimate = chars_received // 4
-                                                    description = f"Processing completed in {processing_time:.1f}s, ~{token_estimate} tokens"
-
-                                                get_global_progress().update_task(
-                                                    thinking_task_id,
-                                                    status=None,  # Keep task in progress during streaming
-                                                    description=description
-                                                )
 
                                         print(content, end="", flush=True)
                                         full_response += content
@@ -5159,22 +4324,6 @@ Please think step by step and provide your analysis:"""
                 print("\n\n⏹️ [Streaming interrupted by user]")
                 response.close()
 
-                # Update thinking task if active
-                if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress and is_reasoning_active:
-                    thinking_time = time.time() - thinking_start_time
-                    token_estimate = len(reasoning_content) // 4
-                    # Truncate thinking content for display
-                    if len(reasoning_content) > 1000:
-                        display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                    else:
-                        display_content = reasoning_content
-                    description = f"Thinking interrupted after {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                    get_global_progress().update_task(
-                        thinking_task_id,
-                        status=TaskStatus.FAILED,
-                        description=description
-                    )
-
                 save_partial = input("\n💾 Save partial response? (y/n): ").strip().lower()
                 if save_partial == 'y' and full_response:
                     self.add_to_history("assistant", full_response + "\n[Response interrupted by user]")
@@ -5183,35 +4332,7 @@ Please think step by step and provide your analysis:"""
                     self.conversation_history.pop()
                     return None
 
-            # Update thinking task if still active (thinking-only response)
-            if thinking_task_id and HAS_PROGRESS_DISPLAY and get_global_progress and is_reasoning_active:
-                thinking_time = time.time() - thinking_start_time
-                token_estimate = len(reasoning_content) // 4
-                # Truncate thinking content for display
-                if len(reasoning_content) > 1000:
-                    display_content = reasoning_content[:1000] + f"\n[... {len(reasoning_content) - 1000} more characters]"
-                else:
-                    display_content = reasoning_content
-                description = f"Thinking completed in {thinking_time:.1f}s, ~{token_estimate} tokens\n\n{display_content}"
-                get_global_progress().update_task(
-                    thinking_task_id,
-                    status=TaskStatus.COMPLETED,
-                    description=description
-                )
-
-            # Handle tool calls if any
-            if tool_calls:
-                self._status_print(f"🔧 Detected {len(tool_calls)} tool call(s) in response", "info")
-                # Execute tool calls
-                success = self._handle_tool_calls(tool_calls, full_response)
-                if success:
-                    self._status_print("✅ Tool execution successful, continuing conversation...", "info")
-                else:
-                    self._status_print("⚠️  Tool execution had errors, continuing conversation...", "warning")
-                # Continue conversation with LLM, passing tool results in history
-                return self.stream_response("", temperature, max_tokens, is_tool_continuation=True, tool_call_depth=tool_call_depth+1)
-
-            # Add the complete response to history (only if no tool calls)
+            # Add the complete response to history
             if full_response:
                 self.add_to_history("assistant", full_response)
 
@@ -5275,7 +4396,7 @@ Please think step by step and provide your analysis:"""
             self.conversation_history.pop()
             return None
 
-    async def stream_response_async(self, prompt: str, tool_call_depth: int = 0, **kwargs):
+    async def stream_response_async(self, prompt: str, **kwargs):
         """Async version - handles search and model commands asynchronously"""
         # Special case for /search (native async)
         if prompt.startswith("/search"):
@@ -5313,9 +4434,9 @@ Please think step by step and provide your analysis:"""
                 return None
 
         # No command matched, fall back to sync stream_response
-        return self.stream_response(prompt, tool_call_depth=tool_call_depth, **kwargs)
+        return self.stream_response(prompt, **kwargs)
 
-        return self.stream_response(prompt, tool_call_depth=tool_call_depth, **kwargs)
+        return self.stream_response(prompt, **kwargs)
 
     def run_async(self, prompt: str, **kwargs):
         """Helper to run async from sync code"""
@@ -5949,7 +5070,7 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         # If old_code is very short, just return empty
         if len(old_code_clean) < 10:
             return ""
-
+        
         # Try to find exact or similar matches
         best_match = None
         best_ratio = 0
@@ -5965,19 +5086,19 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
         # Try to find similar code using difflib
         # Break the file into chunks and compare
         chunk_size = min(10, len(file_lines))
-
+        
         for i in range(0, len(file_lines) - chunk_size + 1, chunk_size // 2):
             chunk = "\n".join(file_lines[i:i+chunk_size])
-
+            
             # Calculate similarity ratio
             ratio = difflib.SequenceMatcher(None, old_code_clean, chunk).ratio()
-
+            
             if ratio > best_ratio:
                 best_ratio = ratio
                 start = max(0, i - context_lines)
                 end = min(len(file_lines), i + chunk_size + context_lines)
                 best_match = "\n".join(file_lines[start:end])
-
+        
         # If we found something reasonably similar (ratio > 0.3)
         if best_match and best_ratio > 0.3:
             return best_match
@@ -5987,20 +5108,3 @@ Please analyze this code and suggest any improvements, fixes, or optimizations."
             start = max(0, middle - context_lines * 2)
             end = min(len(file_lines), middle + context_lines * 2)
             return "\n".join(file_lines[start:end])
-
-    def shutdown(self, wait: bool = True) -> None:
-        """
-        Shutdown background task queue and cleanup resources.
-
-        Args:
-            wait: Wait for background tasks to complete
-        """
-        shutdown_global_task_queue(wait=wait)
-        self._status_print("Background task queue shutdown", "info")
-
-    def __del__(self):
-        """Cleanup on destruction."""
-        try:
-            shutdown_global_task_queue(wait=False)
-        except:
-            pass  # Ignore errors during cleanup

@@ -1,6 +1,6 @@
 agent:
-  mode: coding
-  model: deepseek-reasoner
+  mode: chat
+  model: deepseek-chat
   temperature: 0.7
   max_tokens: 8192
   thinking_enabled: true
@@ -9,8 +9,8 @@ agent:
   max_retries: 3
   debug: false
   search_enabled: true
-  system_prompt: 'You are an advanced AI assistant with powerful capabilities for
-    software engineering, web search, and general assistance. You can help with:
+  system_prompt: 'You are DeepSeek AI, a helpful and versatile AI assistant. You can
+    help with:
 
 
     1. **General conversation** - Answer questions, have discussions, provide information
@@ -41,7 +41,7 @@ agent:
   auto_features:
     enabled: true
     auto_search:
-      enabled: true
+      enabled: false
       triggers:
       - today
       - news
@@ -64,7 +64,7 @@ agent:
       - announcement
       - release
     natural_language:
-      enabled: true
+      enabled: false
       confidence_threshold: 0.8
     safety:
       confirm_file_operations: true
@@ -72,9 +72,8 @@ agent:
   coding_mode:
     auto_file_operations: true
     workspace_scan: true
-    system_prompt: 'You are an advanced AI coding assistant with powerful software
-      engineering capabilities. You operate as an interactive CLI tool that helps
-      users with software engineering tasks.
+    system_prompt: 'You are Claude Code, Anthropic''s official CLI for Claude. You
+      are an interactive CLI tool that helps users with software engineering tasks.
 
       You automatically read files when they are mentioned, suggest edits, and provide
       coding assistance. You are aware of the workspace context and can navigate project
@@ -94,34 +93,3 @@ agent:
     show_status_bar: true
     enable_auto_complete: true
     enable_mcp_support: true
-  tool_mode:
-    system_prompt: 'You are an AI assistant with tool-calling capabilities. You can
-      call tools to perform actions like reading files, executing commands, searching
-      the web, git operations, planning, and delegating to subagents.
-
-      Available tools: • File operations: read, write • System operations: execute,
-      git • Web: search • Planning: enter_plan_mode, exit_plan_mode • Delegation:
-      task (delegates to explore, plan, bash subagents)
-
-      When the user asks you to do something, determine which tool(s) to use and call
-      them with appropriate parameters. You will receive the tool results and can
-      respond to the user.
-
-      Special notes: - Use enter_plan_mode for complex tasks that need planning -
-      Use exit_plan_mode to summarize and execute plans - Use task to delegate to
-      specialized subagents (explore, plan, bash) - Always explain what you are doing
-      and show tool results to the user.'
-    natural_language_confidence_threshold: 0.7
-    safety_confirm_file_operations: false
-    auto_read_files: true
-    auto_analyze_references: true
-    show_status_bar: true
-    enable_auto_complete: true
-    enable_mcp_support: true
-  skill_directories:
-  - agent/skills/
-  - skills/
-  - .claude/skills/
-  tool_dispatch_mode: auto
-  enable_todo_write: true
-  enable_skill_loader: true
