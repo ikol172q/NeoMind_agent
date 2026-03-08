@@ -214,12 +214,6 @@ class HelpSystem:
                 usage="/context [status|compress|clear|help]",
                 examples="/context status\n/context compress\n/context clear"
             ),
-            "compact": self.formatter.command_help(
-                command="/compact",
-                description="Compact conversation history to reduce token usage.",
-                usage="/compact",
-                examples="/compact"
-            ),
             "think": self.formatter.command_help(
                 command="/think",
                 description="Toggle thinking mode.",

@@ -5,13 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "user-agent"
 version = "0.1.0"
-description = "Advanced AI Agent - LLM-based agent for personal usage"
+description = "DeepSeek AI Agent - LLM-based agent for personal usage"
 readme = "README.md"
 authors = [
     {name = "user", email = "removed@example.com"}
 ]
 license = {file = "LICENSE"}
-keywords = ["advanced", "ai", "agent", "llm", "cli"]
+keywords = ["deepseek", "ai", "agent", "llm", "cli"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
