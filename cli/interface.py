@@ -13,7 +13,6 @@ try:
     from prompt_toolkit import PromptSession
     from prompt_toolkit.history import InMemoryHistory
     from prompt_toolkit.output.defaults import create_output
-    from prompt_toolkit.key_binding import KeyBindings
     PROMPT_TOOLKIT_AVAILABLE = True
 except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
@@ -212,20 +211,6 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
     progress = get_global_progress(language="en")
     task_registry = {}  # Map command -> task_id
 
-    # Create key bindings for ctrl+o to toggle task expansion
-    kb = KeyBindings()
-
-    @kb.add('c-o')
-    def _(event):
-        # Toggle expansion of most recent task
-        if progress.toggle_task_expansion():
-            # Clear screen and redisplay interface
-            print("\033[2J\033[H")  # Clear screen and move cursor to top
-            display_interface()
-        else:
-            # No task to expand
-            pass
-
     # Helper function to display progress and status bar
     def display_interface():
         """Display progress and status bar."""
@@ -242,7 +227,7 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
             # Display interface
             display_interface()
 
-            user_input = get_multiline_input_with_prompt_toolkit(session, chat.mode, completer, debug=agent_config.debug, key_bindings=kb)
+            user_input = get_multiline_input_with_prompt_toolkit(session, chat.mode, completer, debug=agent_config.debug)
 
             if user_input is None:
                 break

@@ -4,7 +4,7 @@ from prompt_toolkit.completion import Completer
 from agent_config import agent_config
 
 
-def get_multiline_input_with_prompt_toolkit(session, mode: str = "chat", completer: Optional[Completer] = None, debug: Optional[bool] = None, key_bindings=None):
+def get_multiline_input_with_prompt_toolkit(session, mode: str = "chat", completer: Optional[Completer] = None, debug: Optional[bool] = None):
     """Get multiline input with prompt_toolkit, supporting \ + Enter for line continuation"""
     import sys
     if debug is None:
@@ -54,8 +54,6 @@ def get_multiline_input_with_prompt_toolkit(session, mode: str = "chat", complet
                 prompt_args["complete_while_typing"] = True
             if "complete_in_thread" in supported_params:
                 prompt_args["complete_in_thread"] = True
-            if "key_bindings" in supported_params and key_bindings is not None:
-                prompt_args["key_bindings"] = key_bindings
 
             line = session.prompt(**prompt_args)
 
