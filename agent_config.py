@@ -88,10 +88,6 @@ class AgentConfigManager:
             "DEEPSEEK_KEEP_SYSTEM_MESSAGES": "agent.context.keep_system_messages",
             "DEEPSEEK_KEEP_RECENT_MESSAGES": "agent.context.keep_recent_messages",
             "DEEPSEEK_DEBUG": "agent.debug",
-            "DEEPSEEK_SKILL_DIRECTORIES": "agent.skill_directories",
-            "DEEPSEEK_TOOL_DISPATCH_MODE": "agent.tool_dispatch_mode",
-            "DEEPSEEK_ENABLE_TODO_WRITE": "agent.enable_todo_write",
-            "DEEPSEEK_ENABLE_SKILL_LOADER": "agent.enable_skill_loader",
         }
 
         for env_var, config_path in env_mappings.items():
@@ -111,13 +107,6 @@ class AgentConfigManager:
                 elif env_var == "DEEPSEEK_DEBUG":
                     # Accept "true", "false", "1", "0"
                     env_val = env_val.lower() in ("true", "1", "yes", "on")
-                elif env_var == "DEEPSEEK_ENABLE_TODO_WRITE":
-                    env_val = env_val.lower() in ("true", "1", "yes", "on")
-                elif env_var == "DEEPSEEK_ENABLE_SKILL_LOADER":
-                    env_val = env_val.lower() in ("true", "1", "yes", "on")
-                elif env_var == "DEEPSEEK_SKILL_DIRECTORIES":
-                    # Comma-separated list of directories
-                    env_val = [p.strip() for p in env_val.split(",") if p.strip()]
                 # Compression strategy is string, no conversion needed
                 OmegaConf.update(self._cfg, config_path, env_val)
     
@@ -234,10 +223,6 @@ class AgentConfigManager:
         return self.get("coding_mode.system_prompt", "")
 
     @property
-    def tool_mode_system_prompt(self) -> str:
-        return self.get("tool_mode.system_prompt", "")
-
-    @property
     def coding_mode_natural_language_confidence_threshold(self) -> float:
         return self.get("coding_mode.natural_language_confidence_threshold", 0.7)
 
@@ -265,25 +250,9 @@ class AgentConfigManager:
     def coding_mode_enable_mcp_support(self) -> bool:
         return self.get("coding_mode.enable_mcp_support", True)
 
-    @property
-    def skill_directories(self) -> list:
-        return self.get("skill_directories", ["agent/skills/", "skills/", ".claude/skills/"])
-
-    @property
-    def tool_dispatch_mode(self) -> str:
-        return self.get("tool_dispatch_mode", "auto")
-
-    @property
-    def enable_todo_write(self) -> bool:
-        return self.get("enable_todo_write", True)
-
-    @property
-    def enable_skill_loader(self) -> bool:
-        return self.get("enable_skill_loader", True)
-
     def update_mode(self, mode: str) -> bool:
         """Update agent mode and save configuration."""
-        if mode not in ("chat", "coding", "tool"):
+        if mode not in ("chat", "coding"):
             return False
         return self.update_value("agent.mode", mode)
 

@@ -1,5 +1,5 @@
 # cli/progress_display.py
-"""Advanced progress display system similar to advanced CLI."""
+"""Advanced progress display system similar to Claude CLI."""
 
 import time
 import threading
@@ -353,8 +353,8 @@ class ProgressDisplay:
                 # Build title line
                 title_line = f"{color}{icon} {task['title']}{reset}"
 
-                # Add description if available and (expanded or still in progress)
-                if task.get("description") and (task.get("expanded") or status == TaskStatus.IN_PROGRESS):
+                # Add description if available and expanded
+                if task.get("description") and task.get("expanded"):
                     desc_lines = task["description"].split('\n')
                     for desc_line in desc_lines[:3]:  # Limit description lines
                         lines.append(f"  {desc_line}")
@@ -405,26 +405,13 @@ class ProgressDisplay:
 
             return "\n".join(lines)
 
-    def clear_completed(self, retention_seconds: float = 0.0) -> int:
-        """Clear completed tasks and return number cleared.
-
-        Args:
-            retention_seconds: How long to keep completed tasks before clearing.
-                               Default 0.0 clears immediately (backward compatibility).
-        """
+    def clear_completed(self) -> int:
+        """Clear completed tasks and return number cleared."""
         with self.lock:
             to_remove = []
-            current_time = time.time()
             for task_id in list(self.tasks.keys()):
-                task = self.tasks[task_id]
-                if task["status"] in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
-                    # Check retention period
-                    end_time = task.get("end_time")
-                    if end_time and current_time - end_time >= retention_seconds:
-                        to_remove.append(task_id)
-                    elif not end_time:
-                        # No end_time set, remove immediately
-                        to_remove.append(task_id)
+                if self.tasks[task_id]["status"] in [TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED]:
+                    to_remove.append(task_id)
 
             for task_id in to_remove:
                 if task_id in self.tasks:

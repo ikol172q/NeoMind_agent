@@ -13,33 +13,13 @@ except ImportError:
 
 from agent_config import agent_config
 
-# Compression strategies
-try:
-    from .compression import (
-        TruncationStrategy,
-        SummarizationStrategy,
-        RelevanceFilteringStrategy,
-        ToolResultCompressionStrategy,
-    )
-    HAS_COMPRESSION = True
-except ImportError:
-    HAS_COMPRESSION = False
-
 
 class ContextManager:
     """Manages conversation context including token counting and compression."""
 
-    def __init__(
-        self,
-        conversation_history: List[Dict[str, str]],
-        api_key: Optional[str] = None,
-        model: str = "deepseek-chat"
-    ):
+    def __init__(self, conversation_history: List[Dict[str, str]]):
         self.conversation_history = conversation_history
-        self.api_key = api_key
-        self.model = model
         self._encoding = None
-        self._compression_strategies: Dict[str, Any] = {}
         self._initialize_encoding()
 
     def _initialize_encoding(self):
@@ -134,67 +114,6 @@ class ContextManager:
 
         return False, stats
 
-    def _get_compression_strategy(self, strategy_name: str):
-        """
-        Get compression strategy by name.
-
-        Args:
-            strategy_name: Name of strategy.
-
-        Returns:
-            CompressionStrategy instance.
-
-        Raises:
-            ValueError: If strategy not found or compression module not available.
-        """
-        if not HAS_COMPRESSION:
-            raise ValueError(
-                "Compression module not available. "
-                "Install required dependencies or use 'truncate' strategy."
-            )
-
-        if strategy_name not in self._compression_strategies:
-            if strategy_name == "truncate":
-                try:
-                    self._compression_strategies[strategy_name] = TruncationStrategy()
-                except NameError:
-                    # Fallback if TruncationStrategy not imported
-                    from .compression.truncation import TruncationStrategy
-                    self._compression_strategies[strategy_name] = TruncationStrategy()
-            elif strategy_name == "summarize":
-                # Create summarizer if API key available
-                summarizer = None
-                if self.api_key:
-                    from .compression.summarization import create_default_summarizer
-                    try:
-                        summarizer = create_default_summarizer(self.api_key, self.model)
-                    except Exception:
-                        pass  # Fall back to no summarizer
-                self._compression_strategies[strategy_name] = SummarizationStrategy(summarizer)
-            elif strategy_name == "relevance":
-                self._compression_strategies[strategy_name] = RelevanceFilteringStrategy()
-            elif strategy_name == "tool_result":
-                self._compression_strategies[strategy_name] = ToolResultCompressionStrategy()
-            elif strategy_name == "combined":
-                # Combine multiple strategies (truncate + tool_result)
-                class CombinedStrategy(TruncationStrategy):
-                    def compress(self, messages, keep_system=True, keep_recent=5, **kwargs):
-                        # First apply tool result compression
-                        tool_compressor = ToolResultCompressionStrategy()
-                        tool_result = tool_compressor.compress(messages, keep_system, keep_recent)
-                        # Then apply truncation
-                        return super().compress(
-                            tool_result.compressed_messages,
-                            keep_system,
-                            keep_recent,
-                            **kwargs
-                        )
-                self._compression_strategies[strategy_name] = CombinedStrategy()
-            else:
-                raise ValueError(f"Unknown compression strategy: {strategy_name}")
-
-        return self._compression_strategies[strategy_name]
-
     def compress_history(self, strategy: Optional[str] = None) -> Dict[str, Any]:
         """
         Compress conversation history to reduce token count.
@@ -205,44 +124,19 @@ class ContextManager:
         Returns:
             Dictionary with compression results.
         """
-        strategy_name = strategy or agent_config.compression_strategy
+        strategy = strategy or agent_config.compression_strategy
         keep_system = agent_config.keep_system_messages
         keep_recent = agent_config.keep_recent_messages
 
         original_count = len(self.conversation_history)
         original_tokens = self.count_conversation_tokens()
 
-        try:
-            strategy_obj = self._get_compression_strategy(strategy_name)
-        except ValueError as e:
-            # Invalid strategy name, re-raise
-            raise
-        except Exception as e:
-            # Other errors (e.g., import issues) fall back to truncate
-            warnings.warn(f"Compression strategy '{strategy_name}' failed: {e}. Falling back to truncate.")
-            from .compression import TruncationStrategy
-            strategy_obj = TruncationStrategy()
-            strategy_name = "truncate_fallback"
-
-        try:
-            result = strategy_obj.compress(
-                self.conversation_history,
-                keep_system=keep_system,
-                keep_recent=keep_recent
-            )
-            compressed = result.compressed_messages
-        except Exception as e:
-            # If compression fails, fall back to simple truncation
-            warnings.warn(f"Compression execution failed: {e}. Using simple truncation.")
-            from .compression import TruncationStrategy
-            fallback = TruncationStrategy()
-            result = fallback.compress(
-                self.conversation_history,
-                keep_system=keep_system,
-                keep_recent=keep_recent
-            )
-            compressed = result.compressed_messages
-            strategy_name = "truncate_fallback"
+        if strategy == "truncate":
+            compressed = self._truncate_history(keep_system, keep_recent)
+        elif strategy == "summarize":
+            compressed = self._summarize_history(keep_system, keep_recent)
+        else:
+            raise ValueError(f"Unknown compression strategy: {strategy}")
 
         # Replace history with compressed version
         self.conversation_history[:] = compressed
@@ -256,8 +150,7 @@ class ContextManager:
             "original_tokens": original_tokens,
             "compressed_tokens": new_tokens,
             "token_reduction": reduction,
-            "strategy": strategy_name,
-            "compression_details": result.details if 'result' in locals() else {},
+            "strategy": strategy,
         }
 
     def _truncate_history(self, keep_system: bool, keep_recent: int) -> List[Dict[str, str]]:
