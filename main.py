@@ -40,6 +40,14 @@ def interactive_main(mode: str = "chat"):
         else:
             print(f"Warning: Failed to set mode to {mode}, using current mode: {agent_config.mode}")
 
+    # Try Claude-like interface first (preferred)
+    try:
+        from cli.claude_interface import interactive_chat_claude_interface
+        interactive_chat_claude_interface(mode)
+        return
+    except Exception as e:
+        print(f"Note: Claude interface unavailable ({e}), falling back to standard interface")
+
     # Check for prompt_toolkit availability
     try:
         from prompt_toolkit import PromptSession

@@ -1,12 +1,6 @@
 # agent/core.py
 import os
-import json
-import asyncio
-from typing import Optional, Dict, List, Any
-import requests
-from bs4 import BeautifulSoup
-import re
-import os
+import sys
 import json
 import asyncio
 import re
@@ -16,17 +10,47 @@ import pathlib
 import fnmatch
 import hashlib
 import warnings
-import sys
 import stat
+import difflib
 from typing import Optional, Dict, List, Any, Set, Tuple, Callable
-import requests
 from urllib.parse import urlparse
+
+import requests
+
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+    BeautifulSoup = None
+
 try:
     import chardet
     HAS_CHARDET = True
 except ImportError:
     HAS_CHARDET = False
     chardet = None
+
+try:
+    from requests_html import HTMLSession
+    HAS_REQUESTS_HTML = True
+except ImportError:
+    HAS_REQUESTS_HTML = False
+    HTMLSession = None
+
+try:
+    import trafilatura
+    HAS_TRAFILATURA = True
+except ImportError:
+    HAS_TRAFILATURA = False
+
+try:
+    import html2text
+    HAS_HTML2TEXT = True
+except ImportError:
+    HAS_HTML2TEXT = False
+    html2text = None
+
 from .code_analyzer import CodeAnalyzer
 from .self_iteration import SelfIteration
 from .task_manager import TaskManager
@@ -36,45 +60,8 @@ from .command_executor import CommandExecutor, execute_safe, execute_git_safe
 from .safety import SafetyManager, safe_read_file, safe_write_file, safe_delete_file, is_path_safe, log_operation
 from .planner import Planner, plan_changes, GoalPlanner
 from .context_manager import ContextManager, HAS_TIKTOKEN
-import difflib  # Add this line to your imports
-
-# Add to imports
-import html
-from urllib.parse import urlparse
-try:
-    import chardet
-    HAS_CHARDET = True
-except ImportError:
-    HAS_CHARDET = False
-    chardet = None  # For auto-detecting encoding
-
 from .search import OptimizedDuckDuckGoSearch
 from .natural_language import NaturalLanguageInterpreter
-from agent_config import agent_config
-
-try:
-    from requests_html import HTMLSession
-    HAS_REQUESTS_HTML = True
-except ImportError:
-    HAS_REQUESTS_HTML = False
-    HTMLSession = None
-
-# Optional: For better article extraction
-try:
-    import trafilatura
-    HAS_TRAFILATURA = True
-except ImportError:
-    HAS_TRAFILATURA = False
-
-# Optional: html2text for HTML to markdown conversion
-try:
-    import html2text
-    HAS_HTML2TEXT = True
-except ImportError:
-    HAS_HTML2TEXT = False
-    html2text = None
-
-from .search import OptimizedDuckDuckGoSearch
 from agent_config import agent_config
 
 class DeepSeekStreamingChat:
@@ -89,7 +76,7 @@ class DeepSeekStreamingChat:
         self.workspace_manager = None  # Lazy initialization for coding mode
         self.show_status_bar = agent_config.coding_mode_show_status_bar if agent_config.mode == "coding" else False
         # Status display system for coding mode
-        self.verbose_mode = True if agent_config.mode == "coding" else False  # Show detailed debug messages in coding mode by default
+        self.verbose_mode = False  # Hidden by default; toggle with /verbose or Ctrl+E
         self.status_buffer = []  # Store debug/info messages for later display
         self.current_status = ""  # Current single-line status message
         self.last_status_update = 0  # Timestamp of last status update
@@ -221,10 +208,14 @@ class DeepSeekStreamingChat:
         Args:
             message: Message to print
             level: Message level - "critical", "important", "info", "debug"
-        """
-        import time
 
-        # Store message in buffer for potential later display
+        Levels:
+            critical  - Always shown (errors, failures)
+            important - Always shown (key state changes)
+            info      - Hidden unless verbose; shown as single-line status in tty
+            debug     - Hidden unless verbose; silently buffered
+        """
+        # Store message in buffer for potential later display (/verbose dump)
         self.status_buffer.append({
             "timestamp": time.time(),
             "message": message,
@@ -234,28 +225,15 @@ class DeepSeekStreamingChat:
         if len(self.status_buffer) > 100:
             self.status_buffer = self.status_buffer[-50:]
 
-        # In coding mode with verbose mode disabled
-        if self.mode == "coding" and not self.verbose_mode:
-            if level in ("critical", "important"):
-                # Show critical/important messages immediately
-                self._safe_print(message)
-            elif level == "info":
-                # For info messages, update single-line status
-                self.current_status = message
-                # Use carriage return to update line (if output is a tty)
-                import sys
-                if sys.stdout.isatty():
-                    # Clear line and print status
-                    sys.stdout.write(f"\r\033[K{message}")
-                    sys.stdout.flush()
-                else:
-                    # Non-interactive, just print
-                    self._safe_print(message)
-            # debug messages are silently stored in buffer
+        # Verbose mode ON → print everything
+        if self.verbose_mode:
+            self._safe_print(message)
             return
 
-        # In chat mode OR coding mode with verbose mode enabled
-        self._safe_print(message)
+        # Verbose mode OFF (default) → only show critical/important
+        if level in ("critical", "important"):
+            self._safe_print(message)
+        # info/debug are silently buffered; viewable via /verbose dump
 
     def add_status_message(self, message: str, level: str = "info") -> None:
         """Add a status message to the buffer without printing."""
@@ -375,8 +353,7 @@ class DeepSeekStreamingChat:
             self.safety_confirm_file_operations = agent_config.coding_mode_safety_confirm_file_operations
             # Show status bar
             self.show_status_bar = agent_config.coding_mode_show_status_bar
-            # Enable verbose mode in coding mode by default
-            self.verbose_mode = True
+            # Keep verbose mode as user set it
         else:
             # Restore default system prompt
             default_prompt = agent_config.system_prompt
@@ -390,8 +367,7 @@ class DeepSeekStreamingChat:
             self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
             # Hide status bar
             self.show_status_bar = False
-            # Disable verbose mode in chat mode (all messages shown anyway)
-            self.verbose_mode = False
+            # Keep verbose mode as user set it
 
         return True
 
@@ -4148,7 +4124,6 @@ Please think step by step and provide your analysis:"""
         # If no command matched
         if not command_handled:
             skip_user_add = False
-            skip_user_add = False
 
         # Regular chat processing (skip if we already added in handle_auto_fix_command)
         if not skip_user_add:
@@ -4387,14 +4362,7 @@ Please think step by step and provide your analysis:"""
             traceback.print_exc()
             return None
 
-        except requests.exceptions.Timeout:
-            print("\nRequest timed out. Please try again.")
-            self.conversation_history.pop()
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"\nRequest failed: {e}")
-            self.conversation_history.pop()
-            return None
+        # Note: Timeout and RequestException are already handled above
 
     async def stream_response_async(self, prompt: str, **kwargs):
         """Async version - handles search and model commands asynchronously"""
@@ -4434,8 +4402,6 @@ Please think step by step and provide your analysis:"""
                 return None
 
         # No command matched, fall back to sync stream_response
-        return self.stream_response(prompt, **kwargs)
-
         return self.stream_response(prompt, **kwargs)
 
     def run_async(self, prompt: str, **kwargs):

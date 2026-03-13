@@ -48,8 +48,24 @@ coverage.xml
 # macOS
 .DS_Store
 
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Convenience scripts (personal)
+run.sh
+
 # DeepSeek Agent specific
 .claude/
+.user/
 
 # Safety audit logs
 *.safety_audit.log
+
+# Secrets / credentials — NEVER check in
+*.pem
+*.key
+*.secret
+credentials.json
+token.json
