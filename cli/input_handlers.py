@@ -1,6 +1,13 @@
 # cli/input_handlers.py
 from typing import Optional
-from prompt_toolkit.completion import Completer
+
+try:
+    from prompt_toolkit.completion import Completer
+    PROMPT_TOOLKIT_AVAILABLE = True
+except ImportError:
+    PROMPT_TOOLKIT_AVAILABLE = False
+    Completer = None
+
 from agent_config import agent_config
 
 
