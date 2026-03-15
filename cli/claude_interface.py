@@ -16,6 +16,9 @@ import json
 import time
 import re
 import threading
+import itertools
+import subprocess
+import shutil
 from pathlib import Path
 from typing import Optional, Dict, List, Any
 from datetime import datetime
@@ -40,6 +43,8 @@ try:
     from rich.panel import Panel
     from rich.text import Text
     from rich.live import Live
+    from rich.spinner import Spinner
+    from rich.status import Status
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -54,61 +59,73 @@ from agent_config import agent_config
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SlashCommandCompleter(Completer):
-    """Fuzzy-matching slash command completer with descriptions."""
+    """Mode-aware slash command completer with descriptions."""
 
-    COMMAND_DESCRIPTIONS = {
+    # All known command descriptions (superset)
+    ALL_DESCRIPTIONS = {
+        # Shared
+        "help": "Show available commands",
         "clear": "Clear conversation history",
         "think": "Toggle thinking mode on/off",
-        "history": "Show conversation history",
-        "mode": "Switch chat / coding mode",
-        "search": "Search the web",
-        "write": "Write content to a file",
-        "edit": "Edit file content",
-        "read": "Read file or webpage",
-        "run": "Execute a shell command",
-        "git": "Execute git commands",
-        "code": "Code analysis and refactoring",
+        "debug": "Toggle debug logs / dump recent logs",
         "models": "List and switch models",
+        "switch": "Switch model",
+        "history": "Show conversation history",
         "save": "Save conversation to file",
         "load": "Load previous conversation",
-        "context": "Manage context window",
-        "verbose": "Toggle verbose output",
-        "task": "Manage tasks",
-        "plan": "Generate plans from goals",
-        "execute": "Execute a plan",
-        "diff": "Compare files or versions",
-        "browse": "Browse directory tree",
-        "undo": "Revert recent changes",
-        "test": "Run tests",
-        "apply": "Apply pending code changes",
-        "fix": "Auto-fix code issues",
-        "analyze": "Analyze code for issues",
-        "debug": "Toggle debug logs / dump recent logs",
-        "explain": "Explain code",
-        "refactor": "Suggest refactorings",
-        "grep": "Search text across files",
-        "find": "Find files by pattern",
+        "context": "Show context window usage",
+        "compact": "Compact conversation to save context",
+        "transcript": "View full conversation transcript",
+        "expand": "Expand a turn's thinking in a pager (Ctrl+E)",
+        "quit": "Exit the agent",
+        "exit": "Exit the agent",
+        # Chat-only
+        "search": "Search the web",
+        "browse": "Read a webpage",
         "summarize": "Summarize text or code",
         "translate": "Translate text",
         "generate": "Generate content",
         "reason": "Chain-of-thought reasoning",
-        "switch": "Switch model",
-        "quit": "Exit the agent",
-        "exit": "Exit the agent",
-        "help": "Show help",
-        "auto": "Control auto-features",
+        # Coding-only (Claude CLI tools)
+        "read": "Read file with line numbers",
+        "write": "Create or overwrite a file",
+        "edit": "Edit specific sections of a file",
+        "ls": "List directory contents",
+        "glob": "Find files by pattern",
+        "grep": "Search file contents with regex",
+        "find": "Find files by name pattern",
+        "run": "Execute a shell command",
+        "git": "Execute git commands",
+        "code": "Code analysis and refactoring",
+        "fix": "Auto-fix code issues",
+        "analyze": "Analyze code for issues",
+        "explain": "Explain code",
+        "refactor": "Suggest refactorings",
+        "test": "Run tests",
+        "diff": "Compare files or show changes",
+        "undo": "Revert recent changes",
+        "apply": "Apply pending code changes",
+        "task": "Manage tasks",
+        "plan": "Generate plans from goals",
+        "execute": "Execute a plan",
+        "todo": "Track task progress",
     }
 
-    def __init__(self, help_system: Optional[HelpSystem] = None):
+    def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None):
         self.help_system = help_system
-        if help_system and hasattr(help_system, "help_texts"):
-            self.commands = list(help_system.help_texts.keys())
-        else:
-            self.commands = list(self.COMMAND_DESCRIPTIONS.keys())
-        # Add commands that may not be in help_system
-        for cmd in ("save", "load", "debug"):
-            if cmd not in self.commands:
-                self.commands.append(cmd)
+        self.mode = mode
+        # Load commands from config for the active mode
+        self.commands = list(agent_config.get_mode_config(mode).get("commands", []))
+        # Fallback if config has no commands list
+        if not self.commands:
+            self.commands = list(self.ALL_DESCRIPTIONS.keys())
+
+    def set_mode(self, mode: str):
+        """Update completer for a new mode."""
+        self.mode = mode
+        self.commands = list(agent_config.get_mode_config(mode).get("commands", []))
+        if not self.commands:
+            self.commands = list(self.ALL_DESCRIPTIONS.keys())
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor
@@ -122,9 +139,8 @@ class SlashCommandCompleter(Completer):
         partial = text[1:].lower()
 
         for cmd in sorted(self.commands):
-            # Prefix match first, then fuzzy substring fallback
             if cmd.lower().startswith(partial):
-                desc = self.COMMAND_DESCRIPTIONS.get(cmd, "")
+                desc = self.ALL_DESCRIPTIONS.get(cmd, "")
                 yield Completion(
                     f"/{cmd}",
                     start_position=-(len(partial) + 1),
@@ -190,28 +206,51 @@ class ClaudeInterface:
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
+        model_name = self.chat.model
+        mode = self.chat.mode
+        think_icon = "on" if self.chat.thinking_enabled else "off"
+
         if self.console:
-            model_name = self.chat.model
-            mode = self.chat.mode
-            think_icon = "on" if self.chat.thinking_enabled else "off"
             self.console.print()
-            self.console.print(
-                f"[bold cyan]ikol1729 agent[/bold cyan]  "
-                f"[dim]v0.1.0[/dim]"
-            )
-            self.console.print(
-                f"[dim]Model:[/dim] [green]{model_name}[/green]  "
-                f"[dim]Mode:[/dim] [green]{mode}[/green]  "
-                f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
-            )
-            self.console.print(
-                "[dim]  / commands  |  Ctrl+O think  |  /debug logs  |  Ctrl+C cancel  |  Ctrl+D exit[/dim]"
-            )
+            if mode == "coding":
+                cwd = os.getcwd()
+                self.console.print(
+                    f"[bold cyan]ikol1729[/bold cyan]  "
+                    f"[dim]coding mode[/dim]"
+                )
+                self.console.print(
+                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
+                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
+                )
+                self.console.print(
+                    f"[dim]Workspace:[/dim] [blue]{cwd}[/blue]"
+                )
+                self.console.print(
+                    "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
+                )
+                self.console.print(
+                    "[dim]  / commands  |  Ctrl+O think  |  Ctrl+E expand  |  /debug logs  |  Ctrl+D exit[/dim]"
+                )
+            else:
+                self.console.print(
+                    f"[bold cyan]ikol1729[/bold cyan]  "
+                    f"[dim]chat mode[/dim]"
+                )
+                self.console.print(
+                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
+                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
+                )
+                self.console.print(
+                    "[dim]  / commands  |  Ctrl+O think  |  /debug logs  |  Ctrl+C cancel  |  Ctrl+D exit[/dim]"
+                )
             self.console.print()
         else:
-            print(f"\nikol1729 agent v0.1.0")
-            print(f"Model: {self.chat.model}  Mode: {self.chat.mode}")
-            print("  / commands | Ctrl+O think | Ctrl+C cancel | Ctrl+D exit\n")
+            print(f"\nikol1729 — {mode} mode")
+            print(f"Model: {model_name}  Think: {think_icon}")
+            if mode == "coding":
+                print(f"Workspace: {os.getcwd()}")
+                print("Tools: Bash, Read, Write, Edit, Glob, Grep, LS")
+            print("  / commands | Ctrl+O think | Ctrl+D exit\n")
 
     # ── Status bar (prompt_toolkit bottom_toolbar) ────────────────────────
     def _bottom_toolbar(self):
@@ -219,7 +258,7 @@ class ClaudeInterface:
         mode = self.chat.mode
         think = "on" if self.chat.thinking_enabled else "off"
         tokens = 0
-        max_ctx = 128000  # DeepSeek context window
+        max_ctx = 128000
         msg_count = len(self.chat.conversation_history)
         if hasattr(self.chat, "context_manager") and self.chat.context_manager:
             try:
@@ -227,7 +266,6 @@ class ClaudeInterface:
             except Exception:
                 pass
             try:
-                from agent_config import agent_config
                 max_ctx = agent_config.max_context_tokens or 128000
             except Exception:
                 pass
@@ -239,11 +277,24 @@ class ClaudeInterface:
         else:
             pct_color = "ansigreen"
         max_label = f"{max_ctx // 1000}k"
-        return HTML(
-            f" <b>{model}</b> | {mode} | think:{think} "
-            f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
-            f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
-        )
+
+        if mode == "coding":
+            # Coding mode: show permission mode + cwd
+            perm = agent_config.permission_mode
+            cwd = os.path.basename(os.getcwd()) or "~"
+            return HTML(
+                f" <b>{model}</b> | coding | {perm} | think:{think} "
+                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
+                f"| {cwd} "
+                f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+            )
+        else:
+            # Chat mode: simpler bar
+            return HTML(
+                f" <b>{model}</b> | chat | think:{think} "
+                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
+                f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+            )
 
     # ── Command handling ──────────────────────────────────────────────────
     def _handle_local_command(self, user_input: str) -> Optional[bool]:
@@ -255,6 +306,14 @@ class ClaudeInterface:
         parts = user_input.split(maxsplit=1)
         cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
         args = parts[1].strip() if len(parts) > 1 else ""
+
+        # Check if command is allowed in current mode
+        allowed = agent_config.available_commands
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help"):
+            self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
+            if self.chat.mode == "chat":
+                self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
+            return True
 
         if cmd in ("quit", "exit"):
             self._print("[dim]Goodbye![/dim]")
@@ -331,14 +390,193 @@ class ClaudeInterface:
             return True
 
         if cmd == "help" and not args:
-            self._print("[bold]Commands:[/bold]")
-            for c in sorted(SlashCommandCompleter.COMMAND_DESCRIPTIONS):
-                desc = SlashCommandCompleter.COMMAND_DESCRIPTIONS[c]
+            mode_label = self.chat.mode
+            self._print(f"[bold]Commands ({mode_label} mode):[/bold]")
+            allowed = agent_config.available_commands
+            for c in sorted(allowed):
+                desc = SlashCommandCompleter.ALL_DESCRIPTIONS.get(c, "")
                 self._print(f"  /{c:<14} {desc}")
+            return True
+
+        if cmd == "transcript":
+            self._show_transcript(args)
+            return True
+
+        if cmd == "expand":
+            self._show_expand(args)
             return True
 
         # Not a local command
         return None
+
+    # ── Transcript viewer ───────────────────────────────────────────────
+    def _show_transcript(self, args: str = ""):
+        """Show full conversation transcript.
+
+        Usage:
+            /transcript        — show all messages (truncated to last 20)
+            /transcript full   — show all messages untruncated
+            /transcript N      — show last N messages
+            /transcript last   — show the last assistant response in full
+        """
+        history = self.chat.conversation_history
+        if not history:
+            self._print("[dim]No conversation history yet.[/dim]")
+            return
+
+        args = args.strip().lower()
+
+        if args == "last":
+            # Show the last assistant response in full
+            for msg in reversed(history):
+                if msg["role"] == "assistant":
+                    self._print(f"\n[bold green]Assistant:[/bold green]")
+                    if self.console and RICH_AVAILABLE:
+                        self.console.print(Markdown(msg["content"]))
+                    else:
+                        print(msg["content"])
+                    return
+            self._print("[dim]No assistant responses yet.[/dim]")
+            return
+
+        if args == "full":
+            limit = len(history)
+        elif args.isdigit():
+            limit = int(args)
+        else:
+            limit = 20  # default: last 20
+
+        msgs = history[-limit:] if limit < len(history) else history
+        skipped = len(history) - len(msgs)
+
+        if skipped > 0:
+            self._print(f"[dim]({skipped} earlier messages omitted — use /transcript full to see all)[/dim]\n")
+
+        for i, msg in enumerate(msgs):
+            role = msg["role"]
+            content = msg["content"]
+
+            if role == "system":
+                self._print(f"[dim]━━━ System ━━━[/dim]")
+                preview = content[:200] + ("…" if len(content) > 200 else "")
+                self._print(f"[dim]{preview}[/dim]")
+            elif role == "user":
+                self._print(f"\n[bold blue]You:[/bold blue]")
+                # Show full user message (usually short)
+                if len(content) > 500:
+                    self._print(content[:500] + "…")
+                else:
+                    self._print(content)
+            elif role == "assistant":
+                self._print(f"\n[bold green]Assistant:[/bold green]")
+                if args == "full" or len(content) <= 1000:
+                    if self.console and RICH_AVAILABLE:
+                        self.console.print(Markdown(content))
+                    else:
+                        print(content)
+                else:
+                    # Truncate long responses in default view
+                    self._print(content[:500])
+                    self._print(f"[dim]… ({len(content)} chars total — use /transcript last to see full)[/dim]")
+
+            if i < len(msgs) - 1:
+                self._print("[dim]─[/dim]")
+
+        self._print(f"\n[dim]({len(history)} total messages)[/dim]")
+
+    # ── Turn expansion viewer (Ctrl+E or /expand) ────────────────────────
+    def _show_expand(self, args: str = ""):
+        """Show full thinking content for a turn, opened in a pager.
+
+        Usage:
+            /expand        — list turns with thinking, pick one to expand
+            /expand N      — expand turn N directly
+            /expand last   — expand the most recent thinking turn
+            /expand all    — expand all turns with thinking
+        """
+        thinking_history = getattr(self.chat, '_thinking_history', [])
+        if not thinking_history:
+            self._print("[dim]No thinking turns recorded yet.[/dim]")
+            return
+
+        args = args.strip().lower()
+
+        if args == "last":
+            self._expand_turn_in_pager(thinking_history[-1])
+            return
+
+        if args == "all":
+            full_text = ""
+            for i, turn in enumerate(thinking_history):
+                full_text += f"{'='*60}\n"
+                full_text += f"Turn {i+1} — Thought for {turn['duration']:.1f}s\n"
+                full_text += f"{'='*60}\n\n"
+                full_text += f"THINKING:\n{turn['thinking']}\n\n"
+                if turn.get('response_preview'):
+                    full_text += f"RESPONSE (preview):\n{turn['response_preview']}…\n\n"
+            self._open_in_pager(full_text)
+            return
+
+        if args.isdigit():
+            idx = int(args) - 1
+            if 0 <= idx < len(thinking_history):
+                self._expand_turn_in_pager(thinking_history[idx])
+            else:
+                self._print(f"[red]Turn {args} not found. Valid: 1-{len(thinking_history)}[/red]")
+            return
+
+        # Default: list turns and prompt for selection
+        self._print(f"[bold]Thinking turns ({len(thinking_history)} total):[/bold]")
+        for i, turn in enumerate(thinking_history):
+            duration = turn.get('duration', 0)
+            preview = turn.get('response_preview', '')[:60]
+            self._print(f"  [cyan]{i+1}.[/cyan] Thought {duration:.1f}s — {preview}…")
+
+        self._print(f"\n[dim]Usage: /expand N, /expand last, /expand all[/dim]")
+
+        # Prompt for selection
+        try:
+            choice = input("  Expand turn #: ").strip()
+            if choice.isdigit():
+                idx = int(choice) - 1
+                if 0 <= idx < len(thinking_history):
+                    self._expand_turn_in_pager(thinking_history[idx])
+                else:
+                    self._print("[dim]Invalid turn number[/dim]")
+            elif choice.lower() == "all":
+                self._show_expand("all")
+        except (EOFError, KeyboardInterrupt):
+            pass
+
+    def _expand_turn_in_pager(self, turn: dict):
+        """Open a single turn's thinking content in a pager."""
+        duration = turn.get('duration', 0)
+        text = f"{'='*60}\n"
+        text += f"Thinking ({duration:.1f}s)\n"
+        text += f"{'='*60}\n\n"
+        text += turn.get('thinking', '(empty)')
+        text += f"\n\n{'='*60}\n"
+        text += f"Response (preview):\n"
+        text += turn.get('response_preview', '(empty)')
+        text += "…\n"
+        self._open_in_pager(text)
+
+    def _open_in_pager(self, text: str):
+        """Open text in less/more pager. Falls back to printing if unavailable."""
+        pager = shutil.which("less") or shutil.which("more")
+        if pager:
+            try:
+                proc = subprocess.Popen(
+                    [pager, "-R"],  # -R for ANSI color passthrough
+                    stdin=subprocess.PIPE,
+                    encoding="utf-8",
+                )
+                proc.communicate(input=text)
+                return
+            except Exception:
+                pass
+        # Fallback: just print
+        print(text)
 
     # ── Helper: print via rich or plain ────────────────────────────────────
     def _print(self, msg: str):
@@ -349,16 +587,310 @@ class ClaudeInterface:
             clean = re.sub(r'\[/?[^\]]+\]', '', msg)
             print(clean)
 
+    # ── ANSI Spinner (writes to stderr to avoid Rich stdout proxy conflict) ──
+
+    _SPINNER_FRAMES = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏']
+
+    def _start_spinner(self, label: str = "Thinking…") -> threading.Event:
+        """Start a lightweight ANSI spinner on stderr. Returns a stop event.
+
+        The label can be updated dynamically via stop_event._label_ref[0].
+        """
+        stop_event = threading.Event()
+        label_ref = [label]
+        stop_event._label_ref = label_ref  # Expose for dynamic updates
+        frames = itertools.cycle(self._SPINNER_FRAMES)
+
+        def _spin():
+            start = time.time()
+            while not stop_event.is_set():
+                frame = next(frames)
+                elapsed = time.time() - start
+                current_label = label_ref[0]
+                if elapsed > 2:
+                    msg = f"\r\033[K\033[36m{frame}\033[0m {current_label} \033[2m({elapsed:.0f}s)\033[0m"
+                else:
+                    msg = f"\r\033[K\033[36m{frame}\033[0m {current_label}"
+                sys.stderr.write(msg)
+                sys.stderr.flush()
+                stop_event.wait(0.08)
+            # Clear spinner line
+            sys.stderr.write("\r\033[K")
+            sys.stderr.flush()
+
+        t = threading.Thread(target=_spin, daemon=True)
+        t.start()
+        return stop_event
+
+    def _update_spinner(self, stop_event: threading.Event, new_label: str):
+        """Update the spinner label (thread-safe via _label_ref)."""
+        if hasattr(stop_event, '_label_ref'):
+            stop_event._label_ref[0] = new_label
+
+    # ── Code fence filter (suppresses bash blocks from streaming output) ──
+
+    class _CodeFenceFilter:
+        """Suppress bash/shell code fences from streaming stdout.
+
+        Installed on ``chat._content_filter`` before calling ``stream_response``.
+        ``stream_response`` calls ``filter.write(chunk)`` for each content chunk
+        and prints only the returned text.  Code fences matching
+        ````` ```bash ``, ````` ```shell ``, ````` ```sh ``, or ````` ```console ``
+        are silently swallowed so the user sees only prose.
+        """
+
+        _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console)[ \t]*\n')
+
+        def __init__(self):
+            self._buf = ""
+            self._suppressing = False
+
+        def write(self, text: str) -> str:
+            """Feed a streaming chunk. Returns text safe to print."""
+            self._buf += text
+            output = ""
+
+            while True:
+                if self._suppressing:
+                    idx = self._buf.find('```')
+                    if idx == -1:
+                        # Keep last 2 chars (partial backtick sequence)
+                        if len(self._buf) > 2:
+                            self._buf = self._buf[-2:]
+                        break
+                    # Found closing fence — skip past it
+                    self._suppressing = False
+                    rest = self._buf[idx + 3:]
+                    if rest.startswith('\n'):
+                        rest = rest[1:]
+                    self._buf = rest
+                    continue                 # process remaining buffer
+                else:
+                    m = self._OPEN_RE.search(self._buf)
+                    if m:
+                        # Strip trailing newlines before the fence
+                        output += self._buf[:m.start()].rstrip('\n')
+                        self._suppressing = True
+                        self._buf = self._buf[m.end():]
+                        continue
+                    # Keep a small tail in case a fence straddles two chunks
+                    if len(self._buf) > 15:
+                        safe = self._buf[:-15]
+                        self._buf = self._buf[-15:]
+                        output += safe
+                    break
+
+            return output
+
+        def flush(self) -> str:
+            """Flush remaining buffer (call after stream ends)."""
+            out = self._buf
+            self._buf = ""
+            self._suppressing = False
+            return out
+
+    # ── Tool execution from LLM response (agentic loop) ─────────────────
+    _TOOL_BLOCK_RE = re.compile(
+        r'```(?:bash|shell|sh|console)\s*\n(.*?)```',
+        re.DOTALL
+    )
+
+    def _extract_tool_blocks(self, response: str) -> list:
+        """Extract executable code blocks from an LLM response.
+
+        Only extracts the FIRST bash block — the LLM should output one at a time.
+        Skips blocks that appear to have inline output already (hallucinated).
+
+        Returns list of (language, code) tuples for bash/shell blocks.
+        """
+        blocks = []
+        for m in self._TOOL_BLOCK_RE.finditer(response):
+            code = m.group(1).strip()
+            if not code or code.startswith('#'):
+                continue
+            # Filter out comment-only blocks
+            lines = [l for l in code.split('\n') if l.strip() and not l.strip().startswith('#')]
+            if not lines:
+                continue
+
+            # Check for hallucinated inline output: if the text after this code block
+            # contains another ``` block that looks like output (no language tag, or
+            # starts with typical output patterns), skip this block
+            end_pos = m.end()
+            after = response[end_pos:end_pos + 200].strip()
+            if after.startswith('```\n') or after.startswith('```\r'):
+                # This block has inline "output" — the LLM hallucinated the result
+                continue
+
+            blocks.append(("bash", code))
+            # Only take the FIRST block — execute it, feed back, let LLM continue
+            break
+        return blocks
+
+    def _execute_tool_blocks(self, blocks: list) -> list:
+        """Execute tool blocks through ToolRegistry and return results.
+
+        Args:
+            blocks: List of (language, code) tuples
+
+        Returns:
+            List of (code, ToolResult) tuples
+        """
+        from agent.tools import ToolRegistry
+        # Lazily initialize tool registry attached to the interface
+        if not hasattr(self, '_tool_registry') or self._tool_registry is None:
+            self._tool_registry = ToolRegistry(working_dir=os.getcwd())
+
+        results = []
+        for lang, code in blocks:
+            if lang == "bash":
+                result = self._tool_registry.bash(code, timeout=30)
+                results.append((code, result))
+        return results
+
+    def _run_agentic_loop(self, max_iterations: int = 10):
+        """After an LLM response, check for tool blocks, execute ONE, feed back.
+
+        This implements the Claude CLI-like agent loop:
+        1. LLM generates response with code block(s)
+        2. We extract the FIRST bash block only
+        3. Ask permission (show brief preview)
+        4. Execute it under the spinner (no verbose output)
+        5. Feed result back to conversation
+        6. Re-prompt the LLM (spinner continues until first token)
+        """
+        if self.chat.mode != "coding":
+            return  # Only in coding mode
+
+        auto_approved = False  # Track if user said "all"
+
+        for iteration in range(max_iterations):
+            # Get the last assistant message
+            history = self.chat.conversation_history
+            if not history:
+                return
+            last_msg = history[-1]
+            if last_msg["role"] != "assistant":
+                return
+
+            response_text = last_msg["content"]
+            blocks = self._extract_tool_blocks(response_text)
+            if not blocks:
+                return  # No more tool blocks — done
+
+            lang, code = blocks[0]
+            cmd_preview = code.split('\n')[0][:60]
+
+            # Check permission mode
+            perm = agent_config.permission_mode
+            if perm == "plan":
+                self._print(f"[dim]  Would run: {cmd_preview}[/dim]")
+                self._print("[dim]  (permission mode is 'plan' — skipping)[/dim]")
+                return
+
+            if perm != "auto_accept" and not auto_approved:
+                self._print(f"  [dim]│[/dim] [cyan]$[/cyan] [dim]{cmd_preview}[/dim]")
+                try:
+                    choice = input("  │ Run? [y/n/a]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    self._print("[dim]  │ Skipped[/dim]")
+                    return
+                if choice in ("n", "no"):
+                    return
+                if choice in ("a", "all"):
+                    auto_approved = True
+
+            # Start spinner — tool execution + re-prompt happen under it
+            stop = self._start_spinner("Thinking…")
+
+            # Execute the single block (silently — no verbose output)
+            self._update_spinner(stop, f"Thinking… $ {cmd_preview}")
+            results = self._execute_tool_blocks(blocks)
+            code_str, result = results[0]
+
+            # Update spinner with brief tool result status
+            if result.success:
+                brief = (result.output or "").split('\n')[0][:50]
+                if brief:
+                    self._update_spinner(stop, f"Thinking… {brief}")
+                else:
+                    self._update_spinner(stop, "Thinking…")
+            else:
+                brief = (result.error or "").split('\n')[0][:50]
+                if brief:
+                    self._update_spinner(stop, f"Thinking… {brief}")
+                else:
+                    self._update_spinner(stop, "Thinking… (error)")
+
+            # Feed result back to conversation
+            status = "OK" if result.success else "ERROR"
+            output_text = result.output[:3000] if result.output else "(no output)"
+            if result.error and not result.success:
+                output_text = f"STDERR: {result.error}\n{output_text}"
+            truncated = self.chat._truncate_middle(
+                f"$ {code_str}\n[{status}]\n{output_text}"
+            )
+            self.chat.add_to_history("user", f"[Tool Result]\n{truncated}")
+
+            # Re-prompt the LLM — spinner stays running until first content token
+            self._stream_and_render_inner(stop_event=stop)
+
+        self._print("[dim](Agent loop: max iterations reached)[/dim]")
+
+    def _stream_and_render_inner(self, stop_event=None):
+        """Inner streaming call (no agentic loop — prevents recursion).
+
+        If *stop_event* is given the caller already owns a running spinner;
+        we re-use it instead of starting a new one.
+        """
+        own_spinner = stop_event is None
+        if own_spinner:
+            stop_event = self._start_spinner("Thinking…")
+
+        self.chat._ui_on_first_token = lambda: stop_event.set()
+        # Install content filter to suppress code fences from display
+        self.chat._content_filter = self._CodeFenceFilter()
+
+        try:
+            self.chat.stream_response("[Continue based on the tool results above.]")
+        except KeyboardInterrupt:
+            self._print("\n[dim][Interrupted][/dim]")
+        except Exception as e:
+            self._print(f"[red]Error: {e}[/red]")
+        finally:
+            stop_event.set()
+            self.chat._content_filter = None
+
     # ── Render AI streaming response ──────────────────────────────────────
     def _stream_and_render(self, prompt: str):
-        """Send prompt to agent core's stream_response and let it handle output."""
+        """Send prompt to agent core's stream_response with spinner UX."""
         self._interrupt = False
+
+        # Start a lightweight ANSI spinner (writes to stderr, avoids Rich proxy)
+        stop = self._start_spinner("Thinking…")
+        self.chat._ui_on_first_token = lambda: stop.set()
+
+        # In coding mode, install content filter to suppress code fences
+        if self.chat.mode == "coding":
+            self.chat._content_filter = self._CodeFenceFilter()
+
         try:
             self.chat.stream_response(prompt)
         except KeyboardInterrupt:
             self._print("\n[dim][Interrupted][/dim]")
         except Exception as e:
             self._print(f"[red]Error: {e}[/red]")
+        finally:
+            stop.set()
+            self.chat._content_filter = None
+
+        # Agentic loop: auto-execute tool blocks from the response
+        try:
+            self._run_agentic_loop()
+        except KeyboardInterrupt:
+            self._print("\n[dim][Agent loop interrupted][/dim]")
+        except Exception as e:
+            self._print(f"[dim]Agent loop error: {e}[/dim]")
 
     # ── Main loop ─────────────────────────────────────────────────────────
     def run(self):
@@ -393,12 +925,17 @@ class ClaudeInterface:
         def _clear_screen(event):
             event.app.renderer.clear()
 
+        @bindings.add("c-e")
+        def _expand_thinking(event):
+            """Ctrl+E: open /expand to view thinking turns."""
+            event.app.exit(result="/expand")
+
         # Shift+Enter for newline continuation
         @bindings.add("escape", "enter")
         def _newline(event):
             event.current_buffer.insert_text("\n")
 
-        completer = SlashCommandCompleter(self.help_system)
+        completer = SlashCommandCompleter(mode=self.chat.mode, help_system=self.help_system)
 
         style = PTStyle.from_dict({
             "bottom-toolbar":                "bg:#1a1a2e #e0e0e0",
