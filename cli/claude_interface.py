@@ -109,6 +109,7 @@ class SlashCommandCompleter(Completer):
         "plan": "Generate plans from goals",
         "execute": "Execute a plan",
         "todo": "Track task progress",
+        "permissions": "Toggle permission mode (normal / auto_accept / plan)",
     }
 
     def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None):
@@ -404,6 +405,27 @@ class ClaudeInterface:
 
         if cmd == "expand":
             self._show_expand(args)
+            return True
+
+        if cmd == "permissions":
+            current = agent_config.permission_mode
+            if not args:
+                # Toggle between normal and auto_accept
+                new_mode = "auto_accept" if current == "normal" else "normal"
+                agent_config.permission_mode = new_mode
+            elif args in ("normal", "auto_accept", "auto", "plan"):
+                new_mode = "auto_accept" if args == "auto" else args
+                agent_config.permission_mode = new_mode
+            else:
+                self._print(f"[yellow]Usage:[/yellow] /permissions [normal|auto|plan]")
+                self._print(f"  [dim]Current: {current}[/dim]")
+                return True
+            mode_display = {
+                "normal": "[cyan]normal[/cyan] — ask before each command",
+                "auto_accept": "[green]auto_accept[/green] — run all commands automatically",
+                "plan": "[yellow]plan[/yellow] — read-only, no execution",
+            }
+            self._print(f"Permissions: {mode_display[agent_config.permission_mode]}")
             return True
 
         # Not a local command

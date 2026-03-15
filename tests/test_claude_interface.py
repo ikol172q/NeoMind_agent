@@ -1193,5 +1193,72 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
         self.assertIsNone(getattr(chat, '_content_filter', None))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# /permissions command
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestPermissionsCommand(unittest.TestCase):
+    """Test the /permissions command for toggling permission mode at runtime."""
+
+    def setUp(self):
+        from cli.claude_interface import ClaudeInterface
+        from agent_config import agent_config
+        agent_config.switch_mode("coding")
+        self.mock_chat = _make_mock_chat(mode="coding")
+        self.interface = ClaudeInterface(self.mock_chat)
+        # Reset to normal
+        agent_config.permission_mode = "normal"
+
+    def tearDown(self):
+        from agent_config import agent_config
+        agent_config.permission_mode = "normal"
+        agent_config.switch_mode("chat")
+
+    def test_toggle_normal_to_auto(self):
+        from agent_config import agent_config
+        agent_config.permission_mode = "normal"
+        result = self.interface._handle_local_command("/permissions")
+        self.assertTrue(result)
+        self.assertEqual(agent_config.permission_mode, "auto_accept")
+
+    def test_toggle_auto_to_normal(self):
+        from agent_config import agent_config
+        agent_config.permission_mode = "auto_accept"
+        result = self.interface._handle_local_command("/permissions")
+        self.assertTrue(result)
+        self.assertEqual(agent_config.permission_mode, "normal")
+
+    def test_set_explicit_auto(self):
+        from agent_config import agent_config
+        result = self.interface._handle_local_command("/permissions auto")
+        self.assertTrue(result)
+        self.assertEqual(agent_config.permission_mode, "auto_accept")
+
+    def test_set_explicit_plan(self):
+        from agent_config import agent_config
+        result = self.interface._handle_local_command("/permissions plan")
+        self.assertTrue(result)
+        self.assertEqual(agent_config.permission_mode, "plan")
+
+    def test_set_explicit_normal(self):
+        from agent_config import agent_config
+        agent_config.permission_mode = "auto_accept"
+        result = self.interface._handle_local_command("/permissions normal")
+        self.assertTrue(result)
+        self.assertEqual(agent_config.permission_mode, "normal")
+
+    def test_invalid_arg_shows_usage(self):
+        from agent_config import agent_config
+        old_mode = agent_config.permission_mode
+        result = self.interface._handle_local_command("/permissions foobar")
+        self.assertTrue(result)
+        # Should not change the mode
+        self.assertEqual(agent_config.permission_mode, old_mode)
+
+    def test_permissions_in_descriptions(self):
+        from cli.claude_interface import SlashCommandCompleter
+        self.assertIn("permissions", SlashCommandCompleter.ALL_DESCRIPTIONS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
