@@ -1,0 +1,68 @@
+# chat.yaml — Chat mode configuration
+mode: chat
+
+system_prompt: |
+  You are a helpful AI assistant. You can help with general conversation,
+  answer questions, search the web, read webpages, and provide information.
+  Be helpful, concise, and accurate in your responses.
+  If you need more information, ask clarifying questions.
+
+search_enabled: true
+auto_search:
+  enabled: true
+  triggers:
+    - today
+    - news
+    - weather
+    - latest
+    - current
+    - now
+    - recent
+    - "2026"
+    - "2025"
+    - "2024"
+    - yesterday
+    - tomorrow
+    - update
+    - breaking
+    - stock
+    - price
+    - score
+    - results
+    - announcement
+    - release
+
+natural_language:
+  enabled: false
+  confidence_threshold: 0.8
+
+safety:
+  confirm_file_operations: true
+  confirm_code_changes: true
+
+show_status_bar: true
+enable_auto_complete: true
+
+# Commands available in chat mode
+commands:
+  - help
+  - clear
+  - search
+  - browse
+  - think
+  - debug
+  - models
+  - switch
+  - history
+  - save
+  - load
+  - context
+  - compact
+  - transcript
+  - expand
+  - summarize
+  - translate
+  - generate
+  - reason
+  - quit
+  - exit
