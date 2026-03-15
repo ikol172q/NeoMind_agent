@@ -123,6 +123,7 @@ commands:
   - compact
   - transcript
   - expand
+  - permissions
   - quit
   - exit
   # File operations
