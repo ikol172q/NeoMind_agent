@@ -272,7 +272,13 @@ class AgentConfigManager:
 
     @property
     def permission_mode(self) -> str:
-        return self.get("permissions.mode", "normal")
+        return getattr(self, '_permission_mode_override', None) or self.get("permissions.mode", "normal")
+
+    @permission_mode.setter
+    def permission_mode(self, value: str):
+        if value not in ("normal", "auto_accept", "plan"):
+            raise ValueError(f"Invalid permission mode: {value}")
+        self._permission_mode_override = value
 
     @property
     def enable_mcp_support(self) -> bool:
