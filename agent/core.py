@@ -74,7 +74,7 @@ class DeepSeekStreamingChat:
         # Mode configuration
         self.mode = agent_config.mode  # chat or coding
         self.workspace_manager = None  # Lazy initialization for coding mode
-        self.show_status_bar = agent_config.coding_mode_show_status_bar if agent_config.mode == "coding" else False
+        self.show_status_bar = agent_config.show_status_bar
         # Status display system for coding mode
         self.verbose_mode = False  # Hidden by default; toggle with /verbose or Ctrl+E
         self.status_buffer = []  # Store debug/info messages for later display
@@ -116,11 +116,8 @@ class DeepSeekStreamingChat:
         self.available_models_cache = None  # NEW: Cache for available models
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
 
-        # NEW: Add system prompt if provided
-        # Use coding mode system prompt if mode is coding, otherwise default
-        if self.mode == "coding" and agent_config.coding_mode_system_prompt:
-            self.add_to_history("system", agent_config.coding_mode_system_prompt)
-        elif agent_config.system_prompt:
+        # Add system prompt from active mode config
+        if agent_config.system_prompt:
             self.add_to_history("system", agent_config.system_prompt)
 
         if not self.api_key:
@@ -200,6 +197,35 @@ class DeepSeekStreamingChat:
             "/fix": (self.handle_auto_fix_command, False),
             "/analyze": (self.handle_auto_fix_command, False),
         }
+
+    # Commands whose output should be added to conversation history
+    # so the LLM can reason about tool results
+    COMMANDS_FEED_TO_LLM = {
+        "/run", "/grep", "/find", "/read", "/write", "/edit",
+        "/git", "/code", "/analyze", "/fix", "/diff", "/test",
+        "/glob", "/ls", "/search", "/browse",
+    }
+
+    # Commands that should NOT feed to LLM (UI-only)
+    # /help, /clear, /think, /debug, /save, /load, /history,
+    # /quit, /exit, /models, /switch, /verbose, /context, /compact
+
+    @staticmethod
+    def _truncate_middle(text: str, max_chars: int = 30000) -> str:
+        """Truncate long output using middle-truncation strategy.
+
+        Preserves the beginning and end of output (most useful parts)
+        while removing the middle. Matches Claude CLI's approach.
+        """
+        if len(text) <= max_chars:
+            return text
+        keep = max_chars // 2
+        removed = len(text) - max_chars
+        return (
+            text[:keep]
+            + f"\n\n... [{removed:,} chars truncated] ...\n\n"
+            + text[-keep:]
+        )
 
     def _status_print(self, message: str, level: str = "info") -> None:
         """
@@ -327,47 +353,29 @@ class DeepSeekStreamingChat:
             self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat' or 'coding'.")
             return False
 
-        if persist:
-            success = agent_config.update_mode(mode)
-            if not success:
-                self._safe_print("❌ Failed to update configuration.")
-                return False
-
         old_mode = self.mode
         self.mode = mode
-        self._safe_print(f"🔄 Switching from {old_mode} mode to {mode} mode.")
 
-        # Update mode-specific settings
+        # Switch the config manager to the new mode
+        agent_config.switch_mode(mode)
+
+        # Reload settings from the now-active mode config
+        new_prompt = agent_config.system_prompt
+        if new_prompt:
+            self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
+            self.add_to_history("system", new_prompt)
+
+        if self.interpreter:
+            self.interpreter.confidence_threshold = agent_config.natural_language_confidence_threshold
+
+        self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
+        self.show_status_bar = agent_config.show_status_bar
+
         if mode == "coding":
             self._initialize_workspace_manager()
-            # Update system prompt to coding mode system prompt
-            coding_prompt = agent_config.coding_mode_system_prompt
-            if coding_prompt:
-                # Clear existing system prompts
-                self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
-                self.add_to_history("system", coding_prompt)
-            # Adjust natural language confidence threshold
-            if self.interpreter:
-                self.interpreter.confidence_threshold = agent_config.coding_mode_natural_language_confidence_threshold
-            # Adjust safety confirmations for file operations
-            self.safety_confirm_file_operations = agent_config.coding_mode_safety_confirm_file_operations
-            # Show status bar
-            self.show_status_bar = agent_config.coding_mode_show_status_bar
-            # Keep verbose mode as user set it
-        else:
-            # Restore default system prompt
-            default_prompt = agent_config.system_prompt
-            if default_prompt:
-                self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
-                self.add_to_history("system", default_prompt)
-            # Restore default natural language confidence threshold
-            if self.interpreter:
-                self.interpreter.confidence_threshold = agent_config.natural_language_confidence_threshold
-            # Restore default safety confirmations
-            self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
-            # Hide status bar
-            self.show_status_bar = False
-            # Keep verbose mode as user set it
+
+        if old_mode != mode:
+            self._safe_print(f"🔄 Switched from {old_mode} to {mode} mode.")
 
         return True
 
@@ -637,21 +645,160 @@ Remember: Always ask for permission before making changes!
         except Exception as e:
             return f"Error generating completion: {str(e)}"
 
-    # Updated stream_response to handle /models command
+    # ── Smart search routing ────────────────────────────────────────────
+
+    # Keywords that indicate the user is talking about the local codebase
+    _CODE_CONTEXT_KEYWORDS = {
+        "codebase", "code base", "this repo", "this project", "this file",
+        "these files", "my code", "our code", "source code", "in the code",
+        "in this directory", "in this folder", "locally", "local files",
+    }
+
+    # Keywords that indicate a comprehension/exploration task (→ pass to LLM)
+    _COMPREHENSION_KEYWORDS = {
+        "understand", "explain", "analyze", "summarize", "overview",
+        "architecture", "structure", "how does", "what does", "walk me through",
+        "describe", "explore", "review", "audit", "breakdown", "break down",
+    }
+
+    def _classify_search_intent(self, query: str):
+        """Classify a /search query into one of three intents.
+
+        Returns:
+            "llm"   — comprehension task, pass to LLM as regular prompt
+            "grep"  — has a concrete pattern, use local grep
+            "web"   — no local intent detected, do web search
+        """
+        q = query.lower()
+
+        is_about_code = any(kw in q for kw in self._CODE_CONTEXT_KEYWORDS)
+        is_comprehension = any(kw in q for kw in self._COMPREHENSION_KEYWORDS)
+
+        if is_about_code:
+            if is_comprehension:
+                return "llm"  # "understand this codebase" → LLM task
+            # Has code context but not comprehension → try to extract a grep pattern
+            pattern = self._extract_grep_pattern(query)
+            if pattern and len(pattern) >= 2:
+                return "grep"
+            # Pattern too vague → let LLM handle it
+            return "llm"
+
+        return "web"
+
+    def _extract_grep_pattern(self, query: str) -> str:
+        """Extract a grep-able pattern from a natural language query."""
+        q = query.lower()
+        # Strip context keywords
+        for noise in sorted(self._CODE_CONTEXT_KEYWORDS, key=len, reverse=True):
+            q = q.replace(noise, "")
+        # Strip filler words
+        for filler in ["search", "find", "look for", "in", "for", "the", "this", "my"]:
+            q = q.replace(filler, "")
+        return q.strip().strip("\"'")
+
     def handle_search(self, query: str) -> str:
-        """Procedddddss search command and return results"""
+        """Process search command — smart routing between LLM, grep, and web."""
+        if not query or query.strip() == "":
+            return (
+                "Usage: /search <query>\n"
+                "  Routes automatically:\n"
+                "  • 'search codebase for TODO'  → local grep\n"
+                "  • 'search codebase to understand it' → AI analysis\n"
+                "  • 'search python asyncio tutorial'  → web search\n"
+                "  Or use directly: /grep <pattern>  |  /find <name>"
+            )
+
+        # Smart routing in coding mode
+        if self.mode == "coding":
+            intent = self._classify_search_intent(query)
+
+            if intent == "llm":
+                # Comprehension task — gather context and pass to LLM
+                self._safe_print("🧠 Detected codebase comprehension request — gathering context...")
+                context = self._gather_codebase_context()
+                prompt = f"{query}\n\nHere is the project structure and key files:\n{context}"
+                self.add_to_history("user", prompt)
+                return None  # Signal to caller: proceed to LLM streaming
+
+            if intent == "grep":
+                pattern = self._extract_grep_pattern(query)
+                self._safe_print(f"🔍 Detected code search — running /grep {pattern}")
+                return self.handle_grep_command(pattern)
+
+        # Web search
         if not self.search_enabled:
             return "Search is disabled. Enable it in config or use a different search method."
-        if not query or query.strip() == "":
-            return "Usage: /search <your query>"
 
-        success, result = self.searcher.search(query.strip())
+        if not self.search_loop:
+            self.search_loop = asyncio.new_event_loop()
+
+        try:
+            success, result = self.search_loop.run_until_complete(
+                self.searcher.search(query.strip())
+            )
+        except Exception as e:
+            success, result = False, f"Search error: {e}"
+
         if success:
             self.add_search_results_to_history('web', query.strip(), result)
         else:
-            # Add error to history as system message
             self.add_to_history("system", f"Web search failed for '{query.strip()}': {result}")
         return result
+
+    def _gather_codebase_context(self) -> str:
+        """Gather project structure and key file previews for LLM comprehension."""
+        import os
+        parts = []
+
+        # 1. Project tree (top-level + one level deep)
+        cwd = os.getcwd()
+        if self.code_analyzer:
+            cwd = self.code_analyzer.root_path
+        try:
+            entries = sorted(os.listdir(cwd))
+            tree_lines = []
+            for entry in entries:
+                full = os.path.join(cwd, entry)
+                if entry.startswith(".") and entry in (".git", ".venv", "__pycache__", ".mypy_cache"):
+                    continue
+                if os.path.isdir(full):
+                    tree_lines.append(f"  {entry}/")
+                    try:
+                        subs = sorted(os.listdir(full))[:15]
+                        for s in subs:
+                            if s.startswith(".") or s == "__pycache__":
+                                continue
+                            sub_full = os.path.join(full, s)
+                            suffix = "/" if os.path.isdir(sub_full) else ""
+                            tree_lines.append(f"    {s}{suffix}")
+                        if len(subs) > 15:
+                            tree_lines.append(f"    ... ({len(os.listdir(full)) - 15} more)")
+                    except OSError:
+                        pass
+                else:
+                    tree_lines.append(f"  {entry}")
+            parts.append("Project structure:\n" + "\n".join(tree_lines))
+        except OSError:
+            pass
+
+        # 2. Key files — read first ~30 lines of important files
+        key_files = ["README.md", "pyproject.toml", "setup.py", "main.py",
+                     "agent_config.py", "Makefile", "requirements.txt"]
+        for fname in key_files:
+            fpath = os.path.join(cwd, fname)
+            if os.path.isfile(fpath):
+                try:
+                    with open(fpath, "r", errors="replace") as f:
+                        lines = f.readlines()[:30]
+                    preview = "".join(lines)
+                    if len(lines) == 30:
+                        preview += "\n... (truncated)"
+                    parts.append(f"── {fname} ──\n{preview}")
+                except OSError:
+                    pass
+
+        return "\n\n".join(parts) if parts else "(Could not read project structure)"
 
     def handle_auto_command(self, subcommand: str) -> Optional[str]:
         """
@@ -4119,6 +4266,21 @@ Please think step by step and provide your analysis:"""
                 # For other commands, print response and return
                 if response is not None:
                     self._safe_print(f"\n{response}\n")
+
+                    # Feed tool output to LLM so it can reason about results
+                    if prefix in self.COMMANDS_FEED_TO_LLM and response:
+                        truncated = self._truncate_middle(str(response))
+                        self.add_to_history("user", f"[Tool: {prefix}] {truncated}")
+
+                    return None
+
+                # response is None → handler wants us to continue to LLM
+                # (e.g. /search with comprehension intent adds context to history)
+                if response is None and prefix == "/search":
+                    skip_user_add = True  # context already added by handle_search
+                    command_handled = False  # fall through to LLM
+                    break
+
                 return None
 
         # If no command matched
@@ -4144,14 +4306,7 @@ Please think step by step and provide your analysis:"""
         if not should_continue:
             return None
 
-        self._status_print(f"🤖 Preparing to contact DeepSeek API...", "debug")
-        self._status_print(f"📊 Current conversation has {len(self.conversation_history)} messages", "debug")
-
-        # Debug: Show last message
-        if self.conversation_history:
-            last_msg = self.conversation_history[-1]
-            self._status_print(f"📝 Last message role: {last_msg['role']}", "debug")
-            self._status_print(f"📝 Last message preview: {last_msg['content'][:100]}...", "debug")
+        self._status_print(f"Sending request ({len(self.conversation_history)} messages)", "debug")
 
         headers = {
             "Content-Type": "application/json",
@@ -4180,63 +4335,82 @@ Please think step by step and provide your analysis:"""
 
         if self.thinking_enabled:
             payload["thinking"] = {"type": "enabled"}
-            self._status_print(f"💭 Thinking mode: ENABLED", "debug")
+            self._status_print(f"Thinking mode: on", "debug")
 
         try:
-            self._status_print(f"📡 Sending request to DeepSeek API...", "debug")
-            self._status_print(f"⏱️  Timeout set to: 60 seconds", "debug")
+            self._status_print(f"Connecting to API...", "debug")
             
             # Start timing
             start_time = time.time()
 
-            # Add progress indicator in background (only in chat mode)
-            import threading
-            progress_thread = None
+            # Spinner is now handled by the UI layer (ClaudeInterface._stream_and_render)
+            # We just notify when first token arrives via _ui_on_first_token callback
 
-            if self.mode == "chat":
-                def show_progress():
-                    dots = 0
-                    while not getattr(self, '_request_complete', False):
-                        print(f"\r⏳ Waiting for AI response{'.' * dots}{' ' * (3-dots)}", end="", flush=True)
-                        dots = (dots + 1) % 4
-                        time.sleep(0.5)
-
-                self._request_complete = False
-                progress_thread = threading.Thread(target=show_progress, daemon=True)
-                progress_thread.start()
-            
             response = requests.post(
                 self.base_url,
                 headers=headers,
                 json=payload,
                 stream=True,
-                timeout=60  # Increased timeout
+                timeout=60
             )
 
-            # Stop progress indicator (only if it was started)
-            if self.mode == "chat":
-                self._request_complete = True
-                # Clear the progress line
-                print("\r" + " " * 60 + "\r", end="", flush=True)
-
             elapsed_time = time.time() - start_time
-            self._status_print(f"✅ Request sent in {elapsed_time:.1f}s. Status: {response.status_code}", "debug")
+            self._status_print(f"Connected ({elapsed_time:.1f}s, status {response.status_code})", "debug")
 
             if response.status_code != 200:
                 self._status_print(f"❌ Error {response.status_code}: {response.text}", "critical")
                 self.conversation_history.pop()
                 return None
 
-            self._status_print(f"📥 Starting to receive stream...", "debug")
-            self._status_print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━", "debug")
+            self._status_print(f"Streaming response...", "debug")
 
             full_response = ""
             reasoning_content = ""
             is_reasoning_active = False
             is_final_response_active = False
             has_seen_reasoning = False
-            chars_received = 0
-            last_update_time = time.time()
+            first_token_notified = False
+            thinking_start_time = None
+            last_thinking_summary_time = 0
+            content_was_displayed = False  # Track if any visible content was printed
+
+            # Callback to notify UI layer (spinner) on first token
+            def _notify_first_token():
+                nonlocal first_token_notified
+                if not first_token_notified:
+                    first_token_notified = True
+                    cb = getattr(self, '_ui_on_first_token', None)
+                    if cb:
+                        try:
+                            cb()
+                        except Exception:
+                            pass
+
+            def _summarize_thinking(text, max_len=60):
+                """Extract a brief summary from thinking content for spinner display."""
+                # Take the last meaningful sentence/phrase
+                lines = text.strip().split('\n')
+                for line in reversed(lines):
+                    line = line.strip()
+                    if len(line) > 10:
+                        if len(line) > max_len:
+                            return line[:max_len - 1] + "…"
+                        return line
+                return ""
+
+            def _update_thinking_spinner(reasoning_so_far):
+                """Update the spinner label with a thinking summary (via stderr)."""
+                nonlocal last_thinking_summary_time
+                now = time.time()
+                # Update at most every 2 seconds to avoid flickering
+                if now - last_thinking_summary_time < 2:
+                    return
+                last_thinking_summary_time = now
+                summary = _summarize_thinking(reasoning_so_far)
+                if summary:
+                    elapsed = now - (thinking_start_time or now)
+                    sys.stderr.write(f"\r\033[K\033[36m⠸\033[0m Thinking… \033[2m{summary}\033[0m")
+                    sys.stderr.flush()
 
             try:
                 for line in response.iter_lines():
@@ -4245,7 +4419,7 @@ Please think step by step and provide your analysis:"""
                         if line.startswith("data: "):
                             data = line[6:]
                             if data == "[DONE]":
-                                self._status_print(f"✅ Stream complete", "debug")
+                                self._status_print(f"Stream complete", "debug")
                                 break
                             try:
                                 json_data = json.loads(data)
@@ -4255,64 +4429,87 @@ Please think step by step and provide your analysis:"""
 
                                     if reasoning_chunk is not None:
                                         if reasoning_chunk and not is_reasoning_active:
-                                            if COLORS_ENABLED:
-                                                print(f"\n{COLOR_THINKING}💭 THINKING:{COLOR_RESET}")
-                                            else:
-                                                print(f"\n💭 THINKING:")
-                                            if COLORS_ENABLED:
-                                                print(f"{COLOR_THINKING}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{COLOR_RESET}")
-                                            else:
-                                                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+                                            # Don't stop spinner yet — keep it running
+                                            # during thinking, just update its label
                                             is_reasoning_active = True
                                             is_final_response_active = False
                                             has_seen_reasoning = True
+                                            thinking_start_time = time.time()
 
                                         if reasoning_chunk:
-                                            if COLORS_ENABLED and is_reasoning_active:
-                                                print(f"{COLOR_THINKING}{reasoning_chunk}{COLOR_RESET}", end="", flush=True)
-                                            else:
-                                                print(f"{reasoning_chunk}", end="", flush=True)
                                             reasoning_content += reasoning_chunk
+                                            # Update spinner with thinking summary
+                                            _update_thinking_spinner(reasoning_content)
 
                                     content = delta.get("content", "")
                                     if content:
                                         if not is_final_response_active:
-                                            if has_seen_reasoning and is_reasoning_active:
-                                                print(f"\n\n🤖 RESPONSE:")
-                                                print(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-                                            elif not self.thinking_enabled:
-                                                print(f"\n🤖 Assistant: ", end="", flush=True)
+                                            # Transition: thinking → response
+                                            _notify_first_token()  # Stop spinner
+
+                                            if has_seen_reasoning and thinking_start_time:
+                                                # Show condensed thinking summary
+                                                elapsed = time.time() - thinking_start_time
+                                                summary = _summarize_thinking(reasoning_content)
+                                                if COLORS_ENABLED:
+                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
+                                                else:
+                                                    print(f"Thought for {elapsed:.1f}s")
+                                            else:
+                                                _notify_first_token()
                                             is_final_response_active = True
                                             is_reasoning_active = False
 
-                                        print(content, end="", flush=True)
+                                        # Accumulate full response regardless of filter
                                         full_response += content
-                                        chars_received += len(content)
+                                        # Content filter: suppress code fences if active
+                                        _cf = getattr(self, '_content_filter', None)
+                                        if _cf:
+                                            display = _cf.write(content)
+                                            if display:
+                                                print(display, end="", flush=True)
+                                                content_was_displayed = True
+                                        else:
+                                            print(content, end="", flush=True)
+                                            content_was_displayed = True
 
-                                        # Show progress every 500 characters
-                                        if chars_received % 500 == 0:
-                                            print(f"\n📊 Received: {chars_received} chars")
-                                            
                             except json.JSONDecodeError:
                                 continue
             except KeyboardInterrupt:
-                print("\n\n⏹️ [Streaming interrupted by user]")
+                _notify_first_token()
+                print("\n[interrupted]")
                 response.close()
-
-                save_partial = input("\n💾 Save partial response? (y/n): ").strip().lower()
-                if save_partial == 'y' and full_response:
-                    self.add_to_history("assistant", full_response + "\n[Response interrupted by user]")
-                    return full_response + "\n[Response interrupted by user]"
+                if full_response:
+                    self.add_to_history("assistant", full_response + "\n[interrupted]")
+                    return full_response
                 else:
                     self.conversation_history.pop()
                     return None
 
+            # Flush content filter if active
+            _cf = getattr(self, '_content_filter', None)
+            if _cf:
+                remaining = _cf.flush()
+                if remaining:
+                    print(remaining, end="", flush=True)
+                    content_was_displayed = True
+
             # Add the complete response to history
             if full_response:
                 self.add_to_history("assistant", full_response)
+                if content_was_displayed:
+                    print()  # Clean newline after visible streaming output
 
-                print(f"\n\n✅ Response saved to conversation history")
-                print(f"📊 Stats: {len(full_response)} characters")
+            # Store thinking content for expansion later
+            if reasoning_content:
+                if not hasattr(self, '_thinking_history'):
+                    self._thinking_history = []
+                self._thinking_history.append({
+                    "timestamp": time.time(),
+                    "thinking": reasoning_content,
+                    "response_preview": full_response[:200] if full_response else "",
+                    "duration": (time.time() - thinking_start_time) if thinking_start_time else 0,
+                })
 
             # ============================================
             # AUTO-FIX LOGIC
@@ -4340,10 +4537,6 @@ Please think step by step and provide your analysis:"""
                 # Reset auto-fix mode
                 self.auto_fix_mode = False
                 self.current_fix_file = None
-
-            print(f"\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-            print(f"✅ Command completed. Ready for next input.")
-            print()
 
             return full_response
 
@@ -4399,6 +4592,12 @@ Please think step by step and provide your analysis:"""
 
                 if response is not None:
                     self._safe_print(f"\n{response}\n")
+
+                    # Feed tool output to LLM so it can reason about results
+                    if prefix in self.COMMANDS_FEED_TO_LLM and response:
+                        truncated = self._truncate_middle(str(response))
+                        self.add_to_history("user", f"[Tool: {prefix}] {truncated}")
+
                 return None
 
         # No command matched, fall back to sync stream_response
