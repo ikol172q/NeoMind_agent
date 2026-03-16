@@ -20,12 +20,22 @@ from typing import Optional, List, Dict, Any, Tuple
 
 
 class ToolResult:
-    """Standardized result from any tool execution."""
+    """Standardized result from any tool execution.
 
-    def __init__(self, success: bool, output: str = "", error: str = ""):
+    Attributes:
+        success: Whether the tool executed successfully
+        output: The tool's stdout/primary output
+        error: Error message if failed
+        metadata: Structured metadata about the execution (e.g. lines_read,
+                  exit_code, files_matched, duration_ms, file_path)
+    """
+
+    def __init__(self, success: bool, output: str = "", error: str = "",
+                 metadata: Optional[Dict[str, Any]] = None):
         self.success = success
         self.output = output
         self.error = error
+        self.metadata = metadata or {}
 
     def __str__(self):
         if self.success:
@@ -35,16 +45,271 @@ class ToolResult:
     def __bool__(self):
         return self.success
 
+    def __repr__(self):
+        status = "OK" if self.success else "ERROR"
+        preview = (self.output or self.error)[:60]
+        return f"ToolResult({status}, {preview!r})"
+
 
 class ToolRegistry:
     """Claude CLI-like tool system for coding mode.
 
     Each tool returns a ToolResult with structured output.
+    Tools are registered with typed schemas (ToolDefinition) for:
+    - Parameter validation before execution
+    - Per-tool permission levels
+    - Auto-generated system prompt sections
     """
 
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = working_dir or os.getcwd()
         self._persistent_bash = None  # Lazy init
+        self._tool_definitions: Dict[str, Any] = {}  # name → ToolDefinition
+        self._register_tools()
+
+    def _register_tools(self):
+        """Register all built-in tools with their schemas."""
+        from agent.tool_schema import ToolDefinition, ToolParam, ParamType, PermissionLevel
+
+        self._tool_definitions = {}
+
+        # ── Bash ──
+        self._tool_definitions["Bash"] = ToolDefinition(
+            name="Bash",
+            description="Execute shell commands in a persistent bash session (cd/export carry across calls)",
+            parameters=[
+                ToolParam("command", ParamType.STRING, "Shell command to execute"),
+                ToolParam("timeout", ParamType.INTEGER,
+                          "Timeout in seconds", required=False, default=120),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_bash,
+            examples=[
+                {"command": "ls -la src/"},
+                {"command": "python3 -m pytest tests/ -v", "timeout": 60},
+                {"command": "git status"},
+                {"command": "pip install requests --break-system-packages"},
+            ],
+        )
+
+        # ── Read ──
+        self._tool_definitions["Read"] = ToolDefinition(
+            name="Read",
+            description="Read a file with line numbers (auto-truncated at 30K chars)",
+            parameters=[
+                ToolParam("path", ParamType.STRING, "File path (absolute or relative to workspace)"),
+                ToolParam("offset", ParamType.INTEGER,
+                          "Starting line number (0 = from beginning)", required=False, default=0),
+                ToolParam("limit", ParamType.INTEGER,
+                          "Max lines to read (0 = all)", required=False, default=0),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_read,
+            examples=[
+                {"path": "src/main.py"},
+                {"path": "src/main.py", "offset": 50, "limit": 20},
+            ],
+        )
+
+        # ── Write ──
+        self._tool_definitions["Write"] = ToolDefinition(
+            name="Write",
+            description="Create a new file or overwrite an existing file",
+            parameters=[
+                ToolParam("path", ParamType.STRING, "File path"),
+                ToolParam("content", ParamType.STRING, "File content to write"),
+            ],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_write,
+            examples=[
+                {"path": "src/hello.py", "content": "print('Hello, world!')\\n"},
+            ],
+        )
+
+        # ── Edit ──
+        self._tool_definitions["Edit"] = ToolDefinition(
+            name="Edit",
+            description="Edit a file by replacing exact string matches (read file first to get exact content)",
+            parameters=[
+                ToolParam("path", ParamType.STRING, "File path"),
+                ToolParam("old_string", ParamType.STRING, "Exact text to find and replace"),
+                ToolParam("new_string", ParamType.STRING, "Replacement text"),
+                ToolParam("replace_all", ParamType.BOOLEAN,
+                          "Replace all occurrences (default: first only)", required=False, default=False),
+            ],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_edit,
+            examples=[
+                {"path": "src/main.py", "old_string": "def old_name(", "new_string": "def new_name("},
+            ],
+        )
+
+        # ── Glob ──
+        self._tool_definitions["Glob"] = ToolDefinition(
+            name="Glob",
+            description="Find files matching a glob pattern (sorted by modification time, most recent first)",
+            parameters=[
+                ToolParam("pattern", ParamType.STRING, "Glob pattern (e.g. '**/*.py', 'src/**/*.ts')"),
+                ToolParam("path", ParamType.STRING,
+                          "Base directory (default: workspace)", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_glob,
+            examples=[
+                {"pattern": "**/*.py"},
+                {"pattern": "src/**/*.ts", "path": "/project"},
+            ],
+        )
+
+        # ── Grep ──
+        self._tool_definitions["Grep"] = ToolDefinition(
+            name="Grep",
+            description="Search file contents with regex (uses ripgrep when available for 5-10x speed)",
+            parameters=[
+                ToolParam("pattern", ParamType.STRING, "Regex pattern to search for"),
+                ToolParam("path", ParamType.STRING,
+                          "Directory to search (default: workspace)", required=False, default=None),
+                ToolParam("file_type", ParamType.STRING,
+                          "Filter by extension (e.g. 'py', 'js')", required=False, default=None),
+                ToolParam("context", ParamType.INTEGER,
+                          "Lines of context around matches", required=False, default=0),
+                ToolParam("case_insensitive", ParamType.BOOLEAN,
+                          "Case insensitive search", required=False, default=False),
+                ToolParam("output_mode", ParamType.STRING,
+                          "Output format", required=False, default="content",
+                          enum=["content", "files_with_matches", "count"]),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_grep,
+            examples=[
+                {"pattern": "def main\\("},
+                {"pattern": "TODO|FIXME", "file_type": "py", "case_insensitive": True},
+                {"pattern": "import", "output_mode": "files_with_matches"},
+            ],
+        )
+
+        # ── LS ──
+        self._tool_definitions["LS"] = ToolDefinition(
+            name="LS",
+            description="List directory contents with file sizes",
+            parameters=[
+                ToolParam("path", ParamType.STRING,
+                          "Directory path (default: workspace)", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_ls,
+            examples=[
+                {},
+                {"path": "src/"},
+            ],
+        )
+
+    # ── Tool execution wrappers (bridge schema → existing methods) ─────────
+
+    def _exec_bash(self, command: str, timeout: int = 120) -> ToolResult:
+        """Execute via persistent bash session."""
+        import time
+        start = time.time()
+        result = self.bash(command, timeout=timeout)
+        elapsed_ms = int((time.time() - start) * 1000)
+        result.metadata["duration_ms"] = elapsed_ms
+        result.metadata["command"] = command
+        return result
+
+    def _exec_read(self, path: str, offset: int = 0, limit: int = 0) -> ToolResult:
+        """Execute file read with metadata."""
+        result = self.read_file(path, offset=offset, limit=limit)
+        resolved = self._resolve_path(path)
+        result.metadata["file_path"] = resolved
+        if result.success:
+            # Count lines in output
+            lines = result.output.split("\n")
+            result.metadata["lines_in_output"] = len(lines) - 1  # subtract header
+        return result
+
+    def _exec_write(self, path: str, content: str) -> ToolResult:
+        """Execute file write with metadata."""
+        result = self.write_file(path, content)
+        result.metadata["file_path"] = self._resolve_path(path)
+        if result.success:
+            result.metadata["bytes_written"] = len(content)
+            result.metadata["lines_written"] = content.count("\n") + (
+                1 if content and not content.endswith("\n") else 0
+            )
+        return result
+
+    def _exec_edit(self, path: str, old_string: str, new_string: str,
+                   replace_all: bool = False) -> ToolResult:
+        """Execute file edit with metadata."""
+        result = self.edit_file(path, old_string, new_string, replace_all=replace_all)
+        result.metadata["file_path"] = self._resolve_path(path)
+        return result
+
+    def _exec_glob(self, pattern: str, path: Optional[str] = None) -> ToolResult:
+        """Execute glob search with metadata."""
+        result = self.glob_files(pattern, path=path)
+        if result.success and not result.output.startswith("No files"):
+            # Extract count from header: "# N files matching ..."
+            try:
+                count = int(result.output.split("\n")[0].split()[1])
+                result.metadata["files_matched"] = count
+            except (IndexError, ValueError):
+                pass
+        result.metadata["pattern"] = pattern
+        return result
+
+    def _exec_grep(self, pattern: str, path: Optional[str] = None,
+                   file_type: Optional[str] = None, context: int = 0,
+                   case_insensitive: bool = False,
+                   output_mode: str = "content") -> ToolResult:
+        """Execute grep search with metadata."""
+        result = self.grep_files(
+            pattern, path=path, file_type=file_type, context=context,
+            case_insensitive=case_insensitive, output_mode=output_mode,
+        )
+        result.metadata["pattern"] = pattern
+        return result
+
+    def _exec_ls(self, path: Optional[str] = None) -> ToolResult:
+        """Execute directory listing with metadata."""
+        result = self.list_dir(path=path)
+        if result.success:
+            # Extract count from header: "# /path (N entries)"
+            try:
+                header = result.output.split("\n")[0]
+                count = int(header.split("(")[1].split()[0])
+                result.metadata["entry_count"] = count
+            except (IndexError, ValueError):
+                pass
+        return result
+
+    # ── Tool registry access ───────────────────────────────────────────────
+
+    def get_tool(self, name: str) -> Optional[Any]:
+        """Get a tool definition by name (case-insensitive lookup)."""
+        # Exact match first
+        if name in self._tool_definitions:
+            return self._tool_definitions[name]
+        # Case-insensitive fallback
+        name_lower = name.lower()
+        for key, tool_def in self._tool_definitions.items():
+            if key.lower() == name_lower:
+                return tool_def
+        return None
+
+    def get_all_tools(self) -> List[Any]:
+        """Get all registered tool definitions in display order."""
+        # Display order: Bash, Read, Write, Edit, Glob, Grep, LS
+        order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"]
+        result = []
+        for name in order:
+            if name in self._tool_definitions:
+                result.append(self._tool_definitions[name])
+        # Append any tools not in the default order
+        for name, tool_def in self._tool_definitions.items():
+            if name not in order:
+                result.append(tool_def)
+        return result
 
     def _resolve_path(self, path: str) -> str:
         """Resolve a path relative to working directory."""
