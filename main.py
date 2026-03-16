@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py - Entry point for localuser Agent
+# main.py - Entry point for neomind Agent
 
 import sys
 import os
@@ -63,7 +63,7 @@ def test_main():
 def main():
     """Main entry point with argument parsing"""
     parser = argparse.ArgumentParser(
-        description="localuser AI Agent — Chat or Coding mode",
+        description="neomind AI Agent — Chat or Coding mode",
         epilog="Examples:\n"
                "  python main.py --mode chat     # General conversation\n"
                "  python main.py --mode coding   # Claude CLI-like coding assistant",
@@ -92,10 +92,10 @@ def main():
 
     if args.version:
         try:
-            from localuser_agent import __version__
-            print(f"localuser-agent version {__version__}")
+            from neomind import __version__
+            print(f"neomind-agent version {__version__}")
         except ImportError:
-            print("localuser-agent version 0.1.0")
+            print("neomind-agent version 0.1.0")
         return
 
     if args.run_mode == 'test':

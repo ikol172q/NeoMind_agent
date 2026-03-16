@@ -1,6 +1,6 @@
-# localuser-agent Examples
+# neomind Examples
 
-This document provides practical examples and tutorials for using localuser-agent, focusing on its code analysis and self-iteration capabilities.
+This document provides practical examples and tutorials for using neomind, focusing on its code analysis and self-iteration capabilities.
 
 ## Table of Contents
 
@@ -16,10 +16,10 @@ This document provides practical examples and tutorials for using localuser-agen
 
 ```bash
 # Interactive chat mode
-localuser-agent
+neomind
 
 # Or as a module
-python -m localuser_agent
+python -m neomind
 ```
 
 ### Essential Commands

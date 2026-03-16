@@ -356,7 +356,7 @@ class TestContentFilterToolCallSuppression(unittest.TestCase):
         self.assertEqual(output, text)
 
     def test_python_block_suppressed(self):
-        """Python blocks are now suppressed (DeepSeek fallback support)."""
+        """Python blocks are now suppressed (LLM fallback support)."""
         f = self._make_filter()
         text = 'Before\n```python\nprint("hello")\n```\nAfter'
         output = f.write(text) + f.flush()

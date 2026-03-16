@@ -15,7 +15,7 @@ sys.stderr.reconfigure(encoding='utf-8') if hasattr(sys.stderr, 'reconfigure') e
 # Add agent to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 from agent.safety import SafetyManager
 
 def test_write_command_safety():
@@ -23,7 +23,7 @@ def test_write_command_safety():
     print("=== Testing /write command safety ===")
     with tempfile.TemporaryDirectory() as tmpdir:
         # Create agent with dummy API key
-        agent = DeepSeekStreamingChat(api_key="dummy_key")
+        agent = NeoMindAgent(api_key="dummy_key")
         # Replace safety manager with one using tmpdir as workspace
         new_sm = SafetyManager(workspace_root=tmpdir, agent_root=tmpdir)
         agent.safety_manager = new_sm

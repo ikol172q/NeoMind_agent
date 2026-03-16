@@ -280,8 +280,8 @@ class TestCoreIntegration(unittest.TestCase):
     def test_chat_mode_system_prompt(self):
         from agent_config import agent_config
         agent_config.switch_mode("chat")
-        from agent.core import DeepSeekStreamingChat
-        chat = DeepSeekStreamingChat(api_key="test")
+        from agent.core import NeoMindAgent
+        chat = NeoMindAgent(api_key="test")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
         self.assertEqual(len(sys_msgs), 1)
         self.assertIn("helpful AI assistant", sys_msgs[0]["content"])
@@ -289,8 +289,8 @@ class TestCoreIntegration(unittest.TestCase):
     def test_coding_mode_system_prompt(self):
         from agent_config import agent_config
         agent_config.switch_mode("coding")
-        from agent.core import DeepSeekStreamingChat
-        chat = DeepSeekStreamingChat(api_key="test")
+        from agent.core import NeoMindAgent
+        chat = NeoMindAgent(api_key="test")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
         self.assertEqual(len(sys_msgs), 1)
         self.assertIn("expert software engineer", sys_msgs[0]["content"])
@@ -298,8 +298,8 @@ class TestCoreIntegration(unittest.TestCase):
     def test_switch_mode_updates_prompt(self):
         from agent_config import agent_config
         agent_config.switch_mode("chat")
-        from agent.core import DeepSeekStreamingChat
-        chat = DeepSeekStreamingChat(api_key="test")
+        from agent.core import NeoMindAgent
+        chat = NeoMindAgent(api_key="test")
         # Switch to coding
         chat.switch_mode("coding")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
@@ -341,14 +341,14 @@ class TestAgentConfigEdgeCases(unittest.TestCase):
         self.assertEqual(cfg.temperature, 0.7)  # default
         del os.environ["DEEPSEEK_TEMPERATURE"]
 
-    def test_ikol_mode_env_var(self):
+    def test_neomind_mode_env_var(self):
         os.environ["IKOL_MODE"] = "coding"
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager()  # no explicit mode
         self.assertEqual(cfg.mode, "coding")
         del os.environ["IKOL_MODE"]
 
-    def test_invalid_ikol_mode_defaults_to_chat(self):
+    def test_invalid_neomind_mode_defaults_to_chat(self):
         os.environ["IKOL_MODE"] = "invalid_mode"
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager()

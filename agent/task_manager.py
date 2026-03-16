@@ -1,5 +1,5 @@
 """
-Task management system for localuser_agent.
+Task management system for neomind.
 Provides persistent task tracking with CRUD operations.
 """
 import os

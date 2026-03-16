@@ -23,12 +23,12 @@ class ContextManager:
         self._initialize_encoding()
 
     def _initialize_encoding(self):
-        """Initialize tiktoken encoding for DeepSeek model."""
+        """Initialize tiktoken encoding for LLM tokenization."""
         if not HAS_TIKTOKEN:
             self._encoding = None
             return
 
-        # DeepSeek models likely use cl100k_base (same as GPT-3.5/4)
+        # Models likely use cl100k_base (same as GPT-3.5/4)
         try:
             self._encoding = tiktoken.get_encoding("cl100k_base")
         except Exception as e:
