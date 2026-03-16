@@ -1,4 +1,4 @@
-# Plan: Split ikol1729 Agent into Chat + Coding Modes
+# Plan: Split neomind Agent into Chat + Coding Modes
 
 ## Overview
 
@@ -199,7 +199,7 @@ class PermissionMode(Enum):
 
 Map Claude CLI tools to agent capabilities:
 
-| Claude CLI Tool | ikol1729 Implementation |
+| Claude CLI Tool | neomind Implementation |
 |-----------------|------------------------|
 | Bash            | `/run` command → subprocess |
 | Read            | `/read` → file read with line numbers |
@@ -311,8 +311,8 @@ python main.py --mode chat
 python main.py --mode coding
 
 # Or shorthand aliases (in .zshrc)
-alias ikol-chat="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate && python3 main.py --mode chat"
-alias ikol-code="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate && python3 main.py --mode coding"
+alias neomind-chat="cd ~/Desktop/neomind && source .venv/bin/activate && python3 main.py --mode chat"
+alias neomind-code="cd ~/Desktop/neomind && source .venv/bin/activate && python3 main.py --mode coding"
 ```
 
 ### Welcome Screen (mode-specific)
@@ -320,7 +320,7 @@ alias ikol-code="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate && pyt
 **Chat mode:**
 ```
 ╭─────────────────────────────────────────╮
-│  ikol1729 — Chat Mode                   │
+│  neomind — Chat Mode                   │
 │  Model: deepseek-chat                   │
 │  Type /help for commands, /quit to exit │
 ╰─────────────────────────────────────────╯
@@ -329,7 +329,7 @@ alias ikol-code="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate && pyt
 **Coding mode (Claude CLI-like):**
 ```
 ╭─────────────────────────────────────────╮
-│  ikol1729 — Coding Mode                 │
+│  neomind — Coding Mode                 │
 │  Model: deepseek-chat                   │
 │  Workspace: ~/Desktop/my-project        │
 │  Tools: Bash, Read, Write, Edit,        │

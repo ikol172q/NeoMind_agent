@@ -1,5 +1,5 @@
-# ikol1729_agent __main__ module
-# Allows running as: python -m ikol1729_agent
+# neomind __main__ module
+# Allows running as: python -m neomind
 
 import sys
 import os

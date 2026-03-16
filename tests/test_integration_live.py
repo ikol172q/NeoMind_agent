@@ -1,5 +1,5 @@
 """
-Live integration tests for ikol1729 agent.
+Live integration tests for neomind agent.
 
 These tests make REAL API calls to DeepSeek to verify that the model's output
 format works correctly with the tool parser, content filter, and agentic loop.
@@ -432,7 +432,7 @@ class TestFullRoundTrip:
             "     1\tfrom setuptools import setup, find_packages\n"
             "     2\t\n"
             "     3\tsetup(\n"
-            "     4\t    name='ikol1729',\n"
+            "     4\t    name='neomind',\n"
             "     5\t    version='0.1.0',\n"
             "     6\t    packages=find_packages(),\n"
             "     7\t)\n"

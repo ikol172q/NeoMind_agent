@@ -1,6 +1,6 @@
 # Plans
 
-Implementation plans and architecture decisions for ikol1729 agent.
+Implementation plans and architecture decisions for neomind agent.
 
 | Date | Plan | Status |
 |------|------|--------|

@@ -1,5 +1,5 @@
 """
-Comprehensive help system for ikol1729-agent.
+Comprehensive help system for neomind.
 Provides command documentation and usage examples.
 """
 from typing import Dict, Optional
@@ -60,7 +60,7 @@ class HelpSystem:
             ),
             "models": self.formatter.command_help(
                 command="/models",
-                description="List and switch DeepSeek models.",
+                description="List and switch models across all providers.",
                 usage="/models list\n/models switch <model>",
                 examples="/models list\n/models switch deepseek-reasoner"
             ),

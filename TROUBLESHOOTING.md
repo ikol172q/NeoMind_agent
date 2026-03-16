@@ -1,4 +1,4 @@
-# Troubleshooting Guide — ikol1729 Agent
+# Troubleshooting Guide — neomind Agent
 
 A living document of issues encountered and their fixes.
 Check here first before debugging a "new" problem — it might be an old one.
@@ -39,11 +39,11 @@ Check here first before debugging a "new" problem — it might be an old one.
 **Fix:** In `.p10k.zsh`, set `POWERLEVEL9K_VIRTUALENV_SHOW_WITH_PYENV=true`
 **Root cause:** p10k hides virtualenv when pyenv is not detected by default
 
-### `ikol` alias launches the agent instead of just activating env
-**Symptom:** Typing `ikol` runs `python3 main.py` immediately
+### `neomind` alias launches the agent instead of just activating env
+**Symptom:** Typing `neomind` runs `python3 main.py` immediately
 **Fix:** Alias should only `cd` + `source activate`, NOT run main.py:
 ```zsh
-alias ikol="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate"
+alias neomind="cd ~/Desktop/neomind && source .venv/bin/activate"
 ```
 
 ---
@@ -56,14 +56,14 @@ alias ikol="cd ~/Desktop/ikol1729_agent && source .venv/bin/activate"
 **Root cause:** A previous git process crashed or was interrupted
 
 ### Sensitive files almost committed
-**Symptom:** `.env`, `.ikol1729/`, `.venv/` show up in `git status`
+**Symptom:** `.env`, `.neomind/`, `.venv/` show up in `git status`
 **Fix:** Updated `.gitignore` with:
 ```
 .venv/
 venv/
 env/
 .env
-.ikol1729/
+.neomind/
 run.sh
 *.pem
 *.key
@@ -270,9 +270,9 @@ for key in ['DEEPSEEK_API_KEY', 'ZAI_API_KEY']:
 
 # Check provider resolution
 python3 -c "
-from agent.core import DeepSeekChat
+from agent.core import NeoMindAgent
 for model in ['deepseek-chat', 'glm-5', 'glm-4.7-flash']:
-    spec = DeepSeekChat._get_model_spec(model)
+    spec = NeoMindAgent._get_model_spec(model)
     print(f'{model}: ctx={spec[\"max_context\"]//1000}K out={spec[\"max_output\"]//1000}K default={spec[\"default_max\"]//1000}K')
 "
 

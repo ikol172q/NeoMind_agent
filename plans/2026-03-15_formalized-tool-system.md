@@ -2,7 +2,7 @@
 
 **Date:** 2026-03-15
 **Status:** Implemented (Phases 1-3 complete, Phase 4 partial)
-**Goal:** Transform ikol1729 from prompt-only tool execution into a formalized, structured tool system with controlled I/O, guaranteed correctness, and Claude CLI-level smoothness.
+**Goal:** Transform neomind from prompt-only tool execution into a formalized, structured tool system with controlled I/O, guaranteed correctness, and Claude CLI-level smoothness.
 
 > **Post-implementation note (2026-03-15):**
 > The original plan proposed `<tool_call>` XML tags with JSON bodies. In practice, DeepSeek models **ignored the `<tool_call>` format entirely** — they wrote Python scripts with `open()` and `os.path.exists()` instead of using tools. Integration tests confirmed: 11/12 passed but `test_model_uses_structured_read` failed because DeepSeek produced Python code, not tool calls.
@@ -19,7 +19,7 @@
 
 ### Current State (Prompt-Only Tools)
 
-The current ikol1729 agent relies on the LLM to produce bash code blocks, which are then extracted via regex and executed in a persistent bash session. This approach has several weaknesses:
+The current neomind agent relies on the LLM to produce bash code blocks, which are then extracted via regex and executed in a persistent bash session. This approach has several weaknesses:
 
 1. **No structured tool calls.** The LLM must generate free-form bash, which is prone to hallucination, syntax errors, and unpredictable output formats.
 2. **Single tool type.** Everything runs through `bash()` — Read, Write, Edit, Glob, Grep all exist in `tools.py` but are **only used by slash commands**, not by the agentic loop. The LLM has to `cat` files instead of calling `read_file()`.
@@ -39,7 +39,7 @@ Based on research (Claude Code docs, architecture deep-dives):
 
 ### The Gap
 
-ikol1729 uses **DeepSeek's API**, which does **not** natively support structured tool_use like Anthropic's API. This means we can't do native tool calls. BUT we can build the next best thing: a **structured tool dispatch system** that:
+neomind uses **DeepSeek's API**, which does **not** natively support structured tool_use like Anthropic's API. This means we can't do native tool calls. BUT we can build the next best thing: a **structured tool dispatch system** that:
 
 - Defines typed tool schemas in code
 - Teaches the LLM to output tool calls in a predictable format (JSON or structured blocks)

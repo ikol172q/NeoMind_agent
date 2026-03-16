@@ -32,6 +32,8 @@ def _make_mock_chat(mode="chat"):
     ]
     chat.context_manager = MagicMock()
     chat.context_manager.count_conversation_tokens.return_value = 1500
+    # Provide model spec method for status bar
+    chat._get_model_spec = lambda model: {"max_context": 131072, "max_output": 8192, "default_max": 8192}
     return chat
 
 
@@ -393,7 +395,7 @@ class TestWelcomeScreen(unittest.TestCase):
             iface.console.file = captured
         iface.display_welcome()
         output = captured.getvalue()
-        self.assertIn("ikol1729", output)
+        self.assertIn("neomind", output)
         self.assertIn("chat mode", output)
 
     def test_coding_welcome_with_rich(self):
@@ -1012,7 +1014,7 @@ class TestCodeFenceFilter(unittest.TestCase):
         text = "Code:\n```python\nprint('hello')\n```\nDone."
         result = f.write(text)
         result += f.flush()
-        # Python blocks ARE now suppressed (DeepSeek fallback)
+        # Python blocks ARE now suppressed (LLM fallback)
         self.assertNotIn("print('hello')", result)
         self.assertIn("Code:", result)
         self.assertIn("Done.", result)

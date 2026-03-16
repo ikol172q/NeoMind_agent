@@ -1,5 +1,5 @@
 """
-Formalized tool definition framework for ikol1729 agent.
+Formalized tool definition framework for neomind agent.
 
 Provides typed tool schemas with parameter validation, permission levels,
 and auto-generated system prompt sections. This replaces the prompt-only

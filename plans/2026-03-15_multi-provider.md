@@ -2,19 +2,19 @@
 
 **Date:** 2026-03-15
 **Status:** Done
-**Goal:** Allow ikol1729 to use models from multiple API providers (DeepSeek, z.ai) with seamless switching via `/switch`.
+**Goal:** Allow neomind to use models from multiple API providers (DeepSeek, z.ai) with seamless switching via `/switch`.
 
 ---
 
 ## Problem
 
-ikol1729 was hardcoded to DeepSeek — single API key, single base URL, single set of model limits. Adding z.ai's GLM-5 (or any future provider) required touching dozens of places.
+neomind was hardcoded to DeepSeek — single API key, single base URL, single set of model limits. Adding z.ai's GLM-5 (or any future provider) required touching dozens of places.
 
 ## Solution: Provider Registry + Per-Model Specs
 
 ### Provider Registry (`_PROVIDERS`)
 
-A class-level dict on `DeepSeekChat` that maps provider names to their config:
+A class-level dict on `NeoMindAgent` that maps provider names to their config:
 
 ```python
 _PROVIDERS = {

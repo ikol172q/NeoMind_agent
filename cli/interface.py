@@ -18,7 +18,7 @@ except ImportError:
     PROMPT_TOOLKIT_AVAILABLE = False
     print("Note: For better experience, install prompt_toolkit: pip install prompt_toolkit")
 
-from agent import DeepSeekStreamingChat
+from agent import NeoMindAgent
 from agent.help_system import HelpSystem
 from agent_config import agent_config
 from .input_handlers import get_multiline_input_with_prompt_toolkit, get_multiline_input_fallback
@@ -72,7 +72,7 @@ def display_welcome_banner(mode: str = "chat"):
     """Display welcome banner with instructions"""
     mode_display = f"[{mode.upper()} MODE]"
     print("\n" + "="*60)
-    print(f"DeepSeek Streaming Chat (Enhanced with Thinking Stream) {mode_display}")
+    print(f"NeoMind Agent {mode_display}")
     print("="*60)
     print("Commands:")
     print("  /clear   - Clear conversation history")
@@ -106,14 +106,14 @@ def get_api_key() -> Optional[str]:
     if not api_key:
         print("DEEPSEEK_API_KEY environment variable not found.")
         print("Please set it in your .env file or enter it now.")
-        api_key = input("Enter your DeepSeek API key: ").strip()
+        api_key = input("Enter your API key: ").strip()
         if not api_key:
             print("API key is required!")
             return None
     return api_key
 
 
-def handle_command(chat: DeepSeekStreamingChat, command: str, session=None) -> bool:
+def handle_command(chat: NeoMindAgent, command: str, session=None) -> bool:
     """Handle CLI commands, returns True if should continue"""
     if command.lower() in ['/quit', '/exit', 'quit', 'exit']:
         print("Goodbye!")
@@ -162,7 +162,7 @@ def interactive_chat_with_prompt_toolkit(mode: str = "chat"):
         return
 
     try:
-        chat = DeepSeekStreamingChat(api_key=api_key)
+        chat = NeoMindAgent(api_key=api_key)
     except ValueError as e:
         print(f"Error initializing chat: {e}")
         return
@@ -346,7 +346,7 @@ def interactive_chat_fallback(mode: str = "chat"):
         return
 
     try:
-        chat = DeepSeekStreamingChat(api_key=api_key)
+        chat = NeoMindAgent(api_key=api_key)
     except ValueError as e:
         print(f"Error initializing chat: {e}")
         return

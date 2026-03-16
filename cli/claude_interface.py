@@ -1,5 +1,5 @@
 """
-Claude CLI-like interface for ikol1729 agent.
+Claude CLI-like interface for neomind agent.
 
 Features:
 - Key bindings: Ctrl+O (thinking toggle), Ctrl+C (cancel/interrupt), Escape (clear), Ctrl+L (clear screen), Ctrl+D (exit)
@@ -49,7 +49,7 @@ try:
 except ImportError:
     RICH_AVAILABLE = False
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 from agent.help_system import HelpSystem
 from agent_config import agent_config
 
@@ -155,13 +155,13 @@ class SlashCommandCompleter(Completer):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ConversationManager:
-    """Save / load conversations to ~/.ikol1729/conversations/."""
+    """Save / load conversations to ~/.neomind/conversations/."""
 
     def __init__(self):
-        self.base_dir = Path.home() / ".ikol1729" / "conversations"
+        self.base_dir = Path.home() / ".neomind" / "conversations"
         self.base_dir.mkdir(parents=True, exist_ok=True)
 
-    def save(self, chat: DeepSeekStreamingChat, name: Optional[str] = None) -> str:
+    def save(self, chat: NeoMindAgent, name: Optional[str] = None) -> str:
         name = name or f"conv_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         fp = self.base_dir / f"{name}.json"
         data = {
@@ -197,7 +197,7 @@ class ConversationManager:
 class ClaudeInterface:
     """Claude-like terminal chat interface."""
 
-    def __init__(self, chat: DeepSeekStreamingChat):
+    def __init__(self, chat: NeoMindAgent):
         self.chat = chat
         self.console = Console(highlight=False) if RICH_AVAILABLE else None
         self.conv_mgr = ConversationManager()
@@ -216,7 +216,7 @@ class ClaudeInterface:
             if mode == "coding":
                 cwd = os.getcwd()
                 self.console.print(
-                    f"[bold cyan]ikol1729[/bold cyan]  "
+                    f"[bold cyan]neomind[/bold cyan]  "
                     f"[dim]coding mode[/dim]"
                 )
                 self.console.print(
@@ -234,7 +234,7 @@ class ClaudeInterface:
                 )
             else:
                 self.console.print(
-                    f"[bold cyan]ikol1729[/bold cyan]  "
+                    f"[bold cyan]neomind[/bold cyan]  "
                     f"[dim]chat mode[/dim]"
                 )
                 self.console.print(
@@ -246,7 +246,7 @@ class ClaudeInterface:
                 )
             self.console.print()
         else:
-            print(f"\nikol1729 — {mode} mode")
+            print(f"\nneomind — {mode} mode")
             print(f"Model: {model_name}  Think: {think_icon}")
             if mode == "coding":
                 print(f"Workspace: {os.getcwd()}")
@@ -662,7 +662,7 @@ class ClaudeInterface:
 
         Suppresses:
         - Bash code fences: ```bash, ```shell, ```sh, ```console
-        - Python code fences: ```python (DeepSeek fallback)
+        - Python code fences: ```python (LLM fallback)
         - Structured tool calls: <tool_call>...</tool_call>
         """
 
@@ -1047,7 +1047,7 @@ class ClaudeInterface:
             return
 
         # --- Setup prompt_toolkit session ---
-        history_path = Path.home() / ".ikol1729" / "history"
+        history_path = Path.home() / ".neomind" / "history"
         history_path.parent.mkdir(parents=True, exist_ok=True)
 
         bindings = KeyBindings()
@@ -1205,13 +1205,13 @@ def interactive_chat_claude_interface(mode: str = "chat"):
     if not api_key:
         print("DEEPSEEK_API_KEY not found in environment.")
         print("Please set it in your .env file or enter it now.")
-        api_key = input("Enter your DeepSeek API key: ").strip()
+        api_key = input("Enter your API key: ").strip()
         if not api_key:
             print("API key is required!")
             return
 
     try:
-        chat = DeepSeekStreamingChat(api_key=api_key)
+        chat = NeoMindAgent(api_key=api_key)
     except ValueError as e:
         print(f"Error initializing chat: {e}")
         return

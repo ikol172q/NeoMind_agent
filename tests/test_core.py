@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Comprehensive unit tests for DeepSeekStreamingChat core functionality.
+Comprehensive unit tests for NeoMindAgent core functionality.
 Tests initialization, mode switching, configuration, history management,
 and basic agent operations.
 """
@@ -15,12 +15,12 @@ import time
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 from agent_config import agent_config
 
 
 class TestCoreInitialization(unittest.TestCase):
-    """Test DeepSeekStreamingChat initialization and basic properties."""
+    """Test NeoMindAgent initialization and basic properties."""
 
     def setUp(self):
         """Set up test environment."""
@@ -50,7 +50,7 @@ class TestCoreInitialization(unittest.TestCase):
         self.mock_agent_config.coding_mode_system_prompt = ""
 
         # Create agent with API key
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Verify basic properties
         self.assertEqual(agent.api_key, self.test_api_key)
@@ -89,7 +89,7 @@ class TestCoreInitialization(unittest.TestCase):
             self.mock_agent_config.coding_mode_system_prompt = ""
 
             # Create agent without explicit API key
-            agent = DeepSeekStreamingChat(api_key=None)
+            agent = NeoMindAgent(api_key=None)
 
             # Should use environment variable
             self.assertEqual(agent.api_key, 'env_api_key_123')
@@ -104,7 +104,7 @@ class TestCoreInitialization(unittest.TestCase):
 
             # Should raise ValueError
             with self.assertRaises(ValueError) as context:
-                DeepSeekStreamingChat(api_key=None)
+                NeoMindAgent(api_key=None)
 
             self.assertIn("API key is required", str(context.exception))
 
@@ -125,7 +125,7 @@ class TestCoreInitialization(unittest.TestCase):
         self.mock_agent_config.coding_mode_system_prompt = ""
 
         # Create agent with custom model
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key, model="deepseek-reasoner")
+        agent = NeoMindAgent(api_key=self.test_api_key, model="deepseek-reasoner")
 
         # Should use custom model
         self.assertEqual(agent.model, "deepseek-reasoner")
@@ -147,7 +147,7 @@ class TestCoreInitialization(unittest.TestCase):
         self.mock_agent_config.coding_mode_system_prompt = ""
 
         # Create agent
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Should have system message in conversation history
         self.assertEqual(len(agent.conversation_history), 1)
@@ -171,7 +171,7 @@ class TestCoreInitialization(unittest.TestCase):
         self.mock_agent_config.coding_mode_system_prompt = "You are a coding assistant."
 
         # Create agent
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Should have coding mode system prompt in conversation history
         self.assertEqual(len(agent.conversation_history), 1)
@@ -203,7 +203,7 @@ class TestCoreInitialization(unittest.TestCase):
                 mock_converter = Mock()
                 mock_html2text.HTML2Text.return_value = mock_converter
 
-                agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+                agent = NeoMindAgent(api_key=self.test_api_key)
 
                 # Should initialize HTML converter
                 self.assertIsNotNone(agent.html_converter)
@@ -211,7 +211,7 @@ class TestCoreInitialization(unittest.TestCase):
 
         # Test without html2text
         with patch('agent.core.HAS_HTML2TEXT', False):
-            agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+            agent = NeoMindAgent(api_key=self.test_api_key)
 
             # Should not have HTML converter
             self.assertIsNone(agent.html_converter)
@@ -245,7 +245,7 @@ class TestCoreHistoryManagement(unittest.TestCase):
 
     def test_add_to_history(self):
         """Test adding messages to conversation history."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial state
         initial_len = len(agent.conversation_history)
@@ -270,7 +270,7 @@ class TestCoreHistoryManagement(unittest.TestCase):
 
     def test_clear_history(self):
         """Test clearing conversation history."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Add some messages
         agent.add_to_history("user", "Message 1")
@@ -289,7 +289,7 @@ class TestCoreHistoryManagement(unittest.TestCase):
 
     def test_get_conversation_summary(self):
         """Test getting conversation summary."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Add some messages
         agent.add_to_history("user", "What is Python?")
@@ -306,7 +306,7 @@ class TestCoreHistoryManagement(unittest.TestCase):
 
     def test_token_counting(self):
         """Test token counting functionality."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Add a message
         test_message = "This is a test message for token counting."
@@ -354,7 +354,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.mock_agent_config.system_prompt = ""
         self.mock_agent_config.coding_mode_system_prompt = "Coding assistant."
 
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial state should be chat mode
         self.assertEqual(agent.mode, "chat")
@@ -394,7 +394,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.mock_agent_config.system_prompt = ""
         self.mock_agent_config.coding_mode_system_prompt = "Coding assistant."
 
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial state should be coding mode
         self.assertEqual(agent.mode, "coding")
@@ -435,7 +435,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.mock_agent_config.system_prompt = ""
         self.mock_agent_config.coding_mode_system_prompt = ""
 
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Try to switch to invalid mode
         result = agent.switch_mode("invalid_mode")
@@ -461,7 +461,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.mock_agent_config.system_prompt = ""
         self.mock_agent_config.coding_mode_system_prompt = ""
 
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Mock agent_config.update_mode to fail
         self.mock_agent_config.update_mode = Mock(return_value=False)
@@ -503,7 +503,7 @@ class TestCoreStatusBuffer(unittest.TestCase):
 
     def test_add_status_message(self):
         """Test adding status messages."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial buffer should be empty
         self.assertEqual(len(agent.status_buffer), 0)
@@ -525,7 +525,7 @@ class TestCoreStatusBuffer(unittest.TestCase):
 
     def test_get_status_messages(self):
         """Test retrieving status messages."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Add some messages
         agent.add_status_message("Info 1", "info")
@@ -557,7 +557,7 @@ class TestCoreStatusBuffer(unittest.TestCase):
 
     def test_clear_status_buffer(self):
         """Test clearing status buffer."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Add some messages
         agent.add_status_message("Message 1", "info")
@@ -574,7 +574,7 @@ class TestCoreStatusBuffer(unittest.TestCase):
 
     def test_update_current_status(self):
         """Test updating current single-line status."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial status should be empty
         self.assertEqual(agent.current_status, "")
@@ -620,7 +620,7 @@ class TestCoreMiscellaneous(unittest.TestCase):
 
     def test_toggle_thinking_mode(self):
         """Test toggling thinking mode."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initial thinking mode from config (False in our mock)
         initial_mode = agent.thinking_enabled
@@ -637,7 +637,7 @@ class TestCoreMiscellaneous(unittest.TestCase):
 
     def test_get_status_info(self):
         """Test getting status information."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Get status info
         status_info = agent.get_status_info()
@@ -656,7 +656,7 @@ class TestCoreMiscellaneous(unittest.TestCase):
 
     def test_workspace_manager_lazy_initialization(self):
         """Test workspace manager lazy initialization."""
-        agent = DeepSeekStreamingChat(api_key=self.test_api_key)
+        agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Initially should be None
         self.assertIsNone(agent.workspace_manager)

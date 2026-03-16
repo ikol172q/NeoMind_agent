@@ -1,6 +1,6 @@
-# ikol1729-agent Examples
+# neomind Examples
 
-This document provides practical examples and tutorials for using ikol1729-agent, focusing on its code analysis and self-iteration capabilities.
+This document provides practical examples and tutorials for using neomind, focusing on its code analysis and self-iteration capabilities.
 
 ## Table of Contents
 
@@ -16,10 +16,10 @@ This document provides practical examples and tutorials for using ikol1729-agent
 
 ```bash
 # Interactive chat mode
-ikol1729-agent
+neomind
 
 # Or as a module
-python -m ikol1729_agent
+python -m neomind
 ```
 
 ### Essential Commands
