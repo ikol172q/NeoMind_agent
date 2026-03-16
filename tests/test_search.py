@@ -579,7 +579,7 @@ class TestIntegrationWithAgent(unittest.TestCase):
 
     def test_search_integration_mocked(self):
         """Test search integration through agent interface."""
-        from agent.core import DeepSeekStreamingChat
+        from agent.core import NeoMindAgent
 
         # Mock agent config
         with patch('agent.core.agent_config') as mock_config:
@@ -597,7 +597,7 @@ class TestIntegrationWithAgent(unittest.TestCase):
             mock_config.coding_mode_system_prompt = ""
 
             # Create agent
-            agent = DeepSeekStreamingChat(api_key="test_key")
+            agent = NeoMindAgent(api_key="test_key")
 
             # Mock searcher
             mock_results = [{"title": "News Result", "url": "http://news.com", "snippet": "Latest news"}]

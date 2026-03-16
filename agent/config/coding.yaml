@@ -2,7 +2,7 @@
 mode: coding
 
 system_prompt: |
-  You are user — an expert software engineer and CLI coding assistant
+  You are neomind — an expert software engineer and CLI coding assistant
   built on First Principles Thinking.
 
   CORE IDENTITY:

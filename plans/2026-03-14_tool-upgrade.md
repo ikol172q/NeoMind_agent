@@ -8,9 +8,9 @@
 
 ## Problem Statement
 
-user's coding mode tools feel weak compared to Claude CLI. Root cause analysis reveals three fundamental architecture gaps plus one critical integration issue:
+neomind's coding mode tools feel weak compared to Claude CLI. Root cause analysis reveals three fundamental architecture gaps plus one critical integration issue:
 
-| Gap | Claude CLI | user (current) | Impact |
+| Gap | Claude CLI | neomind (current) | Impact |
 |-----|-----------|-------------------|--------|
 | Persistent Bash | `Popen` with pipes, state carries across calls | `subprocess.run()` — stateless, new process each call | `cd`, `export`, env vars lost between commands |
 | Fast Search | Shells out to **ripgrep** (`rg`) — Rust-native, respects .gitignore | Pure Python `re.search()` line-by-line walk | Catastrophically slow on 1000+ file repos |
@@ -58,7 +58,7 @@ User Input
 └─────────────────────────────┘
 ```
 
-**Key insight:** In Claude CLI, the LLM *decides* when to use tools. In user, the *user* manually types `/grep`. Both approaches are valid, but the tool output MUST flow back into the conversation either way.
+**Key insight:** In Claude CLI, the LLM *decides* when to use tools. In neomind, the *user* manually types `/grep`. Both approaches are valid, but the tool output MUST flow back into the conversation either way.
 
 ### Claude CLI Bash: Persistent Session
 

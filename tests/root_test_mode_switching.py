@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Test mode switching functionality for user agent.
+Test mode switching functionality for neomind agent.
 Run with: python test_mode_switching.py
 """
 import sys
@@ -8,7 +8,7 @@ import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent_config import agent_config
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 
 
 def test_mode_switching():
@@ -22,7 +22,7 @@ def test_mode_switching():
         api_key = "dummy_key"
 
     # Create agent instance
-    chat = DeepSeekStreamingChat(api_key=api_key)
+    chat = NeoMindAgent(api_key=api_key)
 
     print(f"Initial mode: {chat.mode}")
     assert chat.mode in ("chat", "coding"), f"Invalid initial mode: {chat.mode}"

@@ -1,5 +1,5 @@
 # cli/completers.py
-"""Command auto-completion system for user agent."""
+"""Command auto-completion system for neomind agent."""
 
 from prompt_toolkit.completion import Completer, Completion
 from typing import Dict, List, Optional, Iterable

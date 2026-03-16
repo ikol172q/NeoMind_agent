@@ -6,11 +6,11 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 
 def test_command_router():
     # Create agent with dummy API key (won't be used for commands)
-    agent = DeepSeekStreamingChat(api_key="dummy_key")
+    agent = NeoMindAgent(api_key="dummy_key")
 
     # Test /help command
     print("Testing /help command...")
