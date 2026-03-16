@@ -1,5 +1,5 @@
 """
-Structured tool call parser for user agent.
+Structured tool call parser for neomind agent.
 
 Parses tool calls from LLM responses in two formats:
 1. Structured: <tool_call>{"tool": "Read", "params": {...}}</tool_call>
@@ -74,7 +74,7 @@ class ToolCallParser:
         re.DOTALL,
     )
 
-    # Python code blocks (fallback — DeepSeek sometimes writes Python instead of bash)
+    # Python code blocks (fallback — LLM sometimes writes Python instead of bash)
     _PYTHON_RE = re.compile(
         r'```python\s*\n(.*?)```',
         re.DOTALL,
@@ -105,7 +105,7 @@ class ToolCallParser:
             if result:
                 return result
 
-        # Last resort: python blocks (DeepSeek fallback)
+        # Last resort: python blocks (LLM fallback)
         for m in self._PYTHON_RE.finditer(response):
             result = self._parse_python_block(m, response)
             if result:

@@ -1,13 +1,13 @@
 # Comprehensive Unit Test Suite
 
-This directory contains comprehensive unit tests for the DeepSeek Agent codebase. The tests cover all major functionalities and components identified in the codebase analysis.
+This directory contains comprehensive unit tests for the NeoMind codebase. The tests cover all major functionalities and components identified in the codebase analysis.
 
 ## Test Structure
 
 The test suite is organized into comprehensive test files for each major component:
 
 ### Core Components
-- **`test_core.py`** - Tests for `DeepSeekStreamingChat` class
+- **`test_core.py`** - Tests for `NeoMindAgent` class
   - Initialization and configuration
   - Mode switching (chat ↔ coding)
   - Conversation history management

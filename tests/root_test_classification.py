@@ -6,11 +6,11 @@ import os
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 
 def test_classification():
     # Create instance with dummy API key
-    agent = DeepSeekStreamingChat(api_key="dummy_key")
+    agent = NeoMindAgent(api_key="dummy_key")
 
     test_cases = [
         ("https://example.com", "/read https://example.com"),

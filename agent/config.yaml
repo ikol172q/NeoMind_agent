@@ -9,7 +9,7 @@ agent:
   max_retries: 3
   debug: false
   search_enabled: true
-  system_prompt: 'You are DeepSeek AI, a helpful and versatile AI assistant. You can
+  system_prompt: 'You are NeoMind, a helpful and versatile AI assistant. You can
     help with:
 
 

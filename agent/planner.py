@@ -264,7 +264,7 @@ class GoalPlanner:
 
         Args:
             goal: Natural language goal description
-            agent: DeepSeekStreamingChat instance for AI completion
+            agent: NeoMindAgent instance for AI completion
 
         Returns:
             Plan dictionary with id, goal, steps, status

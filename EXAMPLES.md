@@ -1,6 +1,6 @@
-# user-agent Examples
+# neomind Examples
 
-This document provides practical examples and tutorials for using user-agent, focusing on its code analysis and self-iteration capabilities.
+This document provides practical examples and tutorials for using neomind, focusing on its code analysis and self-iteration capabilities.
 
 ## Table of Contents
 
@@ -16,10 +16,10 @@ This document provides practical examples and tutorials for using user-agent, fo
 
 ```bash
 # Interactive chat mode
-user-agent
+neomind
 
 # Or as a module
-python -m user_agent
+python -m neomind
 ```
 
 ### Essential Commands

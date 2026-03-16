@@ -64,7 +64,7 @@ from .search import OptimizedDuckDuckGoSearch
 from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
 
-class DeepSeekStreamingChat:
+class NeoMindAgent:
     """Main AI agent with streaming, search, and model listing capabilities.
 
     Supports multiple providers (DeepSeek, z.ai) via OpenAI-compatible APIs.
@@ -2706,7 +2706,7 @@ Common subcommands: status, diff, log, commit, push, pull, branch, checkout
 """,
             "models": """
 🤖 /models Command:
-  /models list      - List available DeepSeek models
+  /models list      - List available models (all providers)
   /models switch <model> - Switch to a different model
 """,
             "fix": """

@@ -6,14 +6,14 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 
 def test_auto_mode_switch():
     """Test that /code and /fix commands auto-switch to coding mode."""
     print("Testing auto mode switching...")
 
     # Use dummy API key
-    chat = DeepSeekStreamingChat(api_key="dummy_key")
+    chat = NeoMindAgent(api_key="dummy_key")
 
     print(f"Initial mode: {chat.mode}")
     assert chat.mode == "chat", f"Expected initial mode 'chat', got '{chat.mode}'"

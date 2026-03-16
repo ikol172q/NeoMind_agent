@@ -14,7 +14,7 @@ from unittest.mock import Mock, patch, MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.self_iteration import SelfIteration
-from agent.core import DeepSeekStreamingChat
+from agent.core import NeoMindAgent
 
 
 class TestSelfIteration(unittest.TestCase):
@@ -175,7 +175,7 @@ class TestSelfIterationCommands(unittest.TestCase):
 
     def setUp(self):
         """Create agent with mocked dependencies."""
-        self.agent = DeepSeekStreamingChat(api_key="dummy_key")
+        self.agent = NeoMindAgent(api_key="dummy_key")
         self.agent.code_analyzer = Mock()
         self.agent.safety_manager = Mock()
         self.agent.formatter = Mock()

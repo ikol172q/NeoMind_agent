@@ -30,8 +30,8 @@ class TestTruncateMiddle(unittest.TestCase):
     """Test the _truncate_middle static method."""
 
     def _truncate(self, text, max_chars=30000):
-        from agent.core import DeepSeekStreamingChat
-        return DeepSeekStreamingChat._truncate_middle(text, max_chars=max_chars)
+        from agent.core import NeoMindAgent
+        return NeoMindAgent._truncate_middle(text, max_chars=max_chars)
 
     def test_short_text_unchanged(self):
         text = "Hello world"
@@ -70,26 +70,26 @@ class TestCommandsFeedToLLM(unittest.TestCase):
     """Test that command categorization is correct."""
 
     def test_tool_commands_feed_to_llm(self):
-        from agent.core import DeepSeekStreamingChat
+        from agent.core import NeoMindAgent
         tool_commands = {"/run", "/grep", "/find", "/read", "/write", "/edit",
                          "/git", "/code", "/diff", "/test", "/glob", "/ls"}
         for cmd in tool_commands:
-            self.assertIn(cmd, DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM,
+            self.assertIn(cmd, NeoMindAgent.COMMANDS_FEED_TO_LLM,
                           f"{cmd} should feed to LLM")
 
     def test_ui_commands_dont_feed_to_llm(self):
-        from agent.core import DeepSeekStreamingChat
+        from agent.core import NeoMindAgent
         ui_commands = {"/help", "/clear", "/think", "/debug", "/save",
                        "/load", "/history", "/quit", "/exit", "/models",
                        "/switch", "/verbose", "/context", "/compact"}
         for cmd in ui_commands:
-            self.assertNotIn(cmd, DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM,
+            self.assertNotIn(cmd, NeoMindAgent.COMMANDS_FEED_TO_LLM,
                              f"{cmd} should NOT feed to LLM")
 
     def test_search_and_browse_feed_to_llm(self):
-        from agent.core import DeepSeekStreamingChat
-        self.assertIn("/search", DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM)
-        self.assertIn("/browse", DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM)
+        from agent.core import NeoMindAgent
+        self.assertIn("/search", NeoMindAgent.COMMANDS_FEED_TO_LLM)
+        self.assertIn("/browse", NeoMindAgent.COMMANDS_FEED_TO_LLM)
 
 
 class TestToolOutputInHistory(unittest.TestCase):
@@ -97,8 +97,8 @@ class TestToolOutputInHistory(unittest.TestCase):
 
     def setUp(self):
         """Create a minimal chat instance for testing."""
-        from agent.core import DeepSeekStreamingChat
-        self.chat = DeepSeekStreamingChat.__new__(DeepSeekStreamingChat)
+        from agent.core import NeoMindAgent
+        self.chat = NeoMindAgent.__new__(NeoMindAgent)
         self.chat.conversation_history = []
         self.chat.mode = "coding"
         self.chat.thinking_enabled = False
@@ -115,9 +115,9 @@ class TestToolOutputInHistory(unittest.TestCase):
 
     def test_tool_result_format(self):
         """Verify the format of tool results in history."""
-        from agent.core import DeepSeekStreamingChat
+        from agent.core import NeoMindAgent
         result = "file.py:10: def main():"
-        truncated = DeepSeekStreamingChat._truncate_middle(result)
+        truncated = NeoMindAgent._truncate_middle(result)
         msg = f"[Tool: /grep] {truncated}"
         self.chat.add_to_history("user", msg)
 
@@ -128,9 +128,9 @@ class TestToolOutputInHistory(unittest.TestCase):
 
     def test_truncated_tool_result_in_history(self):
         """Large tool output should be truncated before adding to history."""
-        from agent.core import DeepSeekStreamingChat
+        from agent.core import NeoMindAgent
         large_output = "x" * 50000
-        truncated = DeepSeekStreamingChat._truncate_middle(large_output, max_chars=30000)
+        truncated = NeoMindAgent._truncate_middle(large_output, max_chars=30000)
         self.chat.add_to_history("user", f"[Tool: /run] {truncated}")
 
         last = self.chat.conversation_history[-1]
@@ -413,15 +413,15 @@ class TestToolUpgradeIntegration(unittest.TestCase):
 
     def test_truncate_middle_is_static(self):
         """_truncate_middle should be callable without an instance."""
-        from agent.core import DeepSeekStreamingChat
-        result = DeepSeekStreamingChat._truncate_middle("short text")
+        from agent.core import NeoMindAgent
+        result = NeoMindAgent._truncate_middle("short text")
         self.assertEqual(result, "short text")
 
     def test_commands_feed_to_llm_is_class_attr(self):
         """COMMANDS_FEED_TO_LLM should be a class attribute."""
-        from agent.core import DeepSeekStreamingChat
-        self.assertIsInstance(DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM, set)
-        self.assertTrue(len(DeepSeekStreamingChat.COMMANDS_FEED_TO_LLM) > 0)
+        from agent.core import NeoMindAgent
+        self.assertIsInstance(NeoMindAgent.COMMANDS_FEED_TO_LLM, set)
+        self.assertTrue(len(NeoMindAgent.COMMANDS_FEED_TO_LLM) > 0)
 
     def test_tool_result_str_format(self):
         """ToolResult.__str__ should work correctly for history injection."""

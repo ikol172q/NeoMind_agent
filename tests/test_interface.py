@@ -24,7 +24,7 @@ from cli.interface import (
     interactive_chat_with_prompt_toolkit,
     interactive_chat_fallback
 )
-from agent import DeepSeekStreamingChat
+from agent import NeoMindAgent
 from agent.help_system import HelpSystem
 from cli.progress_display import ProgressDisplay, TaskStatus
 
@@ -167,7 +167,7 @@ class TestDisplayWelcomeBanner(unittest.TestCase):
 
             # Check key elements
             all_output = "\n".join(outputs)
-            self.assertIn("DeepSeek Streaming Chat", all_output)
+            self.assertIn("NeoMind Agent", all_output)
             self.assertIn("[CHAT MODE]", all_output)
             self.assertIn("/clear", all_output)
             self.assertIn("/search", all_output)
@@ -210,7 +210,7 @@ class TestGetApiKey(unittest.TestCase):
                     result = get_api_key()
 
                     self.assertEqual(result, 'user-entered-key')
-                    mock_input.assert_called_once_with("Enter your DeepSeek API key: ")
+                    mock_input.assert_called_once_with("Enter your API key: ")
                     # Should print instructions
                     self.assertGreater(mock_print.call_count, 0)
 
@@ -341,7 +341,7 @@ class TestInteractiveChatWithPromptToolkit(unittest.TestCase):
         self.get_api_key_patch = patch('cli.interface.get_api_key', return_value='test-key')
         self.mock_get_api_key = self.get_api_key_patch.start()
 
-        self.deepseek_chat_patch = patch('cli.interface.DeepSeekStreamingChat')
+        self.deepseek_chat_patch = patch('cli.interface.NeoMindAgent')
         self.mock_deepseek_chat_class = self.deepseek_chat_patch.start()
         self.mock_chat = Mock()
         self.mock_deepseek_chat_class.return_value = self.mock_chat
@@ -569,7 +569,7 @@ class TestInteractiveChatFallback(unittest.TestCase):
         self.get_api_key_patch = patch('cli.interface.get_api_key', return_value='test-key')
         self.mock_get_api_key = self.get_api_key_patch.start()
 
-        self.deepseek_chat_patch = patch('cli.interface.DeepSeekStreamingChat')
+        self.deepseek_chat_patch = patch('cli.interface.NeoMindAgent')
         self.mock_deepseek_chat_class = self.deepseek_chat_patch.start()
         self.mock_chat = Mock()
         self.mock_deepseek_chat_class.return_value = self.mock_chat

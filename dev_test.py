@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Dev test script for user-agent.
+Dev test script for neomind.
 Quickly verify agent functionality without full installation.
 """
 
@@ -70,10 +70,10 @@ def test_agent_core():
 
     # Check specific classes
     try:
-        from agent.core import DeepSeekStreamingChat
-        print("[OK] DeepSeekStreamingChat class available")
+        from agent.core import NeoMindAgent
+        print("[OK] NeoMindAgent class available")
     except ImportError as e:
-        print(f"[WARN] DeepSeekStreamingChat import failed: {e}")
+        print(f"[WARN] NeoMindAgent import failed: {e}")
         print("  Note: Agent functionality limited")
 
     try:
@@ -119,7 +119,7 @@ def test_api_key():
 
 def run_tests():
     """Run all tests and return True if all required tests passed."""
-    print("user-agent Development Test")
+    print("neomind Development Test")
     print("=" * 60)
 
     required_ok = True
@@ -148,8 +148,8 @@ def run_tests():
             print("  For full functionality: pip install -e .[full]")
         print("\nYou can run the agent using:")
         print("  python main.py                     # Interactive chat")
-        print("  user-agent                    # If installed")
-        print("  python -m user_agent          # Module execution")
+        print("  neomind                    # If installed")
+        print("  python -m neomind          # Module execution")
         print("\nUse /models list to see available models")
         print("Use /think to toggle thinking mode")
         print("Use /test to run these tests from within the agent")

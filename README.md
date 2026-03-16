@@ -1,4 +1,4 @@
-# user_agent
+# neomind
 
 A CLI coding agent powered by multiple LLM providers (DeepSeek, z.ai). Features an agentic tool loop, streaming responses, thinking mode, web search, and self-improvement capabilities.
 
@@ -19,7 +19,7 @@ A CLI coding agent powered by multiple LLM providers (DeepSeek, z.ai). Features 
 ```bash
 # Clone and install
 git clone <repository-url>
-cd user_agent
+cd neomind
 python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 pip install -e .
@@ -137,7 +137,7 @@ CLI Layer (main.py -> interface.py)
 ### Key Files
 
 ```
-user_agent/
+neomind/
 ├── agent/
 │   ├── core.py            # Main agent: providers, model specs, streaming, history
 │   ├── tool_parser.py     # Extracts tool calls from LLM output (bash + python fallback)
@@ -206,7 +206,3 @@ The content filter suppresses tool blocks from terminal display, so you only see
 ## Troubleshooting
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and fixes.
-
-## Plans & Architecture Decisions
-
-See [plans/](plans/) for implementation plans and architecture decisions.

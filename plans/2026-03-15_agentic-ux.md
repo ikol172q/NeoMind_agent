@@ -10,7 +10,7 @@
 
 After the mode split and tool upgrade, coding mode had the infrastructure (persistent bash, ripgrep, tool→LLM history) but lacked the UX to feel like an agent. The LLM would output bash code blocks as text and the user had to manually copy-paste them. There was no spinner, no thinking display, no automatic tool execution loop.
 
-| Gap | Claude CLI | user (before) | Impact |
+| Gap | Claude CLI | neomind (before) | Impact |
 |-----|-----------|-------------------|--------|
 | Spinner during thinking | Animated spinner with elapsed time | Nothing — blank screen while waiting | User thinks it's frozen |
 | Thinking display | Brief summary, expandable | Raw thinking dumped to stdout | Clutters terminal |

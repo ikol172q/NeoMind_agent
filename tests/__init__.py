@@ -1,2 +1,2 @@
 # tests/__init__.py
-# Comprehensive test suite for DeepSeek Agent
+# Comprehensive test suite for NeoMind Agent

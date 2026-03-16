@@ -3,15 +3,15 @@ requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "user-agent"
-version = "0.1.0"
-description = "DeepSeek AI Agent - LLM-based agent for personal usage"
+name = "neomind"
+version = "0.2.0"
+description = "NeoMind — Multi-provider CLI coding agent and personal assistant"
 readme = "README.md"
 authors = [
-    {name = "user", email = "removed@example.com"}
+    {name = "neomind", email = "removed@example.com"}
 ]
 license = {file = "LICENSE"}
-keywords = ["deepseek", "ai", "agent", "llm", "cli"]
+keywords = ["neomind", "ai", "agent", "llm", "cli", "deepseek", "glm"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
@@ -51,10 +51,10 @@ dev = [
 ]
 
 [project.scripts]
-user-agent = "main:main"
+neomind = "main:main"
 
 [tool.setuptools]
-packages = ["agent", "cli", "user_agent"]
+packages = ["agent", "cli", "neomind"]
 py-modules = ["agent_config", "main"]
 include-package-data = true
 
