@@ -267,9 +267,11 @@ class ClaudeInterface:
             except Exception:
                 pass
             try:
-                max_ctx = agent_config.max_context_tokens or 128000
+                # Use model-specific context limit instead of static config
+                spec = self.chat._get_model_spec(self.chat.model)
+                max_ctx = spec["max_context"]
             except Exception:
-                pass
+                max_ctx = agent_config.max_context_tokens or 128000
         pct = (tokens / max_ctx * 100) if max_ctx > 0 else 0
         if pct >= 80:
             pct_color = "ansired"
@@ -652,20 +654,26 @@ class ClaudeInterface:
     # ── Code fence filter (suppresses bash blocks from streaming output) ──
 
     class _CodeFenceFilter:
-        """Suppress bash/shell code fences from streaming stdout.
+        """Suppress tool calls and bash code fences from streaming stdout.
 
         Installed on ``chat._content_filter`` before calling ``stream_response``.
         ``stream_response`` calls ``filter.write(chunk)`` for each content chunk
-        and prints only the returned text.  Code fences matching
-        ````` ```bash ``, ````` ```shell ``, ````` ```sh ``, or ````` ```console ``
-        are silently swallowed so the user sees only prose.
+        and prints only the returned text.
+
+        Suppresses:
+        - Bash code fences: ```bash, ```shell, ```sh, ```console
+        - Python code fences: ```python (DeepSeek fallback)
+        - Structured tool calls: <tool_call>...</tool_call>
         """
 
-        _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console)[ \t]*\n')
+        _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
+        _TOOL_CALL_OPEN_RE = re.compile(r'<tool_call>\s*')
+        _TOOL_CALL_CLOSE = '</tool_call>'
 
         def __init__(self):
             self._buf = ""
             self._suppressing = False
+            self._suppress_type = None  # "fence" or "tool_call"
 
         def write(self, text: str) -> str:
             """Feed a streaming chunk. Returns text safe to print."""
@@ -674,28 +682,64 @@ class ClaudeInterface:
 
             while True:
                 if self._suppressing:
-                    idx = self._buf.find('```')
-                    if idx == -1:
-                        # Keep last 2 chars (partial backtick sequence)
-                        if len(self._buf) > 2:
-                            self._buf = self._buf[-2:]
-                        break
-                    # Found closing fence — skip past it
-                    self._suppressing = False
-                    rest = self._buf[idx + 3:]
-                    if rest.startswith('\n'):
-                        rest = rest[1:]
-                    self._buf = rest
-                    continue                 # process remaining buffer
-                else:
-                    m = self._OPEN_RE.search(self._buf)
-                    if m:
-                        # Strip trailing newlines before the fence
-                        output += self._buf[:m.start()].rstrip('\n')
-                        self._suppressing = True
-                        self._buf = self._buf[m.end():]
+                    if self._suppress_type == "fence":
+                        idx = self._buf.find('```')
+                        if idx == -1:
+                            # Keep last 2 chars (partial backtick sequence)
+                            if len(self._buf) > 2:
+                                self._buf = self._buf[-2:]
+                            break
+                        # Found closing fence — skip past it
+                        self._suppressing = False
+                        self._suppress_type = None
+                        rest = self._buf[idx + 3:]
+                        if rest.startswith('\n'):
+                            rest = rest[1:]
+                        self._buf = rest
                         continue
-                    # Keep a small tail in case a fence straddles two chunks
+                    elif self._suppress_type == "tool_call":
+                        idx = self._buf.find(self._TOOL_CALL_CLOSE)
+                        if idx == -1:
+                            # Keep tail for partial match
+                            close_len = len(self._TOOL_CALL_CLOSE)
+                            if len(self._buf) > close_len:
+                                self._buf = self._buf[-close_len:]
+                            break
+                        # Found closing tag — skip past it
+                        self._suppressing = False
+                        self._suppress_type = None
+                        rest = self._buf[idx + len(self._TOOL_CALL_CLOSE):]
+                        if rest.startswith('\n'):
+                            rest = rest[1:]
+                        self._buf = rest
+                        continue
+                else:
+                    # Check for <tool_call> first (higher priority)
+                    m_tc = self._TOOL_CALL_OPEN_RE.search(self._buf)
+                    m_fence = self._OPEN_RE.search(self._buf)
+
+                    # Pick the earliest match
+                    match = None
+                    match_type = None
+                    if m_tc and m_fence:
+                        if m_tc.start() <= m_fence.start():
+                            match, match_type = m_tc, "tool_call"
+                        else:
+                            match, match_type = m_fence, "fence"
+                    elif m_tc:
+                        match, match_type = m_tc, "tool_call"
+                    elif m_fence:
+                        match, match_type = m_fence, "fence"
+
+                    if match:
+                        # Strip trailing newlines before the suppressed block
+                        output += self._buf[:match.start()].rstrip('\n')
+                        self._suppressing = True
+                        self._suppress_type = match_type
+                        self._buf = self._buf[match.end():]
+                        continue
+
+                    # Keep a small tail in case a tag straddles two chunks
                     if len(self._buf) > 15:
                         safe = self._buf[:-15]
                         self._buf = self._buf[-15:]
@@ -705,86 +749,145 @@ class ClaudeInterface:
             return output
 
         def flush(self) -> str:
-            """Flush remaining buffer (call after stream ends)."""
+            """Flush remaining buffer (call after stream ends).
+
+            If still in suppress mode (stream ended mid-suppression),
+            discard the suppressed content instead of leaking it to display.
+            """
+            if self._suppressing:
+                # Stream ended while suppressing a tool call or code fence.
+                # Discard the buffer — it contains suppressed content.
+                self._buf = ""
+                self._suppressing = False
+                self._suppress_type = None
+                return ""
             out = self._buf
             self._buf = ""
-            self._suppressing = False
             return out
 
     # ── Tool execution from LLM response (agentic loop) ─────────────────
-    _TOOL_BLOCK_RE = re.compile(
-        r'```(?:bash|shell|sh|console)\s*\n(.*?)```',
-        re.DOTALL
-    )
 
-    def _extract_tool_blocks(self, response: str) -> list:
-        """Extract executable code blocks from an LLM response.
+    def _get_tool_parser(self):
+        """Lazily create the ToolCallParser."""
+        if not hasattr(self, '_tool_parser') or self._tool_parser is None:
+            from agent.tool_parser import ToolCallParser
+            self._tool_parser = ToolCallParser()
+        return self._tool_parser
 
-        Only extracts the FIRST bash block — the LLM should output one at a time.
-        Skips blocks that appear to have inline output already (hallucinated).
-
-        Returns list of (language, code) tuples for bash/shell blocks.
-        """
-        blocks = []
-        for m in self._TOOL_BLOCK_RE.finditer(response):
-            code = m.group(1).strip()
-            if not code or code.startswith('#'):
-                continue
-            # Filter out comment-only blocks
-            lines = [l for l in code.split('\n') if l.strip() and not l.strip().startswith('#')]
-            if not lines:
-                continue
-
-            # Check for hallucinated inline output: if the text after this code block
-            # contains another ``` block that looks like output (no language tag, or
-            # starts with typical output patterns), skip this block
-            end_pos = m.end()
-            after = response[end_pos:end_pos + 200].strip()
-            if after.startswith('```\n') or after.startswith('```\r'):
-                # This block has inline "output" — the LLM hallucinated the result
-                continue
-
-            blocks.append(("bash", code))
-            # Only take the FIRST block — execute it, feed back, let LLM continue
-            break
-        return blocks
-
-    def _execute_tool_blocks(self, blocks: list) -> list:
-        """Execute tool blocks through ToolRegistry and return results.
-
-        Args:
-            blocks: List of (language, code) tuples
-
-        Returns:
-            List of (code, ToolResult) tuples
-        """
+    def _get_tool_registry(self):
+        """Lazily create the ToolRegistry."""
         from agent.tools import ToolRegistry
-        # Lazily initialize tool registry attached to the interface
         if not hasattr(self, '_tool_registry') or self._tool_registry is None:
             self._tool_registry = ToolRegistry(working_dir=os.getcwd())
+        return self._tool_registry
 
-        results = []
-        for lang, code in blocks:
-            if lang == "bash":
-                result = self._tool_registry.bash(code, timeout=30)
-                results.append((code, result))
-        return results
+    def _execute_tool_call(self, tool_call) -> 'ToolResult':
+        """Execute a parsed ToolCall through the registry.
 
-    def _run_agentic_loop(self, max_iterations: int = 10):
-        """After an LLM response, check for tool blocks, execute ONE, feed back.
+        For structured tool calls (Read, Edit, Grep, etc.), dispatches to
+        the registered tool definition's execute function with validated params.
+        For legacy bash blocks, falls back to Bash tool.
 
-        This implements the Claude CLI-like agent loop:
-        1. LLM generates response with code block(s)
-        2. We extract the FIRST bash block only
-        3. Ask permission (show brief preview)
-        4. Execute it under the spinner (no verbose output)
-        5. Feed result back to conversation
-        6. Re-prompt the LLM (spinner continues until first token)
+        Returns a ToolResult.
+        """
+        registry = self._get_tool_registry()
+        tool_def = registry.get_tool(tool_call.tool_name)
+
+        if tool_def is None:
+            # Unknown tool — try Bash as fallback for legacy compatibility
+            from agent.tools import ToolResult
+            return ToolResult(False, error=f"Unknown tool: {tool_call.tool_name}")
+
+        # Validate params
+        valid, error = tool_def.validate_params(tool_call.params)
+        if not valid:
+            from agent.tools import ToolResult
+            return ToolResult(False, error=f"Invalid params: {error}")
+
+        # Apply defaults and execute
+        params = tool_def.apply_defaults(tool_call.params)
+        return tool_def.execute(**params)
+
+    def _check_permission(self, tool_call, auto_approved: bool) -> tuple:
+        """Check permission for a tool call.
+
+        Returns (approved: bool, new_auto_approved: bool).
+        Uses per-tool permission levels when a structured tool is found.
+        """
+        from agent.tool_schema import PermissionLevel
+
+        perm_mode = agent_config.permission_mode
+        registry = self._get_tool_registry()
+        tool_def = registry.get_tool(tool_call.tool_name)
+
+        # Determine permission level (default to EXECUTE for unknown tools)
+        if tool_def:
+            level = tool_def.permission_level
+        else:
+            level = PermissionLevel.EXECUTE
+
+        # Plan mode: only READ_ONLY tools run
+        if perm_mode == "plan":
+            if level == PermissionLevel.READ_ONLY:
+                return True, auto_approved
+            preview = tool_call.preview()
+            self._print(f"[dim]  Would run: {preview}[/dim]")
+            self._print("[dim]  (permission mode is 'plan' — skipping)[/dim]")
+            return False, auto_approved
+
+        # Auto-accept mode or already auto-approved this turn
+        if perm_mode == "auto_accept" or auto_approved:
+            return True, auto_approved
+
+        # Normal mode: READ_ONLY tools auto-approve (no prompt)
+        if level == PermissionLevel.READ_ONLY:
+            return True, auto_approved
+
+        # Ask user for WRITE/EXECUTE/DESTRUCTIVE tools
+        preview = tool_call.preview()
+        if tool_call.tool_name == "Bash":
+            self._print(f"  [dim]│[/dim] [cyan]$[/cyan] [dim]{preview}[/dim]")
+        else:
+            self._print(f"  [dim]│[/dim] [cyan]{tool_call.tool_name}[/cyan] [dim]{preview}[/dim]")
+        try:
+            choice = input("  │ Run? [y/n/a]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            self._print("[dim]  │ Skipped[/dim]")
+            return False, auto_approved
+
+        if choice in ("n", "no"):
+            return False, auto_approved
+        if choice in ("a", "all"):
+            return True, True
+        return choice in ("y", "yes", ""), auto_approved
+
+    # How many tool calls before we tell the model to wrap up
+    _AGENTIC_SOFT_LIMIT = 8
+    _AGENTIC_HARD_LIMIT = 15
+
+    def _run_agentic_loop(self, max_iterations: int = None):
+        """After an LLM response, parse tool calls, execute, feed back, repeat.
+
+        This implements the structured agentic loop:
+        1. Parse the FIRST tool call from the LLM response (structured or legacy)
+        2. Check per-tool permissions (READ_ONLY auto-approves)
+        3. Validate parameters against the tool's schema
+        4. Execute under spinner (no verbose output)
+        5. Feed structured result back to conversation
+        6. Re-prompt the LLM
+        7. Repeat until no more tool calls or max iterations
+
+        After _AGENTIC_SOFT_LIMIT iterations, the re-prompt instructs the model
+        to stop making tool calls and provide a final summary.
         """
         if self.chat.mode != "coding":
             return  # Only in coding mode
 
-        auto_approved = False  # Track if user said "all"
+        if max_iterations is None:
+            max_iterations = self._AGENTIC_HARD_LIMIT
+
+        parser = self._get_tool_parser()
+        auto_approved = False  # Track if user said "all" this turn
 
         for iteration in range(max_iterations):
             # Get the last assistant message
@@ -796,39 +899,24 @@ class ClaudeInterface:
                 return
 
             response_text = last_msg["content"]
-            blocks = self._extract_tool_blocks(response_text)
-            if not blocks:
-                return  # No more tool blocks — done
 
-            lang, code = blocks[0]
-            cmd_preview = code.split('\n')[0][:60]
+            # Parse the first tool call
+            tool_call = parser.parse(response_text)
+            if not tool_call:
+                return  # No tool calls found — done
 
-            # Check permission mode
-            perm = agent_config.permission_mode
-            if perm == "plan":
-                self._print(f"[dim]  Would run: {cmd_preview}[/dim]")
-                self._print("[dim]  (permission mode is 'plan' — skipping)[/dim]")
+            # Check permission
+            approved, auto_approved = self._check_permission(tool_call, auto_approved)
+            if not approved:
                 return
 
-            if perm != "auto_accept" and not auto_approved:
-                self._print(f"  [dim]│[/dim] [cyan]$[/cyan] [dim]{cmd_preview}[/dim]")
-                try:
-                    choice = input("  │ Run? [y/n/a]: ").strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    self._print("[dim]  │ Skipped[/dim]")
-                    return
-                if choice in ("n", "no"):
-                    return
-                if choice in ("a", "all"):
-                    auto_approved = True
-
             # Start spinner — tool execution + re-prompt happen under it
+            preview = tool_call.preview()
             stop = self._start_spinner("Thinking…")
+            self._update_spinner(stop, f"Thinking… {preview}")
 
-            # Execute the single block (silently — no verbose output)
-            self._update_spinner(stop, f"Thinking… $ {cmd_preview}")
-            results = self._execute_tool_blocks(blocks)
-            code_str, result = results[0]
+            # Execute the tool call (structured dispatch or bash)
+            result = self._execute_tool_call(tool_call)
 
             # Update spinner with brief tool result status
             if result.success:
@@ -844,26 +932,37 @@ class ClaudeInterface:
                 else:
                     self._update_spinner(stop, "Thinking… (error)")
 
-            # Feed result back to conversation
-            status = "OK" if result.success else "ERROR"
-            output_text = result.output[:3000] if result.output else "(no output)"
-            if result.error and not result.success:
-                output_text = f"STDERR: {result.error}\n{output_text}"
-            truncated = self.chat._truncate_middle(
-                f"$ {code_str}\n[{status}]\n{output_text}"
-            )
-            self.chat.add_to_history("user", f"[Tool Result]\n{truncated}")
+            # Feed structured result + continuation prompt as ONE user message
+            from agent.tool_parser import format_tool_result
+            feedback = format_tool_result(tool_call, result)
+
+            # After soft limit, tell the model to wrap up instead of making more calls
+            if iteration >= self._AGENTIC_SOFT_LIMIT - 1:
+                continuation = (
+                    "You have used many tool calls. Now STOP making tool calls "
+                    "and provide your final analysis/summary based on everything "
+                    "you've gathered so far. Do NOT include any more code blocks."
+                )
+            else:
+                continuation = "Continue based on the tool results above."
+
+            combined = feedback + "\n\n" + continuation
+            self.chat.add_to_history("user", combined)
 
             # Re-prompt the LLM — spinner stays running until first content token
-            self._stream_and_render_inner(stop_event=stop)
+            self._stream_and_render_inner(stop_event=stop, skip_user_add=True)
 
         self._print("[dim](Agent loop: max iterations reached)[/dim]")
 
-    def _stream_and_render_inner(self, stop_event=None):
+    def _stream_and_render_inner(self, stop_event=None, skip_user_add=False):
         """Inner streaming call (no agentic loop — prevents recursion).
 
         If *stop_event* is given the caller already owns a running spinner;
         we re-use it instead of starting a new one.
+
+        If *skip_user_add* is True, the caller already added the user message
+        to history (e.g. the combined tool_result + continuation prompt), so
+        we tell stream_response not to add another one.
         """
         own_spinner = stop_event is None
         if own_spinner:
@@ -874,6 +973,9 @@ class ClaudeInterface:
         self.chat._content_filter = self._CodeFenceFilter()
 
         try:
+            if skip_user_add:
+                # Caller already added user message — tell stream_response to skip
+                self.chat._skip_next_user_add = True
             self.chat.stream_response("[Continue based on the tool results above.]")
         except KeyboardInterrupt:
             self._print("\n[dim][Interrupted][/dim]")
@@ -882,6 +984,7 @@ class ClaudeInterface:
         finally:
             stop_event.set()
             self.chat._content_filter = None
+            self.chat._skip_next_user_add = False
 
     # ── Render AI streaming response ──────────────────────────────────────
     def _stream_and_render(self, prompt: str):
@@ -913,6 +1016,27 @@ class ClaudeInterface:
             self._print("\n[dim][Agent loop interrupted][/dim]")
         except Exception as e:
             self._print(f"[dim]Agent loop error: {e}[/dim]")
+
+        # Fallback: if nothing was ever displayed to the user, show the raw response
+        if not getattr(self.chat, '_last_content_was_displayed', True):
+            history = self.chat.conversation_history
+            if history and history[-1]["role"] == "assistant":
+                raw = history[-1]["content"].strip()
+                if raw:
+                    # Strip any tool_call blocks for display
+                    import re
+                    cleaned = re.sub(
+                        r'<tool_call>.*?</tool_call>',
+                        '', raw, flags=re.DOTALL
+                    ).strip()
+                    cleaned = re.sub(
+                        r'```(?:bash|shell|sh|console)\s*\n.*?```',
+                        '', cleaned, flags=re.DOTALL
+                    ).strip()
+                    if cleaned:
+                        self._print(cleaned)
+                    else:
+                        self._print("[dim](Agent executed tools but produced no visible summary)[/dim]")
 
     # ── Main loop ─────────────────────────────────────────────────────────
     def run(self):
