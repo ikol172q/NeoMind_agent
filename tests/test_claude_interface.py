@@ -564,92 +564,99 @@ class TestNpmFree(unittest.TestCase):
 
 
 class TestExtractToolBlocks(unittest.TestCase):
-    """Test code block extraction from LLM responses."""
+    """Test tool call extraction from LLM responses via ToolCallParser."""
 
-    def _iface(self):
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface(_make_mock_chat("coding"))
+    def _parser(self):
+        from agent.tool_parser import ToolCallParser
+        return ToolCallParser()
 
     def test_extract_bash_block(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("Check:\n```bash\nls -la\n```\nDone.")
-        self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0], ("bash", "ls -la"))
+        parser = self._parser()
+        tc = parser.parse("Check:\n```bash\nls -la\n```\nDone.")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")
+        self.assertEqual(tc.params["command"], "ls -la")
 
     def test_extract_only_first_block(self):
         """Should only extract the FIRST bash block (one-at-a-time execution)."""
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```bash\nls\n```\nNow:\n```bash\ncat README.md\n```")
-        self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0][1], "ls")
+        parser = self._parser()
+        tc = parser.parse("```bash\nls\n```\nNow:\n```bash\ncat README.md\n```")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.params["command"], "ls")
 
     def test_extract_shell_block(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```shell\npwd\n```")
-        self.assertEqual(len(blocks), 1)
+        parser = self._parser()
+        tc = parser.parse("```shell\npwd\n```")
+        self.assertIsNotNone(tc)
 
-    def test_skip_python_block(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```python\nprint('hello')\n```")
-        self.assertEqual(len(blocks), 0)
+    def test_python_block_parsed_as_fallback(self):
+        parser = self._parser()
+        tc = parser.parse("```python\nprint('hello')\n```")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")
+        self.assertIn("python3", tc.params["command"])
 
     def test_skip_comment_only_block(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```bash\n# This is just a comment\n```")
-        self.assertEqual(len(blocks), 0)
+        parser = self._parser()
+        tc = parser.parse("```bash\n# This is just a comment\n```")
+        self.assertIsNone(tc)
 
     def test_empty_response(self):
-        iface = self._iface()
-        self.assertEqual(iface._extract_tool_blocks(""), [])
+        parser = self._parser()
+        self.assertIsNone(parser.parse(""))
 
     def test_no_code_blocks(self):
-        iface = self._iface()
-        self.assertEqual(iface._extract_tool_blocks("Just text, no code."), [])
+        parser = self._parser()
+        self.assertIsNone(parser.parse("Just text, no code."))
 
     def test_multiline_block(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```bash\nfind . -name '*.py'\nwc -l\n```")
-        self.assertEqual(len(blocks), 1)
-        self.assertIn("find", blocks[0][1])
-        self.assertIn("wc", blocks[0][1])
+        parser = self._parser()
+        tc = parser.parse("```bash\nfind . -name '*.py'\nwc -l\n```")
+        self.assertIsNotNone(tc)
+        self.assertIn("find", tc.params["command"])
+        self.assertIn("wc", tc.params["command"])
 
     def test_sh_tag(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```sh\necho hi\n```")
-        self.assertEqual(len(blocks), 1)
+        parser = self._parser()
+        tc = parser.parse("```sh\necho hi\n```")
+        self.assertIsNotNone(tc)
 
     def test_console_tag(self):
-        iface = self._iface()
-        blocks = iface._extract_tool_blocks("```console\necho hi\n```")
-        self.assertEqual(len(blocks), 1)
+        parser = self._parser()
+        tc = parser.parse("```console\necho hi\n```")
+        self.assertIsNotNone(tc)
 
 
 class TestExecuteToolBlocks(unittest.TestCase):
-    """Test tool block execution through ToolRegistry."""
+    """Test tool call execution through _execute_tool_call."""
 
     def _iface(self):
         from cli.claude_interface import ClaudeInterface
         return ClaudeInterface(_make_mock_chat("coding"))
 
     def test_execute_echo(self):
+        from agent.tool_parser import ToolCall
         iface = self._iface()
-        results = iface._execute_tool_blocks([("bash", "echo hello")])
-        self.assertEqual(len(results), 1)
-        _, result = results[0]
+        tc = ToolCall("Bash", {"command": "echo hello"}, "raw")
+        result = iface._execute_tool_call(tc)
         self.assertTrue(result.success)
         self.assertIn("hello", result.output)
 
     def test_execute_failing_command(self):
+        from agent.tool_parser import ToolCall
         iface = self._iface()
-        results = iface._execute_tool_blocks([("bash", "false")])
-        _, result = results[0]
+        tc = ToolCall("Bash", {"command": "false"}, "raw")
+        result = iface._execute_tool_call(tc)
         self.assertFalse(result.success)
 
     def test_registry_reuse(self):
+        from agent.tool_parser import ToolCall
         iface = self._iface()
-        iface._execute_tool_blocks([("bash", "echo 1")])
+        tc1 = ToolCall("Bash", {"command": "echo 1"}, "raw")
+        iface._execute_tool_call(tc1)
         reg1 = iface._tool_registry
-        iface._execute_tool_blocks([("bash", "echo 2")])
+        tc2 = ToolCall("Bash", {"command": "echo 2"}, "raw")
+        iface._execute_tool_call(tc2)
         self.assertIs(reg1, iface._tool_registry)
 
 
@@ -773,37 +780,35 @@ class TestSpinnerCallback(unittest.TestCase):
 class TestHallucinationDetection(unittest.TestCase):
     """Test that blocks with inline hallucinated output are skipped."""
 
-    def _iface(self):
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface(_make_mock_chat("coding"))
+    def _parser(self):
+        from agent.tool_parser import ToolCallParser
+        return ToolCallParser()
 
     def test_skip_block_with_inline_output(self):
         """Block followed by ``` output block should be skipped (hallucinated)."""
-        iface = self._iface()
-        # This simulates the LLM hallucinating both command and output
+        parser = self._parser()
         response = "Let me check:\n```bash\nls -la\n```\n```\ntotal 20\ndrwxr-xr-x  5 root root  4096 Mar 14  .\n```"
-        blocks = iface._extract_tool_blocks(response)
-        self.assertEqual(len(blocks), 0, "Should skip block with inline output")
+        tc = parser.parse(response)
+        self.assertIsNone(tc, "Should skip block with inline output")
 
     def test_dont_skip_block_without_output(self):
         """Block NOT followed by ``` output should be extracted."""
-        iface = self._iface()
+        parser = self._parser()
         response = "Let me check:\n```bash\nls -la\n```\nDone."
-        blocks = iface._extract_tool_blocks(response)
-        self.assertEqual(len(blocks), 1)
+        tc = parser.parse(response)
+        self.assertIsNotNone(tc)
 
     def test_skip_only_first_hallucinated(self):
         """If first block has output but second doesn't, skip first, take second."""
-        iface = self._iface()
+        parser = self._parser()
         response = (
             "```bash\nls -la\n```\n```\ntotal 20\n```\n"
             "Now let me also:\n```bash\ncat README.md\n```\nThat's all."
         )
-        blocks = iface._extract_tool_blocks(response)
+        tc = parser.parse(response)
         # First is skipped (has inline output), second should be extracted
-        # But since we only take FIRST non-hallucinated block:
-        self.assertEqual(len(blocks), 1)
-        self.assertEqual(blocks[0][1], "cat README.md")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.params["command"], "cat README.md")
 
 
 class TestExpandCommand(unittest.TestCase):
@@ -921,26 +926,34 @@ class TestSpinnerMechanism(unittest.TestCase):
 
 
 class TestToolBlockRegex(unittest.TestCase):
-    """Test the compiled regex for code blocks."""
+    """Test the legacy bash regex in ToolCallParser."""
 
-    def _pattern(self):
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface._TOOL_BLOCK_RE
+    def _parser(self):
+        from agent.tool_parser import ToolCallParser
+        return ToolCallParser()
 
     def test_bash(self):
-        self.assertEqual(len(list(self._pattern().finditer("```bash\nls\n```"))), 1)
+        tc = self._parser().parse("```bash\nls\n```")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")
 
     def test_shell(self):
-        self.assertEqual(len(list(self._pattern().finditer("```shell\npwd\n```"))), 1)
+        tc = self._parser().parse("```shell\npwd\n```")
+        self.assertIsNotNone(tc)
 
     def test_sh(self):
-        self.assertEqual(len(list(self._pattern().finditer("```sh\necho hi\n```"))), 1)
+        tc = self._parser().parse("```sh\necho hi\n```")
+        self.assertIsNotNone(tc)
 
-    def test_no_python(self):
-        self.assertEqual(len(list(self._pattern().finditer("```python\nprint()\n```"))), 0)
+    def test_python_parsed(self):
+        tc = self._parser().parse("```python\nprint()\n```")
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")
+        self.assertIn("python3", tc.params["command"])
 
     def test_no_plain(self):
-        self.assertEqual(len(list(self._pattern().finditer("```\nstuff\n```"))), 0)
+        tc = self._parser().parse("```\nstuff\n```")
+        self.assertIsNone(tc)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -994,13 +1007,15 @@ class TestCodeFenceFilter(unittest.TestCase):
         result += f.flush()
         self.assertNotIn("whoami", result)
 
-    def test_passes_python_block(self):
+    def test_suppresses_python_block(self):
         f = self._filter()
         text = "Code:\n```python\nprint('hello')\n```\nDone."
         result = f.write(text)
         result += f.flush()
-        # Python blocks should NOT be suppressed
-        self.assertIn("print('hello')", result)
+        # Python blocks ARE now suppressed (DeepSeek fallback)
+        self.assertNotIn("print('hello')", result)
+        self.assertIn("Code:", result)
+        self.assertIn("Done.", result)
 
     def test_streaming_chunks(self):
         """Feed content character-by-character like real streaming."""

@@ -65,7 +65,129 @@ from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
 
 class DeepSeekStreamingChat:
-    """Main DeepSeek agent with streaming, search, and model listing capabilities"""
+    """Main AI agent with streaming, search, and model listing capabilities.
+
+    Supports multiple providers (DeepSeek, z.ai) via OpenAI-compatible APIs.
+    """
+
+    # ── Provider registry ─────────────────────────────────────────────────
+    # Each provider: base_url for /chat/completions, models_url for listing,
+    # env_key for the API key environment variable, and model_prefixes to
+    # auto-detect which provider a model belongs to.
+    # ── Per-model specs ────────────────────────────────────────────────
+    # max_context  = total context window (input + output)
+    # max_output   = hard cap on completion tokens the API will return
+    # default_max  = sensible default for max_tokens in normal requests
+    _MODEL_SPECS = {
+        # DeepSeek models
+        "deepseek-chat": {
+            "max_context": 131072,   # 128K
+            "max_output": 8192,      # 8K
+            "default_max": 8192,
+        },
+        "deepseek-coder": {
+            "max_context": 131072,
+            "max_output": 8192,
+            "default_max": 8192,
+        },
+        "deepseek-reasoner": {
+            "max_context": 131072,   # 128K
+            "max_output": 65536,     # 64K (thinking mode)
+            "default_max": 16384,
+        },
+        # z.ai GLM models
+        "glm-5": {
+            "max_context": 205000,   # ~200K
+            "max_output": 128000,    # 128K
+            "default_max": 16384,
+        },
+        "glm-4.7": {
+            "max_context": 200000,   # 200K
+            "max_output": 32000,     # 32K
+            "default_max": 8192,
+        },
+        "glm-4.7-flash": {
+            "max_context": 200000,   # 200K
+            "max_output": 32000,     # 32K
+            "default_max": 8192,
+        },
+        "glm-4.5": {
+            "max_context": 128000,   # 128K
+            "max_output": 16000,     # 16K
+            "default_max": 8192,
+        },
+        "glm-4.5-flash": {
+            "max_context": 128000,   # 128K
+            "max_output": 16000,     # 16K
+            "default_max": 4096,
+        },
+    }
+
+    # Fallback specs when model is not in _MODEL_SPECS
+    _DEFAULT_SPEC = {
+        "max_context": 131072,
+        "max_output": 8192,
+        "default_max": 8192,
+    }
+
+    @classmethod
+    def _get_model_spec(cls, model: str) -> dict:
+        """Return the spec dict for a model, falling back to defaults."""
+        return cls._MODEL_SPECS.get(model, cls._DEFAULT_SPEC)
+
+    # ── Provider registry ────────────────────────────────────────────
+    _PROVIDERS = {
+        "deepseek": {
+            "base_url": "https://api.deepseek.com/chat/completions",
+            "models_url": "https://api.deepseek.com/models",
+            "env_key": "DEEPSEEK_API_KEY",
+            "model_prefixes": ["deepseek-"],
+            "fallback_models": [
+                {"id": "deepseek-chat", "owned_by": "deepseek"},
+                {"id": "deepseek-coder", "owned_by": "deepseek"},
+                {"id": "deepseek-reasoner", "owned_by": "deepseek"},
+            ],
+        },
+        "zai": {
+            "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
+            "models_url": "https://api.z.ai/api/paas/v4/models",
+            "env_key": "ZAI_API_KEY",
+            "model_prefixes": ["glm-"],
+            "fallback_models": [
+                {"id": "glm-5", "owned_by": "z.ai"},
+                {"id": "glm-4.7", "owned_by": "z.ai"},
+                {"id": "glm-4.7-flash", "owned_by": "z.ai"},
+                {"id": "glm-4.5", "owned_by": "z.ai"},
+                {"id": "glm-4.5-flash", "owned_by": "z.ai"},
+            ],
+        },
+    }
+
+    def _resolve_provider(self, model: str = None) -> dict:
+        """Resolve which provider config to use for a given model.
+
+        Returns a dict with keys: base_url, models_url, api_key, name.
+        Falls back to deepseek if no prefix matches.
+        """
+        model = model or self.model
+        for name, prov in self._PROVIDERS.items():
+            for prefix in prov["model_prefixes"]:
+                if model.startswith(prefix):
+                    api_key = os.getenv(prov["env_key"], "")
+                    return {
+                        "name": name,
+                        "base_url": prov["base_url"],
+                        "models_url": prov["models_url"],
+                        "api_key": api_key,
+                    }
+        # Default: deepseek
+        prov = self._PROVIDERS["deepseek"]
+        return {
+            "name": "deepseek",
+            "base_url": prov["base_url"],
+            "models_url": prov["models_url"],
+            "api_key": self.api_key,
+        }
 
     def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
@@ -81,9 +203,10 @@ class DeepSeekStreamingChat:
         self.current_status = ""  # Current single-line status message
         self.last_status_update = 0  # Timestamp of last status update
         self._mcp_servers_cache = None  # Cache for MCP servers
-        # https://api-docs.deepseek.com/quick_start/pricing
-        self.base_url = "https://api.deepseek.com/chat/completions"
-        self.models_url = "https://api.deepseek.com/models"  # NEW: For listing models
+        # Provider-aware URLs (resolved dynamically per request)
+        provider = self._resolve_provider(self.model)
+        self.base_url = provider["base_url"]
+        self.models_url = provider["models_url"]
         self.conversation_history = []
         self.context_manager = ContextManager(self.conversation_history)
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
@@ -441,12 +564,13 @@ Remember: Always ask for permission before making changes!
     
     
     # NEW METHODS FOR MODEL LISTING
-    def list_models(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    def list_models(self, force_refresh: bool = False, provider: str = None) -> List[Dict[str, Any]]:
         """
-        List all available DeepSeek models via API
+        List available models from the current provider (or a specific one).
 
         Args:
             force_refresh: If True, force refresh the model list cache
+            provider: Specific provider name (e.g. "deepseek", "zai"). If None, uses current model's provider.
 
         Returns:
             List of model dictionaries with id, created, and owned_by fields
@@ -455,12 +579,21 @@ Remember: Always ask for permission before making changes!
         if not force_refresh and self.available_models_cache:
             return self.available_models_cache
 
+        if provider:
+            prov = self._PROVIDERS.get(provider, {})
+            models_url = prov.get("models_url", self.models_url)
+            api_key = os.getenv(prov.get("env_key", ""), self.api_key)
+        else:
+            resolved = self._resolve_provider()
+            models_url = resolved["models_url"]
+            api_key = resolved["api_key"] or self.api_key
+
         headers = {
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {api_key}"
         }
-        
+
         try:
-            response = requests.get(self.models_url, headers=headers, timeout=10)
+            response = requests.get(models_url, headers=headers, timeout=10)
             response.raise_for_status()
 
             models_data = response.json()
@@ -471,108 +604,125 @@ Remember: Always ask for permission before making changes!
                 self.available_models_cache = models_data
                 return self.available_models_cache
             else:
-                # Fallback to known models if API response is unexpected
-                return self._get_fallback_models()
+                return self._get_fallback_models(provider)
 
         except requests.exceptions.RequestException as e:
-            print(f"Error fetching models: {e}")
-            # Return fallback models on error
-            return self._get_fallback_models()
-    
-    def _get_fallback_models(self) -> List[Dict[str, Any]]:
-        """Return a list of fallback models when API call fails"""
-        return [
-            {"id": "deepseek-chat", "created": None, "owned_by": "deepseek"},
-            {"id": "deepseek-coder", "created": None, "owned_by": "deepseek"},
-            {"id": "deepseek-reasoner", "created": None, "owned_by": "deepseek"}
-        ]
-    
+            self._status_print(f"Error fetching models from {models_url}: {e}", "debug")
+            return self._get_fallback_models(provider)
+
+    def _get_fallback_models(self, provider: str = None) -> List[Dict[str, Any]]:
+        """Return fallback models when API call fails."""
+        if provider and provider in self._PROVIDERS:
+            return list(self._PROVIDERS[provider]["fallback_models"])
+        # Default: return current provider's fallback
+        resolved = self._resolve_provider()
+        prov = self._PROVIDERS.get(resolved["name"], {})
+        return list(prov.get("fallback_models", []))
+
     def print_models(self, force_refresh: bool = False) -> None:
         """
-        Print available models in a formatted way
-
-        Args:
-            force_refresh: If True, force refresh the model list
+        Print available models from ALL configured providers.
         """
-        models = self.list_models(force_refresh)
+        current_provider = self._resolve_provider()["name"]
 
         print("\n" + "="*60)
-        print("AVAILABLE DEEPSEEK MODELS")
+        print("AVAILABLE MODELS")
         print("="*60)
 
-        if not models:
-            print("No models found or failed to fetch model list.")
-            return
+        total = 0
+        for prov_name, prov_config in self._PROVIDERS.items():
+            api_key = os.getenv(prov_config["env_key"], "")
+            has_key = bool(api_key)
+            status = "✓" if has_key else "✗ (no API key)"
 
-        # Group models by type for better display
-        chat_models = []
-        coder_models = []
-        other_models = []
-        
-        for model in models:
-            model_id = model.get("id", "").lower()
+            # Section header
+            label = prov_name.upper()
+            print(f"\n{'🟢' if has_key else '🔴'} {label} {status}")
 
-            if "chat" in model_id:
-                chat_models.append(model)
-            elif "coder" in model_id or "code" in model_id:
-                coder_models.append(model)
+            if has_key:
+                models = self.list_models(force_refresh=force_refresh, provider=prov_name)
             else:
-                other_models.append(model)
+                models = prov_config["fallback_models"]
 
-        # Print in sections
-        if chat_models:
-            print("\n📝 CHAT MODELS:")
-            for model in chat_models:
-                print(f"  • {model['id']}")
-        
-        if coder_models:
-            print("\n💻 CODER MODELS:")
-            for model in coder_models:
-                print(f"  • {model['id']}")
-        
-        if other_models:
-            self._safe_print("\n🔧 OTHER MODELS:")
-            for model in other_models:
-                print(f"  • {model['id']}")
+            for m in models:
+                model_id = m.get("id", m) if isinstance(m, dict) else m
+                marker = " ◀ current" if model_id == self.model else ""
+                s = self._get_model_spec(model_id)
+                ctx_k = s["max_context"] // 1000
+                out_k = s["max_output"] // 1000
+                print(f"  • {model_id:<24} {ctx_k}K ctx / {out_k}K out{marker}")
+            total += len(models)
 
         print("\n" + "-"*60)
-        print(f"Current model: {self.model}")
-        print(f"Total models available: {len(models)}")
+        spec = self._get_model_spec(self.model)
+        print(f"Current: {self.model} [{current_provider}]  "
+              f"(ctx {spec['max_context']//1000}K, out {spec['max_output']//1000}K, "
+              f"default {spec['default_max']//1000}K)")
+        print(f"Switch:  /switch <model_id>  (e.g. /switch glm-5)")
         print("="*60 + "\n")
 
     def set_model(self, model_id: str) -> bool:
         """
-        Switch to a different model
+        Switch to a different model (may change provider).
 
         Args:
-            model_id: The model ID to switch to
+            model_id: The model ID to switch to (e.g. "deepseek-chat", "glm-5")
 
         Returns:
             True if model was switched successfully, False otherwise
         """
+        # Resolve provider for the requested model
+        new_provider = self._resolve_provider(model_id)
+
+        # Check API key for the target provider
+        if not new_provider["api_key"]:
+            env_key = self._PROVIDERS.get(new_provider["name"], {}).get("env_key", "???")
+            print(f"✗ No API key for provider '{new_provider['name']}'. Set {env_key} in your .env file.")
+            return False
+
+        # Check if model is in the available list (try current provider first, then all)
         models = self.list_models()
         available_ids = [m["id"] for m in models]
 
-        if model_id in available_ids:
-            old_model = self.model
-            self.model = model_id
+        # Also include fallback models from the target provider
+        target_prov = self._PROVIDERS.get(new_provider["name"], {})
+        fallback_ids = [m["id"] for m in target_prov.get("fallback_models", [])]
+        all_known = set(available_ids) | set(fallback_ids)
 
-            # Update configuration file
-            try:
-                from agent_config import agent_config
-                success = agent_config.update_value("agent.model", model_id)
-                if success:
-                    print(f"✓ Model switched from '{old_model}' to '{model_id}' (saved to config)")
-                else:
-                    print(f"✓ Model switched from '{old_model}' to '{model_id}' (but failed to save config)")
-            except ImportError:
-                print(f"✓ Model switched from '{old_model}' to '{model_id}' (config update failed: agent_config not found)")
+        if model_id not in all_known:
+            # Model not in known lists — but allow it anyway with a warning
+            # (z.ai may have models not in the fallback list)
+            print(f"⚠ Model '{model_id}' not in known model lists — trying anyway.")
 
-            return True
-        else:
-            print(f"✗ Model '{model_id}' not found. Available models:")
-            self.print_models()
-            return False
+        old_model = self.model
+        old_provider_name = self._resolve_provider(old_model)["name"]
+        self.model = model_id
+
+        # Update provider URLs if provider changed
+        self.base_url = new_provider["base_url"]
+        self.models_url = new_provider["models_url"]
+
+        # Clear model cache (different provider = different model list)
+        if new_provider["name"] != old_provider_name:
+            self.available_models_cache = None
+
+        # Show new model specs
+        spec = self._get_model_spec(model_id)
+        spec_info = f"ctx {spec['max_context']//1000}K, out {spec['max_output']//1000}K"
+
+        # Update configuration file
+        try:
+            from agent_config import agent_config
+            success = agent_config.update_value("agent.model", model_id)
+            provider_label = f" [{new_provider['name']}]" if new_provider["name"] != "deepseek" else ""
+            if success:
+                print(f"✓ Model switched: '{old_model}' → '{model_id}'{provider_label} ({spec_info}) (saved)")
+            else:
+                print(f"✓ Model switched: '{old_model}' → '{model_id}'{provider_label} ({spec_info}) (not saved)")
+        except ImportError:
+            print(f"✓ Model switched: '{old_model}' → '{model_id}' ({spec_info})")
+
+        return True
 
     def with_model(self, model_id: str, func: Callable, *args, **kwargs):
         """
@@ -607,16 +757,19 @@ Remember: Always ask for permission before making changes!
 
     def generate_completion(self, messages, temperature=0.7, max_tokens=2048):
         """Generate a completion using the current model (non-streaming)."""
+        provider = self._resolve_provider()
+        spec = self._get_model_spec(self.model)
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {provider['api_key'] or self.api_key}"
         }
-        # Context validation
+        # Clamp max_tokens to model's hard output limit
+        max_tokens = min(max_tokens, spec["max_output"])
+        # Context validation using model-specific context window
         temp_context = ContextManager(messages)
         total_tokens = temp_context.count_conversation_tokens()
-        max_context = agent_config.max_context_tokens
+        max_context = spec["max_context"]
         if total_tokens + max_tokens > max_context:
-            # Reduce max_tokens to fit within limit, but keep at least 1
             new_max = max(1, max_context - total_tokens)
             self._status_print(f"⚠️  Context limit: reducing max_tokens from {max_tokens} to {new_max}", "info")
             max_tokens = new_max
@@ -630,12 +783,14 @@ Remember: Always ask for permission before making changes!
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-        if self.thinking_enabled:
+        # Only add thinking param for providers that support it (DeepSeek)
+        if self.thinking_enabled and provider.get("name") == "deepseek":
             payload["thinking"] = {"type": "enabled"}
 
         try:
             import requests
-            response = requests.post(self.base_url, headers=headers, json=payload, timeout=60)
+            request_url = provider["base_url"]
+            response = requests.post(request_url, headers=headers, json=payload, timeout=60)
             response.raise_for_status()
             result = response.json()
             if "choices" in result and result["choices"]:
@@ -1039,7 +1194,8 @@ Remember: Always ask for permission before making changes!
                 else:
                     print("Usage: /models switch [agent] <model_id>")
                     print("Examples:")
-                    print("  /models switch deepseek-reasoner          # Switch model")
+                    print("  /models switch deepseek-reasoner          # Switch to DeepSeek model")
+                    print("  /models switch glm-5                      # Switch to z.ai model")
                     print("  /models switch agent deepseek-reasoner    # Switch model (explicit)")
                     return None
             elif subcommand in ["current", "active"]:
@@ -4232,10 +4388,14 @@ Please think step by step and provide your analysis:"""
         if file_content:
             # Extract just the filename from path
             file_match = re.search(r'([^\\/]+\.\w+)$', prompt)
-            if file_match:
-                filename = file_match.group(1)
-                self._safe_print(f"🔍 Detected file reference: {filename}")
-                self._safe_print(f"📄 Auto-loaded file content into conversation")
+            filename = file_match.group(1) if file_match else "file"
+            # Inject the file content into the prompt so the model can analyze it directly
+            prompt = (
+                f"{prompt}\n\n"
+                f"<file path=\"{filename}\">\n"
+                f"{file_content}\n"
+                f"</file>"
+            )
 
         # Handle commands using registry
         skip_user_add = False
@@ -4287,12 +4447,18 @@ Please think step by step and provide your analysis:"""
         if not command_handled:
             skip_user_add = False
 
+        # Check if caller already added the user message (agentic loop re-prompt)
+        if getattr(self, '_skip_next_user_add', False):
+            skip_user_add = True
+            self._skip_next_user_add = False
+
         # Regular chat processing (skip if we already added in handle_auto_fix_command)
         if not skip_user_add:
             self.add_to_history("user", prompt)
 
-        # Context management check
-        actual_max_tokens = max_tokens or agent_config.max_tokens
+        # Context management check (use model-specific default)
+        spec = self._get_model_spec(self.model)
+        actual_max_tokens = max_tokens or spec["default_max"]
         should_continue = self.context_manager.interactive_context_management(additional_tokens=actual_max_tokens)
         # Ensure system prompt is present regardless of choice (unless cancelled)
         self._ensure_system_prompt()
@@ -4308,17 +4474,24 @@ Please think step by step and provide your analysis:"""
 
         self._status_print(f"Sending request ({len(self.conversation_history)} messages)", "debug")
 
+        # Resolve provider for current model (may be DeepSeek or z.ai)
+        provider = self._resolve_provider()
+        request_api_key = provider["api_key"] or self.api_key
+        request_base_url = provider["base_url"]
+
         headers = {
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {self.api_key}"
+            "Authorization": f"Bearer {request_api_key}"
         }
 
-        # Context validation after possible compression
+        # Model-specific limits
+        spec = self._get_model_spec(self.model)
         total_tokens = self.context_manager.count_conversation_tokens()
-        max_context = agent_config.max_context_tokens
-        actual_max_tokens = max_tokens or agent_config.max_tokens
+        max_context = spec["max_context"]
+        actual_max_tokens = max_tokens or spec["default_max"]
+        # Clamp to model's hard output limit
+        actual_max_tokens = min(actual_max_tokens, spec["max_output"])
         if total_tokens + actual_max_tokens > max_context:
-            # Reduce max_tokens to fit within limit, but keep at least 1
             new_max = max(1, max_context - total_tokens)
             self._status_print(f"⚠️  Context limit: reducing max_tokens from {actual_max_tokens} to {new_max}", "info")
             actual_max_tokens = new_max
@@ -4333,7 +4506,8 @@ Please think step by step and provide your analysis:"""
             "max_tokens": actual_max_tokens,
         }
 
-        if self.thinking_enabled:
+        # Only add thinking param for providers that support it (DeepSeek)
+        if self.thinking_enabled and provider.get("name") == "deepseek":
             payload["thinking"] = {"type": "enabled"}
             self._status_print(f"Thinking mode: on", "debug")
 
@@ -4347,7 +4521,7 @@ Please think step by step and provide your analysis:"""
             # We just notify when first token arrives via _ui_on_first_token callback
 
             response = requests.post(
-                self.base_url,
+                request_base_url,
                 headers=headers,
                 json=payload,
                 stream=True,
@@ -4355,7 +4529,7 @@ Please think step by step and provide your analysis:"""
             )
 
             elapsed_time = time.time() - start_time
-            self._status_print(f"Connected ({elapsed_time:.1f}s, status {response.status_code})", "debug")
+            self._status_print(f"Connected to {provider['name']} ({elapsed_time:.1f}s, status {response.status_code})", "debug")
 
             if response.status_code != 200:
                 self._status_print(f"❌ Error {response.status_code}: {response.text}", "critical")
@@ -4493,6 +4667,9 @@ Please think step by step and provide your analysis:"""
                 if remaining:
                     print(remaining, end="", flush=True)
                     content_was_displayed = True
+
+            # Track whether content was visible (used by agentic loop)
+            self._last_content_was_displayed = content_was_displayed
 
             # Add the complete response to history
             if full_response:

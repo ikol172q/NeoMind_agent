@@ -203,6 +203,46 @@ Pick `--mode chat` or `--mode coding` at startup. Switching mid-session causes:
 
 ---
 
+## Multi-Provider / Model Switching
+
+### "No answer" — model response is blank
+**Symptom:** You ask a question, the spinner runs, but no text appears at the `>` prompt.
+**Root cause:** Multiple possible causes (this bug was fixed through 4 rounds of debugging):
+1. System prompt told model "Do NOT write explanatory prose" → model output only tool blocks → content filter suppressed everything → user saw nothing.
+2. Auto-read file injection was broken — `file_content` was loaded but never appended to the prompt.
+3. Agentic loop created two consecutive user messages (tool result + re-prompt), confusing the model.
+**Fix:** (1) Rewrote system prompt to require plain text reasoning. (2) Fixed auto-read injection to actually append `<file>` content. (3) Combined tool result + continuation into a single user message. (4) Added `_last_content_was_displayed` fallback to show raw content when filter suppresses everything.
+
+### DeepSeek ignores `<tool_call>` format
+**Symptom:** System prompt asks for `<tool_call>` XML tags, but model outputs Python scripts with `open()` and `os.path.exists()` instead.
+**Root cause:** DeepSeek models don't reliably follow structured tool call formats they weren't trained on.
+**Fix:** Pivoted to bash-centric approach — system prompt now asks for ` ```bash ` blocks. Added python block fallback parser that wraps ` ```python ` blocks in `python3 << 'PYEOF'` heredocs.
+
+### `/switch glm-5` fails with "No API key"
+**Symptom:** `✗ No API key for provider 'zai'. Set ZAI_API_KEY in your .env file.`
+**Fix:** Add `ZAI_API_KEY=your_key_here` to `.env`. Get your key from https://open.z.ai.
+
+### z.ai model returns error about `thinking` parameter
+**Symptom:** API error when using a GLM model with thinking mode enabled.
+**Root cause:** z.ai's API doesn't support DeepSeek's `thinking` parameter.
+**Fix:** Already handled — the `thinking` parameter is only sent when the provider is `deepseek`. If you see this, ensure you're on the latest `core.py`.
+
+### Model limits feel wrong after switching
+**Symptom:** Context warnings trigger too early, or responses are unexpectedly truncated.
+**Root cause:** Before per-model specs, all models used the same 128K/8K limits from `base.yaml`.
+**Fix:** Each model now has its own `max_context`, `max_output`, and `default_max` in `_MODEL_SPECS`. Run `/models` to see the active limits. If a model is missing from `_MODEL_SPECS`, it falls back to 128K/8K/8K defaults.
+
+### Agentic loop hits max iterations without finishing
+**Symptom:** Output ends with `(Agent loop: max iterations reached)` — model kept making exploratory tool calls without summarizing.
+**Fix:** Added soft limit at iteration 8 (tells model "stop making tool calls and provide your final summary") and hard limit at 15. If you still see this, the task may be too open-ended — try breaking it into smaller requests.
+
+### `generate_completion` hits wrong API endpoint
+**Symptom:** Switched to GLM model but responses still come from DeepSeek (or get auth errors).
+**Root cause:** `generate_completion` was using `self.base_url` instead of provider-resolved URL.
+**Fix:** Fixed to use `provider['base_url']` from `_resolve_provider()`. If you see this, ensure you're on the latest `core.py`.
+
+---
+
 ## Quick Diagnostics
 
 ```bash
@@ -217,8 +257,24 @@ pip list | grep -E "prompt_toolkit|rich|aiohttp|PyYAML|dotenv"
 # Check config loads
 python3 -c "from agent_config import agent_config; print(f'mode={agent_config.mode}, model={agent_config.model}')"
 
-# Check API key is set
-python3 -c "import os; print('API key:', 'SET' if os.getenv('DEEPSEEK_API_KEY') else 'MISSING')"
+# Check API keys are set
+python3 -c "
+import os
+from dotenv import load_dotenv
+load_dotenv()
+for key in ['DEEPSEEK_API_KEY', 'ZAI_API_KEY']:
+    val = os.getenv(key, '')
+    status = f'SET ({val[:8]}...)' if val else 'MISSING'
+    print(f'{key}: {status}')
+"
+
+# Check provider resolution
+python3 -c "
+from agent.core import DeepSeekChat
+for model in ['deepseek-chat', 'glm-5', 'glm-4.7-flash']:
+    spec = DeepSeekChat._get_model_spec(model)
+    print(f'{model}: ctx={spec[\"max_context\"]//1000}K out={spec[\"max_output\"]//1000}K default={spec[\"default_max\"]//1000}K')
+"
 
 # Run tests
 python3 -m pytest tests/ -v
