@@ -70,3 +70,5 @@ run.sh
 *.secret
 credentials.json
 token.json
+# TokenSight (local only)
+tokensight/
