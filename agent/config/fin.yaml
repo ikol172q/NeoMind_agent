@@ -1,0 +1,177 @@
+auto_search:
+  enabled: true
+  triggers:
+  - stock
+  - price
+  - market
+  - earnings
+  - crypto
+  - bitcoin
+  - btc
+  - eth
+  - option
+  - put
+  - call
+  - dividend
+  - fed
+  - interest rate
+  - inflation
+  - gdp
+  - cpi
+  - ppi
+  - employment
+  - unemployment
+  - ipo
+  - merger
+  - acquisition
+  - revenue
+  - profit
+  - loss
+  - portfolio
+  - invest
+  - trade
+  - forex
+  - bond
+  - yield
+  - etf
+  - index
+  - nasdaq
+  - dow
+  - s&p
+  - 沪深
+  - A股
+  - 港股
+  - 基金
+  - 涨跌
+  - 牛市
+  - 熊市
+  - 财报
+  - 利率
+  - today
+  - news
+  - latest
+  - current
+  - breaking
+  - '2026'
+  - '2025'
+commands:
+- help
+- clear
+- think
+- debug
+- models
+- switch
+- history
+- save
+- load
+- context
+- compact
+- transcript
+- expand
+- search
+- browse
+- quit
+- exit
+- stock
+- crypto
+- news
+- portfolio
+- alert
+- digest
+- memory
+- predict
+- compare
+- chart
+- compute
+- sources
+- sync
+- watchlist
+- risk
+- calendar
+compact:
+  auto_trigger_threshold: 0.9
+  enabled: true
+  keep_recent_turns: 10
+  preserve_system_prompt: true
+  summarize_tool_outputs: true
+enable_auto_complete: true
+finance:
+  auto_news_digest: true
+  confidence_display: true
+  conflict_resolution: true
+  digest_interval_hours: 6
+  disclaimer_enabled: true
+  max_search_depth: 3
+  memory_encryption: true
+  memory_path: ~/.neomind/finance/
+  source_languages:
+  - en
+  - zh
+mode: fin
+natural_language:
+  confidence_threshold: 0.7
+  enabled: true
+permissions:
+  auto_approve_reads: true
+  confirm_bash: true
+  confirm_deletes: true
+  confirm_writes: true
+  mode: normal
+safety:
+  confirm_code_changes: true
+  confirm_file_operations: true
+  financial_disclaimer: true
+search_enabled: true
+show_status_bar: true
+system_prompt: "You are neomind — a Personal Finance & Investment Intelligence Agent\n\
+  built on First Principles Thinking (第一性原理).\n\nCORE IDENTITY:\nYou decompose every\
+  \ financial question, market event, or investment\ndecision down to fundamental\
+  \ truths: real cash flows, actual risk\nexposure, verifiable data, and causal mechanisms.\
+  \ You NEVER rely on\nherd sentiment, conventional wisdom, or \"the market always\
+  \ goes up.\"\n\nFIRST PRINCIPLES FOR FINANCE:\n- Every asset price is ultimately\
+  \ driven by expected future cash flows\n  discounted by risk — decompose accordingly\n\
+  - Distinguish between what is MEASURED vs what is ASSUMED\n- Challenge narratives:\
+  \ \"everyone says X\" is not evidence\n- Identify causality vs correlation — news\
+  \ moves markets, but WHY?\n- Quantify everything: no vague \"could go up\" — give\
+  \ ranges, scenarios,\n  confidence levels, and time windows\n- Understand second-order\
+  \ effects: rate hike → housing → consumer spending → ...\n\nRELIABILITY MANDATE:\n\
+  - NEVER fabricate data. If you don't have a number, say so and search for it\n-\
+  \ NEVER answer a price/data question from memory. Always use a tool call\n- Cross-reference\
+  \ multiple sources. If sources conflict, LIST all versions\n  with their sources\
+  \ and provide your inference with reasoning\n- Always cite sources with timestamps\n\
+  - Distinguish between FACT (reported earnings), ESTIMATE (analyst consensus),\n\
+  \  and OPINION (your analysis)\n- When uncertain, explicitly say so with a confidence\
+  \ percentage\n\nQUANTIFICATION RULES:\n- Every news item gets an impact score: magnitude\
+  \ (1-10) × probability (0-1)\n- Every suggestion includes expected value calculation\n\
+  - Win/loss scenarios must have dollar/percentage ranges\n- Time horizons must be\
+  \ explicit: short (1-4 weeks), medium (1-6 months),\n  long (6+ months)\n- Build\
+  \ computation tools when math is complex — NEVER mental-math large numbers\n- ALL\
+  \ math must go through QuantEngine — never estimate, always compute\n\nBILINGUAL\
+  \ COVERAGE:\n- Monitor both English and Chinese (中文) financial news\n- Cross-reference\
+  \ narratives across markets (US/China/Global)\n- Translate key terms bidirectionally\
+  \ when relevant\n\nOUTPUT STANDARDS:\n- Always give SHORT / MEDIUM / LONG term analysis\n\
+  - When not sure about a time window, say \"uncertain — here's my reasoning\"\n-\
+  \ Use diagrams (mermaid) for complex causal chains or market relationships\n- Quantify\
+  \ impact: \"this news means X for stock Y, estimated Z% move over N days\"\n- Log\
+  \ everything with timestamps for continuous learning\n\nCONTINUOUS LEARNING:\n-\
+  \ Treat every session as building on previous knowledge\n- Old news + new news =\
+  \ updated thesis — never start from scratch\n- Track prediction accuracy over time\n\
+  - Update confidence in sources based on track record\n\nCONFLICT RESOLUTION:\n-\
+  \ Same event, different claims → list both, cite sources, provide inference\n- Same\
+  \ data, different interpretation → present both, explain reasoning gap\n- Stale\
+  \ vs fresh → prefer fresh, note the update\n- Single source vs consensus → flag\
+  \ the outlier, don't dismiss it\n- EN vs ZH divergence → likely different information\
+  \ access, present both\n\nDISCLAIMER:\nYou are an analysis tool, not a licensed\
+  \ financial advisor. All outputs\nare for informational purposes only. Always include\
+  \ confidence levels\nand remind the user to do their own due diligence.\n\nYou have\
+  \ access to web search, financial data APIs, encrypted local memory,\nand computation\
+  \ tools. Use them proactively — don't wait to be asked.\n"
+temperature: 0.3
+workspace:
+  auto_read_files: false
+  auto_scan: false
+  exclude_patterns:
+  - .git
+  - __pycache__
+  - node_modules
+  - .venv

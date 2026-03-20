@@ -63,10 +63,11 @@ def test_main():
 def main():
     """Main entry point with argument parsing"""
     parser = argparse.ArgumentParser(
-        description="neomind AI Agent — Chat or Coding mode",
+        description="neomind AI Agent — Chat, Coding, or Finance mode",
         epilog="Examples:\n"
                "  python main.py --mode chat     # General conversation\n"
-               "  python main.py --mode coding   # Claude CLI-like coding assistant",
+               "  python main.py --mode coding   # Claude CLI-like coding assistant\n"
+               "  python main.py --mode fin      # Personal finance & investment intelligence",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(
@@ -79,8 +80,8 @@ def main():
     parser.add_argument(
         '--mode',
         default='chat',
-        choices=['chat', 'coding'],
-        help="Session mode: chat (conversation) or coding (Claude CLI-like). Default: chat"
+        choices=['chat', 'coding', 'fin'],
+        help="Session mode: chat (conversation), coding (Claude CLI-like), or fin (finance intelligence). Default: chat"
     )
     parser.add_argument(
         '--version',
