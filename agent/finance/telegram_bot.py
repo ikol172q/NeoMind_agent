@@ -25,6 +25,7 @@ Architecture:
 
 import os
 import re
+import json
 import asyncio
 import logging
 import html
@@ -245,6 +246,7 @@ class NeoMindTelegramBot:
         self.components = components
         self._skill = None  # lazy init
         self._current_mode = "fin"  # default personality
+        self._thinking_enabled = False  # /think toggle
         self._app: Optional[Application] = None
         self._bot_id: Optional[int] = None
         self._last_response_time: Dict[int, float] = {}  # chat_id → timestamp
@@ -279,6 +281,7 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("help", self._cmd_help))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("mode", self._cmd_mode))
+        self._app.add_handler(CommandHandler("think", self._cmd_think))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -451,6 +454,18 @@ class NeoMindTelegramBot:
 
     # ── Message Handlers ─────────────────────────────────────────────
 
+    async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /think — toggle thinking (reasoning) mode."""
+        self._thinking_enabled = not self._thinking_enabled
+        status = "ON" if self._thinking_enabled else "OFF"
+        model = "deepseek-reasoner" if self._thinking_enabled else "deepseek-chat"
+        await update.message.reply_text(
+            f"🧠 Thinking mode: <b>{status}</b>\n"
+            f"Model: <code>{model}</code>\n\n"
+            f"{'开启后每条回复会包含思考过程（灰色字体）。回复更深入但更慢。' if self._thinking_enabled else '已关闭思考模式，回复更快。'}",
+            parse_mode=ParseMode.HTML,
+        )
+
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
         text = update.message.text or ""
@@ -529,6 +544,7 @@ class NeoMindTelegramBot:
 
         For /commands (fin_command): route through finance skill.
         For everything else: send to DeepSeek LLM for a real conversation.
+        When thinking is enabled: stream thinking into one message, then send response as another.
         """
         msg = update.message
 
@@ -555,24 +571,22 @@ class NeoMindTelegramBot:
                 return
 
         # 2. Everything else → send to DeepSeek LLM
-        reply = await self._ask_llm(text)
-        if reply:
-            await self._send_long_message(msg, reply)
+        thinking = getattr(self, '_thinking_enabled', False)
+
+        if thinking:
+            await self._ask_llm_streaming(msg, text)
         else:
-            await msg.reply_text("⚠️ LLM 未响应，请稍后重试")
+            reply = await self._ask_llm(text)
+            if reply:
+                await self._send_long_message(msg, reply)
+            else:
+                await msg.reply_text("⚠️ LLM 未响应，请稍后重试")
 
-    async def _ask_llm(self, user_message: str) -> Optional[str]:
-        """Send a message to DeepSeek/z.ai and get a response.
+    # ── LLM Shared Helpers ──────────────────────────────────────────
 
-        Maintains per-chat conversation history for context.
-        No hardcoded rules — the LLM handles everything.
-        """
-        import requests as req
-
+    def _get_system_prompt(self) -> str:
         current_mode = getattr(self, '_current_mode', 'fin')
-
-        # System prompts per mode
-        system_prompts = {
+        prompts = {
             "fin": (
                 "你是 NeoMind Finance，一个个人金融与投资智能助手。"
                 "你在 Telegram 上运行。回复简洁、有用。"
@@ -596,70 +610,202 @@ class NeoMindTelegramBot:
                 "回复用用户的语言。"
             ),
         }
+        return prompts.get(current_mode, prompts["chat"])
 
-        system_prompt = system_prompts.get(current_mode, system_prompts["chat"])
-
-        # Maintain conversation history (last 10 turns per chat)
+    def _get_history(self) -> list:
         if not hasattr(self, '_chat_histories'):
             self._chat_histories = {}
-
-        chat_key = "default"  # Could be per-chat_id in the future
+        chat_key = "default"
         if chat_key not in self._chat_histories:
             self._chat_histories[chat_key] = []
+        return self._chat_histories[chat_key]
 
-        history = self._chat_histories[chat_key]
-        history.append({"role": "user", "content": user_message})
-
-        # Keep last 10 turns (20 messages)
-        if len(history) > 20:
-            history[:] = history[-20:]
-
-        # Build messages for API call
-        messages = [{"role": "system", "content": system_prompt}] + history
-
-        # Resolve provider and API key
+    def _resolve_api(self, thinking: bool = False) -> tuple:
+        """Returns (api_key, base_url, model) or raises."""
         api_key = os.getenv("DEEPSEEK_API_KEY", "")
         base_url = "https://api.deepseek.com/chat/completions"
-        model = "deepseek-chat"
+        model = "deepseek-reasoner" if thinking else "deepseek-chat"
 
         if not api_key:
             api_key = os.getenv("ZAI_API_KEY", "")
             base_url = "https://api.z.ai/api/paas/v4/chat/completions"
-            model = "glm-4.5-flash"
+            model = "glm-5" if thinking else "glm-4.5-flash"
+
+        return api_key, base_url, model
+
+    # ── Normal mode: simple non-streaming call ───────────────────
+
+    async def _ask_llm(self, user_message: str) -> Optional[str]:
+        """Non-streaming LLM call. Used when thinking is OFF."""
+        import requests as req
+
+        history = self._get_history()
+        history.append({"role": "user", "content": user_message})
+        if len(history) > 20:
+            history[:] = history[-20:]
+
+        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
+        api_key, base_url, model = self._resolve_api(thinking=False)
 
         if not api_key:
             return "⚠️ No API key configured (DEEPSEEK_API_KEY or ZAI_API_KEY)"
 
-        # Make API call (non-streaming for Telegram)
         try:
             loop = asyncio.get_event_loop()
             response = await loop.run_in_executor(None, lambda: req.post(
                 base_url,
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model,
-                    "messages": messages,
-                    "max_tokens": 1024,
-                    "temperature": 0.7,
-                    "stream": False,
-                },
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": messages, "max_tokens": 1024, "temperature": 0.7, "stream": False},
                 timeout=30,
             ))
-
             if response.status_code == 200:
-                data = response.json()
-                reply = data["choices"][0]["message"]["content"].strip()
-                # Save assistant reply to history
+                reply = response.json()["choices"][0]["message"]["content"].strip()
                 history.append({"role": "assistant", "content": reply})
                 return reply
             else:
                 return f"⚠️ API error: {response.status_code}"
-
         except Exception as e:
             return f"⚠️ Request failed: {e}"
+
+    # ── Thinking mode: streaming with live Telegram message updates ──
+
+    async def _ask_llm_streaming(self, msg, user_message: str):
+        """Streaming LLM call with thinking. Used when /think is ON.
+
+        Flow:
+        1. Send "🧠 Thinking..." placeholder message
+        2. Stream API response, collecting reasoning_content chunks
+        3. Edit the placeholder every ~2s with accumulated thinking text
+        4. When content (final answer) starts, send it as a new message
+        """
+        import requests as req
+
+        history = self._get_history()
+        history.append({"role": "user", "content": user_message})
+        if len(history) > 20:
+            history[:] = history[-20:]
+
+        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
+        api_key, base_url, model = self._resolve_api(thinking=True)
+
+        if not api_key:
+            await msg.reply_text("⚠️ No API key configured")
+            return
+
+        # Step 1: Send thinking placeholder
+        thinking_msg = await msg.reply_text(
+            "🧠 <b>Thinking...</b>",
+            parse_mode=ParseMode.HTML,
+        )
+
+        thinking_text = ""
+        response_text = ""
+        last_edit_time = 0
+        EDIT_INTERVAL = 2.0  # edit Telegram message at most every 2 seconds
+
+        try:
+            # Step 2: Stream the response
+            response = await asyncio.get_event_loop().run_in_executor(None, lambda: req.post(
+                base_url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={"model": model, "messages": messages, "max_tokens": 4096, "stream": True},
+                timeout=120,
+                stream=True,
+            ))
+
+            if response.status_code != 200:
+                await thinking_msg.edit_text(f"⚠️ API error: {response.status_code}")
+                return
+
+            # Step 3: Process SSE stream
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode("utf-8", errors="ignore")
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+
+                    # Collect reasoning_content (thinking)
+                    rc = delta.get("reasoning_content", "")
+                    if rc:
+                        thinking_text += rc
+
+                    # Collect content (final answer)
+                    ct = delta.get("content", "")
+                    if ct:
+                        response_text += ct
+
+                    # Periodically update the thinking message
+                    now = asyncio.get_event_loop().time()
+                    if rc and (now - last_edit_time) >= EDIT_INTERVAL:
+                        last_edit_time = now
+                        display = self._format_thinking(thinking_text)
+                        try:
+                            await thinking_msg.edit_text(
+                                display,
+                                parse_mode=ParseMode.HTML,
+                            )
+                        except Exception:
+                            pass  # Telegram rate limit, skip this update
+
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+            # Step 4: Final update of thinking message
+            if thinking_text:
+                display = self._format_thinking(thinking_text, final=True)
+                try:
+                    await thinking_msg.edit_text(display, parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+            else:
+                try:
+                    await thinking_msg.edit_text("🧠 <i>(no reasoning output)</i>", parse_mode=ParseMode.HTML)
+                except Exception:
+                    pass
+
+            # Step 5: Send final response as a separate message
+            if response_text.strip():
+                history.append({"role": "assistant", "content": response_text.strip()})
+                await self._send_long_message(msg, response_text.strip())
+            else:
+                await msg.reply_text("⚠️ No response generated")
+
+        except Exception as e:
+            try:
+                await thinking_msg.edit_text(f"⚠️ Error: {e}")
+            except Exception:
+                await msg.reply_text(f"⚠️ Error: {e}")
+
+    @staticmethod
+    def _format_thinking(text: str, final: bool = False) -> str:
+        """Format thinking content using Telegram's expandable blockquote.
+
+        Uses <blockquote expandable> so the thinking is:
+        - Visually indented with a left border (clearly distinct from response)
+        - Collapsed by default when long (user taps to expand)
+        - Italic for extra visual separation
+        """
+        # Truncate for Telegram's 4096 char limit (leave room for tags)
+        max_len = 3800
+        if len(text) > max_len:
+            text = text[-max_len:]
+            text = "…\n" + text
+
+        escaped = html.escape(text)
+        header = "🧠 <b>Thinking</b>" if final else "🧠 <b>Thinking...</b>"
+
+        return (
+            f"{header}\n"
+            f"<blockquote expandable>{escaped}</blockquote>"
+        )
 
     async def _send_long_message(self, msg, text: str):
         """Send a message, splitting if it exceeds Telegram's 4096 char limit."""
