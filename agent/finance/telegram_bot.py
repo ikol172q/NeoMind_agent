@@ -251,6 +251,11 @@ class NeoMindTelegramBot:
         self._bot_id: Optional[int] = None
         self._last_response_time: Dict[int, float] = {}  # chat_id → timestamp
 
+        # Persistent chat history (SQLite — survives container restarts)
+        from .chat_store import ChatStore
+        self._store = ChatStore()
+        print(f"[bot] Chat history DB: {self._store.db_path}", flush=True)
+
     async def start(self):
         """Start the Telegram bot (long polling mode)."""
         print("[bot] Building Telegram application...", flush=True)
@@ -282,7 +287,11 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("mode", self._cmd_mode))
         self._app.add_handler(CommandHandler("think", self._cmd_think))
+        self._app.add_handler(CommandHandler("history", self._cmd_history))
         self._app.add_handler(CommandHandler("clear", self._cmd_clear))
+        self._app.add_handler(CommandHandler("archive", self._cmd_archive))
+        self._app.add_handler(CommandHandler("purge", self._cmd_purge))
+        self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("context", self._cmd_context))
         self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
         # Catch all /neo_* commands
@@ -345,28 +354,35 @@ class NeoMindTelegramBot:
         )
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /help — list all commands."""
-        commands = [
-            ("/stock <symbol>", "股票价格和分析"),
-            ("/crypto <symbol>", "加密货币行情"),
-            ("/news [query]", "多源新闻搜索 (EN+ZH)"),
-            ("/digest", "每日市场摘要 + Dashboard"),
-            ("/compute <expr>", "金融计算 (复利/DCF/BS)"),
-            ("/predict <sym> <方向> <置信度>", "记录预测"),
-            ("/watchlist [add|remove] <sym>", "自选股管理"),
-            ("/risk", "风险评估 (VaR/Sharpe)"),
-            ("/sources", "数据源信任度排名"),
-            ("/compare <sym1> <sym2>", "资产对比"),
-            ("/status", "Bot 和搜索引擎状态"),
-        ]
-        lines = ["<b>NeoMind Finance — 命令列表</b>\n"]
-        for cmd, desc in commands:
-            lines.append(f"<code>{cmd}</code>\n  {desc}\n")
-        lines.append("\n💡 群聊中用 <code>/neo_stock</code> 前缀避免和其他 bot 冲突")
-        lines.append("💡 直接 @我 或发含 $AAPL 的消息也会触发")
+        """Handle /help — grouped command reference."""
+        current_mode = getattr(self, '_current_mode', 'fin')
+        thinking = "ON 🧠" if getattr(self, '_thinking_enabled', False) else "OFF"
 
         await update.message.reply_text(
-            "\n".join(lines),
+            f"📋 <b>NeoMind 命令 (mode: {current_mode}, think: {thinking})</b>\n"
+            "\n"
+            "── 💬 <b>对话</b> ──\n"
+            "直接打字即可对话，无需命令\n"
+            "<code>/think</code> — 开关深度思考模式\n"
+            "<code>/mode</code> <code>chat</code>|<code>fin</code>|<code>coding</code> — 切换人格\n"
+            "\n"
+            "── 📈 <b>金融 (fin 模式)</b> ──\n"
+            "<code>/stock</code> AAPL — 股票\n"
+            "<code>/crypto</code> BTC — 加密货币\n"
+            "<code>/news</code> 央行降息 — 多源新闻\n"
+            "<code>/digest</code> — 每日市场摘要\n"
+            "<code>/compute</code> compound 10000 0.08 10 — 金融计算\n"
+            "<code>/predict</code> NVDA bullish 0.8 — 记录预测\n"
+            "<code>/compare</code> AAPL MSFT — 资产对比\n"
+            "<code>/sources</code> — 数据源信任度\n"
+            "\n"
+            "── 🔧 <b>管理</b> ──\n"
+            "<code>/clear</code> — 归档对话 (LLM 重开)\n"
+            "<code>/context</code> — token 使用量\n"
+            "<code>/status</code> — Bot 状态\n"
+            "<code>/admin</code> — 管理面板 (历史/归档/清除/统计)\n"
+            "\n"
+            "<i>群聊: @我 或 /neo_stock 前缀 | 含 $AAPL 自动触发</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -469,19 +485,194 @@ class NeoMindTelegramBot:
             parse_mode=ParseMode.HTML,
         )
 
+    async def _cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /history — alias for /admin history."""
+        # Rewrite args and forward to admin handler
+        context.args = ["history"] + (list(context.args) if context.args else [])
+        await self._cmd_admin(update, context)
+
     async def _cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /clear — clear conversation history."""
-        history = self._get_history()
-        count = len(history)
-        history.clear()
-        await update.message.reply_text(f"🗑 对话历史已清空（{count} 条消息）")
+        """Handle /clear — archive current conversation (soft-clear).
+
+        Messages are archived (hidden from LLM), not deleted.
+        LLM starts fresh, but admin can still view archived messages.
+        """
+        cid = update.message.chat_id
+        count = self._store.clear_active(cid)
+        await update.message.reply_text(
+            f"🗑 对话已归档（{count} 条消息）\nLLM 重新开始，旧消息已存档"
+        )
+
+    async def _cmd_archive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Alias: /archive → /clear."""
+        await self._cmd_clear(update, context)
+
+    async def _cmd_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Alias: /purge → /admin purge."""
+        context.args = ["purge"] + (list(context.args) if context.args else [])
+        await self._cmd_admin(update, context)
+
+    async def _cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /admin — unified admin panel.
+
+        /admin              — show help
+        /admin stats        — DB statistics
+        /admin history [N] [full] — active messages (with optional thinking)
+        /admin archived [N] — archived messages
+        /admin chats        — list all chats
+        """
+        parts = list(context.args) if context.args else []
+        subcmd = parts[0] if parts else ""
+        rest = parts[1:] if len(parts) > 1 else []
+        cid = update.message.chat_id
+
+        if subcmd == "stats":
+            stats = self._store.get_stats()
+            await update.message.reply_text(
+                f"📊 <b>Chat Store Stats</b>\n\n"
+                f"Active chats: {stats['active_chats']}\n"
+                f"Total chats: {stats['total_chats']}\n"
+                f"Active messages: {stats['active_messages']:,}\n"
+                f"Archived messages: {stats['archived_messages']:,}\n"
+                f"DB size: {stats['db_size_kb']} KB\n"
+                f"DB path: <code>{stats['db_path']}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif subcmd == "history":
+            rest_str = " ".join(rest)
+            show_thinking = "full" in rest_str or "think" in rest_str
+            try:
+                limit = int(rest[0]) if rest and rest[0].isdigit() else 10
+            except (ValueError, IndexError):
+                limit = 10
+
+            messages = self._store.get_history(cid, limit=limit, include_thinking=show_thinking)
+            if not messages:
+                await update.message.reply_text("没有对话记录")
+                return
+
+            lines = [f"📜 <b>对话历史</b> ({len(messages)} 条)\n"]
+            for msg in messages:
+                role = "👤" if msg["role"] == "user" else "🤖"
+                content = msg["content"][:150]
+                ts = msg.get("created_at", "")[:16]
+                lines.append(f"{role} <i>{ts}</i>\n{html.escape(content)}")
+                if show_thinking and msg.get("thinking"):
+                    preview = msg["thinking"][:300]
+                    lines.append(f"<blockquote expandable>💭 {html.escape(preview)}</blockquote>")
+                lines.append("")
+
+            lines.append("<i>/admin history 20 | /admin history full</i>")
+            text = "\n".join(lines)
+            if len(text) > 4000:
+                text = text[:3950] + "\n\n... (用 /admin history 5 看更少)"
+            await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+
+        elif subcmd == "archived":
+            try:
+                limit = int(rest[0]) if rest and rest[0].isdigit() else 20
+            except (ValueError, IndexError):
+                limit = 20
+            show_thinking = "full" in " ".join(rest)
+
+            archived = self._store.get_archived(cid, limit=limit)
+            if not archived:
+                await update.message.reply_text("没有归档消息")
+                return
+            lines = [f"📦 <b>归档消息</b> ({len(archived)} 条)\n"]
+            for msg in archived[-15:]:
+                role = "👤" if msg["role"] == "user" else "🤖"
+                content = msg["content"][:120]
+                ts = msg.get("created_at", "")[:16]
+                lines.append(f"{role} <i>{ts}</i>\n{html.escape(content)}")
+                if show_thinking and msg.get("thinking"):
+                    preview = msg["thinking"][:200]
+                    lines.append(f"<blockquote expandable>💭 {html.escape(preview)}</blockquote>")
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+        elif subcmd == "chats":
+            chats = self._store.list_chats(include_archived=True)
+            if not chats:
+                await update.message.reply_text("没有聊天记录")
+                return
+            lines = ["📋 <b>All Chats</b>\n"]
+            for c in chats[:15]:
+                status = "📦" if c["archived"] else "💬"
+                lines.append(
+                    f"{status} {c['chat_id']} ({c['chat_type']}) — {c['message_count']} msgs"
+                )
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+        elif subcmd == "purge":
+            # Moved from standalone /purge command
+            purge_args = " ".join(rest)
+            if purge_args != "confirm":
+                count = self._store.count_messages(cid, include_archived=True)
+                await update.message.reply_text(
+                    f"⚠️ 即将永久删除 <b>所有</b> 消息（{count} 条，含归档）\n"
+                    f"此操作<b>不可恢复</b>！\n"
+                    f"确认: <code>/admin purge confirm</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                count = self._store.purge(cid)
+                await update.message.reply_text(f"🔥 已永久删除 {count} 条消息")
+
+        elif subcmd == "setctx":
+            # Moved from standalone /setctx command
+            val = rest[0] if rest else ""
+            if not val:
+                _, _, cur_model = self._resolve_api()
+                current = self._MODEL_CONTEXT.get(cur_model, 128000)
+                await update.message.reply_text(
+                    f"当前 context 上限: <b>{current:,}</b> tokens\n"
+                    f"<code>/admin setctx 2000</code> — 测试 compact\n"
+                    f"<code>/admin setctx reset</code> — 恢复默认",
+                    parse_mode=ParseMode.HTML,
+                )
+            elif val == "reset":
+                self._MODEL_CONTEXT.update({
+                    "deepseek-chat": 128000, "deepseek-reasoner": 128000,
+                    "glm-5": 205000, "glm-4.5-flash": 128000,
+                })
+                await update.message.reply_text("✅ Context 上限已恢复默认值")
+            else:
+                try:
+                    new_limit = int(val)
+                    for m in list(self._MODEL_CONTEXT.keys()):
+                        self._MODEL_CONTEXT[m] = new_limit
+                    await update.message.reply_text(f"✅ Context 上限已设为 <b>{new_limit:,}</b>", parse_mode=ParseMode.HTML)
+                except ValueError:
+                    await update.message.reply_text("请输入数字")
+
+        else:
+            await update.message.reply_text(
+                "📋 <b>Admin Panel</b>\n\n"
+                "── 📜 查看 ──\n"
+                "<code>/admin history</code> — 活跃消息\n"
+                "<code>/admin history full</code> — 含思考过程\n"
+                "<code>/admin archived</code> — 归档消息\n"
+                "<code>/admin chats</code> — 所有聊天\n"
+                "<code>/admin stats</code> — DB 统计\n"
+                "\n── 🗑 清理 ──\n"
+                "<code>/admin purge confirm</code> — 永久删除\n"
+                "\n── 🔧 调试 ──\n"
+                "<code>/admin setctx 2000</code> — 改 context 上限\n"
+                "<code>/admin setctx reset</code> — 恢复默认\n"
+                "\n<i>快捷: /history = /admin history</i>",
+                parse_mode=ParseMode.HTML,
+            )
 
     async def _cmd_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /context — show context window usage."""
-        history = self._get_history()
+        cid = update.message.chat_id
+        history = self._store.get_recent_history(cid, limit=100)
         _, _, model = self._resolve_api(thinking=getattr(self, '_thinking_enabled', False))
         max_ctx = self._MODEL_CONTEXT.get(model, 128000)
         used = self._estimate_history_tokens(history)
+        total_count = self._store.count_messages(cid, include_archived=True)
+        active_count = self._store.count_messages(cid, include_archived=False)
         pct = used / max_ctx * 100
 
         if pct >= 80:
@@ -494,57 +685,17 @@ class NeoMindTelegramBot:
         await update.message.reply_text(
             f"{bar} <b>Context Window</b>\n\n"
             f"Model: <code>{model}</code>\n"
-            f"Messages: {len(history)}\n"
-            f"Tokens: ~{used:,} / {max_ctx:,} ({pct:.0f}%)\n\n"
-            f"{'⚠️ 接近上限，建议 /clear 清空' if pct >= 60 else '✅ 充足'}",
+            f"Active messages: {active_count} (total: {total_count})\n"
+            f"Tokens: ~{used:,} / {max_ctx:,} ({pct:.0f}%)\n"
+            f"Storage: SQLite (persistent)\n\n"
+            f"{'⚠️ 接近上限，建议 /clear 归档' if pct >= 60 else '✅ 充足'}",
             parse_mode=ParseMode.HTML,
         )
 
     async def _cmd_setctx(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /setctx <number> — override context window limit for testing.
-
-        Example: /setctx 1000  → pretend context window is only 1000 tokens
-                 /setctx reset → restore real model limits
-        """
-        args = " ".join(context.args) if context.args else ""
-        if not args:
-            _, _, model = self._resolve_api()
-            current = self._MODEL_CONTEXT.get(model, 128000)
-            await update.message.reply_text(
-                f"当前 context 上限: <b>{current:,}</b> tokens ({model})\n\n"
-                f"用法:\n"
-                f"<code>/setctx 2000</code> — 设为 2000 tokens（测试 auto-compact）\n"
-                f"<code>/setctx reset</code> — 恢复模型真实上限",
-                parse_mode=ParseMode.HTML,
-            )
-            return
-
-        if args.strip().lower() == "reset":
-            # Restore defaults
-            self._MODEL_CONTEXT.update({
-                "deepseek-chat": 128000,
-                "deepseek-reasoner": 128000,
-                "glm-5": 205000,
-                "glm-4.5-flash": 128000,
-            })
-            await update.message.reply_text("✅ Context 上限已恢复为模型默认值")
-        else:
-            try:
-                new_limit = int(args.strip())
-                if new_limit < 100:
-                    await update.message.reply_text("上限至少 100 tokens")
-                    return
-                # Override ALL models
-                for model_name in list(self._MODEL_CONTEXT.keys()):
-                    self._MODEL_CONTEXT[model_name] = new_limit
-                await update.message.reply_text(
-                    f"✅ Context 上限已设为 <b>{new_limit:,}</b> tokens（所有模型）\n"
-                    f"现在多聊几句就会触发 auto-compact\n"
-                    f"用 <code>/setctx reset</code> 恢复",
-                    parse_mode=ParseMode.HTML,
-                )
-            except ValueError:
-                await update.message.reply_text("请输入数字，比如 <code>/setctx 2000</code>", parse_mode=ParseMode.HTML)
+        """Alias: /setctx → /admin setctx."""
+        context.args = ["setctx"] + (list(context.args) if context.args else [])
+        await self._cmd_admin(update, context)
 
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
@@ -652,27 +803,28 @@ class NeoMindTelegramBot:
 
         # 2. Everything else → send to DeepSeek LLM
         thinking = getattr(self, '_thinking_enabled', False)
-        self._last_compact_notice = None  # reset
+        self._last_compact_notice = None
+        cid = msg.chat_id
+        ctype = msg.chat.type or "private"
 
         if thinking:
-            await self._ask_llm_streaming(msg, text)
+            await self._ask_llm_streaming(msg, text, chat_id=cid, chat_type=ctype)
         else:
-            reply = await self._ask_llm(text)
+            reply = await self._ask_llm(text, chat_id=cid, chat_type=ctype)
             if reply:
                 await self._send_long_message(msg, reply)
             else:
                 await msg.reply_text("⚠️ LLM 未响应，请稍后重试")
 
-        # Send pre-response context notice
+        # Send context notice
         notice = getattr(self, '_last_compact_notice', None)
         if notice:
             await msg.reply_text(notice)
             self._last_compact_notice = None
 
-        # Post-response check: LLM reply may have pushed us over again
-        history = self._get_history()
+        # Post-response check
         _, _, cur_model = self._resolve_api(thinking=thinking)
-        post_notice = self._auto_compact_if_needed(history, cur_model)
+        post_notice = self._auto_compact_if_needed_db(cid, cur_model)
         if post_notice and "Auto-compacted" in post_notice:
             await msg.reply_text(post_notice)
 
@@ -714,26 +866,48 @@ class NeoMindTelegramBot:
         "glm-4.5-flash": 128000,
     }
 
-    def _get_history(self) -> list:
-        if not hasattr(self, '_chat_histories'):
-            self._chat_histories = {}
-        chat_key = "default"
-        if chat_key not in self._chat_histories:
-            self._chat_histories[chat_key] = []
-        return self._chat_histories[chat_key]
+    def _get_history(self, chat_id: int = 0) -> list:
+        """Get recent history from SQLite for a specific chat.
+
+        Returns a mutable list (callers may modify for compact).
+        """
+        return self._store.get_recent_history(chat_id, limit=20)
 
     def _resolve_api(self, thinking: bool = False) -> tuple:
-        """Returns (api_key, base_url, model) or raises."""
-        api_key = os.getenv("DEEPSEEK_API_KEY", "")
-        base_url = "https://api.deepseek.com/chat/completions"
-        model = "deepseek-reasoner" if thinking else "deepseek-chat"
+        """Returns (api_key, base_url, model) — picks first available provider."""
+        chain = self._get_provider_chain(thinking)
+        if chain:
+            p = chain[0]
+            return p["api_key"], p["base_url"], p["model"]
+        return "", "", ""
 
-        if not api_key:
-            api_key = os.getenv("ZAI_API_KEY", "")
-            base_url = "https://api.z.ai/api/paas/v4/chat/completions"
-            model = "glm-5" if thinking else "glm-4.5-flash"
+    def _get_provider_chain(self, thinking: bool = False) -> list:
+        """Build ordered list of providers to try (primary → fallback).
 
-        return api_key, base_url, model
+        Both DeepSeek and z.ai keys are checked. If both exist,
+        DeepSeek is primary, z.ai is fallback.
+        """
+        providers = []
+
+        ds_key = os.getenv("DEEPSEEK_API_KEY", "")
+        zai_key = os.getenv("ZAI_API_KEY", "")
+
+        if ds_key:
+            providers.append({
+                "api_key": ds_key,
+                "base_url": "https://api.deepseek.com/chat/completions",
+                "model": "deepseek-reasoner" if thinking else "deepseek-chat",
+                "name": "deepseek",
+            })
+        if zai_key:
+            providers.append({
+                "api_key": zai_key,
+                "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
+                "model": "glm-5" if thinking else "glm-4.5-flash",
+                "name": "zai",
+            })
+
+        return providers
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -749,36 +923,35 @@ class NeoMindTelegramBot:
             total += self._estimate_tokens(msg.get("content", "")) + 4  # msg overhead
         return total
 
-    def _auto_compact_if_needed(self, history: list, model: str) -> Optional[str]:
-        """Check context usage, auto-compact if near limit.
-
-        Strategy: aggressively drop old messages to stay under 70% of limit.
-        No summaries (they waste tokens) — just keep the most recent turns.
-        """
+    def _auto_compact_if_needed_db(self, chat_id: int, model: str) -> Optional[str]:
+        """DB-backed version of auto-compact. Archives old messages in SQLite."""
         max_ctx = self._MODEL_CONTEXT.get(model, 128000)
+        history = self._store.get_recent_history(chat_id, limit=100)
         used = self._estimate_history_tokens(history)
         pct = used / max_ctx
 
-        # Over 90%: compact
-        if pct >= 0.9 and len(history) > 2:
-            original_len = len(history)
-            original_tokens = used
+        if pct >= 0.9 and len(history) > 4:
+            target_tokens = int(max_ctx * 0.3)
+            # Figure out how many recent messages to keep
+            keep = len(history)
+            running = 0
+            for i in range(len(history) - 1, -1, -1):
+                running += self._estimate_tokens(history[i].get("content", "")) + 4
+                if running > target_tokens:
+                    keep = len(history) - i - 1
+                    break
 
-            # Target: get under 30% of max_ctx
-            target = int(max_ctx * 0.3)
+            keep = max(keep, 2)  # always keep at least 2
+            archived, remaining = self._store.compact(chat_id, keep_recent=keep)
+            if archived > 0:
+                new_used = self._estimate_history_tokens(
+                    self._store.get_recent_history(chat_id, limit=100)
+                )
+                return (
+                    f"📦 Auto-compacted: archived {archived} msgs, "
+                    f"kept {remaining}, ~{new_used:,}/{max_ctx:,} tokens"
+                )
 
-            # Drop oldest messages one by one until under target
-            while self._estimate_history_tokens(history) > target and len(history) > 2:
-                history.pop(0)
-
-            new_tokens = self._estimate_history_tokens(history)
-            new_pct = new_tokens / max_ctx
-            return (
-                f"📦 Auto-compacted: {original_tokens:,} → {new_tokens:,} tokens "
-                f"({original_len} → {len(history)} msgs, {new_pct:.0%})"
-            )
-
-        # Over 60%: warn
         if pct >= 0.6:
             return f"⚠️ Context: {pct:.0%} ({used:,}/{max_ctx:,}). 接近上限，发 /clear 清空"
 
@@ -786,66 +959,74 @@ class NeoMindTelegramBot:
 
     # ── Normal mode: simple non-streaming call ───────────────────
 
-    async def _ask_llm(self, user_message: str) -> Optional[str]:
-        """Non-streaming LLM call. Used when thinking is OFF."""
+    async def _ask_llm(self, user_message: str, chat_id: int = 0,
+                       chat_type: str = "private") -> Optional[str]:
+        """Non-streaming LLM call with auto-fallback between providers."""
         import requests as req
 
-        history = self._get_history()
-        history.append({"role": "user", "content": user_message})
+        # Save user message to persistent store
+        self._store.add_message(chat_id, "user", user_message, chat_type)
+
+        # Load recent history from DB
+        history = self._store.get_recent_history(chat_id, limit=20)
 
         # Context management
         api_key, base_url, model = self._resolve_api(thinking=False)
-        compact_notice = self._auto_compact_if_needed(history, model)
+        compact_notice = self._auto_compact_if_needed_db(chat_id, model)
 
         messages = [{"role": "system", "content": self._get_system_prompt()}] + history
 
         if not api_key:
             return "⚠️ No API key configured (DEEPSEEK_API_KEY or ZAI_API_KEY)"
 
-        try:
-            loop = asyncio.get_event_loop()
-            response = await loop.run_in_executor(None, lambda: req.post(
-                base_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": messages, "max_tokens": 1024, "temperature": 0.7, "stream": False},
-                timeout=30,
-            ))
-            if response.status_code == 200:
-                reply = response.json()["choices"][0]["message"]["content"].strip()
-                history.append({"role": "assistant", "content": reply})
-                # Store compact notice for caller to send separately
-                self._last_compact_notice = compact_notice
-                return reply
-            else:
-                return f"⚠️ API error: {response.status_code}"
-        except Exception as e:
-            return f"⚠️ Request failed: {e}"
+        # Build provider chain: primary → fallback
+        providers = self._get_provider_chain(thinking=False)
+
+        for provider in providers:
+            try:
+                loop = asyncio.get_event_loop()
+                response = await loop.run_in_executor(None, lambda p=provider: req.post(
+                    p["base_url"],
+                    headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
+                    json={"model": p["model"], "messages": messages, "max_tokens": 1024, "temperature": 0.7, "stream": False},
+                    timeout=30,
+                ))
+                if response.status_code == 200:
+                    reply = response.json()["choices"][0]["message"]["content"].strip()
+                    self._store.add_message(chat_id, "assistant", reply, chat_type)
+                    self._last_compact_notice = compact_notice
+                    if provider != providers[0]:
+                        reply += f"\n\n<i>⚡ via {provider['model']} (primary timed out)</i>"
+                    return reply
+                # Non-timeout error — try next provider
+                continue
+            except Exception:
+                continue  # timeout or network error — try fallback
+
+        return "⚠️ 所有 API 均超时，请稍后重试"
 
     # ── Thinking mode: streaming with live Telegram message updates ──
 
-    async def _ask_llm_streaming(self, msg, user_message: str):
-        """Streaming LLM call with thinking. Used when /think is ON.
-
-        Flow:
-        1. Send "🧠 Thinking..." placeholder message
-        2. Stream API response, collecting reasoning_content chunks
-        3. Edit the placeholder every ~2s with accumulated thinking text
-        4. When content (final answer) starts, send it as a new message
-        """
+    async def _ask_llm_streaming(self, msg, user_message: str,
+                                 chat_id: int = 0, chat_type: str = "private"):
+        """Streaming LLM call with thinking. Used when /think is ON."""
         import requests as req
 
-        history = self._get_history()
-        history.append({"role": "user", "content": user_message})
+        # Save user message to persistent store
+        self._store.add_message(chat_id, "user", user_message, chat_type)
+
+        # Load recent history from DB
+        history = self._store.get_recent_history(chat_id, limit=20)
 
         # Context management
-        api_key, base_url, model = self._resolve_api(thinking=True)
-        compact_notice = self._auto_compact_if_needed(history, model)
-
-        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
-
-        if not api_key:
+        providers = self._get_provider_chain(thinking=True)
+        if not providers:
             await msg.reply_text("⚠️ No API key configured")
             return
+
+        model = providers[0]["model"]
+        compact_notice = self._auto_compact_if_needed_db(chat_id, model)
+        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
 
         # Show compact notice if triggered
         if compact_notice:
@@ -863,17 +1044,27 @@ class NeoMindTelegramBot:
         EDIT_INTERVAL = 2.0  # edit Telegram message at most every 2 seconds
 
         try:
-            # Step 2: Stream the response
-            response = await asyncio.get_event_loop().run_in_executor(None, lambda: req.post(
-                base_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={"model": model, "messages": messages, "max_tokens": 4096, "stream": True},
-                timeout=120,
-                stream=True,
-            ))
+            # Step 2: Stream the response (try providers in order)
+            response = None
+            used_provider = None
+            for provider in providers:
+                try:
+                    response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
+                        p["base_url"],
+                        headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
+                        json={"model": p["model"], "messages": messages, "max_tokens": 4096, "stream": True},
+                        timeout=120,
+                        stream=True,
+                    ))
+                    if response.status_code == 200:
+                        used_provider = provider
+                        break
+                except Exception:
+                    continue  # try next provider
 
-            if response.status_code != 200:
-                await thinking_msg.edit_text(f"⚠️ API error: {response.status_code}")
+            if not response or response.status_code != 200:
+                status = response.status_code if response else "all timed out"
+                await thinking_msg.edit_text(f"⚠️ API error: {status}")
                 return
 
             # Step 3: Process SSE stream
@@ -932,7 +1123,10 @@ class NeoMindTelegramBot:
 
             # Step 5: Send final response as a separate message
             if response_text.strip():
-                history.append({"role": "assistant", "content": response_text.strip()})
+                self._store.add_message(
+                    chat_id, "assistant", response_text.strip(), chat_type,
+                    thinking=thinking_text,
+                )
                 await self._send_long_message(msg, response_text.strip())
             else:
                 await msg.reply_text("⚠️ No response generated")
