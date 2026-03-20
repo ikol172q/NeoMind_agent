@@ -282,6 +282,9 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("status", self._cmd_status))
         self._app.add_handler(CommandHandler("mode", self._cmd_mode))
         self._app.add_handler(CommandHandler("think", self._cmd_think))
+        self._app.add_handler(CommandHandler("clear", self._cmd_clear))
+        self._app.add_handler(CommandHandler("context", self._cmd_context))
+        self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -466,6 +469,83 @@ class NeoMindTelegramBot:
             parse_mode=ParseMode.HTML,
         )
 
+    async def _cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /clear — clear conversation history."""
+        history = self._get_history()
+        count = len(history)
+        history.clear()
+        await update.message.reply_text(f"🗑 对话历史已清空（{count} 条消息）")
+
+    async def _cmd_context(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /context — show context window usage."""
+        history = self._get_history()
+        _, _, model = self._resolve_api(thinking=getattr(self, '_thinking_enabled', False))
+        max_ctx = self._MODEL_CONTEXT.get(model, 128000)
+        used = self._estimate_history_tokens(history)
+        pct = used / max_ctx * 100
+
+        if pct >= 80:
+            bar = "🔴"
+        elif pct >= 60:
+            bar = "🟡"
+        else:
+            bar = "🟢"
+
+        await update.message.reply_text(
+            f"{bar} <b>Context Window</b>\n\n"
+            f"Model: <code>{model}</code>\n"
+            f"Messages: {len(history)}\n"
+            f"Tokens: ~{used:,} / {max_ctx:,} ({pct:.0f}%)\n\n"
+            f"{'⚠️ 接近上限，建议 /clear 清空' if pct >= 60 else '✅ 充足'}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def _cmd_setctx(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /setctx <number> — override context window limit for testing.
+
+        Example: /setctx 1000  → pretend context window is only 1000 tokens
+                 /setctx reset → restore real model limits
+        """
+        args = " ".join(context.args) if context.args else ""
+        if not args:
+            _, _, model = self._resolve_api()
+            current = self._MODEL_CONTEXT.get(model, 128000)
+            await update.message.reply_text(
+                f"当前 context 上限: <b>{current:,}</b> tokens ({model})\n\n"
+                f"用法:\n"
+                f"<code>/setctx 2000</code> — 设为 2000 tokens（测试 auto-compact）\n"
+                f"<code>/setctx reset</code> — 恢复模型真实上限",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if args.strip().lower() == "reset":
+            # Restore defaults
+            self._MODEL_CONTEXT.update({
+                "deepseek-chat": 128000,
+                "deepseek-reasoner": 128000,
+                "glm-5": 205000,
+                "glm-4.5-flash": 128000,
+            })
+            await update.message.reply_text("✅ Context 上限已恢复为模型默认值")
+        else:
+            try:
+                new_limit = int(args.strip())
+                if new_limit < 100:
+                    await update.message.reply_text("上限至少 100 tokens")
+                    return
+                # Override ALL models
+                for model_name in list(self._MODEL_CONTEXT.keys()):
+                    self._MODEL_CONTEXT[model_name] = new_limit
+                await update.message.reply_text(
+                    f"✅ Context 上限已设为 <b>{new_limit:,}</b> tokens（所有模型）\n"
+                    f"现在多聊几句就会触发 auto-compact\n"
+                    f"用 <code>/setctx reset</code> 恢复",
+                    parse_mode=ParseMode.HTML,
+                )
+            except ValueError:
+                await update.message.reply_text("请输入数字，比如 <code>/setctx 2000</code>", parse_mode=ParseMode.HTML)
+
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
         text = update.message.text or ""
@@ -572,6 +652,7 @@ class NeoMindTelegramBot:
 
         # 2. Everything else → send to DeepSeek LLM
         thinking = getattr(self, '_thinking_enabled', False)
+        self._last_compact_notice = None  # reset
 
         if thinking:
             await self._ask_llm_streaming(msg, text)
@@ -581,6 +662,19 @@ class NeoMindTelegramBot:
                 await self._send_long_message(msg, reply)
             else:
                 await msg.reply_text("⚠️ LLM 未响应，请稍后重试")
+
+        # Send pre-response context notice
+        notice = getattr(self, '_last_compact_notice', None)
+        if notice:
+            await msg.reply_text(notice)
+            self._last_compact_notice = None
+
+        # Post-response check: LLM reply may have pushed us over again
+        history = self._get_history()
+        _, _, cur_model = self._resolve_api(thinking=thinking)
+        post_notice = self._auto_compact_if_needed(history, cur_model)
+        if post_notice and "Auto-compacted" in post_notice:
+            await msg.reply_text(post_notice)
 
     # ── LLM Shared Helpers ──────────────────────────────────────────
 
@@ -612,6 +706,14 @@ class NeoMindTelegramBot:
         }
         return prompts.get(current_mode, prompts["chat"])
 
+    # Context window limits per model
+    _MODEL_CONTEXT = {
+        "deepseek-chat": 128000,
+        "deepseek-reasoner": 128000,
+        "glm-5": 205000,
+        "glm-4.5-flash": 128000,
+    }
+
     def _get_history(self) -> list:
         if not hasattr(self, '_chat_histories'):
             self._chat_histories = {}
@@ -633,6 +735,55 @@ class NeoMindTelegramBot:
 
         return api_key, base_url, model
 
+    @staticmethod
+    def _estimate_tokens(text: str) -> int:
+        """Rough token estimate: ~1.5 tokens per Chinese char, ~0.75 per English word."""
+        cn_chars = sum(1 for c in text if '\u4e00' <= c <= '\u9fff')
+        en_words = len(re.findall(r'[a-zA-Z]+', text))
+        return int(cn_chars * 1.5 + en_words * 0.75 + len(text) * 0.1)
+
+    def _estimate_history_tokens(self, history: list) -> int:
+        """Estimate total tokens in conversation history."""
+        total = 0
+        for msg in history:
+            total += self._estimate_tokens(msg.get("content", "")) + 4  # msg overhead
+        return total
+
+    def _auto_compact_if_needed(self, history: list, model: str) -> Optional[str]:
+        """Check context usage, auto-compact if near limit.
+
+        Strategy: aggressively drop old messages to stay under 70% of limit.
+        No summaries (they waste tokens) — just keep the most recent turns.
+        """
+        max_ctx = self._MODEL_CONTEXT.get(model, 128000)
+        used = self._estimate_history_tokens(history)
+        pct = used / max_ctx
+
+        # Over 90%: compact
+        if pct >= 0.9 and len(history) > 2:
+            original_len = len(history)
+            original_tokens = used
+
+            # Target: get under 30% of max_ctx
+            target = int(max_ctx * 0.3)
+
+            # Drop oldest messages one by one until under target
+            while self._estimate_history_tokens(history) > target and len(history) > 2:
+                history.pop(0)
+
+            new_tokens = self._estimate_history_tokens(history)
+            new_pct = new_tokens / max_ctx
+            return (
+                f"📦 Auto-compacted: {original_tokens:,} → {new_tokens:,} tokens "
+                f"({original_len} → {len(history)} msgs, {new_pct:.0%})"
+            )
+
+        # Over 60%: warn
+        if pct >= 0.6:
+            return f"⚠️ Context: {pct:.0%} ({used:,}/{max_ctx:,}). 接近上限，发 /clear 清空"
+
+        return None
+
     # ── Normal mode: simple non-streaming call ───────────────────
 
     async def _ask_llm(self, user_message: str) -> Optional[str]:
@@ -641,11 +792,12 @@ class NeoMindTelegramBot:
 
         history = self._get_history()
         history.append({"role": "user", "content": user_message})
-        if len(history) > 20:
-            history[:] = history[-20:]
+
+        # Context management
+        api_key, base_url, model = self._resolve_api(thinking=False)
+        compact_notice = self._auto_compact_if_needed(history, model)
 
         messages = [{"role": "system", "content": self._get_system_prompt()}] + history
-        api_key, base_url, model = self._resolve_api(thinking=False)
 
         if not api_key:
             return "⚠️ No API key configured (DEEPSEEK_API_KEY or ZAI_API_KEY)"
@@ -661,6 +813,8 @@ class NeoMindTelegramBot:
             if response.status_code == 200:
                 reply = response.json()["choices"][0]["message"]["content"].strip()
                 history.append({"role": "assistant", "content": reply})
+                # Store compact notice for caller to send separately
+                self._last_compact_notice = compact_notice
                 return reply
             else:
                 return f"⚠️ API error: {response.status_code}"
@@ -682,15 +836,20 @@ class NeoMindTelegramBot:
 
         history = self._get_history()
         history.append({"role": "user", "content": user_message})
-        if len(history) > 20:
-            history[:] = history[-20:]
+
+        # Context management
+        api_key, base_url, model = self._resolve_api(thinking=True)
+        compact_notice = self._auto_compact_if_needed(history, model)
 
         messages = [{"role": "system", "content": self._get_system_prompt()}] + history
-        api_key, base_url, model = self._resolve_api(thinking=True)
 
         if not api_key:
             await msg.reply_text("⚠️ No API key configured")
             return
+
+        # Show compact notice if triggered
+        if compact_notice:
+            await msg.reply_text(compact_notice)
 
         # Step 1: Send thinking placeholder
         thinking_msg = await msg.reply_text(
