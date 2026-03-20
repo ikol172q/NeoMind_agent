@@ -77,6 +77,8 @@ class SlashCommandCompleter(Completer):
         "compact": "Compact conversation to save context",
         "transcript": "View full conversation transcript",
         "expand": "Expand a turn's thinking in a pager (Ctrl+E)",
+        "mode": "Switch personality (chat / coding / fin)",
+        "config": "View or change runtime config (/config set temperature 0.5)",
         "quit": "Exit the agent",
         "exit": "Exit the agent",
         # Chat-only
@@ -110,6 +112,23 @@ class SlashCommandCompleter(Completer):
         "execute": "Execute a plan",
         "todo": "Track task progress",
         "permissions": "Toggle permission mode (normal / auto_accept / plan)",
+        # Finance-only (fin mode)
+        "stock": "Look up stock price, fundamentals, and analysis",
+        "crypto": "Cryptocurrency price, market cap, and trends",
+        "news": "Multi-source financial news search (EN + ZH)",
+        "portfolio": "View and manage tracked portfolio",
+        "alert": "Set or manage price / event alerts",
+        "digest": "Generate or view daily market digest",
+        "memory": "Query secure local financial memory",
+        "predict": "Log a prediction with confidence and timeframe",
+        "compare": "Compare assets, sectors, or strategies",
+        "chart": "Generate mermaid diagrams (causal, flow, pie)",
+        "compute": "Run financial math (compound, DCF, Black-Scholes)",
+        "sources": "View source trust scores and rankings",
+        "sync": "Manage mobile sync (pair, status, push)",
+        "watchlist": "Manage tracked assets watchlist",
+        "risk": "Assess portfolio risk (VaR, Sharpe, position sizing)",
+        "calendar": "View upcoming financial events and earnings",
     }
 
     def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None):
@@ -232,6 +251,24 @@ class ClaudeInterface:
                 self.console.print(
                     "[dim]  / commands  |  Ctrl+O think  |  Ctrl+E expand  |  /debug logs  |  Ctrl+D exit[/dim]"
                 )
+            elif mode == "fin":
+                self.console.print(
+                    f"[bold green]neomind[/bold green]  "
+                    f"[dim]finance mode[/dim]"
+                )
+                self.console.print(
+                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
+                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
+                )
+                self.console.print(
+                    "[dim]Sources: Finnhub, yfinance, AKShare, CoinGecko, DuckDuckGo, RSS[/dim]"
+                )
+                self.console.print(
+                    "[dim]Tools: /stock  /crypto  /news  /compute  /digest  /chart  /risk[/dim]"
+                )
+                self.console.print(
+                    "[dim]  / commands  |  Ctrl+O think  |  /sources trust  |  Ctrl+D exit[/dim]"
+                )
             else:
                 self.console.print(
                     f"[bold cyan]neomind[/bold cyan]  "
@@ -251,6 +288,9 @@ class ClaudeInterface:
             if mode == "coding":
                 print(f"Workspace: {os.getcwd()}")
                 print("Tools: Bash, Read, Write, Edit, Glob, Grep, LS")
+            elif mode == "fin":
+                print("Sources: Finnhub, yfinance, AKShare, CoinGecko, DuckDuckGo, RSS")
+                print("Tools: /stock  /crypto  /news  /compute  /digest  /chart  /risk")
             print("  / commands | Ctrl+O think | Ctrl+D exit\n")
 
     # ── Status bar (prompt_toolkit bottom_toolbar) ────────────────────────
@@ -291,6 +331,13 @@ class ClaudeInterface:
                 f"| {cwd} "
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
             )
+        elif mode == "fin":
+            # Finance mode: show source count + encrypted memory status
+            return HTML(
+                f" <b>{model}</b> | <ansigreen>fin</ansigreen> | think:{think} "
+                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
+                f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+            )
         else:
             # Chat mode: simpler bar
             return HTML(
@@ -312,15 +359,70 @@ class ClaudeInterface:
 
         # Check if command is allowed in current mode
         allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help"):
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config"):
             self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
             if self.chat.mode == "chat":
                 self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
+            elif self.chat.mode == "fin":
+                self._print("[dim]Hint: use /stock, /crypto, /news, /compute for finance tools[/dim]")
             return True
 
         if cmd in ("quit", "exit"):
             self._print("[dim]Goodbye![/dim]")
             return False
+
+        if cmd == "mode":
+            if not args:
+                self._print(f"Current mode: [bold]{self.chat.mode}[/bold]")
+                self._print("[dim]Usage: /mode chat | /mode coding | /mode fin[/dim]")
+                return True
+            target = args.lower().strip()
+            if target == self.chat.mode:
+                self._print(f"Already in [bold]{target}[/bold] mode")
+                return True
+            ok = self.chat.switch_mode(target)
+            if ok:
+                # Update completer for new mode's commands
+                if hasattr(self, '_completer') and self._completer:
+                    self._completer.set_mode(target)
+                # Re-display welcome for new mode
+                self.display_welcome()
+            return True
+
+        if cmd == "config":
+            parts = args.split(maxsplit=2) if args else []
+            if not parts or parts[0] == "show":
+                # Show current config
+                self._print(f"[bold]Mode:[/bold] {agent_config.mode}")
+                self._print(f"[bold]Model:[/bold] {agent_config.model}")
+                self._print(f"[bold]Temperature:[/bold] {agent_config.temperature}")
+                self._print(f"[bold]Max tokens:[/bold] {agent_config.max_tokens}")
+                self._print(f"[bold]Stream:[/bold] {agent_config.stream}")
+                self._print(f"[bold]Search:[/bold] {agent_config.search_enabled}")
+                self._print(f"[bold]Think:[/bold] {self.chat.thinking_enabled}")
+                self._print("[dim]Usage: /config set <key> <value>[/dim]")
+                self._print("[dim]  Keys: temperature, max_tokens, stream, search_enabled[/dim]")
+                self._print("[dim]  /config save — save current config to YAML[/dim]")
+            elif parts[0] == "set" and len(parts) >= 3:
+                key, val_str = parts[1], parts[2]
+                # Parse value
+                if val_str.lower() in ("true", "on", "yes"):
+                    val = True
+                elif val_str.lower() in ("false", "off", "no"):
+                    val = False
+                else:
+                    try:
+                        val = float(val_str) if "." in val_str else int(val_str)
+                    except ValueError:
+                        val = val_str
+                agent_config.set_runtime(key, val)
+                self._print(f"[green]✓[/green] {key} = {val}")
+            elif parts[0] == "save":
+                filepath = agent_config.save_config()
+                self._print(f"[green]✓[/green] Config saved to {filepath}")
+            else:
+                self._print("[yellow]Usage:[/yellow] /config show | /config set <key> <value> | /config save")
+            return True
 
         if cmd == "clear":
             self.chat.clear_history()
@@ -1113,7 +1215,7 @@ class ClaudeInterface:
 
         while self.running:
             try:
-                prompt_str = "> " if self.chat.mode == "coding" else f"[{self.chat.mode}] > "
+                prompt_str = "> " if self.chat.mode == "coding" else ("[fin] > " if self.chat.mode == "fin" else f"[{self.chat.mode}] > ")
                 user_input = session.prompt(prompt_str)
 
                 if user_input is None:
@@ -1165,7 +1267,7 @@ class ClaudeInterface:
         """Fallback loop without prompt_toolkit."""
         while self.running:
             try:
-                prompt_str = "> " if self.chat.mode == "coding" else f"[{self.chat.mode}] > "
+                prompt_str = "> " if self.chat.mode == "coding" else ("[fin] > " if self.chat.mode == "fin" else f"[{self.chat.mode}] > ")
                 user_input = input(prompt_str).strip()
                 if not user_input:
                     continue

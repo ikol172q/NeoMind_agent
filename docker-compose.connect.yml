@@ -1,0 +1,57 @@
+# ─────────────────────────────────────────────────────────
+# NeoMind → Connect to EXISTING OpenClaw Docker Container
+#
+# Use this when you ALREADY have OpenClaw running in Docker
+# and want NeoMind to connect to it.
+#
+# Usage:
+#   docker compose -f docker-compose.connect.yml up -d
+#
+# Prerequisites:
+#   1. OpenClaw is running (docker ps | grep openclaw)
+#   2. You know OpenClaw's Docker network name
+#      (run: docker network ls | grep openclaw)
+#   3. You have an OPENCLAW_DEVICE_TOKEN
+#      (from OpenClaw: openclaw auth token)
+#   4. Your .env file has DEEPSEEK_API_KEY and OPENCLAW_DEVICE_TOKEN
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  neomind:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neomind-agent
+    env_file: .env
+    environment:
+      - TERM=xterm-256color
+      - HOME=/data
+      # Point to OpenClaw gateway via Docker DNS
+      # "openclaw-gateway" is the default container name from OpenClaw's compose
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+    volumes:
+      # NeoMind persistent data
+      - neomind-data:/data/neomind
+      # Mount OpenClaw's config dir for memory bridge (read-only)
+      # Change this path to match your OpenClaw config location
+      - ${OPENCLAW_CONFIG_DIR:-~/.openclaw}:/data/openclaw:ro
+    ports:
+      - "${NEOMIND_SYNC_PORT:-18790}:18790"
+    stdin_open: true
+    tty: true
+    restart: unless-stopped
+    networks:
+      - openclaw_default    # Join OpenClaw's existing network
+
+networks:
+  # Connect to the existing OpenClaw Docker network
+  # Find your network name with: docker network ls | grep openclaw
+  # Common names: openclaw_default, openclaw_neomind-net
+  openclaw_default:
+    external: true
+    # If your network has a different name, change it here:
+    # name: your_openclaw_network_name
+
+volumes:
+  neomind-data:
