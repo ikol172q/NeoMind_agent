@@ -466,14 +466,14 @@ class NeoMindAgent:
             print(safe_message)
 
     def switch_mode(self, mode: str, persist: bool = True) -> bool:
-        """Switch between chat and coding modes.
+        """Switch between chat, coding, and fin modes.
 
         Args:
-            mode: Target mode ('chat' or 'coding')
+            mode: Target mode ('chat', 'coding', or 'fin')
             persist: Whether to save the mode change to config file (default: True)
         """
-        if mode not in ("chat", "coding"):
-            self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat' or 'coding'.")
+        if mode not in ("chat", "coding", "fin"):
+            self._safe_print(f"❌ Invalid mode: {mode}. Use 'chat', 'coding', or 'fin'.")
             return False
 
         old_mode = self.mode
@@ -496,11 +496,30 @@ class NeoMindAgent:
 
         if mode == "coding":
             self._initialize_workspace_manager()
+        elif mode == "fin":
+            self._initialize_finance_subsystems()
 
         if old_mode != mode:
             self._safe_print(f"🔄 Switched from {old_mode} to {mode} mode.")
 
         return True
+
+    def _initialize_finance_subsystems(self):
+        """Lazy-init finance components when switching to fin mode."""
+        if hasattr(self, '_finance_components') and self._finance_components:
+            return  # already initialized
+
+        try:
+            from agent.finance import get_finance_components
+            from agent_config import agent_config as cfg
+            self._finance_components = get_finance_components(cfg)
+        except ImportError as e:
+            self._safe_print(f"⚠️  Finance module not fully available: {e}")
+            self._safe_print("   Install finance deps: pip install -e '.[finance]'")
+            self._finance_components = {}
+        except Exception as e:
+            self._safe_print(f"⚠️  Finance init error: {e}")
+            self._finance_components = {}
 
     def toggle_verbose_mode(self) -> bool:
         """Toggle verbose mode to show/hide detailed debug messages.

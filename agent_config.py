@@ -23,13 +23,14 @@ class AgentConfigManager:
         self._base = self._load_yaml(self.config_dir / "base.yaml")
         self._agent_base = self._base.get("agent", {})
 
-        # Load both mode configs
+        # Load all mode configs
         self._chat_cfg = self._load_yaml(self.config_dir / "chat.yaml")
         self._coding_cfg = self._load_yaml(self.config_dir / "coding.yaml")
+        self._fin_cfg = self._load_yaml(self.config_dir / "fin.yaml")
 
         # Determine active mode
         self._mode = mode or os.getenv("IKOL_MODE", "chat")
-        if self._mode not in ("chat", "coding"):
+        if self._mode not in ("chat", "coding", "fin"):
             self._mode = "chat"
 
         # Build merged config for active mode
@@ -49,7 +50,14 @@ class AgentConfigManager:
 
     def _rebuild_active_config(self):
         """Merge base + active mode config into a flat lookup."""
-        mode_cfg = self._chat_cfg if self._mode == "chat" else self._coding_cfg
+        if self._mode == "chat":
+            mode_cfg = self._chat_cfg
+        elif self._mode == "coding":
+            mode_cfg = self._coding_cfg
+        elif self._mode == "fin":
+            mode_cfg = self._fin_cfg
+        else:
+            mode_cfg = self._chat_cfg
         # _active holds mode-specific settings
         self._active = mode_cfg
         # _agent holds base agent settings
@@ -85,7 +93,7 @@ class AgentConfigManager:
 
     def switch_mode(self, mode: str) -> bool:
         """Switch active mode. Returns True on success."""
-        if mode not in ("chat", "coding"):
+        if mode not in ("chat", "coding", "fin"):
             return False
         self._mode = mode
         self._rebuild_active_config()
@@ -94,6 +102,57 @@ class AgentConfigManager:
     # Backward compat
     def update_mode(self, mode: str) -> bool:
         return self.switch_mode(mode)
+
+    # ── Runtime Config Modification ──────────────────────────────────────
+
+    def set_runtime(self, key: str, value: Any) -> bool:
+        """Set a config value at runtime (in-memory only, not persisted to YAML).
+
+        Supports dot notation: 'temperature', 'max_tokens', 'system_prompt', etc.
+        The agent can call this to adjust its own behavior mid-session.
+
+        Returns True on success.
+        """
+        if key.startswith("agent."):
+            key = key[6:]
+
+        # Set in the active merged config
+        self._dot_set(self._active, key, value)
+
+        # Also set in the agent base for global settings
+        if key in ("model", "temperature", "max_tokens", "stream"):
+            self._dot_set(self._agent, key, value)
+
+        return True
+
+    def get_runtime_overrides(self) -> dict:
+        """Get all runtime-modified settings (for display / debugging)."""
+        return dict(self._runtime_overrides) if hasattr(self, '_runtime_overrides') else {}
+
+    def save_config(self, filepath: Optional[str] = None) -> str:
+        """Save current active config to a YAML file.
+
+        If no filepath given, saves to agent/config/{mode}.yaml.
+        Returns the filepath written.
+        """
+        if filepath is None:
+            filepath = str(self.config_dir / f"{self._mode}.yaml")
+
+        with open(filepath, 'w', encoding='utf-8') as f:
+            yaml.dump(self._active, f, default_flow_style=False, allow_unicode=True)
+
+        return filepath
+
+    @staticmethod
+    def _dot_set(d: dict, key: str, value: Any):
+        """Set a value in a nested dict using dot notation."""
+        parts = key.split(".")
+        current = d
+        for part in parts[:-1]:
+            if part not in current or not isinstance(current[part], dict):
+                current[part] = {}
+            current = current[part]
+        current[parts[-1]] = value
 
     # ── Generic getters ──────────────────────────────────────────────────
 
@@ -143,6 +202,8 @@ class AgentConfigManager:
             return dict(self._chat_cfg)
         elif mode == "coding":
             return dict(self._coding_cfg)
+        elif mode == "fin":
+            return dict(self._fin_cfg)
         return {}
 
     @property
@@ -367,19 +428,7 @@ class AgentConfigManager:
         except Exception:
             return False
 
-    def save_config(self) -> bool:
-        """Save current configs to files."""
-        try:
-            base_path = self.config_dir / "base.yaml"
-            base_data = {"agent": self._agent}
-            base_path.write_text(yaml.dump(base_data, default_flow_style=False, sort_keys=False))
-
-            mode_path = self.config_dir / f"{self._mode}.yaml"
-            mode_path.write_text(yaml.dump(self._active, default_flow_style=False, sort_keys=False))
-            return True
-        except Exception as e:
-            print(f"Error saving config: {e}")
-            return False
+    # save_config is defined above in "Runtime Config Modification" section
 
 
 # Global instance — single point of access

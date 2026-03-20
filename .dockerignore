@@ -1,0 +1,46 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.pyc
+*.pyo
+*.egg-info
+dist
+build
+.eggs
+
+# Virtual environments
+.venv
+venv
+env
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# Environment files (secrets — pass via docker run -e or .env)
+.env
+
+# Dev files
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+tests
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Plans and docs (not needed in container)
+plans/
+*.md
+!agent/config/*.yaml
+
+# Docker (keep docker-entrypoint.sh — Dockerfile needs it)
+Dockerfile
+docker-compose*.yml

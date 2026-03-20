@@ -1,0 +1,119 @@
+# ─────────────────────────────────────────────────────────
+# NeoMind Agent + OpenClaw Integration
+#
+# Deployment scenarios:
+#
+# 1. NeoMind interactive CLI:
+#      docker compose up neomind
+#
+# 2. NeoMind as Telegram bot (daemon):
+#      docker compose up neomind-telegram
+#
+# 3. Full stack (NeoMind Telegram + OpenClaw):
+#      docker compose --profile full up
+#
+# 4. Both CLI + Telegram bot:
+#      docker compose up neomind neomind-telegram
+#
+# Required: Copy .env.example to .env and fill in API keys
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  # ── NeoMind Finance Agent ──────────────────────────────
+  neomind:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neomind-agent
+    env_file: .env
+    environment:
+      - TERM=xterm-256color
+      - HOME=/data
+      # OpenClaw gateway auto-detection:
+      # If OpenClaw is in the same compose, this resolves via Docker DNS.
+      # If OpenClaw is external, set OPENCLAW_GATEWAY_URL in .env.
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+    volumes:
+      # Persistent data (memory, conversations, predictions)
+      - neomind-data:/data/neomind
+      # Share OpenClaw memory for bidirectional bridge
+      - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
+    ports:
+      # Standalone sync port (only used if OpenClaw not available)
+      - "${NEOMIND_SYNC_PORT:-18790}:18790"
+    stdin_open: true     # -i : needed for interactive CLI
+    tty: true            # -t : needed for terminal colors
+    restart: unless-stopped
+    networks:
+      - neomind-net
+    # Connect to OpenClaw's network if it exists
+    # (see instructions below for external network setup)
+
+  # ── NeoMind Telegram Bot (daemon mode) ─────────────────
+  neomind-telegram:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neomind-telegram
+    env_file: .env
+    environment:
+      - TERM=xterm-256color
+      - HOME=/data
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+    volumes:
+      - neomind-data:/data/neomind
+      - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
+    restart: unless-stopped
+    networks:
+      - neomind-net
+    # Override entrypoint to run as Telegram bot daemon
+    command: ["telegram"]
+
+  # ── OpenClaw (optional — only with --profile full) ─────
+  openclaw-gateway:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: openclaw-gateway
+    profiles: ["full"]
+    env_file: .env
+    environment:
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-openclaw-workspace}:/home/node/.openclaw/workspace
+    ports:
+      - "${OPENCLAW_GATEWAY_PORT:-18789}:18789"
+    restart: unless-stopped
+    networks:
+      - neomind-net
+
+  openclaw-cli:
+    image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
+    container_name: openclaw-cli
+    profiles: ["full"]
+    env_file: .env
+    environment:
+      - HOME=/home/node
+      - TERM=xterm-256color
+      - BROWSER=echo
+      - OPENCLAW_GATEWAY_TOKEN=${OPENCLAW_GATEWAY_TOKEN:-}
+    volumes:
+      - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/home/node/.openclaw
+      - ${OPENCLAW_WORKSPACE_DIR:-openclaw-workspace}:/home/node/.openclaw/workspace
+    network_mode: "service:openclaw-gateway"
+    depends_on:
+      - openclaw-gateway
+    stdin_open: true
+    tty: true
+    command: ["openclaw"]
+
+networks:
+  neomind-net:
+    driver: bridge
+
+volumes:
+  neomind-data:
+  openclaw-config:
+  openclaw-workspace:
