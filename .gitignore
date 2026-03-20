@@ -3,6 +3,9 @@
 .env.local
 .env.*.local
 
+# Test artifacts
+test_dashboard.html
+
 # Python cache files
 __pycache__/
 *.py[cod]
