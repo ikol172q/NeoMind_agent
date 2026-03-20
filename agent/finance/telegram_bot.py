@@ -604,6 +604,40 @@ class NeoMindTelegramBot:
                 )
             await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
+        elif subcmd == "compact":
+            # Force compact: halve the context if >50%, refuse if <30%
+            _, _, cur_model = self._resolve_api()
+            max_ctx = self._MODEL_CONTEXT.get(cur_model, 128000)
+            active_count = self._store.count_messages(cid, include_archived=False)
+            history = self._store.get_recent_history(cid, limit=200)
+            used = self._estimate_history_tokens(history)
+            pct = used / max_ctx
+
+            if pct < 0.3:
+                await update.message.reply_text(
+                    f"✅ Context 只有 {pct:.0%}（{used:,}/{max_ctx:,}），不需要 compact",
+                )
+            elif active_count <= 2:
+                await update.message.reply_text(
+                    f"⚠️ 只有 {active_count} 条消息，无法再压缩",
+                )
+            else:
+                # Target: halve current usage
+                target_msgs = max(2, active_count // 2)
+                archived, remaining = self._store.compact(cid, keep_recent=target_msgs)
+
+                new_history = self._store.get_recent_history(cid, limit=200)
+                new_used = self._estimate_history_tokens(new_history)
+                new_pct = new_used / max_ctx
+
+                await update.message.reply_text(
+                    f"📦 <b>Compact 完成</b>\n\n"
+                    f"归档: {archived} 条消息\n"
+                    f"保留: {remaining} 条\n"
+                    f"Tokens: {used:,} → {new_used:,} ({pct:.0%} → {new_pct:.0%})",
+                    parse_mode=ParseMode.HTML,
+                )
+
         elif subcmd == "purge":
             # Moved from standalone /purge command
             purge_args = " ".join(rest)
@@ -656,6 +690,7 @@ class NeoMindTelegramBot:
                 "<code>/admin chats</code> — 所有聊天\n"
                 "<code>/admin stats</code> — DB 统计\n"
                 "\n── 🗑 清理 ──\n"
+                "<code>/admin compact</code> — 强制压缩 (砍半, &gt;50%才可用)\n"
                 "<code>/admin purge confirm</code> — 永久删除\n"
                 "\n── 🔧 调试 ──\n"
                 "<code>/admin setctx 2000</code> — 改 context 上限\n"

@@ -457,6 +457,31 @@ class TestAutoCompact:
         assert len(history) == 4
         assert "Message 39" in history[-1]["content"]
 
+    def test_force_compact_halves(self):
+        """Force compact should halve message count."""
+        for i in range(20):
+            self.store.add_message(100, "user", f"msg {i}")
+        assert self.store.count_messages(100) == 20
+
+        # Compact keeping half
+        target = 20 // 2
+        archived, remaining = self.store.compact(100, keep_recent=target)
+        assert remaining == 10
+        assert archived == 10
+
+        # Remaining should be the most recent 10
+        history = self.store.get_history(100)
+        assert history[0]["content"] == "msg 10"
+        assert history[-1]["content"] == "msg 19"
+
+    def test_force_compact_refuses_below_minimum(self):
+        """Compact with keep_recent=2 should always keep at least 2."""
+        self.store.add_message(100, "user", "only one")
+        archived, remaining = self.store.compact(100, keep_recent=2)
+        # Nothing to archive — only 1 message
+        assert archived == 0
+        assert remaining == 1
+
 
 # ═══════════════════════════════════════════════════════════
 # 4. AgentCollaborator Tests
