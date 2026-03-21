@@ -245,7 +245,7 @@ class NeoMindTelegramBot:
 
         self.components = components
         self._skill = None  # lazy init
-        self._current_mode = "fin"  # default personality
+        # Mode is per-chat, stored in SQLite (see ChatStore.get_mode/set_mode)
         self._thinking_enabled = False  # /think toggle
         self._app: Optional[Application] = None
         self._bot_id: Optional[int] = None
@@ -355,7 +355,7 @@ class NeoMindTelegramBot:
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help — grouped command reference."""
-        current_mode = getattr(self, '_current_mode', 'fin')
+        current_mode = self._store.get_mode(update.message.chat_id)
         thinking = "ON 🧠" if getattr(self, '_thinking_enabled', False) else "OFF"
 
         await update.message.reply_text(
@@ -419,9 +419,10 @@ class NeoMindTelegramBot:
         )
 
     async def _cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /mode — switch personality at runtime."""
+        """Handle /mode — switch personality for THIS chat (per-chat, not global)."""
         args = " ".join(context.args) if context.args else ""
-        current = getattr(self, '_current_mode', 'fin')
+        cid = update.message.chat_id
+        current = self._store.get_mode(cid)
 
         if not args:
             modes_text = "\n".join([
@@ -430,9 +431,9 @@ class NeoMindTelegramBot:
                 f"• <code>/mode fin</code> — 金融智能{'（当前）' if current == 'fin' else ''}",
             ])
             await update.message.reply_text(
-                f"当前人格: <b>{current}</b>\n\n"
+                f"当前人格: <b>{current}</b>（仅此对话）\n\n"
                 f"可用人格：\n{modes_text}\n\n"
-                "切换后 system prompt、可用命令、行为逻辑都会变",
+                "每个对话的人格独立，互不影响",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -448,8 +449,8 @@ class NeoMindTelegramBot:
             await update.message.reply_text(f"已经在 <b>{target}</b> 模式了", parse_mode=ParseMode.HTML)
             return
 
-        # Switch mode
-        self._current_mode = target
+        # Switch mode for this chat
+        self._store.set_mode(cid, target)
 
         # Reload finance components if switching to/from fin
         if target == "fin":
@@ -865,8 +866,8 @@ class NeoMindTelegramBot:
 
     # ── LLM Shared Helpers ──────────────────────────────────────────
 
-    def _get_system_prompt(self) -> str:
-        current_mode = getattr(self, '_current_mode', 'fin')
+    def _get_system_prompt(self, chat_id: int = 0) -> str:
+        current_mode = self._store.get_mode(chat_id) if chat_id else "fin"
         prompts = {
             "fin": (
                 "你是 NeoMind Finance，一个个人金融与投资智能助手。"
@@ -1009,7 +1010,7 @@ class NeoMindTelegramBot:
         api_key, base_url, model = self._resolve_api(thinking=False)
         compact_notice = self._auto_compact_if_needed_db(chat_id, model)
 
-        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
+        messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
         if not api_key:
             return "⚠️ No API key configured (DEEPSEEK_API_KEY or ZAI_API_KEY)"
@@ -1061,7 +1062,7 @@ class NeoMindTelegramBot:
 
         model = providers[0]["model"]
         compact_notice = self._auto_compact_if_needed_db(chat_id, model)
-        messages = [{"role": "system", "content": self._get_system_prompt()}] + history
+        messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
         # Show compact notice if triggered
         if compact_notice:
