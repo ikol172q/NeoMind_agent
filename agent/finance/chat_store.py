@@ -65,6 +65,7 @@ class ChatStore:
                 chat_id     INTEGER PRIMARY KEY,
                 chat_type   TEXT DEFAULT 'private',
                 title       TEXT DEFAULT '',
+                mode        TEXT DEFAULT 'fin',
                 created_at  TEXT NOT NULL,
                 updated_at  TEXT NOT NULL,
                 archived    INTEGER DEFAULT 0
@@ -92,6 +93,35 @@ class ChatStore:
         except sqlite3.OperationalError:
             self._conn.execute("ALTER TABLE messages ADD COLUMN thinking TEXT DEFAULT ''")
             self._conn.commit()
+
+        # Migration: add mode column to chats
+        try:
+            self._conn.execute("SELECT mode FROM chats LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT DEFAULT 'fin'")
+            self._conn.commit()
+
+    # ── Per-Chat Mode ────────────────────────────────────────────
+
+    def get_mode(self, chat_id: int) -> str:
+        """Get the personality mode for a specific chat."""
+        row = self._conn.execute(
+            "SELECT mode FROM chats WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return row["mode"] if row and row["mode"] else "fin"
+
+    def set_mode(self, chat_id: int, mode: str) -> bool:
+        """Set the personality mode for a specific chat."""
+        if mode not in ("chat", "coding", "fin"):
+            return False
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("""
+            INSERT INTO chats (chat_id, mode, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET mode=?, updated_at=?
+        """, (chat_id, mode, now, now, mode, now))
+        self._conn.commit()
+        return True
 
     # ── Write Operations ─────────────────────────────────────────
 
