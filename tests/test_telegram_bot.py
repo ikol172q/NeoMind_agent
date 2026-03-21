@@ -243,6 +243,45 @@ class TestChatStore:
         assert len(active_chats) == 1
         assert len(all_chats) == 2
 
+    # -- Per-chat mode --
+
+    def test_per_chat_mode_default(self):
+        """New chats should default to 'fin' mode."""
+        assert self.store.get_mode(999) == "fin"
+
+    def test_per_chat_mode_set_and_get(self):
+        """Each chat has its own independent mode."""
+        self.store.set_mode(100, "chat")
+        self.store.set_mode(200, "coding")
+        self.store.set_mode(300, "fin")
+
+        assert self.store.get_mode(100) == "chat"
+        assert self.store.get_mode(200) == "coding"
+        assert self.store.get_mode(300) == "fin"
+
+    def test_per_chat_mode_independent(self):
+        """Changing one chat's mode doesn't affect others."""
+        self.store.set_mode(100, "fin")
+        self.store.set_mode(200, "fin")
+
+        self.store.set_mode(100, "chat")
+        assert self.store.get_mode(100) == "chat"
+        assert self.store.get_mode(200) == "fin"  # unchanged
+
+    def test_per_chat_mode_persists(self):
+        """Mode survives DB reopen (container restart)."""
+        self.store.set_mode(100, "coding")
+        self.store.close()
+
+        from agent.finance.chat_store import ChatStore
+        store2 = ChatStore(db_path=self.db_path)
+        assert store2.get_mode(100) == "coding"
+        store2.close()
+
+    def test_per_chat_mode_rejects_invalid(self):
+        assert self.store.set_mode(100, "invalid") is False
+        assert self.store.get_mode(100) == "fin"  # unchanged
+
 
 # ═══════════════════════════════════════════════════════════
 # 2. MessageRouter Tests
