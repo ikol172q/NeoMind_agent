@@ -810,11 +810,11 @@ class TestEdgeCases(TestProviderStateBase):
         self.assertTrue(Path(new_dir).exists())
 
     def test_now_iso_format(self):
-        """_now_iso returns valid ISO 8601 UTC format."""
+        """_now_iso returns Pacific time format like '2026-03-22 14:23:16 PT'."""
         ts = _now_iso()
-        self.assertTrue(ts.endswith("Z"))
-        self.assertIn("T", ts)
-        self.assertEqual(len(ts), 20)  # "2026-03-22T00:00:00Z"
+        self.assertTrue(ts.endswith(" PT"), f"Expected PT suffix, got: {ts}")
+        # Format: "YYYY-MM-DD HH:MM:SS PT" = 22 chars
+        self.assertEqual(len(ts), 22, f"Unexpected length: {ts}")
 
     def test_unicode_in_state(self):
         """State file handles unicode correctly (Chinese chars)."""
