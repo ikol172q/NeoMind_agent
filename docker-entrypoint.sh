@@ -32,13 +32,45 @@ if [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$ZAI_API_KEY" ]; then
 fi
 
 # ── Setup data directories ───────────────────────────────
+# Config dir (bind mount from macOS ~/.neomind — for JSON state files)
 mkdir -p /data/neomind/.neomind/finance
 mkdir -p /data/neomind/.neomind/conversations
+
+# DB dir (named volume — fast, reliable SQLite)
+mkdir -p /data/neomind/db/finance
 
 # Symlink so NeoMind finds its config at ~/.neomind
 if [ ! -L "$HOME/.neomind" ] && [ ! -d "$HOME/.neomind" ]; then
     ln -sf /data/neomind/.neomind "$HOME/.neomind"
 fi
+
+# ── SQLite DB migration (one-time) ────────────────────────
+# Move DBs from bind mount (~/.neomind/) to named volume (/data/neomind/db/)
+# for better SQLite performance. Copy, don't move — old file stays as backup.
+migrate_db() {
+    local OLD_DB="$1"
+    local NEW_DB="$2"
+    if [ -f "$OLD_DB" ] && [ ! -f "$NEW_DB" ]; then
+        info "Migrating DB: $OLD_DB → $NEW_DB"
+        cp "$OLD_DB" "$NEW_DB"
+        # Verify new DB is readable
+        if sqlite3 "$NEW_DB" "SELECT 1;" >/dev/null 2>&1; then
+            ok "Migration verified: $NEW_DB"
+        else
+            warn "Migration verification failed — keeping old DB"
+            rm -f "$NEW_DB"
+        fi
+    fi
+}
+
+migrate_db "/data/neomind/.neomind/chat_history.db" "/data/neomind/db/chat_history.db"
+migrate_db "/data/neomind/.neomind/usage.db" "/data/neomind/db/usage.db"
+migrate_db "/data/neomind/.neomind/finance/memory.db" "/data/neomind/db/finance/memory.db"
+
+# Export explicit DB paths so modules don't guess
+export NEOMIND_CHAT_DB="/data/neomind/db/chat_history.db"
+export NEOMIND_USAGE_DB="/data/neomind/db/usage.db"
+export NEOMIND_MEMORY_DIR="/data/neomind/db/finance"
 
 # ── OpenClaw auto-detection ──────────────────────────────
 if [ -n "$OPENCLAW_DEVICE_TOKEN" ]; then

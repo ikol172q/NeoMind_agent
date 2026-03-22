@@ -255,6 +255,15 @@ class NeoMindTelegramBot:
         # Persistent chat history (SQLite — survives container restarts)
         from .chat_store import ChatStore
         self._store = ChatStore()
+
+        # LLM usage tracking (SQLite — survives container restarts)
+        from .usage_tracker import get_usage_tracker
+        self._usage = get_usage_tracker()
+
+        # Provider state (shared with xbar — bidirectional sync)
+        from .provider_state import ProviderStateManager
+        self._state_mgr = ProviderStateManager()
+        self._state_mgr.register_bot("neomind")
         print(f"[bot] Chat history DB: {self._store.db_path}", flush=True)
 
     async def start(self):
@@ -301,6 +310,8 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("careful", self._cmd_careful))
         self._app.add_handler(CommandHandler("sprint", self._cmd_sprint))
         self._app.add_handler(CommandHandler("evidence", self._cmd_evidence))
+        self._app.add_handler(CommandHandler("provider", self._cmd_provider))
+        self._app.add_handler(CommandHandler("usage", self._cmd_usage))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -392,7 +403,7 @@ class NeoMindTelegramBot:
             "\n"
             "── ⚙️ <b>工作流</b> ──\n"
             "<code>/skills</code> — 查看当前模式可用 skills\n"
-            "<code>/sprint new</code> <goal> — 结构化任务流程\n"
+            "<code>/sprint new [goal]</code> — 结构化任务流程\n"
             "<code>/careful</code> — 开关安全护栏\n"
             "<code>/evidence</code> — 操作审计日志\n"
             "\n"
@@ -894,16 +905,27 @@ class NeoMindTelegramBot:
         sub_path = Path(os.getenv("HOME", "/data")) / ".neomind" / "subscriptions.json"
         try:
             if sub_path.exists():
-                return json.loads(sub_path.read_text())
+                return json.loads(sub_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            # Try backup
+            bak = sub_path.with_suffix(".json.bak")
+            if bak.exists():
+                try:
+                    return json.loads(bak.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
         except Exception:
             pass
         return {}
 
     def _save_subscriptions(self, subs: dict):
+        """Save subscriptions atomically (write .tmp → rename)."""
         sub_path = Path(os.getenv("HOME", "/data")) / ".neomind" / "subscriptions.json"
         try:
             sub_path.parent.mkdir(parents=True, exist_ok=True)
-            sub_path.write_text(json.dumps(subs, indent=2))
+            tmp = sub_path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(subs, indent=2), encoding="utf-8")
+            tmp.rename(sub_path)
         except Exception:
             pass
 
@@ -975,6 +997,144 @@ class NeoMindTelegramBot:
         if changed:
             self._save_subscriptions(subs)
 
+    async def _cmd_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /usage — show LLM usage statistics."""
+        args = " ".join(context.args).lower() if context.args else ""
+
+        if args in ("week", "7d"):
+            data = self._usage.get_range(7)
+            period = "最近 7 天"
+        elif args in ("month", "30d"):
+            data = self._usage.get_range(30)
+            period = "最近 30 天"
+        else:
+            data = self._usage.get_today()
+            period = "今日"
+
+        model_lines = "\n".join(
+            f"  {m}: {c} 次" for m, c in data["by_model"].items()
+        ) if data["by_model"] else "  无"
+
+        cost_str = f"${data['cost']:.4f}" if data["cost"] > 0 else "$0 (本地模型)"
+
+        error_lines = ""
+        if data["recent_errors"]:
+            error_lines = "\n\n⚠️ 最近错误:\n" + "\n".join(
+                f"  • {e[:60]}" for e in data["recent_errors"]
+            )
+
+        await update.message.reply_text(
+            f"📊 <b>LLM 用量 ({period})</b>\n\n"
+            f"调用: {data['calls']} 次 (成功 {data['success']}, 失败 {data['failed']})\n"
+            f"Tokens: ~{data['tokens']:,}\n"
+            f"费用: {cost_str}\n"
+            f"平均延迟: {data['avg_latency_ms']}ms\n\n"
+            f"模型分布:\n{model_lines}"
+            f"{error_lines}\n\n"
+            f"<i>/usage week — 7天 | /usage month — 30天</i>",
+            parse_mode=ParseMode.HTML,
+        )
+
+    async def _cmd_provider(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /provider — show or switch LLM provider.
+
+        /provider          — show current provider chain (reads from state file)
+        /provider litellm  — switch to LiteLLM (writes to state file)
+        /provider direct   — switch to direct API (writes to state file)
+
+        State file is shared with xbar — changes here are visible on macOS menu bar.
+        """
+        args = " ".join(context.args).lower() if context.args else ""
+
+        if not args:
+            # Build status with resolved model names
+            config = self._state_mgr.get_bot_config("neomind")
+            mode = config.get("provider_mode", "direct")
+            chain = self._get_provider_chain(thinking=False)
+
+            lines = [f"🔌 <b>LLM Provider (neomind)</b>\n"]
+            lines.append(f"Mode: <b>{mode}</b>")
+            lines.append(f"Updated: {config.get('updated_at', '?')} by {config.get('updated_by', '?')}\n")
+
+            lines.append("Provider chain:")
+            for i, p in enumerate(chain):
+                arrow = "▶" if i == 0 else "→"
+                actual = self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']
+                lines.append(f"  {arrow} {p['name']}: <code>{actual}</code>")
+
+            state = self._state_mgr._read_state()
+            litellm_info = state.get("litellm", {})
+            health = "🟢" if litellm_info.get("health_ok") else "🔴"
+            lines.append(f"\nLiteLLM: {health} {litellm_info.get('base_url', '?')}")
+
+            if mode == "litellm":
+                chat_actual = self._resolve_litellm_model(config.get('litellm_model', 'local'))
+                think_actual = self._resolve_litellm_model(config.get('thinking_model', 'deepseek-reasoner'))
+                lines.append(f"\n普通对话: <b>{chat_actual}</b> (Ollama, 免费)")
+                lines.append(f"Thinking: <b>{think_actual}</b>")
+
+            lines.append(
+                f"\n<code>/provider litellm</code> — 本地 Ollama\n"
+                f"<code>/provider direct</code> — 直连 API"
+            )
+
+            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+
+        elif args in ("litellm", "local", "ollama"):
+            # Check if LITELLM_API_KEY is set
+            if not os.getenv("LITELLM_API_KEY", ""):
+                await update.message.reply_text(
+                    "⚠️ LITELLM_API_KEY 未设置，无法启用。\n"
+                    "在 .env 里加上 LITELLM_API_KEY=你的key"
+                )
+                return
+
+            config = self._state_mgr.set_provider_mode(
+                "neomind", "litellm", updated_by="telegram"
+            )
+            new_chain = self._get_provider_chain(thinking=False)
+            models = [
+                f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
+                for p in new_chain
+            ]
+
+            # Resolve alias → actual model name via LiteLLM API
+            chat_alias = config.get('litellm_model', 'local')
+            think_alias = config.get('thinking_model', 'deepseek-reasoner')
+            chat_actual = self._resolve_litellm_model(chat_alias)
+            think_actual = self._resolve_litellm_model(think_alias)
+
+            await update.message.reply_text(
+                f"✅ LiteLLM 已启用\n"
+                f"Chain: {' → '.join(models)}\n\n"
+                f"普通对话: {chat_actual} (Ollama, 免费)\n"
+                f"Thinking: {think_actual}\n\n"
+                f"<i>此更改已同步到 xbar 菜单栏</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        elif args in ("direct", "off", "disable"):
+            config = self._state_mgr.set_provider_mode(
+                "neomind", "direct", updated_by="telegram"
+            )
+            new_chain = self._get_provider_chain(thinking=False)
+            models = [
+                f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
+                for p in new_chain
+            ]
+            await update.message.reply_text(
+                f"✅ 已切换到直连 API\n"
+                f"Chain: {' → '.join(models)}\n\n"
+                f"<i>此更改已同步到 xbar 菜单栏</i>",
+                parse_mode=ParseMode.HTML,
+            )
+
+        else:
+            await update.message.reply_text(
+                "用法: <code>/provider litellm</code> | <code>/provider direct</code>",
+                parse_mode=ParseMode.HTML,
+            )
+
     async def _cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /skills — list available skills for this chat's mode."""
         from agent.skills import get_skill_loader
@@ -1019,7 +1179,10 @@ class NeoMindTelegramBot:
         cid = update.message.chat_id
         mode = self._store.get_mode(cid)
         args = list(context.args) if context.args else []
-        mgr = SprintManager()
+        # Singleton — persist across commands
+        if not hasattr(self, '_sprint_mgr'):
+            self._sprint_mgr = SprintManager()
+        mgr = self._sprint_mgr
 
         if not args:
             await update.message.reply_text(
@@ -1045,7 +1208,7 @@ class NeoMindTelegramBot:
                 await update.message.reply_text(mgr.format_status(sid))
                 found = True
             if not found:
-                await update.message.reply_text("No active sprints. /sprint new <goal>")
+                await update.message.reply_text("No active sprints. /sprint new [goal]")
         elif subcmd == "next":
             for sid in list(mgr._active_sprints.keys()):
                 phase = mgr.advance(sid)
@@ -1165,6 +1328,11 @@ class NeoMindTelegramBot:
         # Show typing indicator
         await msg.chat.send_action(ChatAction.TYPING)
 
+        # 0. Check for remote provider change (xbar → bot sync)
+        change_notice = self._state_mgr.detect_external_change("neomind")
+        if change_notice:
+            await msg.reply_text(change_notice, parse_mode=ParseMode.HTML)
+
         # 1. Explicit finance commands → skill handler (fast, no LLM call needed)
         if reason == "fin_command" and self._skill:
             from .openclaw_gateway import IncomingMessage
@@ -1184,7 +1352,7 @@ class NeoMindTelegramBot:
                 await msg.reply_text(f"⚠️ Error: {e}")
                 return
 
-        # 2. Everything else → send to DeepSeek LLM
+        # 2. Everything else → send to DeepSeek LLM (always streaming)
         thinking = getattr(self, '_thinking_enabled', False)
         self._last_compact_notice = None
         cid = msg.chat_id
@@ -1193,11 +1361,7 @@ class NeoMindTelegramBot:
         if thinking:
             await self._ask_llm_streaming(msg, text, chat_id=cid, chat_type=ctype)
         else:
-            reply = await self._ask_llm(text, chat_id=cid, chat_type=ctype)
-            if reply:
-                await self._send_long_message(msg, reply)
-            else:
-                await msg.reply_text("⚠️ LLM 未响应，请稍后重试")
+            await self._ask_llm_stream_normal(msg, text, chat_id=cid, chat_type=ctype)
 
         # Send context notice
         notice = getattr(self, '_last_compact_notice', None)
@@ -1266,30 +1430,40 @@ class NeoMindTelegramBot:
     def _get_provider_chain(self, thinking: bool = False) -> list:
         """Build ordered list of providers to try (primary → fallback).
 
-        Both DeepSeek and z.ai keys are checked. If both exist,
-        DeepSeek is primary, z.ai is fallback.
+        Delegates to ProviderStateManager which reads mode from
+        provider-state.json and API keys from os.environ.
         """
-        providers = []
+        return self._state_mgr.get_provider_chain("neomind", thinking=thinking)
 
-        ds_key = os.getenv("DEEPSEEK_API_KEY", "")
-        zai_key = os.getenv("ZAI_API_KEY", "")
-
-        if ds_key:
-            providers.append({
-                "api_key": ds_key,
-                "base_url": "https://api.deepseek.com/chat/completions",
-                "model": "deepseek-reasoner" if thinking else "deepseek-chat",
-                "name": "deepseek",
-            })
-        if zai_key:
-            providers.append({
-                "api_key": zai_key,
-                "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
-                "model": "glm-5" if thinking else "glm-4.5-flash",
-                "name": "zai",
-            })
-
-        return providers
+    def _resolve_litellm_model(self, alias: str) -> str:
+        """Resolve a LiteLLM model alias (e.g. 'local') to the actual model
+        (e.g. 'ollama_chat/qwen3:14b') by querying the LiteLLM /model/info endpoint.
+        Falls back to the alias itself on any error.
+        """
+        try:
+            import requests as req
+            state = self._state_mgr._read_state()
+            base = state.get("litellm", {}).get(
+                "base_url",
+                os.getenv("LITELLM_BASE_URL", "http://host.docker.internal:4000/v1")
+            )
+            # Strip /v1 suffix to get base URL for /model/info
+            api_base = base.rstrip("/").removesuffix("/v1")
+            key = os.getenv("LITELLM_API_KEY", "")
+            resp = req.get(
+                f"{api_base}/v1/model/info",
+                headers={"Authorization": f"Bearer {key}"},
+                timeout=3,
+            )
+            if resp.status_code == 200:
+                data = resp.json().get("data", [])
+                for m in data:
+                    if m.get("model_name") == alias:
+                        # Always use litellm_params.model — the configured model string
+                        return m.get("litellm_params", {}).get("model", alias)
+        except Exception:
+            pass
+        return alias
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
@@ -1364,28 +1538,285 @@ class NeoMindTelegramBot:
         # Build provider chain: primary → fallback
         providers = self._get_provider_chain(thinking=False)
 
+        errors = []
         for provider in providers:
             try:
+                print(f"[llm] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
                 loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(None, lambda p=provider: req.post(
+                # Longer timeout for longer generation (4096 tokens ≈ 20-40s)
+                timeout = 90 if provider["name"] == "litellm" else 60
+                t_start = time.time()
+                response = await loop.run_in_executor(None, lambda p=provider, t=timeout: req.post(
                     p["base_url"],
                     headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
-                    json={"model": p["model"], "messages": messages, "max_tokens": 1024, "temperature": 0.7, "stream": False},
-                    timeout=30,
+                    json={"model": p["model"], "messages": messages, "max_tokens": 4096, "temperature": 0.7, "stream": False},
+                    timeout=t,
                 ))
+                latency = int((time.time() - t_start) * 1000)
+
                 if response.status_code == 200:
                     reply = response.json()["choices"][0]["message"]["content"].strip()
+                    tokens_est = len(reply) * 2  # rough: 1 char ≈ 2 tokens for CJK
+                    print(f"[llm] ✅ {provider['name']}:{provider['model']} responded ({len(reply)} chars, {latency}ms)", flush=True)
+
+                    # Track usage
+                    self._usage.record(
+                        provider=provider["name"], model=provider["model"],
+                        tokens=tokens_est, latency_ms=latency,
+                        success=True, chat_id=chat_id,
+                    )
+
                     self._store.add_message(chat_id, "assistant", reply, chat_type)
                     self._last_compact_notice = compact_notice
                     if provider != providers[0]:
-                        reply += f"\n\n<i>⚡ via {provider['model']} (primary timed out)</i>"
+                        reply += f"\n\n<i>⚡ via {provider['model']} (primary unavailable)</i>"
                     return reply
-                # Non-timeout error — try next provider
-                continue
-            except Exception:
-                continue  # timeout or network error — try fallback
 
-        return "⚠️ 所有 API 均超时，请稍后重试"
+                err_detail = f"{provider['name']}:{provider['model']} HTTP {response.status_code}"
+                try:
+                    err_body = response.json().get("error", {}).get("message", "")[:80]
+                    if err_body:
+                        err_detail += f" — {err_body}"
+                except Exception:
+                    pass
+                print(f"[llm] ❌ {err_detail}", flush=True)
+                errors.append(err_detail)
+                self._usage.record(
+                    provider=provider["name"], model=provider["model"],
+                    latency_ms=int((time.time() - t_start) * 1000),
+                    success=False, chat_id=chat_id, error=f"HTTP {response.status_code}",
+                )
+                continue
+            except req.exceptions.Timeout:
+                err_msg = f"{provider['name']}:{provider['model']} timeout ({timeout}s)"
+                print(f"[llm] ⏱️ {err_msg}", flush=True)
+                errors.append(err_msg)
+                self._usage.record(
+                    provider=provider["name"], model=provider["model"],
+                    success=False, chat_id=chat_id, error="timeout",
+                )
+                continue
+            except req.exceptions.ConnectionError as e:
+                err_msg = f"{provider['name']} connection failed"
+                print(f"[llm] 🔌 {err_msg}: {e}", flush=True)
+                errors.append(err_msg)
+                self._usage.record(
+                    provider=provider["name"], model=provider["model"],
+                    success=False, chat_id=chat_id, error=str(e)[:100],
+                )
+                continue
+            except Exception as e:
+                err_msg = f"{provider['name']} error: {type(e).__name__}"
+                print(f"[llm] ❌ {err_msg}: {e}", flush=True)
+                errors.append(err_msg)
+                self._usage.record(
+                    provider=provider["name"], model=provider["model"],
+                    success=False, chat_id=chat_id, error=str(e)[:100],
+                )
+                continue
+
+        # Show specific error so user knows what went wrong
+        err_summary = "\n".join(f"• {e}" for e in errors) if errors else "未知错误"
+        return f"⚠️ 所有 API 均失败:\n{err_summary}\n\n<i>/provider 查看配置 · /usage 查看统计</i>"
+
+    # ── Normal streaming: live message updates without thinking ────
+
+    async def _ask_llm_stream_normal(self, msg, user_message: str,
+                                     chat_id: int = 0, chat_type: str = "private"):
+        """Streaming LLM call for normal mode — edits message in-place as tokens arrive.
+
+        Flow:
+        1. Send placeholder "💭..."
+        2. Stream tokens, edit the message every ~1.5s
+        3. Final edit with complete text
+        4. If text exceeds 4096 chars, stop editing and send remaining as new message(s)
+        """
+        import requests as req
+
+        # Save user message to persistent store
+        self._store.add_message(chat_id, "user", user_message, chat_type)
+
+        # Load recent history from DB
+        history = self._store.get_recent_history(chat_id, limit=20)
+
+        # Context management
+        providers = self._get_provider_chain(thinking=False)
+        if not providers:
+            await msg.reply_text("⚠️ No API key configured")
+            return
+
+        model = providers[0]["model"]
+        compact_notice = self._auto_compact_if_needed_db(chat_id, model)
+        messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
+
+        if compact_notice:
+            self._last_compact_notice = compact_notice
+
+        # Send placeholder
+        live_msg = await msg.reply_text("💭 ...")
+
+        response_text = ""
+        last_edit_time = 0
+        EDIT_INTERVAL = 1.5  # Telegram allows ~30 edits/min, this stays well under
+
+        try:
+            # Try providers in order
+            response = None
+            used_provider = None
+            for provider in providers:
+                try:
+                    response = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda p=provider: req.post(
+                            p["base_url"],
+                            headers={"Authorization": f"Bearer {p['api_key']}",
+                                     "Content-Type": "application/json"},
+                            json={"model": p["model"], "messages": messages,
+                                  "max_tokens": 4096, "temperature": 0.7, "stream": True},
+                            timeout=90,
+                            stream=True,
+                        ))
+                    if response.status_code == 200:
+                        used_provider = provider
+                        break
+                    else:
+                        print(f"[llm-stream] ❌ {provider['name']} returned {response.status_code}", flush=True)
+                except Exception as e:
+                    print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
+                    continue
+
+            if not response or response.status_code != 200:
+                status = response.status_code if response else "all failed"
+                await live_msg.edit_text(f"⚠️ API error: {status}")
+                return
+
+            # Process SSE stream
+            t_start = time.time()
+            for line in response.iter_lines():
+                if not line:
+                    continue
+                line = line.decode("utf-8", errors="ignore")
+                if not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    ct = delta.get("content", "")
+                    if ct:
+                        response_text += ct
+
+                    # Periodically edit the live message
+                    now = asyncio.get_event_loop().time()
+                    if ct and (now - last_edit_time) >= EDIT_INTERVAL:
+                        last_edit_time = now
+                        # Only edit if within Telegram's limit
+                        display = response_text
+                        if len(display) > 3900:
+                            # Approaching limit — stop editing, will send rest as new msg
+                            break
+                        display = self._md_to_html(display)
+                        try:
+                            await live_msg.edit_text(
+                                display + " ▍",
+                                parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            pass  # Telegram rate limit, skip this update
+
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+            # Drain remaining tokens if we broke out early due to length
+            if response_text and len(response_text) <= 3900:
+                pass  # already got everything
+            else:
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    line = line.decode("utf-8", errors="ignore")
+                    if not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        ct = delta.get("content", "")
+                        if ct:
+                            response_text += ct
+                    except Exception:
+                        continue
+
+            latency = int((time.time() - t_start) * 1000)
+
+            if response_text.strip():
+                # Track usage
+                if used_provider:
+                    self._usage.record(
+                        provider=used_provider["name"], model=used_provider["model"],
+                        tokens=len(response_text) * 2, latency_ms=latency,
+                        success=True, chat_id=chat_id,
+                    )
+                    print(f"[llm-stream] ✅ {used_provider['name']}:{used_provider['model']} "
+                          f"({len(response_text)} chars, {latency}ms)", flush=True)
+
+                self._store.add_message(chat_id, "assistant", response_text.strip(), chat_type)
+
+                # Final update: edit the live message with complete text
+                final_html = self._md_to_html(response_text.strip())
+                if len(final_html) <= self.config.max_message_length:
+                    try:
+                        await live_msg.edit_text(
+                            final_html,
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception:
+                        try:
+                            await live_msg.edit_text(
+                                re.sub(r'<[^>]+>', '', final_html),
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            pass
+                else:
+                    # Text exceeds one message — edit first chunk, send rest as new messages
+                    chunks = self._split_message(final_html)
+                    try:
+                        await live_msg.edit_text(
+                            chunks[0],
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception:
+                        await live_msg.edit_text(
+                            re.sub(r'<[^>]+>', '', chunks[0]),
+                            disable_web_page_preview=True,
+                        )
+                    for i, chunk in enumerate(chunks[1:], 1):
+                        await asyncio.sleep(0.5)
+                        try:
+                            await msg.reply_text(chunk, parse_mode=ParseMode.HTML,
+                                                 disable_web_page_preview=True)
+                        except Exception:
+                            await msg.reply_text(
+                                re.sub(r'<[^>]+>', '', chunk),
+                                disable_web_page_preview=True,
+                            )
+            else:
+                await live_msg.edit_text("⚠️ LLM 未生成回复")
+
+        except Exception as e:
+            logger.error(f"Stream error: {e}")
+            try:
+                await live_msg.edit_text(f"⚠️ Error: {e}")
+            except Exception:
+                await msg.reply_text(f"⚠️ Error: {e}")
 
     # ── Thinking mode: streaming with live Telegram message updates ──
 
@@ -1543,7 +1974,13 @@ class NeoMindTelegramBot:
         )
 
     async def _send_long_message(self, msg, text: str):
-        """Send a message, splitting if it exceeds Telegram's 4096 char limit."""
+        """Send a message, splitting if it exceeds Telegram's 4096 char limit.
+
+        - Converts markdown to Telegram HTML (with proper escaping)
+        - Splits long messages at safe boundaries
+        - Falls back to plain text per-chunk if HTML fails
+        - Adds small delay between chunks to avoid Telegram rate limits
+        """
         # Convert markdown-style links to HTML
         text = self._md_to_html(text)
 
@@ -1551,24 +1988,25 @@ class NeoMindTelegramBot:
             try:
                 await msg.reply_text(text, parse_mode=ParseMode.HTML,
                                      disable_web_page_preview=True)
-            except Exception:
+            except Exception as e:
+                logger.warning(f"HTML send failed ({e}), retrying as plain text")
                 # Fallback: send without formatting
-                await msg.reply_text(
-                    re.sub(r'<[^>]+>', '', text),
-                    disable_web_page_preview=True,
-                )
+                plain = re.sub(r'<[^>]+>', '', text)
+                await msg.reply_text(plain, disable_web_page_preview=True)
         else:
             # Split into chunks
             chunks = self._split_message(text)
-            for chunk in chunks:
+            for i, chunk in enumerate(chunks):
                 try:
                     await msg.reply_text(chunk, parse_mode=ParseMode.HTML,
                                          disable_web_page_preview=True)
-                except Exception:
-                    await msg.reply_text(
-                        re.sub(r'<[^>]+>', '', chunk),
-                        disable_web_page_preview=True,
-                    )
+                except Exception as e:
+                    logger.warning(f"HTML chunk {i+1}/{len(chunks)} failed ({e}), sending plain")
+                    plain = re.sub(r'<[^>]+>', '', chunk)
+                    await msg.reply_text(plain, disable_web_page_preview=True)
+                # Small delay between chunks to respect Telegram rate limits
+                if i < len(chunks) - 1:
+                    await asyncio.sleep(0.5)
 
     async def send_dashboard(self, chat_id: int, dashboard_html: str, caption: str = ""):
         """Send an HTML dashboard as a document attachment."""
@@ -1621,20 +2059,63 @@ class NeoMindTelegramBot:
 
     @staticmethod
     def _md_to_html(text: str) -> str:
-        """Convert simple markdown to Telegram HTML."""
+        """Convert simple markdown to Telegram HTML.
+
+        Strategy: extract markdown tokens first, escape everything else,
+        then re-insert the HTML tags. This prevents raw <, >, & in LLM
+        output from breaking Telegram's HTML parser.
+        """
+        # Step 1: Extract code blocks and inline code BEFORE escaping
+        # so their contents stay literal.
+        code_blocks = []
+        def _save_code_block(m):
+            code_blocks.append(m.group(1))
+            return f"\x00CB{len(code_blocks)-1}\x00"
+        # ```...``` fenced code blocks
+        text = re.sub(r'```(?:\w*\n)?(.*?)```', _save_code_block, text, flags=re.DOTALL)
+
+        inline_codes = []
+        def _save_inline_code(m):
+            inline_codes.append(m.group(1))
+            return f"\x00IC{len(inline_codes)-1}\x00"
+        text = re.sub(r'`([^`]+?)`', _save_inline_code, text)
+
+        # Step 2: Extract markdown links before escaping
+        links = []
+        def _save_link(m):
+            links.append((m.group(1), m.group(2)))
+            return f"\x00LK{len(links)-1}\x00"
+        text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', _save_link, text)
+
+        # Step 3: Escape HTML entities in the remaining text
+        text = html.escape(text)
+
+        # Step 4: Convert markdown formatting to HTML
         # Bold: **text** → <b>text</b>
         text = re.sub(r'\*\*(.+?)\*\*', r'<b>\1</b>', text)
-        # Italic: _text_ → <i>text</i>  (but not in URLs)
+        # Italic: _text_ → <i>text</i>  (but not in URLs / underscored_words)
         text = re.sub(r'(?<!\w)_([^_]+?)_(?!\w)', r'<i>\1</i>', text)
-        # Code: `text` → <code>text</code>
-        text = re.sub(r'`([^`]+?)`', r'<code>\1</code>', text)
-        # Links: [text](url) → <a href="url">text</a>
-        text = re.sub(r'\[([^\]]+?)\]\(([^)]+?)\)', r'<a href="\2">\1</a>', text)
+
+        # Step 5: Restore extracted tokens with proper HTML
+        for i, (link_text, url) in enumerate(links):
+            text = text.replace(f"\x00LK{i}\x00",
+                                f'<a href="{html.escape(url)}">{html.escape(link_text)}</a>')
+        for i, code in enumerate(inline_codes):
+            text = text.replace(f"\x00IC{i}\x00", f'<code>{html.escape(code)}</code>')
+        for i, code in enumerate(code_blocks):
+            text = text.replace(f"\x00CB{i}\x00", f'<pre>{html.escape(code)}</pre>')
+
         return text
 
     @staticmethod
     def _split_message(text: str, max_len: int = 4096) -> List[str]:
-        """Split a long message into chunks at paragraph boundaries."""
+        """Split a long message into chunks at safe boundaries.
+
+        Respects:
+        - Paragraph / line breaks as preferred split points
+        - HTML tag boundaries (won't cut inside <a href="...">, <b>, etc.)
+        - Closes any open tags at chunk end and re-opens them at next chunk start
+        """
         if len(text) <= max_len:
             return [text]
 
@@ -1649,10 +2130,48 @@ class NeoMindTelegramBot:
             if split_at == -1:
                 split_at = text.rfind("\n", 0, max_len)
             if split_at == -1:
+                # Last resort: split at space boundary
+                split_at = text.rfind(" ", 0, max_len)
+            if split_at == -1:
                 split_at = max_len
 
-            chunks.append(text[:split_at])
+            # Safety: don't split inside an HTML tag (< ... >)
+            # Check if we're inside an unclosed '<'
+            chunk_candidate = text[:split_at]
+            last_open = chunk_candidate.rfind("<")
+            last_close = chunk_candidate.rfind(">")
+            if last_open > last_close:
+                # We're inside a tag — move split point before the tag
+                split_at = last_open
+
+            chunk = text[:split_at]
+
+            # Close any open HTML tags in this chunk and re-open in next
+            open_tags = re.findall(r'<(b|i|code|pre|a|blockquote)\b[^>]*>', chunk)
+            close_tags = re.findall(r'</(b|i|code|pre|a|blockquote)>', chunk)
+            # Track net open tags
+            tag_stack = []
+            for tag in open_tags:
+                tag_stack.append(tag)
+            for tag in close_tags:
+                if tag_stack and tag_stack[-1] == tag:
+                    tag_stack.pop()
+
+            # Close unclosed tags at chunk end
+            if tag_stack:
+                for tag in reversed(tag_stack):
+                    chunk += f"</{tag}>"
+
+            chunks.append(chunk)
+
             text = text[split_at:].lstrip("\n")
+
+            # Re-open tags at start of next chunk
+            if tag_stack and text:
+                reopen = ""
+                for tag in tag_stack:
+                    reopen += f"<{tag}>"
+                text = reopen + text
 
         return chunks
 

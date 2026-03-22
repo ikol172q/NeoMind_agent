@@ -21,11 +21,21 @@ from typing import Dict, List, Optional, Tuple
 from pathlib import Path
 
 
-# Default DB path — inside Docker volume for persistence
-DEFAULT_DB_PATH = os.getenv(
-    "NEOMIND_CHAT_DB",
-    str(Path(os.getenv("HOME", "/data")) / ".neomind" / "chat_history.db")
-)
+# Default DB path — inside Docker named volume for persistence & performance.
+# Prefer /data/neomind/db/ (named volume, fast) over ~/.neomind/ (bind mount, slower).
+# Override with NEOMIND_CHAT_DB env var if set by docker-entrypoint.sh.
+def _default_chat_db_path() -> str:
+    explicit = os.getenv("NEOMIND_CHAT_DB")
+    if explicit:
+        return explicit
+    # Prefer named volume path
+    vol_path = Path("/data/neomind/db/chat_history.db")
+    if vol_path.parent.exists():
+        return str(vol_path)
+    # Fallback to legacy path
+    return str(Path(os.getenv("HOME", "/data")) / ".neomind" / "chat_history.db")
+
+DEFAULT_DB_PATH = _default_chat_db_path()
 
 
 class ChatStore:

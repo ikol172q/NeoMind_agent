@@ -37,6 +37,8 @@ services:
     volumes:
       # Persistent data (memory, conversations, predictions)
       - neomind-data:/data/neomind
+      # Shared config dir (provider-state.json — bidirectional sync with xbar)
+      - ${NEOMIND_STATE_DIR:-~/.neomind}:/data/.neomind
       # Share OpenClaw memory for bidirectional bridge
       - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
     ports:
@@ -63,6 +65,8 @@ services:
       - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
     volumes:
       - neomind-data:/data/neomind
+      # Shared config dir (provider-state.json — bidirectional sync with xbar)
+      - ${NEOMIND_STATE_DIR:-~/.neomind}:/data/.neomind
       - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
     restart: unless-stopped
     networks:
