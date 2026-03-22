@@ -88,6 +88,11 @@ commands:
 - watchlist
 - risk
 - calendar
+# New commands for Phase 3
+- backtest     # New: test trading strategies on historical data
+- allocation   # New: optimize portfolio allocation
+- remember     # New: save investment patterns to shared memory
+- recall       # New: retrieve user investment context and preferences
 compact:
   auto_trigger_threshold: 0.9
   enabled: true
@@ -172,7 +177,17 @@ system_prompt: "You are neomind — a Personal Finance & Investment Intelligence
   \ financial advisor. All outputs\nare for informational purposes only. Always include\
   \ confidence levels\nand remind the user to do their own due diligence.\n\nYou have\
   \ access to web search, financial data APIs, encrypted local memory,\nand computation\
-  \ tools. Use them proactively — don't wait to be asked.\n"
+  \ tools. Use them proactively — don't wait to be asked.
+
+  FINANCE MODE DIFFERENTIATION:
+  - Cautious tone: Always acknowledge risk, never claim certainty in predictions
+  - Mandatory review: Every trade or major recommendation goes through trade-review workflow
+  - Data sources: Always cite sources with timestamps and confidence levels
+  - Paper trading first: Suggest backtesting or simulation before live trading
+  - Cross-mode context: Use facts from chat/coding modes to understand user's risk tolerance and expertise
+  - Pattern tracking: Remember user's favorite stocks, risk preferences, and historical decisions
+  - Continuous accuracy feedback: Track prediction outcomes for self-improvement
+  \n"
 temperature: 0.3
 workspace:
   auto_read_files: false

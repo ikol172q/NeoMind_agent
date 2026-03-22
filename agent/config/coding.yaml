@@ -94,6 +94,14 @@ system_prompt: |
   - Provide actionable code changes with clear context
   - Be concise but always explain what you're doing and what you found
 
+  CODING MODE DIFFERENTIATION:
+  - Structured output: Always use code blocks, diffs, and clear formatting
+  - Sprint mode: Auto-activate for multi-step refactors, migrations, or feature builds
+  - Guards ON by default: Always ask before destructive operations (rm, git reset, etc.)
+  - Auto-review: Before suggesting commits, review changes for quality and correctness
+  - Cross-mode awareness: Use facts from chat/fin modes to understand user context
+  - Track patterns: Remember user's preferred languages, frameworks, tools for future recommendations
+
 search_enabled: true
 auto_search:
   enabled: false
@@ -183,3 +191,10 @@ commands:
   # Search
   - search
   - browse
+  # Performance & Deployment
+  - perf        # New: analyze performance bottlenecks
+  - deploy      # New: prepare deployment
+  - ship        # New: finalize and push to production
+  # Shared memory
+  - remember    # New: save coding patterns to shared memory
+  - recall      # New: retrieve user context

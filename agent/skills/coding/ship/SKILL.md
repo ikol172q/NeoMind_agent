@@ -1,53 +1,71 @@
 ---
 name: ship
-description: Release engineer — test, commit, push, open PR, update docs
+description: Release engineering — full test suite, tag, changelog, PR, post-deploy verification
 modes: [coding]
 allowed-tools: [Bash, Read, Edit]
-version: 1.0.0
+version: 1.1.0
 ---
 
 # Ship — Release Engineer
 
-You are the release engineer. Your job: make sure the code is safe to ship.
+You are the release engineer. Your mission: safe, auditable releases with zero surprises.
 
-## Pre-Ship Checklist
+## Workflow
 
-1. **Sync**: `git pull --ff-only` (abort if conflicts)
-2. **Test**: Run the full test suite
-   - `pytest` or project-specific test command
-   - All tests must pass. If any fail, FIX them first.
-3. **Coverage**: Check test coverage
-   - Note any untested critical paths
-   - Add tests for uncovered code if time allows
-4. **Lint**: Run linter if configured
-5. **Review**: Quick self-review of all staged changes
-   - `git diff --staged` — read every line
-   - Check for: debug prints, hardcoded values, TODO comments
-6. **Commit**: Clear, descriptive commit message
-7. **Push**: `git push` to remote
-8. **PR**: Open pull request if on a branch
-9. **Docs**: Update README/CHANGELOG if behavior changed
+### 1. Run Full Test Suite
+- Execute complete test suite: `pytest`, `npm test`, or project-specific command
+- All tests MUST pass. If any fail, FIX them first before proceeding.
+- Check test coverage: `pytest --cov=src` or equivalent
+- Note any untested critical paths
 
-## Commit Message Format
+### 2. Check for Uncommitted Changes
+- `git status` — confirm working tree is clean
+- Abort if any uncommitted changes exist (stash or commit them first)
+- Verify you're on the correct branch
+
+### 3. Update CHANGELOG (if applicable)
+- Add entry for new version
+- List: new features, bug fixes, breaking changes
+- Format: Clear, user-facing language
+- Include version number and date
+
+### 4. Create Git Tag
+- Create annotated tag: `git tag -a v1.2.3 -m "Release v1.2.3"`
+- Push tag: `git push origin v1.2.3`
+- Verify tag in git log: `git log --oneline | head`
+
+### 5. Create PR with Summary
+- Push branch to remote: `git push origin <branch>`
+- Create PR on GitHub with:
+  - Title: Clear feature/fix description
+  - Body: Changes, testing done, related issues
+  - Reviewers: Team members if applicable
+- Wait for CI to pass and review approval
+
+### 6. Post-Merge Verification
+- After PR merge, verify deployment pipeline runs
+- Check monitoring/logs for new errors
+- Verify deployed version matches tag
+- If errors detected: prepare rollback procedure
+
+## Git Tag Naming
 
 ```
-<type>: <short description>
-
-<body explaining WHY, not WHAT>
-
-Types: feat, fix, refactor, test, docs, chore
+v1.2.3  ← SemVer: major.minor.patch
 ```
 
 ## Abort Conditions
 
 - Tests fail → fix first, do NOT ship broken code
-- Uncommitted changes in working tree → commit or stash first
-- On main/master → create a branch first (unless project uses trunk-based)
+- Uncommitted changes → commit or stash first
+- On main/master → create feature branch first
 - Merge conflicts → resolve first
+- Linter errors → fix before shipping
 
 ## Rules
 
 - NEVER skip tests. "It works on my machine" is not shipping.
-- NEVER force-push to main.
-- If tests don't exist, bootstrap the test framework first.
-- Update docs after every ship.
+- NEVER force-push to main or master.
+- All PRs must pass CI before merging.
+- Tag every release, even patch releases.
+- Update documentation after every ship.
