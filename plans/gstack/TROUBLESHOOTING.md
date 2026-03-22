@@ -72,6 +72,21 @@
 | /office-hours too aggressive | Asks too many questions | User can skip questions with "pass" |
 | Forcing questions not relevant | Generic prompts | Mode-aware: finance questions for fin, code questions for coding |
 
+## Bugs Found & Fixed During Implementation
+
+| Bug | Root Cause | Fix Applied |
+|-----|-----------|-------------|
+| `Page` type undefined when Playwright not installed | Type annotations reference `Page` at class-definition time | Added stub types: `Page = Any` in except ImportError block |
+| Sprint `_save()` TypeError: `str / str` | `SPRINTS_DIR` can be str (from tempfile) but `_save` uses Path `/` | Wrap with `Path(self.SPRINTS_DIR)` |
+| Telegram bot thinking content not visually distinct | `<i>` tag not enough visual separation | Changed to `<blockquote expandable>` |
+| Auto-compact `291 → 291 tokens` — no actual reduction | Summary message was as long as original messages | Removed summaries, just drop old messages directly |
+| "哈咯" not recognized as greeting | Hardcoded greeting list too narrow | Removed all hardcoded rules, route through LLM instead |
+| `_current_mode` global, not per-chat | Single variable shared across all Telegram chats | Moved to SQLite `chats.mode` column, per chat_id |
+| `/history` missing from Telegram | No command to view active messages | Added as alias for `/admin history` |
+| DeepSeek timeout kills bot | No provider fallback | Added provider chain: DeepSeek → z.ai auto-fallback |
+| `.dockerignore` excluded `docker-entrypoint.sh` | Listed in ignore file but Dockerfile needs COPY | Removed from `.dockerignore` |
+| `pip install -e ".[finance]"` fails in Docker | deps stage missing source files (agent/, main.py) | Changed to single-stage build with direct pip install |
+
 ## General
 
 | Issue | Cause | Fix |
@@ -80,3 +95,4 @@
 | Skill works in CLI but not Telegram | Telegram bot doesn't load skill | Check `telegram_bot.py` skill routing |
 | Tests fail after integration | New module breaks imports | Run `pytest tests/` to isolate failing test |
 | Docker build fails | New deps not in Dockerfile | Add to `pip install` line in Dockerfile |
+| `test_config.py` collection error | Old test file with stale imports | Run specific test files: `pytest tests/test_skills.py tests/test_telegram_bot.py tests/test_workflow.py` |

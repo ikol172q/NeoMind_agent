@@ -363,7 +363,7 @@ status - Bot 状态
 ### Step 4: Configure `.env`
 
 ```env
-TELEGRAM_BOT_TOKEN=7123456789:AAF4x9-KqVlOPE_your_token
+TELEGRAM_BOT_TOKEN=<your_bot_token_from_botfather>
 OPENCLAW_TELEGRAM_USERNAME=your_openclaw_bot_username
 TELEGRAM_AUTO_DETECT=true
 ```
