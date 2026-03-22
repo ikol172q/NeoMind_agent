@@ -39,18 +39,18 @@ agent/
 
 ## Phase Schedule
 
-| Phase | Days | Deliverable | All 3 Personalities Get |
-|-------|------|-------------|------------------------|
-| P0: Skill System | 2 | `agent/skills/loader.py` + SKILL.md format | Extensible skill loading |
-| P1: Browser Daemon | 3 | `agent/browser/` + `/browse` command | Web browsing in all modes |
-| P2: Safety Guards | 1 | `agent/workflow/guards.py` | Destructive op protection |
-| P3: Sprint Framework | 2 | `agent/workflow/sprint.py` | Structured task workflows |
-| P4: Review + Evidence | 2 | `agent/workflow/review.py` + `evidence.py` | Self-check + audit trail |
-| P5: Coding Skills | 3 | `/eng-review` `/qa` `/ship` | coding: full dev pipeline |
-| P6: Finance Skills | 3 | `/trade-review` `/finance-briefing` `/qa-trading` | fin: investment pipeline |
-| P7: Chat Skills | 2 | `/office-hours` deep questioning | chat: structured analysis |
+| Phase | Days | Deliverable | Status |
+|-------|------|-------------|--------|
+| P0: Skill System | 2 | `agent/skills/loader.py` + 10 SKILL.md files + 17 tests | ✅ DONE |
+| P1: Browser Daemon | 3 | `agent/browser/daemon.py` — 40+ commands, snapshot refs | ✅ DONE |
+| P2: Safety Guards | 1 | `agent/workflow/guards.py` — /careful /freeze /guard + 12 tests | ✅ DONE |
+| P3: Sprint Framework | 2 | `agent/workflow/sprint.py` — 3 mode templates + 7 tests | ✅ DONE |
+| P4: Review + Evidence | 2 | `agent/workflow/review.py` + `evidence.py` + 12 tests | ✅ DONE |
+| P5: CLI Wiring | 1 | /skills /careful /freeze /guard /sprint /evidence in CLI | ✅ DONE |
+| P6: Telegram Wiring | 1 | /skills /careful /sprint /evidence in Telegram | ✅ DONE |
+| P7: Docker + Tests | 1 | Playwright in Dockerfile, 95 tests pass | ✅ DONE |
 
-Total: ~18 days
+Total: 95 tests, 29 modules, 10 skills, all phases complete.
 
 ## Key Design Decisions
 
