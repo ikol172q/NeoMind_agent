@@ -26,6 +26,7 @@ Architecture:
 import os
 import re
 import json
+import time
 import asyncio
 import logging
 import html
@@ -294,6 +295,8 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("context", self._cmd_context))
         self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
+        self._app.add_handler(CommandHandler("hn", self._cmd_hn))
+        self._app.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -319,6 +322,9 @@ class NeoMindTelegramBot:
         await self._app.updater.start_polling(drop_pending_updates=True)
 
         print(f"[bot] ✅ @{bot_info.username} is LIVE — listening for messages", flush=True)
+
+        # Start background scheduler for auto-push (HN, etc.)
+        asyncio.create_task(self._scheduler_loop())
 
         # Keep running
         try:
@@ -375,6 +381,10 @@ class NeoMindTelegramBot:
             "<code>/predict</code> NVDA bullish 0.8 — 记录预测\n"
             "<code>/compare</code> AAPL MSFT — 资产对比\n"
             "<code>/sources</code> — 数据源信任度\n"
+            "\n"
+            "── 📡 <b>资讯</b> ──\n"
+            "<code>/hn</code> top|best|new|ask|show — Hacker News\n"
+            "<code>/subscribe hn</code> — 订阅 HN 定时推送\n"
             "\n"
             "── 🔧 <b>管理</b> ──\n"
             "<code>/clear</code> — 归档对话 (LLM 重开)\n"
@@ -733,6 +743,228 @@ class NeoMindTelegramBot:
         context.args = ["setctx"] + (list(context.args) if context.args else [])
         await self._cmd_admin(update, context)
 
+    async def _cmd_hn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /hn — fetch Hacker News stories.
+
+        /hn          — top 10
+        /hn more     — next 10 (page 2, 3, ...)
+        /hn best     — best stories
+        /hn new      — newest
+        /hn ask      — Ask HN
+        /hn show     — Show HN
+        /hn 20       — top 20
+        /hn best 5   — best 5
+        """
+        from .hackernews import fetch_top_stories, format_stories_telegram
+
+        args = list(context.args) if context.args else []
+        cid = update.message.chat_id
+        category = "top"
+        limit = 10
+
+        # Track pagination state per chat
+        if not hasattr(self, '_hn_page'):
+            self._hn_page = {}
+
+        is_more = "more" in args or "下一页" in args or "next" in args
+
+        for arg in args:
+            if arg in ("top", "best", "new", "ask", "show", "job"):
+                category = arg
+            elif arg.isdigit():
+                limit = min(int(arg), 30)
+
+        if is_more:
+            # Increment page
+            prev = self._hn_page.get(cid, {"category": category, "offset": 0})
+            category = prev["category"]
+            offset = prev["offset"] + limit
+        else:
+            offset = 0
+
+        self._hn_page[cid] = {"category": category, "offset": offset}
+
+        await update.message.chat.send_action(ChatAction.TYPING)
+
+        # Fetch extra stories and slice for pagination
+        stories = await fetch_top_stories(category=category, limit=offset + limit, min_score=0)
+        page_stories = stories[offset:offset + limit]
+
+        if not page_stories and offset > 0:
+            await update.message.reply_text("没有更多了，已经到底了 🏁")
+            self._hn_page[cid] = {"category": category, "offset": 0}
+            return
+
+        page_num = (offset // limit) + 1
+        title = f"Hacker News ({category}) · 第 {page_num} 页" if page_num > 1 else f"Hacker News ({category})"
+        text = format_stories_telegram(page_stories, title=title)
+
+        await self._send_long_message(update.message, text)
+
+    async def _cmd_subscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /subscribe — manage auto-push subscriptions for this chat.
+
+        /subscribe hn          — subscribe to HN push (every 4 hours, top 5, score≥100)
+        /subscribe hn off      — unsubscribe
+        /subscribe hn 2h       — push every 2 hours
+        /subscribe hn 50       — min score 50
+        /subscribe             — show current subscriptions
+        """
+        cid = update.message.chat_id
+        args = list(context.args) if context.args else []
+
+        # Load subscriptions from DB
+        subs = self._load_subscriptions()
+
+        if not args:
+            # Show current subscriptions
+            chat_subs = subs.get(str(cid), {})
+            if not chat_subs:
+                await update.message.reply_text(
+                    "没有订阅。\n\n"
+                    "<code>/subscribe hn</code> — 订阅 Hacker News 推送\n"
+                    "<code>/subscribe hn off</code> — 取消",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                lines = ["📡 <b>当前订阅</b>\n"]
+                for source, cfg in chat_subs.items():
+                    if cfg.get("enabled"):
+                        interval = cfg.get("interval_hours", 4)
+                        min_score = cfg.get("min_score", 100)
+                        lines.append(f"🔶 {source}: 每 {interval}h, 最低分 {min_score}")
+                await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        source = args[0].lower()
+        if source != "hn":
+            await update.message.reply_text("目前支持: <code>/subscribe hn</code>", parse_mode=ParseMode.HTML)
+            return
+
+        # Check for off/unsubscribe
+        if len(args) > 1 and args[1] in ("off", "stop", "cancel", "取消"):
+            subs.setdefault(str(cid), {}).pop("hn", None)
+            self._save_subscriptions(subs)
+            await update.message.reply_text("🔕 已取消 HN 推送")
+            return
+
+        # Parse optional params
+        interval_hours = 4
+        min_score = 100
+        for arg in args[1:]:
+            if arg.endswith("h") and arg[:-1].isdigit():
+                interval_hours = max(1, int(arg[:-1]))
+            elif arg.isdigit():
+                min_score = int(arg)
+
+        subs.setdefault(str(cid), {})["hn"] = {
+            "enabled": True,
+            "interval_hours": interval_hours,
+            "min_score": min_score,
+            "limit": 5,
+            "last_push": 0,
+            "pushed_ids": [],  # track to avoid duplicates
+        }
+        self._save_subscriptions(subs)
+
+        await update.message.reply_text(
+            f"🔔 已订阅 Hacker News 推送\n\n"
+            f"频率: 每 {interval_hours} 小时\n"
+            f"最低分: {min_score}\n"
+            f"每次: 5 条\n\n"
+            f"<code>/subscribe hn off</code> 取消\n"
+            f"<code>/hn</code> 立即查看",
+            parse_mode=ParseMode.HTML,
+        )
+
+    # ── Subscription Storage ─────────────────────────────────────
+
+    def _load_subscriptions(self) -> dict:
+        """Load subscriptions from a JSON file in the data dir."""
+        sub_path = Path(os.getenv("HOME", "/data")) / ".neomind" / "subscriptions.json"
+        try:
+            if sub_path.exists():
+                return json.loads(sub_path.read_text())
+        except Exception:
+            pass
+        return {}
+
+    def _save_subscriptions(self, subs: dict):
+        sub_path = Path(os.getenv("HOME", "/data")) / ".neomind" / "subscriptions.json"
+        try:
+            sub_path.parent.mkdir(parents=True, exist_ok=True)
+            sub_path.write_text(json.dumps(subs, indent=2))
+        except Exception:
+            pass
+
+    # ── Background Scheduler ─────────────────────────────────────
+
+    async def _scheduler_loop(self):
+        """Background loop that checks subscriptions and pushes content."""
+        await asyncio.sleep(30)  # wait 30s after startup before first check
+        print("[bot] Scheduler started", flush=True)
+
+        while True:
+            try:
+                await self._process_subscriptions()
+            except Exception as e:
+                print(f"[bot] Scheduler error: {e}", flush=True)
+            await asyncio.sleep(300)  # check every 5 minutes
+
+    async def _process_subscriptions(self):
+        """Check all subscriptions and push if interval elapsed."""
+        from .hackernews import fetch_top_stories, format_stories_telegram
+
+        subs = self._load_subscriptions()
+        now = time.time()
+        changed = False
+
+        for chat_id_str, chat_subs in subs.items():
+            chat_id = int(chat_id_str)
+
+            # HN subscription
+            hn = chat_subs.get("hn", {})
+            if not hn.get("enabled"):
+                continue
+
+            interval = hn.get("interval_hours", 4) * 3600
+            last_push = hn.get("last_push", 0)
+
+            if now - last_push < interval:
+                continue  # not time yet
+
+            # Time to push!
+            min_score = hn.get("min_score", 100)
+            limit = hn.get("limit", 5)
+            pushed_ids = set(hn.get("pushed_ids", [])[-200:])  # keep last 200
+
+            stories = await fetch_top_stories(category="top", limit=limit * 3, min_score=min_score)
+
+            # Filter out already-pushed stories
+            new_stories = [s for s in stories if s.id not in pushed_ids][:limit]
+
+            if new_stories:
+                text = format_stories_telegram(new_stories, title="Hacker News 推送")
+                try:
+                    await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=text,
+                        parse_mode="HTML",
+                        disable_web_page_preview=True,
+                    )
+                    # Update state
+                    hn["last_push"] = now
+                    for s in new_stories:
+                        pushed_ids.add(s.id)
+                    hn["pushed_ids"] = list(pushed_ids)[-200:]
+                    changed = True
+                    print(f"[bot] Pushed {len(new_stories)} HN stories to {chat_id}", flush=True)
+                except Exception as e:
+                    print(f"[bot] Failed to push HN to {chat_id}: {e}", flush=True)
+
+        if changed:
+            self._save_subscriptions(subs)
+
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
         text = update.message.text or ""
@@ -867,32 +1099,31 @@ class NeoMindTelegramBot:
     # ── LLM Shared Helpers ──────────────────────────────────────────
 
     def _get_system_prompt(self, chat_id: int = 0) -> str:
+        """Load the full system prompt from YAML config for the chat's mode.
+
+        Uses the same first-principles prompts as the CLI — not a simplified version.
+        Appends Telegram-specific instructions at the end.
+        """
         current_mode = self._store.get_mode(chat_id) if chat_id else "fin"
-        prompts = {
-            "fin": (
-                "你是 NeoMind Finance，一个个人金融与投资智能助手。"
-                "你在 Telegram 上运行。回复简洁、有用。"
-                "用户可以问你金融问题，也可以闲聊。"
-                "如果用户问金融相关的问题，尽量给出有用的分析。"
-                "如果用户只是打招呼或闲聊，正常回复即可，不要强行推荐金融命令。"
-                "你支持 /stock, /crypto, /news, /digest 等命令，但用户也可以用自然语言。"
-                "回复用用户的语言（中文问中文答，英文问英文答）。"
-            ),
-            "chat": (
-                "你是 NeoMind，一个通用 AI 助手。"
-                "你在 Telegram 上运行。回复简洁、自然、有帮助。"
-                "用户可以问你任何问题，聊天、翻译、搜索都行。"
-                "回复用用户的语言。"
-            ),
-            "coding": (
-                "你是 NeoMind，一个编程助手。"
-                "你在 Telegram 上运行。回复简洁。"
-                "可以帮用户分析代码、解释概念、调试问题。"
-                "代码用 markdown code block 格式。"
-                "回复用用户的语言。"
-            ),
-        }
-        return prompts.get(current_mode, prompts["chat"])
+
+        # Load from YAML config (same prompts CLI uses)
+        try:
+            from agent_config import AgentConfigManager
+            cfg = AgentConfigManager(mode=current_mode)
+            base_prompt = cfg.system_prompt or ""
+        except Exception:
+            base_prompt = ""
+
+        # Append Telegram-specific context
+        telegram_context = (
+            "\n\nTELEGRAM CONTEXT:\n"
+            "你在 Telegram 上运行。回复简洁但有深度。"
+            "回复用用户的语言（中文问中文答，英文问英文答）。"
+            "如果用户只是打招呼或闲聊，正常回复，不要强行推荐命令。"
+            "用户可以用 /help 查看命令列表。"
+        )
+
+        return base_prompt + telegram_context
 
     # Context window limits per model
     _MODEL_CONTEXT = {
