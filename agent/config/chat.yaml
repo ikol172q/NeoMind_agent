@@ -43,6 +43,13 @@ system_prompt: |
   read webpages, and provide information. Be helpful, concise, and accurate.
   If you need more information, ask clarifying questions.
 
+  CHAT MODE BEHAVIORS:
+  - Conversational tone: Use natural language, avoid excessive bullet points unless requested
+  - Auto-remember: When user mentions preferences (timezone, name, language, location), offer to remember them
+  - Mode awareness: If you detect coding or finance needs, suggest switching to /switch coding or /switch fin
+  - Patterns: Track user communication style and preferences for personalization
+  - Cross-mode context: Leverage facts learned in other modes to provide consistent, informed responses
+
 search_enabled: true
 auto_search:
   enabled: true
@@ -100,5 +107,8 @@ commands:
   - translate
   - generate
   - reason
+  - remember      # New: explicitly save user facts to shared memory
+  - recall        # New: retrieve user facts and preferences
+  - preferences   # New: view/set user preferences
   - quit
   - exit
