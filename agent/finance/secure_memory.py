@@ -283,12 +283,21 @@ class SecureMemoryStore:
     }
 
     def __init__(self, config=None, base_path: Optional[str] = None, passphrase: Optional[str] = None):
-        # Determine storage path
+        # Determine storage path — prefer named volume for SQLite performance
         if base_path:
             self.base_path = Path(base_path).expanduser()
+        elif os.getenv("NEOMIND_MEMORY_DIR"):
+            self.base_path = Path(os.getenv("NEOMIND_MEMORY_DIR")).expanduser()
         elif config:
-            path = config.get("finance.memory_path", "~/.neomind/finance/")
-            self.base_path = Path(path).expanduser()
+            path = config.get("finance.memory_path", "")
+            if path:
+                self.base_path = Path(path).expanduser()
+            elif Path("/data/neomind/db/finance").exists():
+                self.base_path = Path("/data/neomind/db/finance")
+            else:
+                self.base_path = Path("~/.neomind/finance/").expanduser()
+        elif Path("/data/neomind/db/finance").exists():
+            self.base_path = Path("/data/neomind/db/finance")
         else:
             self.base_path = Path("~/.neomind/finance/").expanduser()
 
