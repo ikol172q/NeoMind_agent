@@ -79,6 +79,13 @@ class SlashCommandCompleter(Completer):
         "expand": "Expand a turn's thinking in a pager (Ctrl+E)",
         "mode": "Switch personality (chat / coding / fin)",
         "config": "View or change runtime config (/config set temperature 0.5)",
+        "skills": "List available skills for current mode",
+        "careful": "Enable safety warnings for destructive operations",
+        "freeze": "Restrict edits to one directory (/freeze src/)",
+        "unfreeze": "Remove edit restriction",
+        "guard": "Enable careful + freeze together",
+        "sprint": "Structured task workflow (new/status/next/skip)",
+        "evidence": "View audit trail of operations",
         "quit": "Exit the agent",
         "exit": "Exit the agent",
         # Chat-only
@@ -359,7 +366,7 @@ class ClaudeInterface:
 
         # Check if command is allowed in current mode
         allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config"):
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence"):
             self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
             if self.chat.mode == "chat":
                 self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
@@ -530,6 +537,94 @@ class ClaudeInterface:
                 "plan": "[yellow]plan[/yellow] — read-only, no execution",
             }
             self._print(f"Permissions: {mode_display[agent_config.permission_mode]}")
+            return True
+
+        # ── Skill System ──────────────────────────────────────────
+        if cmd == "skills":
+            from agent.skills import get_skill_loader
+            loader = get_skill_loader()
+            if args:
+                skill = loader.get(args)
+                if skill:
+                    self._print(f"[bold]{skill.name}[/bold] — {skill.description}")
+                    self._print(f"[dim]Modes: {', '.join(skill.modes)} | v{skill.version}[/dim]")
+                    self._print(f"\n{skill.body[:500]}")
+                else:
+                    self._print(f"[yellow]Skill not found: {args}[/yellow]")
+            else:
+                self._print(loader.format_skill_list(mode=self.chat.mode))
+            return True
+
+        # ── Safety Guards ────────────────────────────────────────
+        if cmd == "careful":
+            from agent.workflow.guards import get_guard
+            guard = get_guard()
+            guard.enable_careful()
+            self._print("[green]✓[/green] Careful mode: [bold]ON[/bold] — will warn before destructive ops")
+            return True
+
+        if cmd == "freeze":
+            from agent.workflow.guards import get_guard
+            guard = get_guard()
+            directory = args or os.getcwd()
+            guard.enable_freeze(directory)
+            self._print(f"[cyan]🧊[/cyan] Freeze: edits restricted to [bold]{directory}[/bold]")
+            return True
+
+        if cmd == "unfreeze":
+            from agent.workflow.guards import get_guard
+            guard = get_guard()
+            guard.disable_freeze()
+            self._print("[green]✓[/green] Freeze removed — edits unrestricted")
+            return True
+
+        if cmd == "guard":
+            from agent.workflow.guards import get_guard
+            guard = get_guard()
+            directory = args or os.getcwd()
+            guard.enable_guard(directory)
+            self._print(f"[green]✓[/green] Guard mode: careful + freeze to [bold]{directory}[/bold]")
+            return True
+
+        # ── Sprint ───────────────────────────────────────────────
+        if cmd == "sprint":
+            from agent.workflow.sprint import SprintManager
+            mgr = SprintManager()
+            if args.startswith("new "):
+                goal = args[4:].strip()
+                sprint = mgr.create(goal, mode=self.chat.mode)
+                self._print(f"[green]✓[/green] Sprint created: {sprint.id}")
+                self._print(mgr.format_status(sprint.id))
+            elif args == "status":
+                for sid, s in mgr._active_sprints.items():
+                    self._print(mgr.format_status(sid))
+            elif args == "next":
+                for sid in list(mgr._active_sprints.keys()):
+                    phase = mgr.advance(sid)
+                    if phase:
+                        self._print(f"[green]▶️[/green] Now: {phase.name}")
+                    else:
+                        self._print("[green]✓[/green] Sprint completed!")
+                    break
+            elif args == "skip":
+                for sid in list(mgr._active_sprints.keys()):
+                    phase = mgr.skip_phase(sid)
+                    if phase:
+                        self._print(f"[yellow]⏭️[/yellow] Skipped → {phase.name}")
+                    break
+            else:
+                self._print("Usage: /sprint new <goal> | /sprint status | /sprint next | /sprint skip")
+            return True
+
+        # ── Evidence Trail ───────────────────────────────────────
+        if cmd == "evidence":
+            from agent.workflow.evidence import get_evidence_trail
+            trail = get_evidence_trail()
+            if args == "stats":
+                stats = trail.get_stats()
+                self._print(f"Evidence: {stats.get('total', 0)} entries, {stats.get('log_size_kb', 0)} KB")
+            else:
+                self._print(trail.format_recent(10))
             return True
 
         # Not a local command

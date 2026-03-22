@@ -42,6 +42,10 @@ try:
     HAS_PLAYWRIGHT = True
 except ImportError:
     HAS_PLAYWRIGHT = False
+    # Stub types so class definitions don't break at import time
+    Browser = Any
+    BrowserContext = Any
+    Page = Any
 
 
 # ── Snapshot System ──────────────────────────────────────────────
