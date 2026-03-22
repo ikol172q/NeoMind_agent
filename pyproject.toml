@@ -56,6 +56,7 @@ finance = [
     "trafilatura>=1.4.0",
     "duckduckgo-search>=4.0.0",
     "python-telegram-bot>=20.0",
+    "playwright>=1.40.0",
 ]
 dev = [
     "pytest",
@@ -67,7 +68,7 @@ dev = [
 neomind = "main:main"
 
 [tool.setuptools]
-packages = ["agent", "agent.finance", "cli", "neomind"]
+packages = ["agent", "agent.finance", "agent.browser", "agent.workflow", "agent.skills", "cli", "neomind"]
 py-modules = ["agent_config", "main"]
 include-package-data = true
 
