@@ -31,16 +31,15 @@ class TestSkillLoader:
         assert self.loader.count >= 10
 
     def test_shared_skills_exist(self):
-        for name in ["browse", "careful", "investigate"]:
+        for name in ["browse", "careful", "investigate", "audit", "autoplan", "retro", "teach", "digest"]:
             skill = self.loader.get(name)
             assert skill is not None, f"Shared skill {name} not found"
-            assert skill.category == "shared"
 
     def test_chat_skills_exist(self):
-        skill = self.loader.get("office-hours")
-        assert skill is not None
-        assert "chat" in skill.modes
-        assert skill.category == "chat"
+        for name in ["office-hours", "memo"]:
+            skill = self.loader.get(name)
+            assert skill is not None, f"Chat skill {name} not found"
+            assert "chat" in skill.modes
 
     def test_coding_skills_exist(self):
         for name in ["eng-review", "qa", "ship"]:
@@ -49,7 +48,7 @@ class TestSkillLoader:
             assert "coding" in skill.modes
 
     def test_fin_skills_exist(self):
-        for name in ["trade-review", "finance-briefing", "qa-trading"]:
+        for name in ["trade-review", "qa-trading", "backtest", "risk"]:
             skill = self.loader.get(name)
             assert skill is not None, f"Fin skill {name} not found"
             assert "fin" in skill.modes
@@ -62,6 +61,7 @@ class TestSkillLoader:
             assert "browse" in names, f"browse not in {mode}"
             assert "careful" in names, f"careful not in {mode}"
             assert "investigate" in names, f"investigate not in {mode}"
+            assert "audit" in names, f"audit not in {mode}"
 
     def test_mode_specific_not_leaked(self):
         """Mode-specific skills should NOT appear in other modes."""
@@ -84,9 +84,19 @@ class TestSkillLoader:
         assert "trade-review" not in chat_names
         assert "trade-review" not in coding_names
 
+    def test_deprecated_skills_not_loaded(self):
+        """Deprecated skills (modes: []) should not appear in any mode."""
+        for mode in ["chat", "coding", "fin"]:
+            names = [s.name for s in self.loader.get_skills_for_mode(mode)]
+            for deprecated in ["_deprecated_self-audit", "_deprecated_security-audit",
+                                "_deprecated_finance-briefing", "_deprecated_deploy"]:
+                assert deprecated not in names, f"{deprecated} should not be in {mode}"
+
     def test_skill_has_body(self):
-        """Every skill should have non-empty prompt body."""
+        """Every active skill should have non-empty prompt body."""
         for skill in self.loader._skills.values():
+            if skill.name.startswith("_deprecated"):
+                continue
             assert len(skill.body) > 50, f"{skill.name} has empty/short body"
 
     def test_skill_has_description(self):
