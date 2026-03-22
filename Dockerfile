@@ -27,7 +27,11 @@ RUN pip install --no-cache-dir \
     cryptography keyring sympy websockets \
     trafilatura duckduckgo-search lxml \
     html2text chardet tiktoken \
-    python-telegram-bot
+    python-telegram-bot \
+    playwright
+
+# Install Chromium for browser daemon
+RUN playwright install chromium && playwright install-deps chromium
 
 # Copy application code
 COPY . .
