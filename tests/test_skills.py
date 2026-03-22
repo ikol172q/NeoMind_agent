@@ -69,10 +69,10 @@ class TestSkillLoader:
         coding_names = [s.name for s in self.loader.get_skills_for_mode("coding")]
         fin_names = [s.name for s in self.loader.get_skills_for_mode("fin")]
 
-        # office-hours is chat only
+        # office-hours is chat + fin (decision-making for both)
         assert "office-hours" in chat_names
         assert "office-hours" not in coding_names
-        assert "office-hours" not in fin_names
+        assert "office-hours" in fin_names
 
         # eng-review is coding only
         assert "eng-review" in coding_names

@@ -1,49 +1,59 @@
 ---
 name: investigate
-description: Systematic root-cause analysis — trace data flow, test hypotheses
+description: Systematic root-cause debugging — reproduce, bisect, test hypotheses, fix with confidence
 modes: [chat, coding, fin]
-allowed-tools: [Bash, Read, WebSearch]
-version: 1.0.0
+allowed-tools: [Bash, Read, WebSearch, Edit]
+version: 1.1.0
 ---
 
 # Investigate — Root Cause Analysis
 
-You are conducting a systematic investigation. Your goal is to find the ROOT CAUSE,
-not just fix the symptom.
+You are the investigator. Your mission: find the ROOT CAUSE, not just fix the symptom.
 
-## Method (First Principles)
+## Workflow
 
-1. **Observe**: Gather all available evidence before forming hypotheses
-   - Read error messages, logs, stack traces completely
-   - Check data flow: input → processing → output
-   - Identify WHAT changed (time, code, config, data, environment)
+### 1. Reproduce the Bug
+- Gather complete description: symptoms, timing, affected users/code paths
+- For CLI bugs: write command that triggers it
+- For UI bugs: open browser with `/browse` and follow exact reproduction steps
+- For data bugs: dump the actual values, don't assume
+- Take evidence (screenshots, logs, error traces)
 
-2. **Hypothesize**: Form 2-3 specific, testable hypotheses
-   - Each hypothesis must be falsifiable
-   - Rank by likelihood based on evidence
-   - State what you'd expect to see if each hypothesis is true
+### 2. Bisect: Narrow Down to Minimal Failing Case
+- If code change triggered it: `git bisect` to find the exact commit
+- If intermittent: collect multiple reproductions — is there a pattern?
+- Create minimal reproducible example: smallest code/data that shows the bug
+- Eliminate confounds: isolate the single failing component
 
-3. **Test**: Test the most likely hypothesis FIRST
-   - Design a minimal test that proves or disproves
-   - Execute the test, observe the result
-   - If disproved, move to next hypothesis
+### 3. Read Source Code + Logs
+- Read the ENTIRE stack trace from top to bottom
+- Read the function that failed + its callers
+- Check error logs, console output, network requests
+- Track data flow: where does it come from? Where should it go?
+- Look for recent changes in that area
 
-4. **Fix**: Once root cause is confirmed, fix it
-   - Fix the cause, not the symptom
-   - Verify the fix actually resolves the issue
-   - Check for side effects
+### 4. Form Hypothesis → Test It
+- Based on evidence, form 2-3 testable hypotheses
+- Rank by likelihood
+- For each hypothesis, state: "If this is true, I'd see..."
+- Design a minimal test that proves/disproves it
+- Run the test and observe result (don't guess)
+
+### 5. Fix + Verify + Add Regression Test
+- Fix the cause (not the symptom)
+- Verify the fix resolves the original reproduction
+- Run related tests to check for side effects
+- Write a regression test that would catch this bug in the future
 
 ## Rules
 
-- **3-strike rule**: If 3 hypotheses fail, STOP and ask the user for more context.
-  Don't keep guessing blindly.
-- **No assumption cascades**: Don't chain 5 assumptions together. Each step must be
-  verified before proceeding.
-- **Read before guessing**: ALWAYS read the actual code/data/logs before theorizing.
-  "I think the problem might be..." is not allowed without reading first.
+- **Read before guessing**: Always read code/logs/traces first. Never theorize without evidence.
+- **3-hypothesis limit**: If 3 hypotheses fail, stop and ask for more context.
+- **No assumption cascades**: Each step must be verified before proceeding.
+- **Evidence always**: Screenshots, logs, console output — show your work.
 
 ## Per-Personality
 
-- **chat**: Investigate factual claims, research questions, debug user problems
-- **coding**: Debug code, trace data flow, find why tests fail
-- **fin**: Investigate why a stock moved, trace causal chain in markets, find data discrepancies
+- **chat**: Investigate factual claims, fact-check research, debug user problems
+- **coding**: Debug code, trace data flow, bisect regressions, write regression tests
+- **fin**: Investigate why prices moved, trace data discrepancies, backtest failures

@@ -1,51 +1,69 @@
 ---
 name: qa
-description: QA testing with real browser — find bugs, fix them, generate regression tests
+description: QA testing — identify scenarios, write tests (unit + integration), browser verification, regression suite
 modes: [coding]
 allowed-tools: [Bash, Read, Edit, WebSearch]
-version: 1.0.0
+version: 1.1.0
 ---
 
-# QA — Quality Assurance with Real Browser
+# QA — Quality Assurance Testing
 
-You are the QA lead. Your job: find bugs, fix them, add regression tests, verify the fix.
+You are the QA lead. Your workflow: read the change, write comprehensive tests, verify with real browser, generate regression suite.
 
-## Test Tiers
+## Workflow
 
-- **Quick**: Critical + High severity only (default)
-- **Standard**: + Medium severity
-- **Exhaustive**: + Cosmetic issues
+### 1. Read the Change Diff
+- `git diff` or review the exact code changes
+- Understand: what is the new/modified behavior?
+- Identify: what could break?
 
-## Process
+### 2. Identify Test Scenarios
+- **Happy path**: Expected use case with valid input
+- **Edge cases**: Boundary values, empty input, max values, special characters
+- **Error paths**: Invalid input, missing required fields, permission denied, timeout
+- **Integration paths**: Multi-step flows, state changes, database impact
+- For UI: test across browsers/screen sizes if relevant
 
-1. **Navigate**: Use `/browse goto <url>` to open the app
-2. **Snapshot**: `browse snapshot -i` to find interactive elements
-3. **Interact**: Click, fill, submit — follow the user journey
-4. **Verify**: Check expected behavior with `browse text`, `browse screenshot`
-5. **Check logs**: `browse console` for errors, `browse network` for failed requests
-6. **If bug found**:
-   a. Screenshot the bug: `browse screenshot /tmp/bug-<name>.png`
-   b. Fix the source code
-   c. Write a regression test
-   d. `git commit -m "fix: <description>"`
-   e. Reload and re-test to verify fix
-7. **Report**: List all findings with severity
+### 3. Write Tests (Unit + Integration)
+- **Unit tests**: Test isolated functions/components
+  - Use pytest or framework-native test runner
+  - Test each scenario independently
+- **Integration tests**: Test features end-to-end
+  - Database interactions
+  - API calls
+  - Multi-component workflows
 
-## Bug Report Format
+### 4. Run Tests
+- **CLI/Backend**: `pytest test_*.py` with coverage: `pytest --cov=src`
+- **UI/Frontend**: Use browser daemon with `/browse`
+  - Navigate: `browse goto http://localhost:3000`
+  - Snapshot: `browse snapshot -i` to find elements
+  - Interact: `browse click @ref`, `browse fill @ref "value"`
+  - Verify: `browse text`, `browse screenshot`, `browse console`
 
+### 5. Generate Regression Test File
+- Create test file: `test_regression_<feature>.py` or equivalent
+- Each test case covers one scenario
+- Include setup/teardown if needed
+- Add docstring explaining what's being tested
+
+### 6. Report Results
 ```
-🔴 CRITICAL: [Description]
-   Steps: 1. Go to /login  2. Enter empty password  3. Click submit
-   Expected: Error message
-   Actual: 500 server error
-   Evidence: screenshot at /tmp/bug-login.png
-   Fix: Added input validation in auth.py line 42
-   Test: Added test_empty_password_rejected()
+✅ Test Coverage: 87% (23/26 code paths)
+✅ Unit Tests: 12/12 pass
+✅ Integration Tests: 8/8 pass
+✅ Browser Tests: All scenarios verified
+❌ 0 failures
+
+Regression Test Suite: test_regression_auth.py
+  - test_valid_login()
+  - test_empty_password_rejected()
+  - test_session_timeout()
 ```
 
 ## Rules
 
-- Test the REAL app with a REAL browser. Don't just read code and guess.
-- Every bug fix MUST have a regression test.
-- Screenshot every bug before and after fix.
-- Don't fix cosmetic issues unless tier is Exhaustive.
+- Test the REAL app with REAL browser and real test framework
+- Every change needs at least one test
+- Screenshot evidence for UI bugs
+- Report: coverage %, pass/fail count, regression test file

@@ -64,6 +64,50 @@ from .search import OptimizedDuckDuckGoSearch
 from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
 
+# ── Workflow modules (optional/graceful degradation) ──────────────────────────
+try:
+    from .workflow.sprint import SprintManager
+    HAS_SPRINT = True
+except ImportError:
+    HAS_SPRINT = False
+    SprintManager = None
+
+try:
+    from .workflow.guards import SafetyGuard
+    HAS_GUARDS = True
+except ImportError:
+    HAS_GUARDS = False
+    SafetyGuard = None
+
+try:
+    from .workflow.evidence import EvidenceTrail
+    HAS_EVIDENCE = True
+except ImportError:
+    HAS_EVIDENCE = False
+    EvidenceTrail = None
+
+try:
+    from .workflow.review import ReviewDispatcher
+    HAS_REVIEW = True
+except ImportError:
+    HAS_REVIEW = False
+    ReviewDispatcher = None
+
+# ── Phase 4: Self-Evolution (optional/graceful degradation) ───────────────
+try:
+    from .evolution.auto_evolve import AutoEvolve
+    HAS_EVOLUTION = True
+except ImportError:
+    HAS_EVOLUTION = False
+    AutoEvolve = None
+
+try:
+    from .evolution.upgrade import NeoMindUpgrade
+    HAS_UPGRADE = True
+except ImportError:
+    HAS_UPGRADE = False
+    NeoMindUpgrade = None
+
 class NeoMindAgent:
     """Main AI agent with streaming, search, and model listing capabilities.
 
@@ -304,6 +348,57 @@ class NeoMindAgent:
         # Goal planner for generating and executing plans
         self.goal_planner = GoalPlanner()
 
+        # ── Workflow modules (graceful degradation) ──────────────────────────
+        # Evidence Trail — auto-log all operations
+        try:
+            self.evidence = EvidenceTrail() if HAS_EVIDENCE else None
+        except Exception as e:
+            self.evidence = None
+            self._status_print(f"⚠️  Evidence trail init failed: {e}", "debug")
+
+        # Safety Guard — auto-check dangerous operations
+        try:
+            self.guard = SafetyGuard() if HAS_GUARDS else None
+        except Exception as e:
+            self.guard = None
+            self._status_print(f"⚠️  Safety guard init failed: {e}", "debug")
+
+        # Sprint Manager — structured task execution
+        try:
+            self.sprint_mgr = SprintManager() if HAS_SPRINT else None
+            self.current_sprint_id = None  # Track active sprint
+        except Exception as e:
+            self.sprint_mgr = None
+            self.current_sprint_id = None
+            self._status_print(f"⚠️  Sprint manager init failed: {e}", "debug")
+
+        # Review Dispatcher — mode-aware review prompts
+        try:
+            self.review_dispatcher = ReviewDispatcher() if HAS_REVIEW else None
+        except Exception as e:
+            self.review_dispatcher = None
+            self._status_print(f"⚠️  Review dispatcher init failed: {e}", "debug")
+
+        # ── Phase 4: Self-Evolution Engine ────────────────────────────────
+        # Startup health check (fast: ~1-2 seconds)
+        try:
+            self.evolution = AutoEvolve() if HAS_EVOLUTION else None
+            if self.evolution:
+                health = self.evolution.run_startup_check()
+                if health.issues:
+                    for issue in health.issues[:3]:  # Show first 3 issues
+                        self._status_print(f"⚠️  Health: {issue}", "debug")
+        except Exception as e:
+            self.evolution = None
+            self._status_print(f"⚠️  Evolution engine init failed: {e}", "debug")
+
+        # Upgrade manager (checks for updates, doesn't auto-upgrade)
+        try:
+            self.upgrader = NeoMindUpgrade() if HAS_UPGRADE else None
+        except Exception as e:
+            self.upgrader = None
+            self._status_print(f"⚠️  Upgrade manager init failed: {e}", "debug")
+
         # Command registry for unified routing
         self.command_handlers = {}
         self._setup_command_handlers()
@@ -352,6 +447,14 @@ class NeoMindAgent:
             "/code": (self.handle_code_command, True),
             "/fix": (self.handle_auto_fix_command, False),
             "/analyze": (self.handle_auto_fix_command, False),
+            "/sprint": (self.handle_sprint_command, True),
+            "/careful": (self.handle_careful_command, True),
+            "/freeze": (self.handle_freeze_command, True),
+            "/guard": (self.handle_guard_command, True),
+            "/unfreeze": (self.handle_unfreeze_command, True),
+            "/evidence": (self.handle_evidence_command, True),
+            "/evolve": (self.handle_evolve_command, True),
+            "/upgrade": (self.handle_upgrade_command, True),
         }
 
     # Commands whose output should be added to conversation history
@@ -2471,6 +2574,12 @@ Examples:
             if not content:
                 return self.formatter.warning("No content provided. File not written.")
 
+        # ── Guard check ──────────────────────────────────────────────
+        is_allowed, guard_warning = self._check_file_guards(file_path)
+        if not is_allowed:
+            self._log_evidence("file_edit", file_path, guard_warning, severity="warning")
+            return self.formatter.warning(f"🧊 FROZEN: {guard_warning}")
+
         # Ensure code analyzer is initialized
         if not self.code_analyzer:
             self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
@@ -2478,8 +2587,11 @@ Examples:
         # Write file
         success, message = self.code_analyzer.write_file_safe(file_path, content)
         if success:
+            # Log to evidence trail
+            self._log_evidence("file_edit", file_path, f"write_success, {len(content)} bytes", severity="info")
             return self.formatter.success(message)
         else:
+            self._log_evidence("file_edit", file_path, f"write_failed: {message}", severity="warning")
             return self.formatter.error(message)
 
     def handle_edit_command(self, command: str) -> str:
@@ -2591,6 +2703,12 @@ Examples:
         if self.mode != 'coding':
             self.switch_mode('coding', persist=False)
 
+        # ── Guard check ──────────────────────────────────────────────
+        is_allowed, guard_warning = self._check_guards(command)
+        if not is_allowed:
+            self._log_evidence("command", command, guard_warning, severity="warning")
+            return self.formatter.warning(f"🛑 BLOCKED by safety guard:\n{guard_warning}")
+
         # Determine working directory
         import os
         cwd = os.getcwd()
@@ -2602,6 +2720,9 @@ Examples:
         # Log command execution
         log_operation('execute', command, result['success'],
                      f"cwd={cwd}, exit_code={result['returncode']}, time={result['execution_time']:.2f}s")
+
+        # Log to evidence trail
+        self._log_evidence("command", command, f"exit_code={result['returncode']}", severity="info" if result['success'] else "warning")
 
         # Format result using formatter
         if not result['success']:
@@ -3329,6 +3450,405 @@ Note: This is an alias for /code apply. See '/help code' for more details.
             return self._code_apply_changes_confirm(force=True)
         else:
             return self._code_apply_changes()
+
+    # ── Workflow command handlers ────────────────────────────────────────────
+
+    def handle_sprint_command(self, command: str) -> Optional[str]:
+        """Handle /sprint command for structured task execution.
+
+        Usage:
+          /sprint start <goal>     - Start a new sprint with a goal
+          /sprint status           - Show current sprint status
+          /sprint advance           - Complete phase and move to next
+          /sprint skip              - Skip current phase
+          /sprint complete <output> - Mark current phase as done with output
+          /sprint help              - Show sprint help
+        """
+        if not HAS_SPRINT or not self.sprint_mgr:
+            return self.formatter.warning("Sprint module not available. Install workflow modules.")
+
+        try:
+            parts = command.strip().split(maxsplit=2) if command.strip() else []
+            subcommand = parts[0] if parts else "status"
+
+            if subcommand == "start":
+                if len(parts) < 2:
+                    return self.formatter.error("Usage: /sprint start <goal>")
+                goal = " ".join(parts[1:])
+                sprint = self.sprint_mgr.create(goal, mode=self.mode)
+                self.current_sprint_id = sprint.id
+                return self.formatter.success(f"✅ Sprint started: {sprint.id}\n" + self.sprint_mgr.format_status(sprint.id))
+
+            elif subcommand == "status":
+                if not self.current_sprint_id:
+                    return self.formatter.info("No active sprint. Use: /sprint start <goal>")
+                return self.formatter.info(self.sprint_mgr.format_status(self.current_sprint_id))
+
+            elif subcommand == "advance":
+                if not self.current_sprint_id:
+                    return self.formatter.error("No active sprint")
+                next_phase = self.sprint_mgr.advance(self.current_sprint_id)
+                if next_phase:
+                    return self.formatter.success(f"▶️ Advanced to phase: {next_phase.name}\n" + self.sprint_mgr.format_status(self.current_sprint_id))
+                else:
+                    self.current_sprint_id = None
+                    return self.formatter.success("✅ Sprint completed!")
+
+            elif subcommand == "skip":
+                if not self.current_sprint_id:
+                    return self.formatter.error("No active sprint")
+                next_phase = self.sprint_mgr.skip_phase(self.current_sprint_id)
+                if next_phase:
+                    return self.formatter.success(f"⏭️  Skipped to phase: {next_phase.name}\n" + self.sprint_mgr.format_status(self.current_sprint_id))
+                else:
+                    self.current_sprint_id = None
+                    return self.formatter.success("✅ Sprint completed!")
+
+            elif subcommand == "complete":
+                if not self.current_sprint_id:
+                    return self.formatter.error("No active sprint")
+                output = " ".join(parts[1:]) if len(parts) > 1 else ""
+                self.sprint_mgr.complete_phase(self.current_sprint_id, output=output)
+                return self.formatter.success(f"✅ Phase output recorded.\n" + self.sprint_mgr.format_status(self.current_sprint_id))
+
+            elif subcommand == "help":
+                help_text = """
+📋 /sprint Command — Structured Task Execution
+
+Available subcommands:
+  /sprint start <goal>      - Start a new sprint (auto-detects mode-specific phases)
+  /sprint status            - Show current sprint progress
+  /sprint advance           - Complete current phase and move to next
+  /sprint skip              - Skip current phase and move to next
+  /sprint complete <output> - Record output/notes for current phase
+  /sprint help              - Show this help
+
+Example workflow:
+  /sprint start "Fix authentication bug"
+  /sprint status                           # See progress
+  /sprint complete "Analyzed root cause"   # Add notes
+  /sprint advance                          # Move to next phase
+"""
+                return help_text.strip()
+
+            else:
+                return self.formatter.error(f"Unknown sprint subcommand: {subcommand}")
+
+        except Exception as e:
+            return self.formatter.error(f"Sprint error: {e}")
+
+    def handle_careful_command(self, command: str) -> Optional[str]:
+        """Handle /careful command — warn before dangerous operations."""
+        if not HAS_GUARDS or not self.guard:
+            return self.formatter.warning("Guards module not available. Install workflow modules.")
+
+        try:
+            if not command.strip() or command.strip() == "status":
+                return self.guard.get_status()
+            elif command.strip() == "on":
+                self.guard.enable_careful()
+                return self.formatter.success("🟢 Careful mode ON — warnings enabled for dangerous commands")
+            elif command.strip() == "off":
+                self.guard.disable_careful()
+                return self.formatter.info("⚪ Careful mode OFF — no warnings")
+            else:
+                return self.formatter.error("Usage: /careful [on|off|status]")
+        except Exception as e:
+            return self.formatter.error(f"Guard error: {e}")
+
+    def handle_freeze_command(self, command: str) -> Optional[str]:
+        """Handle /freeze command — restrict edits to one directory."""
+        if not HAS_GUARDS or not self.guard:
+            return self.formatter.warning("Guards module not available. Install workflow modules.")
+
+        try:
+            if not command.strip():
+                return self.formatter.error("Usage: /freeze <directory>")
+            directory = command.strip()
+            self.guard.enable_freeze(directory)
+            return self.formatter.success(f"🧊 Frozen to: {directory}\n   Edits restricted to this directory and subdirs.\n   Use /unfreeze to remove restriction.")
+        except Exception as e:
+            return self.formatter.error(f"Freeze error: {e}")
+
+    def handle_guard_command(self, command: str) -> Optional[str]:
+        """Handle /guard command — enable both /careful and /freeze."""
+        if not HAS_GUARDS or not self.guard:
+            return self.formatter.warning("Guards module not available. Install workflow modules.")
+
+        try:
+            if not command.strip() or command.strip() == "status":
+                return self.guard.get_status()
+            elif command.strip() == "on":
+                self.guard.enable_guard()
+                return self.formatter.success("🛡️  Full guard enabled — /careful + /freeze (with current directory)")
+            elif command.strip().startswith("on "):
+                directory = command.strip()[3:].strip()
+                self.guard.enable_guard(directory)
+                return self.formatter.success(f"🛡️  Full guard enabled\n   Careful: ON\n   Frozen to: {directory}")
+            elif command.strip() == "off":
+                self.guard.disable_guard()
+                return self.formatter.info("⚪ Guard disabled")
+            else:
+                return self.formatter.error("Usage: /guard [on [dir]|off|status]")
+        except Exception as e:
+            return self.formatter.error(f"Guard error: {e}")
+
+    def handle_unfreeze_command(self, command: str) -> Optional[str]:
+        """Handle /unfreeze command — remove edit restrictions."""
+        if not HAS_GUARDS or not self.guard:
+            return self.formatter.warning("Guards module not available. Install workflow modules.")
+
+        try:
+            self.guard.disable_freeze()
+            return self.formatter.success("🧊 Freeze removed — edits allowed everywhere")
+        except Exception as e:
+            return self.formatter.error(f"Unfreeze error: {e}")
+
+    def handle_evidence_command(self, command: str) -> Optional[str]:
+        """Handle /evidence command — view audit trail."""
+        if not HAS_EVIDENCE or not self.evidence:
+            return self.formatter.warning("Evidence module not available. Install workflow modules.")
+
+        try:
+            parts = command.strip().split() if command.strip() else []
+            subcommand = parts[0] if parts else "recent"
+
+            if subcommand == "recent":
+                limit = int(parts[1]) if len(parts) > 1 else 10
+                return self.evidence.format_recent(limit=limit)
+
+            elif subcommand == "stats":
+                stats = self.evidence.get_stats()
+                lines = ["📊 Evidence Trail Statistics", "=" * 40]
+                lines.append(f"Total entries: {stats.get('total', 0)}")
+                if "by_action" in stats:
+                    lines.append("\nBy action:")
+                    for action, count in sorted(stats["by_action"].items()):
+                        lines.append(f"  {action}: {count}")
+                lines.append(f"\nLog size: {stats.get('log_size_kb', 0)} KB")
+                lines.append(f"Location: {stats.get('log_path', 'N/A')}")
+                return "\n".join(lines)
+
+            elif subcommand == "filter":
+                if len(parts) < 2:
+                    return self.formatter.error("Usage: /evidence filter <action>")
+                action = parts[1]
+                entries = self.evidence.get_by_action(action)
+                if not entries:
+                    return self.formatter.info(f"No evidence entries for action: {action}")
+                lines = [f"📋 Evidence for action: {action}", "=" * 40]
+                for e in entries[-10:]:
+                    ts = e.get("ts", "")[:16]
+                    lines.append(f"[{ts}] {e.get('input', '')[:60]}")
+                return "\n".join(lines)
+
+            elif subcommand == "help":
+                help_text = """
+📋 /evidence Command — Audit Trail Viewer
+
+Available subcommands:
+  /evidence recent [limit]  - Show recent entries (default: 10)
+  /evidence stats           - Show statistics
+  /evidence filter <action> - Filter by action type
+  /evidence help            - Show this help
+
+Example:
+  /evidence recent 20
+  /evidence filter command
+"""
+                return help_text.strip()
+
+            else:
+                return self.formatter.error(f"Unknown evidence subcommand: {subcommand}")
+
+        except Exception as e:
+            return self.formatter.error(f"Evidence error: {e}")
+
+    def handle_evolve_command(self, command: str) -> Optional[str]:
+        """Handle /evolve command — view self-evolution status."""
+        if not HAS_EVOLUTION or not self.evolution:
+            return self.formatter.warning("Evolution module not available. Install evolution modules.")
+
+        try:
+            parts = command.strip().split() if command.strip() else []
+            subcommand = parts[0] if parts else "status"
+
+            if subcommand == "status":
+                return self.evolution.get_evolution_summary()
+
+            elif subcommand == "daily":
+                report = self.evolution.run_daily_audit()
+                lines = ["📊 Daily Audit Report", "=" * 50]
+                lines.append(f"Date: {report.date}")
+                lines.append(f"Total calls: {report.total_calls}")
+                lines.append(f"Errors: {report.errors}")
+                lines.append(f"Fallbacks: {report.fallbacks}")
+                if report.most_frequent_action:
+                    lines.append(f"Top action: {report.most_frequent_action}")
+                if report.issues:
+                    lines.append("\nIssues detected:")
+                    for issue in report.issues:
+                        lines.append(f"  - {issue}")
+                return "\n".join(lines)
+
+            elif subcommand == "weekly":
+                report = self.evolution.run_weekly_retro()
+                lines = ["📈 Weekly Retrospective", "=" * 50]
+                lines.append(f"Week: {report.week_start} to {report.week_end}")
+                lines.append(f"Sessions: {report.total_sessions}")
+                lines.append(f"Tasks: {report.total_tasks}")
+                lines.append(f"Success rate: {report.success_rate:.1f}%")
+                if report.top_tools:
+                    lines.append(f"Top tools: {', '.join(report.top_tools)}")
+                return "\n".join(lines)
+
+            elif subcommand == "health":
+                report = self.evolution.run_startup_check()
+                lines = ["🏥 Health Check", "=" * 50]
+                lines.append(f"Checks passed: {report.checks_passed}")
+                lines.append(f"Checks failed: {report.checks_failed}")
+                if report.issues:
+                    lines.append("\nIssues:")
+                    for issue in report.issues:
+                        lines.append(f"  ⚠️  {issue}")
+                else:
+                    lines.append("\n✓ All systems healthy")
+                return "\n".join(lines)
+
+            elif subcommand == "help":
+                help_text = """
+📈 /evolve Command — Self-Evolution Status
+
+Available subcommands:
+  /evolve status  - Show overall evolution status
+  /evolve daily   - Run daily audit
+  /evolve weekly  - Run weekly retrospective
+  /evolve health  - Run health check
+  /evolve help    - Show this help
+
+NeoMind Phase 4: Self-Evolution Closed Loop
+- Learns from feedback and conversations
+- Adjusts preferences automatically
+- Generates weekly retros
+- Tracks improvement over time
+"""
+                return help_text.strip()
+
+            else:
+                return self.formatter.error(f"Unknown evolve subcommand: {subcommand}")
+
+        except Exception as e:
+            return self.formatter.error(f"Evolution error: {e}")
+
+    def handle_upgrade_command(self, command: str) -> Optional[str]:
+        """Handle /upgrade command — check and manage updates."""
+        if not HAS_UPGRADE or not self.upgrader:
+            return self.formatter.warning("Upgrade module not available. Install upgrade modules.")
+
+        try:
+            parts = command.strip().split() if command.strip() else []
+            subcommand = parts[0] if parts else "check"
+
+            if subcommand == "check":
+                has_updates, new_version = self.upgrader.check_for_updates()
+                if has_updates:
+                    lines = ["🎉 Updates Available!", "=" * 50]
+                    lines.append(f"Current version: {self.upgrader.get_current_version()}")
+                    lines.append(f"New version: {new_version}")
+                    lines.append(f"\nChangelog:\n{self.upgrader.get_changelog_diff()}")
+                    lines.append("\nRun '/upgrade perform' to install updates.")
+                    return "\n".join(lines)
+                else:
+                    return self.formatter.info(f"✓ You're on the latest version: {self.upgrader.get_current_version()}")
+
+            elif subcommand == "changelog":
+                changelog = self.upgrader.get_changelog_diff()
+                return f"📝 Changelog:\n\n{changelog}"
+
+            elif subcommand == "perform":
+                lines = ["⚠️  Upgrade will:"]
+                lines.append("1. Backup current version")
+                lines.append("2. Pull latest from origin/main")
+                lines.append("3. Verify installation")
+                lines.append("4. Rollback if errors detected")
+                lines.append("\nAre you sure? Run with '--confirm' to proceed.")
+                if "--confirm" in command:
+                    success, message = self.upgrader.upgrade(confirmed=True)
+                    if success:
+                        return self.formatter.success(message)
+                    else:
+                        return self.formatter.error(message)
+                return "\n".join(lines)
+
+            elif subcommand == "history":
+                history = self.upgrader.get_upgrade_history()
+                if not history:
+                    return self.formatter.info("No upgrade history yet.")
+                lines = ["📋 Upgrade History", "=" * 50]
+                for entry in history[-10:]:
+                    ts = entry.get("timestamp", "?")[:19]
+                    upgrade_type = entry.get("type", "?")
+                    version = entry.get("version", "?")
+                    lines.append(f"[{ts}] {upgrade_type}: {version}")
+                return "\n".join(lines)
+
+            elif subcommand == "help":
+                help_text = """
+🔄 /upgrade Command — Update Management
+
+Available subcommands:
+  /upgrade check           - Check for available updates
+  /upgrade changelog       - Show what changed
+  /upgrade perform         - Perform safe upgrade
+  /upgrade perform --confirm - Actually install updates
+  /upgrade history         - Show upgrade history
+  /upgrade help            - Show this help
+
+Safe Upgrade Process:
+1. Backup current version (git tag)
+2. Pull latest code
+3. Verify installation
+4. Rollback on errors
+"""
+                return help_text.strip()
+
+            else:
+                return self.formatter.error(f"Unknown upgrade subcommand: {subcommand}")
+
+        except Exception as e:
+            return self.formatter.error(f"Upgrade error: {e}")
+
+    # ── Workflow integration helpers ────────────────────────────────────────
+
+    def _log_evidence(self, action: str, input_data: str, output_data: str = "", severity: str = "info") -> None:
+        """Helper to log evidence if available."""
+        if self.evidence:
+            try:
+                self.evidence.log(action, input_data, output_data, mode=self.mode, sprint_id=self.current_sprint_id, severity=severity)
+            except Exception:
+                pass  # Gracefully ignore evidence logging failures
+
+    def _check_guards(self, cmd: str) -> Tuple[bool, str]:
+        """Helper to check safety guards. Returns (is_allowed, warning_msg)."""
+        if not self.guard:
+            return True, ""
+
+        try:
+            blocked, warning = self.guard.check_command(cmd)
+            return not blocked, warning
+        except Exception:
+            return True, ""  # Fail safe
+
+    def _check_file_guards(self, filepath: str) -> Tuple[bool, str]:
+        """Helper to check file edit guards. Returns (is_allowed, warning_msg)."""
+        if not self.guard:
+            return True, ""
+
+        try:
+            blocked, warning = self.guard.check_file_edit(filepath)
+            return not blocked, warning
+        except Exception:
+            return True, ""  # Fail safe
 
     def _add_webpage_to_memory(self, url: str, content: str) -> None:
         """
@@ -4550,9 +5070,29 @@ Please think step by step and provide your analysis:"""
         elif total_tokens > agent_config.context_warning_threshold * max_context:
             self._status_print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used", "info")
 
+        # ── Inject sprint context if active ────────────────────────────────────
+        messages_for_api = self.conversation_history.copy()
+        if self.current_sprint_id and self.sprint_mgr and HAS_SPRINT:
+            try:
+                sprint_prompt = self.sprint_mgr.get_sprint_prompt(self.current_sprint_id)
+                if sprint_prompt:
+                    # Inject sprint context as system message (after base system prompt)
+                    system_msg_idx = 0
+                    for i, msg in enumerate(messages_for_api):
+                        if msg["role"] == "system":
+                            system_msg_idx = i + 1
+                            break
+                    messages_for_api.insert(system_msg_idx, {
+                        "role": "system",
+                        "content": sprint_prompt
+                    })
+                    self._status_print(f"📋 Sprint context injected", "debug")
+            except Exception as e:
+                self._status_print(f"⚠️  Sprint context inject failed: {e}", "debug")
+
         payload = {
             "model": self.model,
-            "messages": self.conversation_history,
+            "messages": messages_for_api,
             "stream": True,
             "temperature": temperature or agent_config.temperature,
             "max_tokens": actual_max_tokens,
@@ -4728,6 +5268,15 @@ Please think step by step and provide your analysis:"""
                 self.add_to_history("assistant", full_response)
                 if content_was_displayed:
                     print()  # Clean newline after visible streaming output
+
+                # ── Log to evidence trail ────────────────────────────────────
+                # Get the user's prompt (last user message before this response)
+                user_prompt = ""
+                for msg in reversed(self.conversation_history[:-1]):  # Exclude the assistant response we just added
+                    if msg["role"] == "user":
+                        user_prompt = msg["content"]
+                        break
+                self._log_evidence("llm_call", user_prompt[:200], full_response[:200], severity="info")
 
             # Store thinking content for expansion later
             if reasoning_content:

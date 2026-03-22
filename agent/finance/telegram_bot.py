@@ -266,6 +266,28 @@ class NeoMindTelegramBot:
         self._state_mgr.register_bot("neomind")
         print(f"[bot] Chat history DB: {self._store.db_path}", flush=True)
 
+        # Workflow modules — optional (graceful degradation on import error)
+        try:
+            from agent.workflow.sprint import SprintManager
+            self._sprint_mgr = SprintManager()
+        except Exception as e:
+            logger.warning(f"Failed to initialize SprintManager: {e}")
+            self._sprint_mgr = None
+
+        try:
+            from agent.workflow.guards import SafetyGuard
+            self._guard = SafetyGuard()
+        except Exception as e:
+            logger.warning(f"Failed to initialize SafetyGuard: {e}")
+            self._guard = None
+
+        try:
+            from agent.workflow.evidence import get_evidence_trail
+            self._evidence_trail = get_evidence_trail()
+        except Exception as e:
+            logger.warning(f"Failed to initialize EvidenceTrail: {e}")
+            self._evidence_trail = None
+
     async def start(self):
         """Start the Telegram bot (long polling mode)."""
         print("[bot] Building Telegram application...", flush=True)
@@ -1112,6 +1134,8 @@ class NeoMindTelegramBot:
                 f"<i>此更改已同步到 xbar 菜单栏</i>",
                 parse_mode=ParseMode.HTML,
             )
+            if self._evidence_trail:
+                self._evidence_trail.log("provider", "switch_litellm", f"Switched to LiteLLM: {chat_actual}", mode=self._store.get_mode(update.message.chat_id))
 
         elif args in ("direct", "off", "disable"):
             config = self._state_mgr.set_provider_mode(
@@ -1128,6 +1152,8 @@ class NeoMindTelegramBot:
                 f"<i>此更改已同步到 xbar 菜单栏</i>",
                 parse_mode=ParseMode.HTML,
             )
+            if self._evidence_trail:
+                self._evidence_trail.log("provider", "switch_direct", f"Switched to direct API", mode=self._store.get_mode(update.message.chat_id))
 
         else:
             await update.message.reply_text(
@@ -1164,65 +1190,97 @@ class NeoMindTelegramBot:
 
     async def _cmd_careful(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /careful — toggle safety guard."""
-        from agent.workflow.guards import get_guard
-        guard = get_guard()
-        if guard.state.careful_enabled:
-            guard.disable_careful()
-            await update.message.reply_text("⚪ Careful mode OFF")
-        else:
-            guard.enable_careful()
-            await update.message.reply_text("🛑 Careful mode ON — will warn before destructive operations")
+        if not self._guard:
+            await update.message.reply_text("⚠️ Safety guard module not initialized")
+            return
+
+        try:
+            if self._guard.state.careful_enabled:
+                self._guard.disable_careful()
+                await update.message.reply_text("⚪ Careful mode OFF")
+                if self._evidence_trail:
+                    self._evidence_trail.log("guard", "disable_careful", "Safety guard disabled", mode="fin")
+            else:
+                self._guard.enable_careful()
+                await update.message.reply_text("🛑 Careful mode ON — will warn before destructive operations")
+                if self._evidence_trail:
+                    self._evidence_trail.log("guard", "enable_careful", "Safety guard enabled", mode="fin")
+        except Exception as e:
+            logger.error(f"Error in /careful: {e}")
+            await update.message.reply_text(f"⚠️ Error: {str(e)[:100]}")
 
     async def _cmd_sprint(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /sprint — structured task workflow."""
-        from agent.workflow.sprint import SprintManager
-        cid = update.message.chat_id
-        mode = self._store.get_mode(cid)
-        args = list(context.args) if context.args else []
-        # Singleton — persist across commands
-        if not hasattr(self, '_sprint_mgr'):
-            self._sprint_mgr = SprintManager()
-        mgr = self._sprint_mgr
-
-        if not args:
-            await update.message.reply_text(
-                "<b>Sprint</b> — structured task workflow\n\n"
-                "<code>/sprint new Buy AAPL</code> — create sprint\n"
-                "<code>/sprint status</code> — show progress\n"
-                "<code>/sprint next</code> — advance to next phase\n"
-                "<code>/sprint skip</code> — skip current phase",
-                parse_mode=ParseMode.HTML,
-            )
+        if not self._sprint_mgr:
+            await update.message.reply_text("⚠️ Sprint module not initialized")
             return
 
-        subcmd = args[0]
-        if subcmd == "new" and len(args) > 1:
-            goal = " ".join(args[1:])
-            sprint = mgr.create(goal, mode=mode)
-            await update.message.reply_text(
-                f"✅ Sprint: {sprint.id}\n\n{mgr.format_status(sprint.id)}"
-            )
-        elif subcmd == "status":
-            found = False
-            for sid in mgr._active_sprints:
-                await update.message.reply_text(mgr.format_status(sid))
-                found = True
-            if not found:
-                await update.message.reply_text("No active sprints. /sprint new [goal]")
-        elif subcmd == "next":
-            for sid in list(mgr._active_sprints.keys()):
-                phase = mgr.advance(sid)
-                if phase:
-                    await update.message.reply_text(f"▶️ Now: <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
-                else:
-                    await update.message.reply_text("✅ Sprint completed!")
-                break
-        elif subcmd == "skip":
-            for sid in list(mgr._active_sprints.keys()):
-                phase = mgr.skip_phase(sid)
-                if phase:
-                    await update.message.reply_text(f"⏭️ Skipped → <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
-                break
+        try:
+            cid = update.message.chat_id
+            mode = self._store.get_mode(cid)
+            args = list(context.args) if context.args else []
+            mgr = self._sprint_mgr
+
+            if not args:
+                await update.message.reply_text(
+                    "<b>Sprint</b> — structured task workflow\n\n"
+                    "<code>/sprint new Buy AAPL</code> — create sprint\n"
+                    "<code>/sprint status</code> — show progress\n"
+                    "<code>/sprint next</code> — advance to next phase\n"
+                    "<code>/sprint done</code> — complete current phase",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            subcmd = args[0]
+            if subcmd == "new" and len(args) > 1:
+                goal = " ".join(args[1:])
+                sprint = mgr.create(goal, mode=mode)
+                await update.message.reply_text(
+                    f"✅ Sprint: {sprint.id}\n\n{mgr.format_status(sprint.id)}"
+                )
+                if self._evidence_trail:
+                    self._evidence_trail.log("sprint", f"create {goal}", f"Sprint {sprint.id} created", mode=mode, sprint_id=sprint.id)
+            elif subcmd in ("status", ""):
+                found = False
+                for sid in mgr._active_sprints:
+                    await update.message.reply_text(mgr.format_status(sid))
+                    found = True
+                if not found:
+                    await update.message.reply_text("No active sprints. /sprint new [goal]")
+            elif subcmd == "next":
+                for sid in list(mgr._active_sprints.keys()):
+                    phase = mgr.advance(sid)
+                    if phase:
+                        await update.message.reply_text(f"▶️ Now: <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
+                        if self._evidence_trail:
+                            self._evidence_trail.log("sprint", f"advance to {phase.name}", f"Advanced sprint {sid}", sprint_id=sid)
+                    else:
+                        await update.message.reply_text("✅ Sprint completed!")
+                        if self._evidence_trail:
+                            self._evidence_trail.log("sprint", "complete", f"Sprint {sid} completed", sprint_id=sid)
+                    break
+            elif subcmd == "done":
+                for sid in list(mgr._active_sprints.keys()):
+                    current = mgr._active_sprints[sid].current_phase
+                    if current:
+                        output = " ".join(args[1:]) if len(args) > 1 else ""
+                        mgr.complete_phase(sid, output=output)
+                        await update.message.reply_text(f"✅ Completed: <b>{current.name}</b>", parse_mode=ParseMode.HTML)
+                        if self._evidence_trail:
+                            self._evidence_trail.log("sprint", f"done {current.name}", f"Phase {current.name} completed", sprint_id=sid)
+                    break
+            elif subcmd == "skip":
+                for sid in list(mgr._active_sprints.keys()):
+                    phase = mgr.skip_phase(sid)
+                    if phase:
+                        await update.message.reply_text(f"⏭️ Skipped → <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
+                        if self._evidence_trail:
+                            self._evidence_trail.log("sprint", f"skip to {phase.name}", f"Skipped to {phase.name}", sprint_id=sid)
+                    break
+        except Exception as e:
+            logger.error(f"Error in /sprint: {e}")
+            await update.message.reply_text(f"⚠️ Error: {str(e)[:100]}")
 
     async def _cmd_evidence(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /evidence — view audit trail."""
@@ -1381,7 +1439,7 @@ class NeoMindTelegramBot:
         """Load the full system prompt from YAML config for the chat's mode.
 
         Uses the same first-principles prompts as the CLI — not a simplified version.
-        Appends Telegram-specific instructions at the end.
+        Appends Telegram-specific instructions and active sprint context at the end.
         """
         current_mode = self._store.get_mode(chat_id) if chat_id else "fin"
 
@@ -1402,7 +1460,21 @@ class NeoMindTelegramBot:
             "用户可以用 /help 查看命令列表。"
         )
 
-        return base_prompt + telegram_context
+        # Append active sprint context if sprint is active
+        sprint_context = ""
+        if self._sprint_mgr:
+            try:
+                for sid in self._sprint_mgr._active_sprints:
+                    sprint = self._sprint_mgr._active_sprints.get(sid)
+                    if sprint and sprint.status == "active":
+                        prompt = self._sprint_mgr.get_sprint_prompt(sid)
+                        if prompt:
+                            sprint_context = f"\n\n{prompt}"
+                        break
+            except Exception as e:
+                logger.debug(f"Failed to append sprint context: {e}")
+
+        return base_prompt + telegram_context + sprint_context
 
     # Context window limits per model
     _MODEL_CONTEXT = {
@@ -1566,6 +1638,16 @@ class NeoMindTelegramBot:
                         success=True, chat_id=chat_id,
                     )
 
+                    # Log to evidence trail
+                    if self._evidence_trail:
+                        self._evidence_trail.log(
+                            "llm_call",
+                            f"{provider['model']}: {user_message[:100]}",
+                            f"Generated {len(reply)} chars in {latency}ms",
+                            mode=self._store.get_mode(chat_id),
+                            severity="info"
+                        )
+
                     self._store.add_message(chat_id, "assistant", reply, chat_type)
                     self._last_compact_notice = compact_notice
                     if provider != providers[0]:
@@ -1617,7 +1699,19 @@ class NeoMindTelegramBot:
 
         # Show specific error so user knows what went wrong
         err_summary = "\n".join(f"• {e}" for e in errors) if errors else "未知错误"
-        return f"⚠️ 所有 API 均失败:\n{err_summary}\n\n<i>/provider 查看配置 · /usage 查看统计</i>"
+        error_msg = f"⚠️ 所有 API 均失败:\n{err_summary}\n\n<i>/provider 查看配置 · /usage 查看统计</i>"
+
+        # Log failure to evidence
+        if self._evidence_trail:
+            self._evidence_trail.log(
+                "llm_error",
+                user_message[:100],
+                err_summary,
+                mode=self._store.get_mode(chat_id),
+                severity="critical"
+            )
+
+        return error_msg
 
     # ── Normal streaming: live message updates without thinking ────
 
