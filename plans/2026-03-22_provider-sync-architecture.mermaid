@@ -1,0 +1,57 @@
+---
+title: NeoMind Bidirectional Provider Sync Architecture
+---
+flowchart TB
+    subgraph macOS["macOS 本地"]
+        xbar["🖥️ xbar 菜单栏插件<br/>neomind-provider.1m.sh<br/>(每 1 分钟刷新)"]
+        litellm["⚡ LiteLLM Proxy<br/>localhost:4000"]
+        ollama["🦙 Ollama<br/>localhost:11434<br/>(Qwen3 14B etc.)"]
+        statefile[("📄 provider-state.json<br/>~/.neomind/provider-state.json<br/><b>Single Source of Truth</b>")]
+    end
+
+    subgraph docker["Docker Network"]
+        neomind["🤖 neomind-telegram<br/>NeoMindTelegramBot<br/>ProviderStateManager"]
+        futurebot["🤖 future-bot-2<br/>(独立 provider 配置)"]
+        db[("💾 SQLite<br/>chat history<br/>neomind-data volume")]
+    end
+
+    subgraph apis["Cloud APIs"]
+        deepseek["DeepSeek API<br/>deepseek-chat<br/>deepseek-reasoner"]
+        zai["z.ai API<br/>glm-5<br/>glm-4.5-flash"]
+    end
+
+    subgraph telegram["Telegram"]
+        user["👤 用户<br/>/provider · 自然语言"]
+        group["💬 群聊<br/>状态通知"]
+    end
+
+    %% xbar ↔ state file
+    xbar -- "读取状态<br/>显示菜单" --> statefile
+    xbar -- "写入切换<br/>{provider_mode: litellm}" --> statefile
+
+    %% bot ↔ state file
+    neomind -- "每次请求前读取<br/>检测变化" --> statefile
+    neomind -- "命令/NL 切换后写入" --> statefile
+    futurebot -. "同一文件<br/>独立 bot key" .-> statefile
+
+    %% state file: bind mount
+    statefile -. "bind mount<br/>同一物理文件" .-> statefile
+
+    %% xbar health check
+    xbar -- "健康检查" --> litellm
+
+    %% bot → LLM providers
+    neomind -- "mode=litellm" --> litellm
+    litellm --> ollama
+    neomind -- "mode=direct" --> deepseek
+    neomind -- "fallback" --> zai
+
+    %% Telegram interaction
+    user -- "/provider litellm<br/>帮我切到本地模型" --> neomind
+    neomind -- "✅ 已切换<br/>🔌 远程切换通知" --> group
+
+    %% styling
+    style statefile fill:#fff3cd,stroke:#ffc107,stroke-width:3px
+    style neomind fill:#d4edda,stroke:#28a745,stroke-width:2px
+    style xbar fill:#cce5ff,stroke:#007bff,stroke-width:2px
+    style litellm fill:#e2d5f1,stroke:#6f42c1,stroke-width:2px

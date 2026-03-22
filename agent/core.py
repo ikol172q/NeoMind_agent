@@ -137,6 +137,17 @@ class NeoMindAgent:
 
     # ── Provider registry ────────────────────────────────────────────
     _PROVIDERS = {
+        "litellm": {
+            "base_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1/chat/completions"),
+            "models_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1") + "/models",
+            "env_key": "LITELLM_API_KEY",
+            "model_prefixes": ["local"],
+            "fallback_models": [
+                {"id": "local", "owned_by": "ollama/qwen3"},
+                {"id": "deepseek-chat", "owned_by": "deepseek-via-litellm"},
+                {"id": "deepseek-reasoner", "owned_by": "deepseek-via-litellm"},
+            ],
+        },
         "deepseek": {
             "base_url": "https://api.deepseek.com/chat/completions",
             "models_url": "https://api.deepseek.com/models",
@@ -167,10 +178,32 @@ class NeoMindAgent:
         """Resolve which provider config to use for a given model.
 
         Returns a dict with keys: base_url, models_url, api_key, name.
-        Falls back to deepseek if no prefix matches.
+
+        When LITELLM_ENABLED=true, "local" and "deepseek-*" models route
+        through the LiteLLM proxy (which handles Ollama fallback internally).
+        Otherwise falls back to direct DeepSeek/z.ai API calls.
         """
         model = model or self.model
+        litellm_enabled = os.getenv("LITELLM_ENABLED", "").lower() in ("true", "1", "yes")
+
+        # If litellm is enabled and model is routable through it
+        if litellm_enabled:
+            litellm_key = os.getenv("LITELLM_API_KEY", "")
+            if litellm_key:
+                litellm_models = ["local", "deepseek-chat", "deepseek-reasoner"]
+                if model in litellm_models or model.startswith("local"):
+                    base = os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
+                    return {
+                        "name": "litellm",
+                        "base_url": f"{base}/chat/completions",
+                        "models_url": f"{base}/models",
+                        "api_key": litellm_key,
+                    }
+
+        # Standard provider matching
         for name, prov in self._PROVIDERS.items():
+            if name == "litellm":
+                continue  # skip litellm in standard matching
             for prefix in prov["model_prefixes"]:
                 if model.startswith(prefix):
                     api_key = os.getenv(prov["env_key"], "")
