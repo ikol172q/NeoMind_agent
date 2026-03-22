@@ -234,7 +234,7 @@ class SprintManager:
         return "\n".join(lines)
 
     def _save(self, sprint: Sprint):
-        path = self.SPRINTS_DIR / f"{sprint.id}.json"
+        path = Path(self.SPRINTS_DIR) / f"{sprint.id}.json"
         data = {
             "id": sprint.id,
             "goal": sprint.goal,
