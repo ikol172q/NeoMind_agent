@@ -297,6 +297,10 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
         self._app.add_handler(CommandHandler("hn", self._cmd_hn))
         self._app.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
+        self._app.add_handler(CommandHandler("skills", self._cmd_skills))
+        self._app.add_handler(CommandHandler("careful", self._cmd_careful))
+        self._app.add_handler(CommandHandler("sprint", self._cmd_sprint))
+        self._app.add_handler(CommandHandler("evidence", self._cmd_evidence))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -385,6 +389,12 @@ class NeoMindTelegramBot:
             "── 📡 <b>资讯</b> ──\n"
             "<code>/hn</code> top|best|new|ask|show — Hacker News\n"
             "<code>/subscribe hn</code> — 订阅 HN 定时推送\n"
+            "\n"
+            "── ⚙️ <b>工作流</b> ──\n"
+            "<code>/skills</code> — 查看当前模式可用 skills\n"
+            "<code>/sprint new</code> <goal> — 结构化任务流程\n"
+            "<code>/careful</code> — 开关安全护栏\n"
+            "<code>/evidence</code> — 操作审计日志\n"
             "\n"
             "── 🔧 <b>管理</b> ──\n"
             "<code>/clear</code> — 归档对话 (LLM 重开)\n"
@@ -964,6 +974,111 @@ class NeoMindTelegramBot:
 
         if changed:
             self._save_subscriptions(subs)
+
+    async def _cmd_skills(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /skills — list available skills for this chat's mode."""
+        from agent.skills import get_skill_loader
+        cid = update.message.chat_id
+        mode = self._store.get_mode(cid)
+        loader = get_skill_loader()
+
+        args = " ".join(context.args) if context.args else ""
+        if args:
+            # Show specific skill detail
+            skill = loader.get(args)
+            if skill:
+                await update.message.reply_text(
+                    f"<b>/{skill.name}</b> — {skill.description}\n"
+                    f"Modes: {', '.join(skill.modes)} | v{skill.version}\n\n"
+                    f"<blockquote expandable>{html.escape(skill.body[:800])}</blockquote>",
+                    parse_mode=ParseMode.HTML,
+                )
+            else:
+                await update.message.reply_text(f"Skill not found: {args}")
+        else:
+            output = loader.format_skill_list(mode=mode)
+            await update.message.reply_text(
+                f"<b>Skills (mode: {mode})</b>\n<pre>{html.escape(output)}</pre>",
+                parse_mode=ParseMode.HTML,
+            )
+
+    async def _cmd_careful(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /careful — toggle safety guard."""
+        from agent.workflow.guards import get_guard
+        guard = get_guard()
+        if guard.state.careful_enabled:
+            guard.disable_careful()
+            await update.message.reply_text("⚪ Careful mode OFF")
+        else:
+            guard.enable_careful()
+            await update.message.reply_text("🛑 Careful mode ON — will warn before destructive operations")
+
+    async def _cmd_sprint(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /sprint — structured task workflow."""
+        from agent.workflow.sprint import SprintManager
+        cid = update.message.chat_id
+        mode = self._store.get_mode(cid)
+        args = list(context.args) if context.args else []
+        mgr = SprintManager()
+
+        if not args:
+            await update.message.reply_text(
+                "<b>Sprint</b> — structured task workflow\n\n"
+                "<code>/sprint new Buy AAPL</code> — create sprint\n"
+                "<code>/sprint status</code> — show progress\n"
+                "<code>/sprint next</code> — advance to next phase\n"
+                "<code>/sprint skip</code> — skip current phase",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        subcmd = args[0]
+        if subcmd == "new" and len(args) > 1:
+            goal = " ".join(args[1:])
+            sprint = mgr.create(goal, mode=mode)
+            await update.message.reply_text(
+                f"✅ Sprint: {sprint.id}\n\n{mgr.format_status(sprint.id)}"
+            )
+        elif subcmd == "status":
+            found = False
+            for sid in mgr._active_sprints:
+                await update.message.reply_text(mgr.format_status(sid))
+                found = True
+            if not found:
+                await update.message.reply_text("No active sprints. /sprint new <goal>")
+        elif subcmd == "next":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.advance(sid)
+                if phase:
+                    await update.message.reply_text(f"▶️ Now: <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
+                else:
+                    await update.message.reply_text("✅ Sprint completed!")
+                break
+        elif subcmd == "skip":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.skip_phase(sid)
+                if phase:
+                    await update.message.reply_text(f"⏭️ Skipped → <b>{phase.name}</b>", parse_mode=ParseMode.HTML)
+                break
+
+    async def _cmd_evidence(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /evidence — view audit trail."""
+        from agent.workflow.evidence import get_evidence_trail
+        trail = get_evidence_trail()
+        args = " ".join(context.args) if context.args else ""
+
+        if args == "stats":
+            stats = trail.get_stats()
+            await update.message.reply_text(
+                f"📋 <b>Evidence Trail</b>\n\n"
+                f"Total entries: {stats.get('total', 0)}\n"
+                f"Log size: {stats.get('log_size_kb', 0)} KB\n"
+                f"By action: {stats.get('by_action', {})}",
+                parse_mode=ParseMode.HTML,
+            )
+        else:
+            output = trail.format_recent(10)
+            await update.message.reply_text(output)
 
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
