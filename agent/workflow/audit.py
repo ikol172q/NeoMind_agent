@@ -385,12 +385,12 @@ class AuditEngine:
     def _check_command_descriptions(self) -> List[AuditFinding]:
         findings = []
         try:
-            from cli.claude_interface import SlashCommandCompleter
+            from cli.neomind_interface import SlashCommandCompleter
             descs = SlashCommandCompleter.ALL_DESCRIPTIONS
             expected = ["skills", "careful", "freeze", "guard", "sprint", "evidence", "mode", "config"]
             for cmd in expected:
                 if cmd not in descs:
-                    findings.append(AuditFinding("medium", "claude_interface.py", f"Missing description: /{cmd}"))
+                    findings.append(AuditFinding("medium", "neomind_interface.py", f"Missing description: /{cmd}"))
         except Exception as e:
             findings.append(AuditFinding("low", "commands", f"Check failed: {e}"))
         return findings or [AuditFinding("info", "commands", "All new commands have descriptions")]

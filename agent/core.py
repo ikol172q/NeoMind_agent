@@ -474,7 +474,7 @@ class NeoMindAgent:
         """Truncate long output using middle-truncation strategy.
 
         Preserves the beginning and end of output (most useful parts)
-        while removing the middle. Matches Claude CLI's approach.
+        while removing the middle.
         """
         if len(text) <= max_chars:
             return text
@@ -5109,7 +5109,7 @@ Please think step by step and provide your analysis:"""
             # Start timing
             start_time = time.time()
 
-            # Spinner is now handled by the UI layer (ClaudeInterface._stream_and_render)
+            # Spinner is now handled by the UI layer (NeoMindInterface._stream_and_render)
             # We just notify when first token arrives via _ui_on_first_token callback
 
             response = requests.post(

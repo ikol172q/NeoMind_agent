@@ -1,5 +1,5 @@
 # cli/progress_display.py
-"""Advanced progress display system similar to Claude CLI."""
+"""Advanced progress display system for structured interaction."""
 
 import time
 import threading

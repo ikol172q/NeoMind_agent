@@ -1,6 +1,6 @@
 # agent/skills/__init__.py
 """
-NeoMind Skill System — structured workflow prompts inspired by gstack.
+NeoMind Skill System — structured workflow prompts.
 
 Skills are SKILL.md files with YAML frontmatter + markdown body.
 The loader parses them and injects into the LLM context when invoked.
