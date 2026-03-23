@@ -15,6 +15,7 @@ A CLI coding agent powered by multiple LLM providers (DeepSeek, z.ai). Features 
 - **Code Analysis & Self-Iteration**: Analyze, improve, and safely modify the agent's own code
 - **Permission Model**: Read-only tools auto-approve; write/execute tools ask for confirmation
 - **Persistent Bash**: Shell state carries across commands (`cd`, `export`, env vars persist)
+- **Obsidian Vault**: Markdown-based long-term memory (`~/neomind-vault`). NeoMind reads MEMORY.md + goals at startup, writes journal at session end. Browsable with Obsidian (free, Restricted Mode). Closes the self-improvement loop.
 
 ## Quick Start
 
@@ -191,8 +192,20 @@ graph TB
         SEC["secure_memory.py<br/>encrypted SQLite (finance)"]
     end
 
+    subgraph Vault["Obsidian Vault (agent/vault/)"]
+        VR["reader.py<br/>MEMORY.md + goals + journal<br/>→ system prompt injection"]
+        VW["writer.py<br/>YAML frontmatter journals<br/>goals · retros · learnings"]
+        VP["promoter.py<br/>3-occurrence threshold<br/>SharedMemory → MEMORY.md"]
+        VC2["_config.py<br/>env → Docker → local"]
+    end
+
     Modes --> SM
     FIN --> SEC
+    Core --> VR
+    Core --> VW
+    Evolution --> VW
+    Evolution --> VP
+    SM --> VP
 
     subgraph Logging["Unified Logging (agent/logging/)"]
         UL["unified_logger.py<br/>daily JSONL rotation<br/>llm_call · command · file_op · error"]
@@ -250,6 +263,7 @@ graph TB
         LOGSJ["~/.neomind/logs/YYYY-MM-DD.jsonl<br/>(daily rotation)"]
         SECDB["~/.neomind/finance/memory.db<br/>(encrypted SQLite)"]
         USAGEJ["~/.llm-gateway/usage-daily.json<br/>(incremental tracker)"]
+        VAULT["~/neomind-vault/<br/>MEMORY.md · SOUL.md<br/>journal/ · retros/<br/>(Obsidian-browsable)"]
     end
 
     SM --> SMDB
@@ -257,6 +271,8 @@ graph TB
     UL --> LOGSJ
     SEC --> SECDB
     XBAR --> USAGEJ
+    VW --> VAULT
+    VR --> VAULT
 
     subgraph External["External Services"]
         DS["DeepSeek API"]
@@ -296,10 +312,12 @@ graph LR
 
     subgraph HostBind["Host Bind Mounts"]
         HN["~/.neomind<br/>provider-state.json<br/>shared_memory.db<br/>evidence/ · logs/"]
+        HV["~/neomind-vault<br/>SOUL.md · MEMORY.md<br/>current-goals.md<br/>journal/ · retros/"]
     end
 
     N1 & N2 --> VD
     N1 & N2 --> HN
+    N1 & N2 --> HV
     N1 & N2 -->|ro| VC
     OGW --> VC
     OCLI --> OGW
@@ -360,6 +378,7 @@ flowchart LR
         EV[(Evidence<br/>JSONL)]
         LOG[(Logs<br/>JSONL)]
         PS[(ProviderState<br/>JSON)]
+        VLT[(Vault<br/>Markdown)]
     end
 
     subgraph Output
@@ -371,7 +390,7 @@ flowchart LR
     TG & CLI --> CORE
     XB --> PS
     CORE --> SK & WF
-    CORE --> SM & EV & LOG
+    CORE --> SM & EV & LOG & VLT
     CORE --> PS
     CORE --> RESP & DASH
     PS --> XBUI
@@ -422,6 +441,12 @@ NeoMind_agent/
 │   ├── evolution/
 │   │   ├── auto_evolve.py           # Startup health, daily audit, weekly retro
 │   │   └── upgrade.py               # Git-based update with rollback
+│   ├── vault/
+│   │   ├── __init__.py              # Package exports (graceful degradation)
+│   │   ├── _config.py               # Vault dir resolution (env → Docker → local)
+│   │   ├── reader.py                # VaultReader: MEMORY.md + goals + journal → system prompt
+│   │   ├── writer.py                # VaultWriter: journals, goals, retros, memory entries
+│   │   └── promoter.py              # 3-occurrence pattern promotion: SharedMemory → MEMORY.md
 │   ├── memory/
 │   │   └── shared_memory.py         # Cross-mode SQLite (preferences/facts/patterns/feedback)
 │   ├── logging/
@@ -451,7 +476,7 @@ NeoMind_agent/
 │       └── daemon.py                # Browser automation daemon
 ├── cli/
 │   └── neomind_interface.py         # Terminal UI, agentic loop, content filter
-├── tests/                           # 1300+ tests
+├── tests/                           # 1479 tests (including 51 vault tests)
 ├── plans/                           # Architecture decisions and implementation plans
 ├── Dockerfile                       # Multi-stage Docker build
 ├── docker-compose.yml               # CLI + Telegram + OpenClaw (4 services)

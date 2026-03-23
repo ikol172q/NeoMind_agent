@@ -41,6 +41,8 @@ services:
       - ${NEOMIND_STATE_DIR:-~/.neomind}:/data/.neomind
       # Share OpenClaw memory for bidirectional bridge
       - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
+      # Obsidian vault — NeoMind writes, Obsidian on Mac reads
+      - ${NEOMIND_VAULT_DIR:-~/neomind-vault}:/data/vault
     ports:
       # Standalone sync port (only used if OpenClaw not available)
       - "${NEOMIND_SYNC_PORT:-18790}:18790"
@@ -68,6 +70,8 @@ services:
       # Shared config dir (provider-state.json — bidirectional sync with xbar)
       - ${NEOMIND_STATE_DIR:-~/.neomind}:/data/.neomind
       - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
+      # Obsidian vault — NeoMind writes, Obsidian on Mac reads
+      - ${NEOMIND_VAULT_DIR:-~/neomind-vault}:/data/vault
     restart: unless-stopped
     networks:
       - neomind-net
