@@ -94,6 +94,35 @@ def bot(tmp_path):
     from agent.finance.chat_store import ChatStore
     b._store = ChatStore(db_path=str(tmp_path / "test.db"))
 
+    # Provider state manager (needed by /provider, /context, /careful, /sprint)
+    from agent.finance.provider_state import ProviderStateManager
+    b._state_mgr = ProviderStateManager(state_dir=str(tmp_path / ".neomind"))
+    b._state_mgr.register_bot("neomind")
+
+    # Workflow modules (optional, graceful None)
+    b._sprint_mgr = None
+    b._guard = None
+    b._evidence_trail = None
+
+    # Init sprint/guard with temp HOME so they don't touch real filesystem
+    _old_home = os.environ.get("HOME")
+    os.environ["HOME"] = str(tmp_path)
+    try:
+        from agent.workflow.sprint import SprintManager
+        b._sprint_mgr = SprintManager()
+    except Exception:
+        pass
+    try:
+        from agent.workflow.guards import SafetyGuard
+        b._guard = SafetyGuard()
+    except Exception:
+        pass
+    # Restore HOME
+    if _old_home is not None:
+        os.environ["HOME"] = _old_home
+    else:
+        del os.environ["HOME"]
+
     return b
 
 
@@ -102,96 +131,88 @@ def bot(tmp_path):
 # ═══════════════════════════════════════════════════════════
 
 class TestHelpCommand:
-    @pytest.mark.asyncio
-    async def test_help_returns_grouped_commands(self, bot):
+    def test_help_returns_grouped_commands(self, bot):
         update = make_update("/help")
         ctx = make_context()
-        await bot._cmd_help(update, ctx)
+        asyncio.run(bot._cmd_help(update, ctx))
         reply = get_reply_text(update)
         assert "对话" in reply
         assert "金融" in reply
         assert "管理" in reply
         assert "/skills" in reply
 
-    @pytest.mark.asyncio
-    async def test_help_shows_current_mode(self, bot):
+    def test_help_shows_current_mode(self, bot):
         update = make_update("/help", chat_id=100)
         ctx = make_context()
-        await bot._cmd_help(update, ctx)
+        asyncio.run(bot._cmd_help(update, ctx))
         reply = get_reply_text(update)
         assert "fin" in reply  # default mode
 
 
 class TestModeCommand:
-    @pytest.mark.asyncio
-    async def test_mode_shows_current(self, bot):
+    def test_mode_shows_current(self, bot):
         update = make_update("/mode", chat_id=100)
         ctx = make_context()
-        await bot._cmd_mode(update, ctx)
+        asyncio.run(bot._cmd_mode(update, ctx))
         reply = get_reply_text(update)
         assert "fin" in reply
         assert "chat" in reply
         assert "coding" in reply
 
-    @pytest.mark.asyncio
-    async def test_mode_switch(self, bot):
+    def test_mode_switch(self, bot):
         update = make_update("/mode chat", chat_id=100)
         ctx = make_context(["chat"])
-        await bot._cmd_mode(update, ctx)
+        asyncio.run(bot._cmd_mode(update, ctx))
         reply = get_reply_text(update)
         assert "chat" in reply
 
         # Verify persisted
         assert bot._store.get_mode(100) == "chat"
 
-    @pytest.mark.asyncio
-    async def test_mode_invalid(self, bot):
+    def test_mode_invalid(self, bot):
         update = make_update("/mode xyz", chat_id=100)
         ctx = make_context(["xyz"])
-        await bot._cmd_mode(update, ctx)
+        asyncio.run(bot._cmd_mode(update, ctx))
         reply = get_reply_text(update)
         assert "未知" in reply or "❌" in reply
 
-    @pytest.mark.asyncio
-    async def test_mode_per_chat(self, bot):
+    def test_mode_per_chat(self, bot):
         # Set different modes for different chats
         update1 = make_update("/mode chat", chat_id=100)
-        await bot._cmd_mode(update1, make_context(["chat"]))
+        asyncio.run(bot._cmd_mode(update1, make_context(["chat"])))
 
         update2 = make_update("/mode coding", chat_id=200)
-        await bot._cmd_mode(update2, make_context(["coding"]))
+        asyncio.run(bot._cmd_mode(update2, make_context(["coding"])))
 
         assert bot._store.get_mode(100) == "chat"
         assert bot._store.get_mode(200) == "coding"
 
 
 class TestThinkCommand:
-    @pytest.mark.asyncio
-    async def test_think_toggle(self, bot):
+    def test_think_toggle(self, bot):
         assert bot._thinking_enabled is False
 
         update = make_update("/think")
         ctx = make_context()
-        await bot._cmd_think(update, ctx)
+        asyncio.run(bot._cmd_think(update, ctx))
         assert bot._thinking_enabled is True
         reply = get_reply_text(update)
         assert "ON" in reply
 
         update2 = make_update("/think")
-        await bot._cmd_think(update2, ctx)
+        asyncio.run(bot._cmd_think(update2, ctx))
         assert bot._thinking_enabled is False
 
 
 class TestClearCommand:
-    @pytest.mark.asyncio
-    async def test_clear_archives_messages(self, bot):
+    def test_clear_archives_messages(self, bot):
         # Add some messages
         bot._store.add_message(100, "user", "hello")
         bot._store.add_message(100, "assistant", "hi")
         assert bot._store.count_messages(100) == 2
 
         update = make_update("/clear", chat_id=100)
-        await bot._cmd_clear(update, make_context())
+        asyncio.run(bot._cmd_clear(update, make_context()))
 
         # Active messages gone
         assert bot._store.count_messages(100) == 0
@@ -203,149 +224,133 @@ class TestClearCommand:
 
 
 class TestContextCommand:
-    @pytest.mark.asyncio
-    async def test_context_shows_usage(self, bot):
+    def test_context_shows_usage(self, bot):
         bot._store.add_message(100, "user", "test message")
         update = make_update("/context", chat_id=100)
-        await bot._cmd_context(update, make_context())
+        asyncio.run(bot._cmd_context(update, make_context()))
         reply = get_reply_text(update)
         assert "Context Window" in reply
         assert "tokens" in reply.lower() or "Tokens" in reply
 
 
 class TestSkillsCommand:
-    @pytest.mark.asyncio
-    async def test_skills_lists_for_mode(self, bot):
+    def test_skills_lists_for_mode(self, bot):
         update = make_update("/skills", chat_id=100)
-        await bot._cmd_skills(update, make_context())
+        asyncio.run(bot._cmd_skills(update, make_context()))
         reply = get_reply_text(update)
         assert "Skills" in reply or "skills" in reply
 
-    @pytest.mark.asyncio
-    async def test_skills_detail(self, bot):
+    def test_skills_detail(self, bot):
         update = make_update("/skills browse", chat_id=100)
-        await bot._cmd_skills(update, make_context(["browse"]))
+        asyncio.run(bot._cmd_skills(update, make_context(["browse"])))
         reply = get_reply_text(update)
         assert "browse" in reply.lower()
 
 
 class TestCarefulCommand:
-    @pytest.mark.asyncio
-    async def test_careful_toggle(self, bot):
+    def test_careful_toggle(self, bot):
         update = make_update("/careful")
-        await bot._cmd_careful(update, make_context())
+        asyncio.run(bot._cmd_careful(update, make_context()))
         reply = get_reply_text(update)
         assert "Careful" in reply or "careful" in reply
 
 
 class TestSprintCommand:
-    @pytest.mark.asyncio
-    async def test_sprint_new(self, bot):
+    def test_sprint_new(self, bot):
         update = make_update("/sprint new 测试任务", chat_id=100)
-        await bot._cmd_sprint(update, make_context(["new", "测试任务"]))
+        asyncio.run(bot._cmd_sprint(update, make_context(["new", "测试任务"])))
         reply = get_reply_text(update)
         assert "Sprint" in reply or "sprint" in reply
         assert "think" in reply
 
-    @pytest.mark.asyncio
-    async def test_sprint_status_after_new(self, bot):
+    def test_sprint_status_after_new(self, bot):
         # Create first
         update1 = make_update("/sprint new 任务A", chat_id=100)
-        await bot._cmd_sprint(update1, make_context(["new", "任务A"]))
+        asyncio.run(bot._cmd_sprint(update1, make_context(["new", "任务A"])))
 
         # Status
         update2 = make_update("/sprint status", chat_id=100)
-        await bot._cmd_sprint(update2, make_context(["status"]))
+        asyncio.run(bot._cmd_sprint(update2, make_context(["status"])))
         reply = get_reply_text(update2)
         assert "任务A" in reply or "Sprint" in reply
 
-    @pytest.mark.asyncio
-    async def test_sprint_next(self, bot):
+    def test_sprint_next(self, bot):
         # Create
         update1 = make_update("/sprint new 任务B", chat_id=100)
-        await bot._cmd_sprint(update1, make_context(["new", "任务B"]))
+        asyncio.run(bot._cmd_sprint(update1, make_context(["new", "任务B"])))
 
         # Advance
         update2 = make_update("/sprint next", chat_id=100)
-        await bot._cmd_sprint(update2, make_context(["next"]))
+        asyncio.run(bot._cmd_sprint(update2, make_context(["next"])))
         reply = get_reply_text(update2)
         assert "plan" in reply
 
 
 class TestAdminCommand:
-    @pytest.mark.asyncio
-    async def test_admin_stats(self, bot):
+    def test_admin_stats(self, bot):
         bot._store.add_message(100, "user", "msg")
         update = make_update("/admin stats", chat_id=100)
-        await bot._cmd_admin(update, make_context(["stats"]))
+        asyncio.run(bot._cmd_admin(update, make_context(["stats"])))
         reply = get_reply_text(update)
         assert "Chat Store" in reply
         assert "messages" in reply.lower()
 
-    @pytest.mark.asyncio
-    async def test_admin_help(self, bot):
+    def test_admin_help(self, bot):
         update = make_update("/admin", chat_id=100)
-        await bot._cmd_admin(update, make_context())
+        asyncio.run(bot._cmd_admin(update, make_context()))
         reply = get_reply_text(update)
         assert "Admin Panel" in reply
 
-    @pytest.mark.asyncio
-    async def test_admin_history(self, bot):
+    def test_admin_history(self, bot):
         bot._store.add_message(100, "user", "hello world")
         bot._store.add_message(100, "assistant", "hi there")
         update = make_update("/admin history", chat_id=100)
-        await bot._cmd_admin(update, make_context(["history"]))
+        asyncio.run(bot._cmd_admin(update, make_context(["history"])))
         reply = get_reply_text(update)
         assert "hello world" in reply or "对话历史" in reply
 
-    @pytest.mark.asyncio
-    async def test_admin_purge_requires_confirm(self, bot):
+    def test_admin_purge_requires_confirm(self, bot):
         update = make_update("/admin purge", chat_id=100)
-        await bot._cmd_admin(update, make_context(["purge"]))
+        asyncio.run(bot._cmd_admin(update, make_context(["purge"])))
         reply = get_reply_text(update)
         assert "confirm" in reply.lower() or "确认" in reply
 
 
 class TestProviderCommand:
-    @pytest.mark.asyncio
-    async def test_provider_shows_chain(self, bot):
+    def test_provider_shows_chain(self, bot):
         update = make_update("/provider")
-        await bot._cmd_provider(update, make_context())
+        asyncio.run(bot._cmd_provider(update, make_context()))
         reply = get_reply_text(update)
         assert "LLM Provider" in reply or "Provider" in reply
         assert "chain" in reply.lower() or "Chain" in reply
 
-    @pytest.mark.asyncio
-    async def test_provider_switch_direct(self, bot):
+    def test_provider_switch_direct(self, bot):
         update = make_update("/provider direct")
-        await bot._cmd_provider(update, make_context(["direct"]))
+        asyncio.run(bot._cmd_provider(update, make_context(["direct"])))
         reply = get_reply_text(update)
-        assert "禁用" in reply or "direct" in reply.lower()
+        assert "直连" in reply or "direct" in reply.lower() or "禁用" in reply
 
 
 class TestHnCommand:
-    @pytest.mark.asyncio
-    async def test_hn_calls_fetch(self, bot):
+    def test_hn_calls_fetch(self, bot):
         with patch("agent.finance.telegram_bot.NeoMindTelegramBot._send_long_message", new_callable=AsyncMock) as mock_send:
             update = make_update("/hn best 3", chat_id=100)
-            await bot._cmd_hn(update, make_context(["best", "3"]))
+            asyncio.run(bot._cmd_hn(update, make_context(["best", "3"])))
             # Should have called send (even if HN API fails, it sends "没有找到")
             assert mock_send.called or update.message.reply_text.called
 
 
 class TestEvidenceCommand:
-    @pytest.mark.asyncio
-    async def test_evidence_empty(self, bot):
+    def test_evidence_empty(self, bot):
         update = make_update("/evidence")
-        await bot._cmd_evidence(update, make_context())
+        asyncio.run(bot._cmd_evidence(update, make_context()))
         reply = get_reply_text(update)
         assert "evidence" in reply.lower() or "No" in reply
 
 
 class TestUnknownCommand:
-    @pytest.mark.asyncio
-    async def test_typo_suggestion(self, bot):
+    def test_typo_suggestion(self, bot):
         update = make_update("/model chat")
-        await bot._handle_unknown_command(update, make_context())
+        asyncio.run(bot._handle_unknown_command(update, make_context()))
         reply = get_reply_text(update)
         assert "/mode" in reply
