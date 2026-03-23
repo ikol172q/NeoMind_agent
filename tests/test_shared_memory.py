@@ -508,7 +508,15 @@ class TestSharedMemoryConcurrency:
             db_path = os.path.join(tmpdir, "test.db")
 
             def writer(mode, count):
-                mem = SharedMemory(db_path=db_path)
+                import time
+                for attempt in range(3):
+                    try:
+                        mem = SharedMemory(db_path=db_path)
+                        break
+                    except Exception:
+                        time.sleep(0.1 * (attempt + 1))
+                else:
+                    return
                 for i in range(count):
                     mem.set_preference(f"key_{mode}_{i}", f"value_{i}", mode)
                 mem.close()

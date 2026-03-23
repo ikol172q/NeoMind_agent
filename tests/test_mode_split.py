@@ -109,7 +109,7 @@ class TestAgentConfigManager(unittest.TestCase):
         from agent_config import AgentConfigManager
         chat_cfg = AgentConfigManager(mode="chat")
         code_cfg = AgentConfigManager(mode="coding")
-        self.assertIn("helpful AI assistant", chat_cfg.system_prompt)
+        self.assertIn("AI assistant built on First Principles Thinking", chat_cfg.system_prompt)
         self.assertIn("expert software engineer", code_cfg.system_prompt)
         self.assertNotEqual(chat_cfg.system_prompt, code_cfg.system_prompt)
 
@@ -284,7 +284,7 @@ class TestCoreIntegration(unittest.TestCase):
         chat = NeoMindAgent(api_key="test")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
         self.assertEqual(len(sys_msgs), 1)
-        self.assertIn("helpful AI assistant", sys_msgs[0]["content"])
+        self.assertIn("AI assistant built on First Principles Thinking", sys_msgs[0]["content"])
 
     def test_coding_mode_system_prompt(self):
         from agent_config import agent_config
@@ -307,7 +307,7 @@ class TestCoreIntegration(unittest.TestCase):
         # Switch back to chat
         chat.switch_mode("chat")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
-        self.assertIn("helpful AI assistant", sys_msgs[0]["content"])
+        self.assertIn("AI assistant built on First Principles Thinking", sys_msgs[0]["content"])
 
 
 class TestAgentConfigEdgeCases(unittest.TestCase):

@@ -50,6 +50,13 @@ try:
         ContextTypes, filters,
     )
     from telegram.constants import ParseMode, ChatAction
+    # ReactionTypeEmoji available in python-telegram-bot >= 20.8 (Bot API 7.0)
+    try:
+        from telegram import ReactionTypeEmoji
+        HAS_REACTIONS = True
+    except ImportError:
+        HAS_REACTIONS = False
+        ReactionTypeEmoji = None
     HAS_TELEGRAM = True
 except ImportError:
     HAS_TELEGRAM = False
@@ -1374,14 +1381,56 @@ class NeoMindTelegramBot:
 
         await self._process_and_reply(update, query, reason)
 
+    # ── Message Reactions (Bot API 7.0+) ────────────────────────────
+
+    async def _react(self, msg, emoji: str) -> None:
+        """Set a reaction emoji on a message (👀 processing, ✅ done, ❌ error).
+
+        Gracefully degrades if:
+        - python-telegram-bot < 20.8 (no ReactionTypeEmoji)
+        - Bot lacks permission in the chat
+        - Telegram API rejects the emoji
+        """
+        if not HAS_REACTIONS or not self._app:
+            return
+        try:
+            await self._app.bot.set_message_reaction(
+                chat_id=msg.chat_id,
+                message_id=msg.message_id,
+                reaction=[ReactionTypeEmoji(emoji)],
+            )
+        except Exception:
+            pass  # Silently ignore — reactions are a nice-to-have
+
+    async def _react_clear(self, msg) -> None:
+        """Remove all reactions from a message."""
+        if not HAS_REACTIONS or not self._app:
+            return
+        try:
+            await self._app.bot.set_message_reaction(
+                chat_id=msg.chat_id,
+                message_id=msg.message_id,
+                reaction=[],
+            )
+        except Exception:
+            pass
+
     async def _process_and_reply(self, update: Update, text: str, reason: str):
         """Process a query and send reply.
 
         For /commands (fin_command): route through finance skill.
         For everything else: send to DeepSeek LLM for a real conversation.
         When thinking is enabled: stream thinking into one message, then send response as another.
+
+        Reaction lifecycle:
+        👀 → message received, processing
+        ✅ → response sent successfully
+        ❌ → error occurred
         """
         msg = update.message
+
+        # React 👀 = "seen, processing"
+        await self._react(msg, "👀")
 
         # Show typing indicator
         await msg.chat.send_action(ChatAction.TYPING)
@@ -1405,9 +1454,11 @@ class NeoMindTelegramBot:
                 reply = await self._skill.handle_incoming(incoming)
                 if reply:
                     await self._send_long_message(msg, reply)
+                    await self._react(msg, "✅")
                     return
             except Exception as e:
                 await msg.reply_text(f"⚠️ Error: {e}")
+                await self._react(msg, "❌")
                 return
 
         # 2. Everything else → send to DeepSeek LLM (always streaming)
@@ -1416,10 +1467,19 @@ class NeoMindTelegramBot:
         cid = msg.chat_id
         ctype = msg.chat.type or "private"
 
-        if thinking:
-            await self._ask_llm_streaming(msg, text, chat_id=cid, chat_type=ctype)
-        else:
-            await self._ask_llm_stream_normal(msg, text, chat_id=cid, chat_type=ctype)
+        try:
+            if thinking:
+                await self._ask_llm_streaming(msg, text, chat_id=cid, chat_type=ctype)
+            else:
+                await self._ask_llm_stream_normal(msg, text, chat_id=cid, chat_type=ctype)
+
+            # React ✅ = "done"
+            await self._react(msg, "✅")
+        except Exception as e:
+            logger.error(f"LLM call failed: {e}")
+            await msg.reply_text(f"⚠️ LLM 调用失败: {e}")
+            await self._react(msg, "❌")
+            return
 
         # Send context notice
         notice = getattr(self, '_last_compact_notice', None)

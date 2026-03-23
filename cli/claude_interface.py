@@ -95,6 +95,9 @@ class SlashCommandCompleter(Completer):
         "translate": "Translate text",
         "generate": "Generate content",
         "reason": "Chain-of-thought reasoning",
+        "remember": "Save user facts and preferences to shared memory",
+        "recall": "Retrieve user facts and preferences from memory",
+        "preferences": "View or set user preferences",
         # Coding-only (Claude CLI tools)
         "read": "Read file with line numbers",
         "write": "Create or overwrite a file",
@@ -119,6 +122,11 @@ class SlashCommandCompleter(Completer):
         "execute": "Execute a plan",
         "todo": "Track task progress",
         "permissions": "Toggle permission mode (normal / auto_accept / plan)",
+        "perf": "Analyze performance bottlenecks",
+        "deploy": "Prepare deployment",
+        "ship": "Finalize and push to production",
+        "remember": "Save coding patterns to shared memory",
+        "recall": "Retrieve user context from memory",
         # Finance-only (fin mode)
         "stock": "Look up stock price, fundamentals, and analysis",
         "crypto": "Cryptocurrency price, market cap, and trends",
