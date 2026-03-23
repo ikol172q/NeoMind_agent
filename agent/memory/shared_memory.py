@@ -1,6 +1,6 @@
 # agent/memory/shared_memory.py
 """
-Cross-personality Shared Memory Layer (Phase 3 — NeoMind gstack integration)
+Cross-personality Shared Memory Layer — NeoMind cross-personality memory
 
 All 3 modes (chat/coding/fin) can read and write shared user data:
 - Preferences: user-level settings (language, timezone, name)

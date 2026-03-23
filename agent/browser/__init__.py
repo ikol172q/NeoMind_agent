@@ -2,9 +2,9 @@
 """
 NeoMind Browser — persistent headless Chromium daemon.
 
-Inspired by gstack's browse server architecture:
+Persistent headless Chromium daemon:
 - Persistent Chromium process (survives between commands)
-- HTTP server for command dispatch
+- Command dispatch interface
 - ~100ms latency after cold start
 - ARIA snapshot → @ref system for reliable element targeting
 - Cookie/session persistence across calls

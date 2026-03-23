@@ -1,7 +1,7 @@
 """
-Claude CLI-like tool system for coding mode.
+NeoMind tool system for coding mode.
 
-Provides structured tools that mirror Claude CLI's built-in capabilities:
+Provides structured tools with built-in capabilities:
 - Bash: Execute shell commands
 - Read: Read files with line numbers
 - Write: Create/overwrite files
@@ -52,7 +52,7 @@ class ToolResult:
 
 
 class ToolRegistry:
-    """Claude CLI-like tool system for coding mode.
+    """NeoMind tool system for coding mode.
 
     Each tool returns a ToolResult with structured output.
     Tools are registered with typed schemas (ToolDefinition) for:
@@ -376,7 +376,7 @@ class ToolRegistry:
     # ── Read ─────────────────────────────────────────────────────────────
 
     def read_file(self, path: str, offset: int = 0, limit: int = 0, max_chars: int = 30000) -> ToolResult:
-        """Read a file with line numbers, like Claude CLI's Read tool.
+        """Read a file with line numbers.
 
         Args:
             path: File path (absolute or relative to working dir)
@@ -469,7 +469,7 @@ class ToolRegistry:
     def edit_file(self, path: str, old_string: str, new_string: str, replace_all: bool = False) -> ToolResult:
         """Edit a file by replacing old_string with new_string.
 
-        Like Claude CLI's Edit tool — targeted string replacement.
+        Targeted string replacement in files.
 
         Args:
             path: File path

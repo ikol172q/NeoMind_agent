@@ -10,7 +10,7 @@ class AgentConfigManager:
     Config structure:
         agent/config/base.yaml    — shared settings (model, temperature, context, etc.)
         agent/config/chat.yaml    — chat mode settings
-        agent/config/coding.yaml  — coding mode settings (Claude CLI-like)
+        agent/config/coding.yaml  — coding mode settings
 
     The active mode determines which mode config is loaded on top of base.
     """

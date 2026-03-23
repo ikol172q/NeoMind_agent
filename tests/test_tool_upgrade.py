@@ -814,14 +814,14 @@ class TestConversationManagerAdditional(unittest.TestCase):
     """Additional tests for ConversationManager."""
 
     def test_init_creates_directory(self):
-        from cli.claude_interface import ConversationManager
+        from cli.neomind_interface import ConversationManager
         mgr = ConversationManager()
         self.assertTrue(mgr.base_dir.exists())
 
     def test_save_json_structure(self):
         """Saved file should have proper JSON structure."""
         import json
-        from cli.claude_interface import ConversationManager
+        from cli.neomind_interface import ConversationManager
         from unittest.mock import MagicMock
 
         mgr = ConversationManager()
@@ -847,7 +847,7 @@ class TestConversationManagerAdditional(unittest.TestCase):
                 pass
 
     def test_load_with_json_extension(self):
-        from cli.claude_interface import ConversationManager
+        from cli.neomind_interface import ConversationManager
         mgr = ConversationManager()
         result = mgr.load("nonexistent_conv.json")
         self.assertIsNone(result)
@@ -861,21 +861,21 @@ class TestSlashCommandCompleterAdditional(unittest.TestCase):
 
     def test_fallback_when_no_commands_in_config(self):
         """When config has empty commands, should fall back to ALL_DESCRIPTIONS."""
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         from unittest.mock import patch, MagicMock
 
         # Mock config to return empty commands
         mock_config = MagicMock()
         mock_config.get_mode_config.return_value = {"commands": []}
 
-        with patch("cli.claude_interface.agent_config", mock_config):
+        with patch("cli.neomind_interface.agent_config", mock_config):
             completer = SlashCommandCompleter(mode="chat")
             # Should fall back to all descriptions
             self.assertEqual(set(completer.commands), set(SlashCommandCompleter.ALL_DESCRIPTIONS.keys()))
 
     def test_completion_yields_sorted(self):
         """Completions should be yielded in sorted order."""
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         from unittest.mock import MagicMock
 
         completer = SlashCommandCompleter.__new__(SlashCommandCompleter)

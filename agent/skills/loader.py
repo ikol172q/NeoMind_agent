@@ -2,7 +2,7 @@
 """
 Skill Loader — parses SKILL.md files and manages the skill registry.
 
-SKILL.md format (inspired by gstack):
+SKILL.md format:
 ```
 ---
 name: office-hours

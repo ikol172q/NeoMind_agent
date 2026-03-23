@@ -259,8 +259,8 @@ class TestContentFilterWithRealOutput:
     """Test that the content filter works correctly with real model output."""
 
     def setup_method(self):
-        from cli.claude_interface import ClaudeInterface
-        self.FilterClass = ClaudeInterface._CodeFenceFilter
+        from cli.neomind_interface import NeoMindInterface
+        self.FilterClass = NeoMindInterface._CodeFenceFilter
         self.parser = ToolCallParser()
         self.system_prompt = _get_system_prompt()
 
@@ -342,7 +342,7 @@ class TestToolResultFeedback:
                 "./tests/test_tool_parser.py\n"
                 "./tests/test_tool_schema.py\n"
                 "./tests/test_agentic_loop.py\n"
-                "./tests/test_claude_interface.py\n"
+                "./tests/test_neomind_interface.py\n"
             ),
         )
         mock_call = ToolCall("Bash", {"command": 'find . -name "test_*.py" -type f'},
@@ -513,8 +513,8 @@ class TestNoOutputRegression:
         print(f"\n--- Response ---\n{response}\n---")
 
         # Run through content filter
-        from cli.claude_interface import ClaudeInterface
-        f = ClaudeInterface._CodeFenceFilter()
+        from cli.neomind_interface import NeoMindInterface
+        f = NeoMindInterface._CodeFenceFilter()
         visible = f.write(response) + f.flush()
 
         assert len(visible.strip()) > 10, (

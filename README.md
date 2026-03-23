@@ -125,7 +125,7 @@ graph TB
     end
 
     subgraph UI["User Interfaces"]
-        CLUI["cli/claude_interface.py<br/>Terminal UI + Agentic Loop"]
+        CLUI["cli/neomind_interface.py<br/>Terminal UI + Agentic Loop"]
         TGAPI["Telegram API<br/>polling + /commands"]
     end
 
@@ -311,7 +311,7 @@ graph LR
 ```mermaid
 sequenceDiagram
     participant U as User
-    participant CLI as claude_interface.py
+    participant CLI as neomind_interface.py
     participant A as NeoMindAgent
     participant LLM as LLM Provider
     participant G as SafetyGuard
@@ -450,7 +450,7 @@ NeoMind_agent/
 │   └── browser/
 │       └── daemon.py                # Browser automation daemon
 ├── cli/
-│   └── claude_interface.py          # Terminal UI, agentic loop, content filter
+│   └── neomind_interface.py         # Terminal UI, agentic loop, content filter
 ├── tests/                           # 1300+ tests
 ├── plans/                           # Architecture decisions and implementation plans
 ├── Dockerfile                       # Multi-stage Docker build
@@ -784,3 +784,13 @@ See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues and fixes.
 **Data lost after rebuild**: Data should be in Docker volumes. Check with `docker volume ls | grep neomind`. If you used `docker compose down -v`, the `-v` flag removes volumes — don't use it.
 
 **Dependencies changed after update**: Run `./update.sh --no-cache` for a full rebuild.
+
+---
+
+## Acknowledgments
+
+NeoMind's architecture draws inspiration from and integrates with the following open-source projects:
+
+- **[gstack](https://github.com/garrytan/gstack)** — Structured skill system (SKILL.md format with YAML frontmatter), sprint workflow framework (Think→Plan→Build→Review→Test→Ship→Reflect), safety guards (/careful, /freeze), self-evolution engine, and the three-personality architecture pattern. NeoMind has fully internalized these patterns into its own codebase.
+
+- **[OpenClaw](https://github.com/openclaw/openclaw)** — Inter-agent collaboration protocol. NeoMind connects to OpenClaw via WebSocket gateway for cross-bot message routing in Telegram groups, bidirectional memory bridge (SQLite↔Markdown), and domain-aware task handoff (NeoMind handles finance, OpenClaw handles general tasks).
