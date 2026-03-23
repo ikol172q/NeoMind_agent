@@ -38,7 +38,7 @@ class TestCoreInitialization(unittest.TestCase):
         # Configure mock agent_config
         self.mock_agent_config.model = "deepseek-chat"
         self.mock_agent_config.mode = "chat"
-        self.mock_agent_config.coding_mode_show_status_bar = False
+        self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
         self.mock_agent_config.auto_search_triggers = []
         self.mock_agent_config.auto_search_enabled = True
@@ -159,7 +159,7 @@ class TestCoreInitialization(unittest.TestCase):
         # Configure mock agent_config for coding mode
         self.mock_agent_config.model = "deepseek-chat"
         self.mock_agent_config.mode = "coding"
-        self.mock_agent_config.coding_mode_show_status_bar = True
+        self.mock_agent_config.show_status_bar = True
         self.mock_agent_config.thinking_enabled = False
         self.mock_agent_config.auto_search_triggers = []
         self.mock_agent_config.auto_search_enabled = True
@@ -167,8 +167,8 @@ class TestCoreInitialization(unittest.TestCase):
         self.mock_agent_config.natural_language_confidence_threshold = 0.8
         self.mock_agent_config.safety_confirm_file_operations = True
         self.mock_agent_config.safety_confirm_code_changes = True
-        self.mock_agent_config.system_prompt = "General assistant."
-        self.mock_agent_config.coding_mode_system_prompt = "You are a coding assistant."
+        # When mode is "coding", system_prompt should return the coding prompt
+        self.mock_agent_config.system_prompt = "You are neomind — an expert software engineer"
 
         # Create agent
         agent = NeoMindAgent(api_key=self.test_api_key)
@@ -176,10 +176,11 @@ class TestCoreInitialization(unittest.TestCase):
         # Should have coding mode system prompt in conversation history
         self.assertEqual(len(agent.conversation_history), 1)
         self.assertEqual(agent.conversation_history[0]["role"], "system")
-        self.assertEqual(agent.conversation_history[0]["content"], "You are a coding assistant.")
+        self.assertIn("expert software engineer", agent.conversation_history[0]["content"])
         # Should have coding mode properties
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        # verbose_mode is always initialized to False and toggled by user command
+        self.assertFalse(agent.verbose_mode)
 
     def test_initialization_html_converter(self):
         """Test HTML converter initialization based on dependencies."""
@@ -343,7 +344,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         # Start in chat mode
         self.mock_agent_config.model = "deepseek-chat"
         self.mock_agent_config.mode = "chat"
-        self.mock_agent_config.coding_mode_show_status_bar = True
+        self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
         self.mock_agent_config.auto_search_triggers = []
         self.mock_agent_config.auto_search_enabled = True
@@ -362,8 +363,13 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.assertFalse(agent.verbose_mode)
         self.assertIsNone(agent.workspace_manager)
 
-        # Mock agent_config.update_mode to succeed
-        self.mock_agent_config.update_mode = Mock(return_value=True)
+        # Mock agent_config.switch_mode to update the mode
+        def mock_switch_mode(new_mode):
+            self.mock_agent_config.mode = new_mode
+            # Update show_status_bar based on new mode
+            self.mock_agent_config.show_status_bar = (new_mode == "coding")
+            return True
+        self.mock_agent_config.switch_mode = mock_switch_mode
 
         # Switch to coding mode
         result = agent.switch_mode("coding")
@@ -374,7 +380,8 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.assertEqual(agent.mode, "coding")
         # Properties should be updated for coding mode
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        # verbose_mode is always initialized to False and toggled by user command
+        self.assertFalse(agent.verbose_mode)
         # Workspace manager should be initialized
         self.assertIsNotNone(agent.workspace_manager)
 
@@ -383,7 +390,7 @@ class TestCoreModeSwitching(unittest.TestCase):
         # Start in coding mode
         self.mock_agent_config.model = "deepseek-chat"
         self.mock_agent_config.mode = "coding"
-        self.mock_agent_config.coding_mode_show_status_bar = True
+        self.mock_agent_config.show_status_bar = True
         self.mock_agent_config.thinking_enabled = False
         self.mock_agent_config.auto_search_triggers = []
         self.mock_agent_config.auto_search_enabled = True
@@ -399,14 +406,20 @@ class TestCoreModeSwitching(unittest.TestCase):
         # Initial state should be coding mode
         self.assertEqual(agent.mode, "coding")
         self.assertTrue(agent.show_status_bar)
-        self.assertTrue(agent.verbose_mode)
+        # verbose_mode is always initialized to False and toggled by user command
+        self.assertFalse(agent.verbose_mode)
 
         # Initialize workspace manager
         agent._initialize_workspace_manager()
         self.assertIsNotNone(agent.workspace_manager)
 
-        # Mock agent_config.update_mode to succeed
-        self.mock_agent_config.update_mode = Mock(return_value=True)
+        # Mock agent_config.switch_mode to update the mode
+        def mock_switch_mode(new_mode):
+            self.mock_agent_config.mode = new_mode
+            # Update show_status_bar based on new mode
+            self.mock_agent_config.show_status_bar = (new_mode == "coding")
+            return True
+        self.mock_agent_config.switch_mode = mock_switch_mode
 
         # Switch to chat mode
         result = agent.switch_mode("chat")
@@ -446,11 +459,11 @@ class TestCoreModeSwitching(unittest.TestCase):
         self.assertEqual(agent.mode, "chat")
 
     def test_switch_mode_config_update_fails(self):
-        """Test mode switching when config update fails."""
+        """Test mode switching with invalid mode."""
         # Start in chat mode
         self.mock_agent_config.model = "deepseek-chat"
         self.mock_agent_config.mode = "chat"
-        self.mock_agent_config.coding_mode_show_status_bar = False
+        self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
         self.mock_agent_config.auto_search_triggers = []
         self.mock_agent_config.auto_search_enabled = True
@@ -463,13 +476,10 @@ class TestCoreModeSwitching(unittest.TestCase):
 
         agent = NeoMindAgent(api_key=self.test_api_key)
 
-        # Mock agent_config.update_mode to fail
-        self.mock_agent_config.update_mode = Mock(return_value=False)
+        # Try to switch to invalid mode
+        result = agent.switch_mode("invalid_mode")
 
-        # Try to switch mode
-        result = agent.switch_mode("coding")
-
-        # Should fail
+        # Should fail for invalid mode
         self.assertFalse(result)
         # Mode should remain unchanged
         self.assertEqual(agent.mode, "chat")

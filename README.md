@@ -114,54 +114,350 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 
 ## Architecture
 
+### System Overview
+
+```mermaid
+graph TB
+    subgraph Entry["Entry Points"]
+        CLI["main.py<br/>(CLI)"]
+        TG["agent/finance/telegram_bot.py<br/>(Telegram Bot)"]
+        XBAR["llm-gateway.1m.sh<br/>(xbar Menu Bar)"]
+    end
+
+    subgraph UI["User Interfaces"]
+        CLUI["cli/claude_interface.py<br/>Terminal UI + Agentic Loop"]
+        TGAPI["Telegram API<br/>polling + /commands"]
+    end
+
+    CLI --> CLUI
+    TG --> TGAPI
+
+    subgraph Core["Agent Core (agent/core.py — NeoMindAgent)"]
+        PROV["Provider Registry<br/>DeepSeek · z.ai · LiteLLM"]
+        STREAM["Streaming Engine<br/>+ Thinking Mode"]
+        CMD["Command Dispatcher<br/>40+ commands"]
+        SPEC["Model Spec Engine<br/>context/output limits"]
+    end
+
+    CLUI --> Core
+    TGAPI --> Core
+
+    subgraph Modes["Three Personalities"]
+        CHAT["Chat 💬<br/>chat.yaml<br/>Daily conversation"]
+        CODE["Coding 🔧<br/>coding.yaml<br/>Agentic dev assistant"]
+        FIN["Finance 📈<br/>fin.yaml<br/>Investment intelligence"]
+    end
+
+    Core --> Modes
+
+    subgraph Tools["Tool System"]
+        TP["tool_parser.py<br/>bash/python extraction"]
+        TL["tools.py<br/>read · write · edit · glob · grep"]
+        PB["persistent_bash.py<br/>stateful shell session"]
+        CE["command_executor.py<br/>safe execution"]
+    end
+
+    CODE --> Tools
+
+    subgraph Skills["Skill System (19 active + 4 deprecated)"]
+        SL["skills/loader.py<br/>YAML frontmatter + MD body"]
+        SS["Shared (9):<br/>audit · autoplan · browse · careful<br/>digest · investigate · neomind-upgrade · retro · teach"]
+        SC["Chat (2): memo · office-hours"]
+        SK["Coding (4): eng-review · perf · qa · ship"]
+        SF["Finance (4): backtest · qa-trading · risk · trade-review"]
+    end
+
+    Core --> SL
+    SL --> SS & SC & SK & SF
+
+    subgraph Workflow["Workflow Engine (agent/workflow/)"]
+        SPR["sprint.py<br/>Think→Plan→Build→Review→Test→Ship→Reflect"]
+        GRD["guards.py<br/>/careful · /freeze · /guard<br/>regex pattern detection"]
+        EVI["evidence.py<br/>append-only audit.jsonl"]
+        REV["review.py<br/>mode-aware review dispatch"]
+    end
+
+    Core --> Workflow
+
+    subgraph Evolution["Self-Evolution (agent/evolution/)"]
+        AE["auto_evolve.py<br/>startup health · daily audit · weekly retro<br/>learn from feedback & patterns"]
+        UPG["upgrade.py<br/>git-based update + rollback"]
+    end
+
+    Core --> Evolution
+
+    subgraph Memory["Persistent Memory"]
+        SM["shared_memory.py<br/>SQLite WAL · cross-mode<br/>preferences · facts · patterns · feedback"]
+        SEC["secure_memory.py<br/>encrypted SQLite (finance)"]
+    end
+
+    Modes --> SM
+    FIN --> SEC
+
+    subgraph Logging["Unified Logging (agent/logging/)"]
+        UL["unified_logger.py<br/>daily JSONL rotation<br/>llm_call · command · file_op · error"]
+        PII["pii_sanitizer.py<br/>phone · email · SSN · API keys"]
+    end
+
+    UL --> PII
+    Core --> UL
+
+    subgraph Finance["Finance Module (agent/finance/)"]
+        HS["hybrid_search.py<br/>6-layer search engine<br/>DDG · Google RSS · TF-IDF · RRF"]
+        DH["data_hub.py<br/>yfinance · AKShare · CoinGecko · Finnhub"]
+        ND["news_digest.py<br/>conflict detection · multi-source"]
+        QE["quant_engine.py<br/>BS · DCF · VaR · compound"]
+        DB["dashboard.py<br/>HTML Chart.js KPI dashboard"]
+        SR["source_registry.py<br/>Bayesian trust scoring"]
+        RSS["rss_feeds.py<br/>EN+ZH RSS manager"]
+        PS["provider_state.py<br/>bidirectional sync xbar↔Docker"]
+        DG["diagram_gen.py · chat_store.py · hackernews.py"]
+    end
+
+    FIN --> Finance
+
+    subgraph OClaw["OpenClaw Integration"]
+        OG["openclaw_gateway.py<br/>WebSocket client"]
+        OS["openclaw_skill.py"]
+        MB["memory_bridge.py<br/>SQLite↔Markdown sync"]
+        MS["mobile_sync.py"]
+    end
+
+    Finance --> OClaw
+
+    subgraph Analysis["Code Intelligence"]
+        CA["code_analyzer.py"]
+        SI["self_iteration.py"]
+        PL["planner.py · GoalPlanner"]
+        NL["natural_language.py"]
+        CM["context_manager.py<br/>token counting + compression"]
+        WM["workspace_manager.py"]
+        SRC["search.py<br/>DuckDuckGo"]
+    end
+
+    Core --> Analysis
+
+    subgraph Sync["Bidirectional Provider Sync"]
+        PSJ["~/.neomind/provider-state.json"]
+    end
+
+    PS --> PSJ
+    XBAR --> PSJ
+
+    subgraph DataStores["Data Stores"]
+        SMDB["~/.neomind/shared_memory.db<br/>(SQLite WAL)"]
+        AUDITL["~/.neomind/evidence/audit.jsonl<br/>(append-only)"]
+        LOGSJ["~/.neomind/logs/YYYY-MM-DD.jsonl<br/>(daily rotation)"]
+        SECDB["~/.neomind/finance/memory.db<br/>(encrypted SQLite)"]
+        USAGEJ["~/.llm-gateway/usage-daily.json<br/>(incremental tracker)"]
+    end
+
+    SM --> SMDB
+    EVI --> AUDITL
+    UL --> LOGSJ
+    SEC --> SECDB
+    XBAR --> USAGEJ
+
+    subgraph External["External Services"]
+        DS["DeepSeek API"]
+        ZAI["z.ai (GLM) API"]
+        LLM["LiteLLM (local)<br/>Ollama proxy"]
+        DDG["DuckDuckGo"]
+        GNEWS["Google News RSS"]
+        YF["yfinance · AKShare"]
+        CG["CoinGecko"]
+        FH["Finnhub"]
+        TGSERV["Telegram Bot API"]
+        OCSERV["OpenClaw Gateway"]
+    end
+
+    PROV --> DS & ZAI & LLM
+    HS --> DDG & GNEWS
+    DH --> YF & CG & FH
+    TGAPI --> TGSERV
+    OG --> OCSERV
 ```
-User Input
-    |
-CLI Layer (main.py -> interface.py)
-    |
-    +-- Command? --> Command handler (/search, /models, /run, etc.)
-    |
-    +-- Chat? --> Agent Core (core.py)
-                    |
-                    +-- _resolve_provider() --> picks DeepSeek or z.ai
-                    +-- _get_model_spec() --> applies model-specific limits
-                    +-- stream_response() --> API call with streaming
-                    |
-                    +-- Agentic Loop (coding mode):
-                        1. Model generates ```bash block
-                        2. tool_parser.py extracts command
-                        3. Permission check (auto-approve reads, ask for writes)
-                        4. Execute in persistent bash session
-                        5. Feed result back as tool_result message
-                        6. Re-prompt model --> repeat until done or max iterations
+
+### Docker Deployment Topology
+
+```mermaid
+graph LR
+    subgraph Docker["Docker Compose (neomind-net)"]
+        N1["neomind<br/>(interactive CLI)"]
+        N2["neomind-telegram<br/>(bot daemon)"]
+        OGW["openclaw-gateway<br/>(profile: full)"]
+        OCLI["openclaw-cli<br/>(profile: full)"]
+    end
+
+    subgraph Volumes["Docker Volumes"]
+        VD["neomind-data<br/>/data/neomind"]
+        VC["openclaw-config<br/>/data/openclaw (ro)"]
+    end
+
+    subgraph HostBind["Host Bind Mounts"]
+        HN["~/.neomind<br/>provider-state.json<br/>shared_memory.db<br/>evidence/ · logs/"]
+    end
+
+    N1 & N2 --> VD
+    N1 & N2 --> HN
+    N1 & N2 -->|ro| VC
+    OGW --> VC
+    OCLI --> OGW
+    N2 -->|"command: telegram"| N2
+```
+
+### Agentic Tool Loop (Coding Mode)
+
+```mermaid
+sequenceDiagram
+    participant U as User
+    participant CLI as claude_interface.py
+    participant A as NeoMindAgent
+    participant LLM as LLM Provider
+    participant G as SafetyGuard
+    participant T as persistent_bash
+    participant E as EvidenceTrail
+
+    U->>CLI: input message
+    CLI->>A: stream_response()
+    A->>LLM: API call (streaming)
+    LLM-->>A: response with ```bash block
+    A->>A: tool_parser extracts command
+    A->>G: check_command(cmd)
+    alt dangerous
+        G-->>A: BLOCKED + reason
+        A-->>CLI: ⚠️ warning
+    else safe
+        G-->>A: OK
+        A->>T: execute in persistent shell
+        T-->>A: stdout + exit_code
+        A->>E: log(command, input, output)
+        A->>LLM: feed result → re-prompt
+        Note over A,LLM: repeat until done<br/>or max iterations (15)
+    end
+    A-->>CLI: final response
+    CLI-->>U: display
+```
+
+### Data Flow Summary
+
+```mermaid
+flowchart LR
+    subgraph Input
+        TG[Telegram]
+        CLI[Terminal]
+        XB[xbar]
+    end
+
+    subgraph Processing
+        CORE[NeoMindAgent]
+        SK[Skills]
+        WF[Workflow]
+    end
+
+    subgraph Storage
+        SM[(SharedMemory<br/>SQLite)]
+        EV[(Evidence<br/>JSONL)]
+        LOG[(Logs<br/>JSONL)]
+        PS[(ProviderState<br/>JSON)]
+    end
+
+    subgraph Output
+        RESP[LLM Response]
+        DASH[HTML Dashboard]
+        XBUI[Menu Bar Status]
+    end
+
+    TG & CLI --> CORE
+    XB --> PS
+    CORE --> SK & WF
+    CORE --> SM & EV & LOG
+    CORE --> PS
+    CORE --> RESP & DASH
+    PS --> XBUI
 ```
 
 ### Key Files
 
 ```
-neomind/
+NeoMind_agent/
+├── main.py                          # Entry point (--mode chat|coding|fin)
+├── agent_config.py                  # YAML config loader
 ├── agent/
-│   ├── core.py            # Main agent: providers, model specs, streaming, history
-│   ├── tool_parser.py     # Extracts tool calls from LLM output (bash + python fallback)
-│   ├── tools.py           # Tool implementations (read, write, edit, glob, grep, bash)
-│   ├── search.py          # DuckDuckGo web search
-│   ├── context_manager.py # Token counting, compression, context management
-│   └── config/
-│       ├── base.yaml      # Shared settings
-│       ├── chat.yaml      # Chat mode config + system prompt
-│       └── coding.yaml    # Coding mode config + system prompt (bash-centric tools)
+│   ├── core.py                      # NeoMindAgent: providers, streaming, commands, tool loop
+│   ├── tool_parser.py               # Extracts bash/python blocks from LLM output
+│   ├── tools.py                     # Tool implementations (read, write, edit, glob, grep)
+│   ├── tool_schema.py               # Typed tool definitions + parameter validation
+│   ├── persistent_bash.py           # Stateful shell session across commands
+│   ├── context_manager.py           # Token counting, compression, context window mgmt
+│   ├── search.py                    # DuckDuckGo web search
+│   ├── safety.py                    # Path validation, file backup, audit log
+│   ├── planner.py                   # Goal planner + change planning
+│   ├── code_analyzer.py             # Codebase analysis
+│   ├── self_iteration.py            # Self-improvement engine
+│   ├── natural_language.py          # NL intent interpreter
+│   ├── command_executor.py          # Safe command execution
+│   ├── workspace_manager.py         # Workspace boundary mgmt
+│   ├── formatter.py                 # Output formatting helpers
+│   ├── help_system.py               # /help command tree
+│   ├── task_manager.py              # Task tracking
+│   ├── config/
+│   │   ├── base.yaml                # Shared: model, temperature, max_tokens
+│   │   ├── chat.yaml                # Chat personality: system prompt + behavior
+│   │   ├── coding.yaml              # Coding personality: tool instructions
+│   │   └── fin.yaml                 # Finance personality: investment focus
+│   ├── skills/
+│   │   ├── loader.py                # SKILL.md parser + registry
+│   │   ├── shared/                  # 9 active: audit, autoplan, browse, careful,
+│   │   │                            #   digest, investigate, neomind-upgrade, retro, teach
+│   │   ├── chat/                    # 2 skills: memo, office-hours
+│   │   ├── coding/                  # 4 skills: eng-review, perf, qa, ship
+│   │   └── fin/                     # 4 skills: backtest, qa-trading, risk, trade-review
+│   ├── workflow/
+│   │   ├── sprint.py                # 7-phase execution framework
+│   │   ├── guards.py                # /careful /freeze /guard — regex danger detection
+│   │   ├── evidence.py              # Append-only audit trail (JSONL)
+│   │   ├── review.py                # Mode-aware self-review dispatch
+│   │   └── audit.py                 # Self-audit engine (iterative search→check→fix→verify)
+│   ├── evolution/
+│   │   ├── auto_evolve.py           # Startup health, daily audit, weekly retro
+│   │   └── upgrade.py               # Git-based update with rollback
+│   ├── memory/
+│   │   └── shared_memory.py         # Cross-mode SQLite (preferences/facts/patterns/feedback)
+│   ├── logging/
+│   │   ├── unified_logger.py        # Daily JSONL rotation, 6 log types
+│   │   └── pii_sanitizer.py         # Auto-redact PII before logging
+│   ├── finance/
+│   │   ├── hybrid_search.py         # 6-layer search (DDG, Google RSS, TF-IDF, RRF)
+│   │   ├── data_hub.py              # Market data (yfinance/AKShare/CoinGecko/Finnhub)
+│   │   ├── secure_memory.py         # Encrypted SQLite for finance data
+│   │   ├── news_digest.py           # Multi-source news + conflict detection
+│   │   ├── quant_engine.py          # Black-Scholes, DCF, VaR, compound
+│   │   ├── dashboard.py             # HTML Chart.js dashboard generator
+│   │   ├── source_registry.py       # Bayesian trust scoring
+│   │   ├── rss_feeds.py             # EN+ZH RSS feed manager
+│   │   ├── telegram_bot.py          # Telegram bot adapter + provider sync
+│   │   ├── provider_state.py        # Bidirectional xbar↔Docker provider sync
+│   │   ├── usage_tracker.py         # Incremental log-based usage stats
+│   │   ├── chat_store.py            # Conversation persistence
+│   │   ├── hackernews.py            # HN integration
+│   │   ├── diagram_gen.py           # Mermaid diagram generator
+│   │   ├── agent_collab.py          # Inter-agent collaboration protocol
+│   │   ├── openclaw_gateway.py      # OpenClaw WebSocket client
+│   │   ├── openclaw_skill.py        # OpenClaw skill adapter
+│   │   ├── memory_bridge.py         # SQLite↔Markdown sync with OpenClaw
+│   │   └── mobile_sync.py           # Unified sync gateway
+│   └── browser/
+│       └── daemon.py                # Browser automation daemon
 ├── cli/
-│   ├── interface.py       # Chat session, agentic loop, spinner, content filter
-│   └── input_handlers.py  # User input, multi-line, keyboard handling
-├── tests/
-│   ├── test_tool_parser.py
-│   ├── test_claude_interface.py
-│   └── test_integration_live.py  # Live API tests (skip when offline)
-├── plans/                 # Architecture decisions and implementation plans
-├── agent_config.py        # YAML config loader (plain PyYAML, no Hydra)
-├── main.py                # Entry point
-├── .env                   # API keys (not committed)
-└── .env.example           # Template for .env
+│   └── claude_interface.py          # Terminal UI, agentic loop, content filter
+├── tests/                           # 1300+ tests
+├── plans/                           # Architecture decisions and implementation plans
+├── Dockerfile                       # Multi-stage Docker build
+├── docker-compose.yml               # CLI + Telegram + OpenClaw (4 services)
+├── docker-compose.connect.yml       # Connect to existing OpenClaw
+├── docker-entrypoint.sh             # Container entrypoint
+└── update.sh                        # Pull + rebuild + restart script
 ```
 
 ## Tool System

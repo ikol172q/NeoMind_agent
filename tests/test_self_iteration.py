@@ -197,7 +197,9 @@ class TestSelfIterationCommands(unittest.TestCase):
 
     def test_code_self_improve_no_files(self):
         """Test self-improve with no Python files."""
-        with patch('os.walk') as mock_walk:
+        mock_si = Mock()
+        with patch.object(self.agent, '_get_self_iteration', return_value=mock_si), \
+             patch('os.walk') as mock_walk:
             mock_walk.return_value = []  # no files
             result = self.agent._code_self_improve("")
             # formatter.error is mocked to return "ERROR"

@@ -71,8 +71,8 @@ class TaskManager:
                     data = json.load(f)
                 self.tasks = {task_id: Task.from_dict(task_data)
                              for task_id, task_data in data.items()}
-            except (json.JSONDecodeError, KeyError, ValueError) as e:
-                # If file is corrupted, start fresh
+            except (json.JSONDecodeError, KeyError, ValueError, PermissionError, IOError) as e:
+                # If file is corrupted or inaccessible, start fresh
                 self.tasks = {}
                 log_operation("task_load", self.tasks_file,
                              f"Failed to load tasks: {e}. Starting with empty task list.")
