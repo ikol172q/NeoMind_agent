@@ -25,8 +25,8 @@ from agent.tools import ToolResult
 
 
 def _make_interface(mode="coding", tmpdir=None):
-    """Create a ClaudeInterface with a mocked chat backend."""
-    from cli.claude_interface import ClaudeInterface
+    """Create a NeoMindInterface with a mocked chat backend."""
+    from cli.neomind_interface import NeoMindInterface
 
     chat = MagicMock()
     chat.mode = mode
@@ -44,7 +44,7 @@ def _make_interface(mode="coding", tmpdir=None):
         chat.conversation_history.append({"role": role, "content": content})
     chat.add_to_history = _add
 
-    interface = ClaudeInterface(chat)
+    interface = NeoMindInterface(chat)
 
     # Override working directory for tool registry
     if tmpdir:
@@ -66,14 +66,14 @@ class TestCheckPermission(unittest.TestCase):
 
     # ── auto_accept mode ──
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_auto_accept_always_approves(self, mock_config):
         mock_config.permission_mode = "auto_accept"
         tc = self._make_tc("Bash")
         approved, auto = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_auto_accept_write_tools(self, mock_config):
         mock_config.permission_mode = "auto_accept"
         tc = ToolCall("Write", {"path": "x", "content": "y"}, "raw")
@@ -82,49 +82,49 @@ class TestCheckPermission(unittest.TestCase):
 
     # ── plan mode ──
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_allows_read_only(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("Read", {"path": "x"}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_allows_grep(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("Grep", {"pattern": "x"}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_allows_glob(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("Glob", {"pattern": "*.py"}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_allows_ls(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("LS", {}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_blocks_bash(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = self._make_tc("Bash")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertFalse(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_blocks_write(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("Write", {"path": "x", "content": "y"}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertFalse(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_blocks_edit(self, mock_config):
         mock_config.permission_mode = "plan"
         tc = ToolCall("Edit", {"path": "x", "old_string": "a", "new_string": "b"}, "raw")
@@ -133,14 +133,14 @@ class TestCheckPermission(unittest.TestCase):
 
     # ── normal mode ──
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_auto_approves_read(self, mock_config):
         mock_config.permission_mode = "normal"
         tc = ToolCall("Read", {"path": "x"}, "raw")
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_auto_approves_grep(self, mock_config):
         mock_config.permission_mode = "normal"
         tc = ToolCall("Grep", {"pattern": "x"}, "raw")
@@ -148,7 +148,7 @@ class TestCheckPermission(unittest.TestCase):
         self.assertTrue(approved)
 
     @patch("builtins.input", return_value="y")
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_asks_for_bash(self, mock_config, mock_input):
         mock_config.permission_mode = "normal"
         tc = self._make_tc("Bash")
@@ -157,7 +157,7 @@ class TestCheckPermission(unittest.TestCase):
         mock_input.assert_called_once()
 
     @patch("builtins.input", return_value="n")
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_deny_bash(self, mock_config, mock_input):
         mock_config.permission_mode = "normal"
         tc = self._make_tc("Bash")
@@ -165,7 +165,7 @@ class TestCheckPermission(unittest.TestCase):
         self.assertFalse(approved)
 
     @patch("builtins.input", return_value="a")
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_all_flag(self, mock_config, mock_input):
         mock_config.permission_mode = "normal"
         tc = self._make_tc("Bash")
@@ -173,7 +173,7 @@ class TestCheckPermission(unittest.TestCase):
         self.assertTrue(approved)
         self.assertTrue(auto)  # auto_approved should be True now
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_auto_approved_skips_prompt(self, mock_config):
         """Once auto_approved=True, no more prompts for this turn."""
         mock_config.permission_mode = "normal"
@@ -183,7 +183,7 @@ class TestCheckPermission(unittest.TestCase):
         # No input() was called (no mock needed)
 
     @patch("builtins.input", return_value="y")
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_asks_for_write(self, mock_config, mock_input):
         mock_config.permission_mode = "normal"
         tc = ToolCall("Write", {"path": "x", "content": "y"}, "raw")
@@ -192,7 +192,7 @@ class TestCheckPermission(unittest.TestCase):
         mock_input.assert_called_once()
 
     @patch("builtins.input", return_value="y")
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_normal_asks_for_edit(self, mock_config, mock_input):
         mock_config.permission_mode = "normal"
         tc = ToolCall("Edit", {"path": "x", "old_string": "a", "new_string": "b"}, "raw")
@@ -285,7 +285,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_no_tool_call_exits(self, mock_config):
         """Loop exits immediately if response has no tool call."""
         mock_config.permission_mode = "auto_accept"
@@ -297,7 +297,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         # No crash, no stream_response call
         chat.stream_response.assert_not_called()
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_not_coding_mode_exits(self, mock_config):
         """Loop exits immediately in chat mode."""
         interface, chat = _make_interface(mode="chat", tmpdir=self.tmpdir)
@@ -307,7 +307,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         interface._run_agentic_loop()
         chat.stream_response.assert_not_called()
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_structured_tool_execution(self, mock_config):
         """Test full flow: structured Read tool call → execute → feed back."""
         mock_config.permission_mode = "auto_accept"
@@ -337,7 +337,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         self.assertIn("<tool_result>", fed_back[0]["content"])
         self.assertIn("import os", fed_back[0]["content"])
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_legacy_bash_still_works(self, mock_config):
         """Test backward compatibility: legacy bash blocks still execute."""
         mock_config.permission_mode = "auto_accept"
@@ -359,7 +359,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         self.assertTrue(len(fed_back) >= 1)
         self.assertIn("hello_legacy", fed_back[0]["content"])
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_plan_blocks_bash_allows_read(self, mock_config):
         """In plan mode, Bash is blocked but Read executes."""
         mock_config.permission_mode = "plan"
@@ -374,7 +374,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         user_msgs = [m for m in chat.conversation_history if m["role"] == "user"]
         self.assertEqual(len(user_msgs), 0)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_max_iterations(self, mock_config):
         """Loop stops after max_iterations."""
         mock_config.permission_mode = "auto_accept"
@@ -397,7 +397,7 @@ class TestAgenticLoopFlow(unittest.TestCase):
         # Should have called stream_response exactly 3 times
         self.assertEqual(call_count[0], 3)
 
-    @patch("cli.claude_interface.agent_config")
+    @patch("cli.neomind_interface.agent_config")
     def test_validation_error_feeds_back(self, mock_config):
         """Invalid tool params → error fed back, loop continues."""
         mock_config.permission_mode = "auto_accept"
@@ -433,7 +433,7 @@ class TestPermissionLevelMatrix(unittest.TestCase):
         """Helper to test permission for a tool in a given mode."""
         tc = ToolCall(tool_name, {"command": "x"} if tool_name == "Bash" else {"path": "x"} if tool_name in ("Read", "Write", "Edit", "Glob") else {"pattern": "x"} if tool_name == "Grep" else {}, "raw")
 
-        with patch("cli.claude_interface.agent_config") as mc:
+        with patch("cli.neomind_interface.agent_config") as mc:
             mc.permission_mode = mode
             if mode == "normal" and not auto_approved:
                 with patch("builtins.input", return_value=input_val):

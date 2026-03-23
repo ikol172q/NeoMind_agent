@@ -1,4 +1,4 @@
-# coding.yaml — Coding mode configuration (Claude CLI-like)
+# coding.yaml — Coding mode configuration
 mode: coding
 
 system_prompt: |

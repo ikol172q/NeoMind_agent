@@ -20,7 +20,7 @@ def get_multiline_input_with_prompt_toolkit(session, mode: str = "chat", complet
         sys.stderr.write(f"[DEBUG] get_multiline_input_with_prompt_toolkit called with mode='{mode}'\n")
         sys.stderr.flush()
     lines = []
-    # Use simplified prompt for coding mode (like Claude CLI)
+    # Use simplified prompt for coding mode (for coding mode)
     # Normalize mode string for comparison
     normalized_mode = mode.strip().lower()
     prompt = "> " if normalized_mode == "coding" else f"[{mode.strip()}] > "
@@ -93,7 +93,7 @@ def get_multiline_input_fallback(mode: str = "chat", debug: Optional[bool] = Non
         sys.stderr.write(f"[DEBUG] get_multiline_input_fallback called with mode='{mode}'\n")
         sys.stderr.flush()
     lines = []
-    # Use simplified prompt for coding mode (like Claude CLI)
+    # Use simplified prompt for coding mode (for coding mode)
     # Normalize mode string for comparison
     normalized_mode = mode.strip().lower()
     prompt = "> " if normalized_mode == "coding" else f"[{mode.strip()}] > "

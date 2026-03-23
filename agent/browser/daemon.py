@@ -2,7 +2,7 @@
 """
 Browser Daemon — persistent headless Chromium with command interface.
 
-Architecture (from gstack pattern):
+Architecture:
     BrowserDaemon
         │
         ├── Playwright Chromium (headless, persistent context)

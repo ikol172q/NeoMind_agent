@@ -142,7 +142,7 @@ class TestCommandSeparation(unittest.TestCase):
     """Test that commands are properly isolated per mode."""
 
     def test_chat_completer_commands(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         completer = SlashCommandCompleter(mode="chat")
         self.assertIn("search", completer.commands)
         self.assertIn("help", completer.commands)
@@ -154,7 +154,7 @@ class TestCommandSeparation(unittest.TestCase):
         self.assertNotIn("glob", completer.commands)
 
     def test_coding_completer_commands(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         completer = SlashCommandCompleter(mode="coding")
         self.assertIn("run", completer.commands)
         self.assertIn("edit", completer.commands)
@@ -167,14 +167,14 @@ class TestCommandSeparation(unittest.TestCase):
         self.assertIn("think", completer.commands)
 
     def test_completer_mode_switch(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         completer = SlashCommandCompleter(mode="chat")
         self.assertNotIn("run", completer.commands)
         completer.set_mode("coding")
         self.assertIn("run", completer.commands)
 
     def test_all_descriptions_covers_all_commands(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         from agent_config import AgentConfigManager
         # Every command in both modes should have a description
         for mode in ("chat", "coding"):
@@ -188,7 +188,7 @@ class TestCommandSeparation(unittest.TestCase):
 
 
 class TestToolSystem(unittest.TestCase):
-    """Test the Claude CLI-like tool system."""
+    """Test the NeoMind tool system."""
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()

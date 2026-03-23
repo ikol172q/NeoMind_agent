@@ -1,6 +1,6 @@
 # agent/memory/example_usage.py
 """
-Example usage of the SharedMemory system for Phase 3 gstack integration.
+Example usage of the SharedMemory system for cross-personality memory.
 
 This demonstrates how the three personalities (chat, coding, finance) work together
 by sharing user context through the cross-personality memory layer.

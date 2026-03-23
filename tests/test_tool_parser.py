@@ -306,8 +306,8 @@ class TestContentFilterToolCallSuppression(unittest.TestCase):
 
     def _make_filter(self):
         # Import the nested class
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface._CodeFenceFilter()
+        from cli.neomind_interface import NeoMindInterface
+        return NeoMindInterface._CodeFenceFilter()
 
     def test_suppress_tool_call(self):
         f = self._make_filter()

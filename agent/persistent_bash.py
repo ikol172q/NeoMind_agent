@@ -1,7 +1,7 @@
 """
 Persistent Bash session for coding mode.
 
-Like Claude CLI's Bash tool — a single bash process that persists across
+A Bash tool — a single bash process that persists across
 all /run commands. cd, export, source all carry forward.
 
 Implementation:
