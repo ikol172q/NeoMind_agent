@@ -1359,6 +1359,12 @@ class NeoMindInterface:
                 self._print(f"[red]Error: {e}[/red]")
                 continue
 
+        # Write session journal to vault before saving
+        try:
+            self.chat.write_session_journal()
+        except Exception:
+            pass
+
         # Auto-save on exit
         try:
             if len(self.chat.conversation_history) > 1:
@@ -1392,6 +1398,12 @@ class NeoMindInterface:
                 break
             except Exception as e:
                 print(f"Error: {e}")
+
+        # Write session journal to vault before saving
+        try:
+            self.chat.write_session_journal()
+        except Exception:
+            pass
 
         try:
             if len(self.chat.conversation_history) > 1:
