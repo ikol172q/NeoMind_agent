@@ -22,14 +22,18 @@ import requests
 from pathlib import Path
 from unittest.mock import patch
 
-# Load .env if present
+# Load .env if present — only set API keys needed for live tests
+# (avoid setting LITELLM_ENABLED or other config that could pollute other tests)
+_LIVE_TEST_ENV_KEYS = {"DEEPSEEK_API_KEY", "ZAI_API_KEY"}
 env_path = Path(__file__).parent.parent / ".env"
 if env_path.exists():
     for line in env_path.read_text().splitlines():
         line = line.strip()
         if line and not line.startswith("#") and "=" in line:
             key, val = line.split("=", 1)
-            os.environ.setdefault(key.strip(), val.strip())
+            key = key.strip()
+            if key in _LIVE_TEST_ENV_KEYS:
+                os.environ.setdefault(key, val.strip())
 
 # Import agent components
 sys.path.insert(0, str(Path(__file__).parent.parent))
