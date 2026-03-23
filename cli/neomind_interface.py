@@ -1,5 +1,5 @@
 """
-Claude CLI-like interface for neomind agent.
+NeoMind interface for neomind agent.
 
 Features:
 - Key bindings: Ctrl+O (thinking toggle), Ctrl+C (cancel/interrupt), Escape (clear), Ctrl+L (clear screen), Ctrl+D (exit)
@@ -98,7 +98,7 @@ class SlashCommandCompleter(Completer):
         "remember": "Save user facts and preferences to shared memory",
         "recall": "Retrieve user facts and preferences from memory",
         "preferences": "View or set user preferences",
-        # Coding-only (Claude CLI tools)
+        # Coding-only (NeoMind tools)
         "read": "Read file with line numbers",
         "write": "Create or overwrite a file",
         "edit": "Edit specific sections of a file",
@@ -225,11 +225,11 @@ class ConversationManager:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ClaudeInterface
+# NeoMindInterface
 # ──────────────────────────────────────────────────────────────────────────────
 
-class ClaudeInterface:
-    """Claude-like terminal chat interface."""
+class NeoMindInterface:
+    """NeoMind terminal chat interface."""
 
     def __init__(self, chat: NeoMindAgent):
         self.chat = chat
@@ -1404,8 +1404,8 @@ class ClaudeInterface:
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-def interactive_chat_claude_interface(mode: str = "chat"):
-    """Launch the Claude-like interface."""
+def interactive_chat(mode: str = "chat"):
+    """Launch the NeoMind interface."""
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         print("DEEPSEEK_API_KEY not found in environment.")
@@ -1424,5 +1424,5 @@ def interactive_chat_claude_interface(mode: str = "chat"):
     if chat.mode != mode:
         chat.switch_mode(mode, persist=False)
 
-    interface = ClaudeInterface(chat)
+    interface = NeoMindInterface(chat)
     interface.run()

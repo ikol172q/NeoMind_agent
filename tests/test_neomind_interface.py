@@ -1,7 +1,7 @@
 """
-Comprehensive tests for cli/claude_interface.py.
+Comprehensive tests for cli/neomind_interface.py.
 
-Covers: SlashCommandCompleter, ConversationManager, ClaudeInterface commands,
+Covers: SlashCommandCompleter, ConversationManager, NeoMindInterface commands,
 key bindings, status bar, welcome screen, mode gating, and integration.
 """
 
@@ -45,7 +45,7 @@ class TestSlashCommandCompleter(unittest.TestCase):
     """Test mode-aware slash command completer."""
 
     def _completions(self, text, mode="chat"):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         from prompt_toolkit.document import Document
         c = SlashCommandCompleter(mode=mode)
         return list(c.get_completions(Document(text), None))
@@ -91,7 +91,7 @@ class TestSlashCommandCompleter(unittest.TestCase):
         self.assertTrue(help_comp[0].display_meta)  # has description
 
     def test_set_mode_updates_commands(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         c = SlashCommandCompleter(mode="chat")
         self.assertNotIn("run", c.commands)
         c.set_mode("coding")
@@ -101,7 +101,7 @@ class TestSlashCommandCompleter(unittest.TestCase):
 
     def test_all_commands_have_descriptions(self):
         """Every command in both modes must have an entry in ALL_DESCRIPTIONS."""
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         from agent_config import AgentConfigManager
         for mode in ("chat", "coding"):
             cfg = AgentConfigManager(mode=mode)
@@ -118,7 +118,7 @@ class TestConversationManager(unittest.TestCase):
 
     def setUp(self):
         self.tmpdir = tempfile.mkdtemp()
-        from cli.claude_interface import ConversationManager
+        from cli.neomind_interface import ConversationManager
         self.mgr = ConversationManager()
         self.mgr.base_dir = Path(self.tmpdir)
 
@@ -174,15 +174,15 @@ class TestConversationManager(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ClaudeInterface — Command Handling
+# NeoMindInterface — Command Handling
 # ──────────────────────────────────────────────────────────────────────────────
 
-class TestClaudeInterfaceCommands(unittest.TestCase):
+class TestNeoMindInterfaceCommands(unittest.TestCase):
 
     def setUp(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         self.mock_chat = _make_mock_chat(mode="chat")
-        self.interface = ClaudeInterface(self.mock_chat)
+        self.interface = NeoMindInterface(self.mock_chat)
 
     def test_quit_returns_false(self):
         self.assertFalse(self.interface._handle_local_command("/quit"))
@@ -264,16 +264,16 @@ class TestClaudeInterfaceCommands(unittest.TestCase):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ClaudeInterface — Mode Command Gating
+# NeoMindInterface — Mode Command Gating
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestCommandModeGating(unittest.TestCase):
     """Verify that coding-only commands are rejected in chat mode."""
 
     def setUp(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         self.mock_chat = _make_mock_chat(mode="chat")
-        self.interface = ClaudeInterface(self.mock_chat)
+        self.interface = NeoMindInterface(self.mock_chat)
 
     def test_run_blocked_in_chat(self):
         """'/run' should be blocked in chat mode."""
@@ -316,11 +316,11 @@ class TestCommandModeGating(unittest.TestCase):
 
     def test_coding_mode_allows_run(self):
         """In coding mode, /run should pass through to agent core."""
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="coding")
         from agent_config import agent_config
         agent_config.switch_mode("coding")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         result = iface._handle_local_command("/run echo hi")
         self.assertIsNone(result)  # None = pass to agent core
         agent_config.switch_mode("chat")  # cleanup
@@ -333,10 +333,10 @@ class TestCommandModeGating(unittest.TestCase):
 class TestStatusBar(unittest.TestCase):
 
     def test_chat_mode_bar(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="chat")
         mock.conversation_history = [{"role": "user", "content": "hi"}]
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         toolbar = iface._bottom_toolbar()
         s = str(toolbar)
         self.assertIn("deepseek-chat", s)
@@ -345,11 +345,11 @@ class TestStatusBar(unittest.TestCase):
         self.assertIn("1msg", s)
 
     def test_coding_mode_bar_has_permission(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         from agent_config import agent_config
         agent_config.switch_mode("coding")
         mock = _make_mock_chat(mode="coding")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         toolbar = iface._bottom_toolbar()
         s = str(toolbar)
         self.assertIn("coding", s)
@@ -357,20 +357,20 @@ class TestStatusBar(unittest.TestCase):
         agent_config.switch_mode("chat")  # cleanup
 
     def test_think_on_shows_in_bar(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat()
         mock.thinking_enabled = True
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         s = str(iface._bottom_toolbar())
         self.assertIn("think:on", s)
 
     def test_context_percentage_colors(self):
         """Low usage should be green, high usage red."""
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         # Low usage
         mock = _make_mock_chat()
         mock.context_manager.count_conversation_tokens.return_value = 1000
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         s = str(iface._bottom_toolbar())
         self.assertIn("ansigreen", s)
 
@@ -387,9 +387,9 @@ class TestStatusBar(unittest.TestCase):
 class TestWelcomeScreen(unittest.TestCase):
 
     def test_chat_welcome_with_rich(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="chat")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         captured = StringIO()
         if iface.console:
             iface.console.file = captured
@@ -399,9 +399,9 @@ class TestWelcomeScreen(unittest.TestCase):
         self.assertIn("chat mode", output)
 
     def test_coding_welcome_with_rich(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="coding")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         captured = StringIO()
         if iface.console:
             iface.console.file = captured
@@ -411,18 +411,18 @@ class TestWelcomeScreen(unittest.TestCase):
         self.assertIn("Tools:", output)
 
     def test_welcome_fallback(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="chat")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         iface.console = None  # Force fallback
         with patch("builtins.print") as mock_print:
             iface.display_welcome()
             mock_print.assert_called()
 
     def test_coding_welcome_fallback_shows_tools(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat(mode="coding")
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         iface.console = None
         with patch("builtins.print") as mock_print:
             iface.display_welcome()
@@ -470,16 +470,16 @@ class TestKeyBindings(unittest.TestCase):
 class TestIntegrationLoop(unittest.TestCase):
 
     def test_interface_creation(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat()
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         self.assertTrue(iface.running)
         self.assertFalse(iface._interrupt)
 
     def test_command_routing_local_vs_core(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat()
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         # Local commands
         self.assertFalse(iface._handle_local_command("/quit"))
         self.assertTrue(iface._handle_local_command("/clear"))
@@ -489,9 +489,9 @@ class TestIntegrationLoop(unittest.TestCase):
         self.assertIsNone(iface._handle_local_command("/search test"))
 
     def test_print_with_rich(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat()
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         captured = StringIO()
         if iface.console:
             iface.console.file = captured
@@ -499,9 +499,9 @@ class TestIntegrationLoop(unittest.TestCase):
         self.assertIn("test", captured.getvalue())
 
     def test_print_without_rich(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         mock = _make_mock_chat()
-        iface = ClaudeInterface(mock)
+        iface = NeoMindInterface(mock)
         iface.console = None
         with patch("builtins.print") as mock_print:
             iface._print("[green]test message[/green]")
@@ -633,8 +633,8 @@ class TestExecuteToolBlocks(unittest.TestCase):
     """Test tool call execution through _execute_tool_call."""
 
     def _iface(self):
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        return NeoMindInterface(_make_mock_chat("coding"))
 
     def test_execute_echo(self):
         from agent.tool_parser import ToolCall
@@ -666,10 +666,10 @@ class TestAgenticLoop(unittest.TestCase):
     """Test the agentic tool execution loop."""
 
     def _iface(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat._truncate_middle = MagicMock(side_effect=lambda x: x[:2000])
-        return ClaudeInterface(chat)
+        return NeoMindInterface(chat)
 
     def test_no_loop_in_chat_mode(self):
         iface = self._iface()
@@ -706,7 +706,7 @@ class TestTranscriptCommand(unittest.TestCase):
     """Test the /transcript command."""
 
     def _iface(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat.conversation_history = [
             {"role": "system", "content": "You are helpful."},
@@ -715,7 +715,7 @@ class TestTranscriptCommand(unittest.TestCase):
             {"role": "user", "content": "What is Python?"},
             {"role": "assistant", "content": "Python is a programming language."},
         ]
-        return ClaudeInterface(chat)
+        return NeoMindInterface(chat)
 
     @patch('sys.stdout', new_callable=StringIO)
     def test_transcript_default(self, _):
@@ -748,17 +748,17 @@ class TestTranscriptInCommands(unittest.TestCase):
     """Test that /transcript is wired into command handling."""
 
     def test_transcript_in_descriptions(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         self.assertIn("transcript", SlashCommandCompleter.ALL_DESCRIPTIONS)
 
     def test_handle_transcript_returns_true(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat.conversation_history = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi!"},
         ]
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         result = iface._handle_local_command("/transcript")
         self.assertTrue(result)
 
@@ -767,11 +767,11 @@ class TestSpinnerCallback(unittest.TestCase):
     """Test that spinner callback is properly injected."""
 
     def test_callback_set_on_chat(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat.stream_response = MagicMock()
         chat._truncate_middle = MagicMock(side_effect=lambda x: x)
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         iface._stream_and_render("test")
         # stream_response was called
         chat.stream_response.assert_called_once_with("test")
@@ -817,7 +817,7 @@ class TestExpandCommand(unittest.TestCase):
     """Test the /expand command for viewing thinking turns."""
 
     def _iface_with_thinking(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat._thinking_history = [
             {
@@ -833,14 +833,14 @@ class TestExpandCommand(unittest.TestCase):
                 "duration": 5.1,
             },
         ]
-        return ClaudeInterface(chat)
+        return NeoMindInterface(chat)
 
     @patch('sys.stdout', new_callable=StringIO)
     def test_expand_no_thinking(self, _):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat._thinking_history = []  # Explicitly empty
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         iface._show_expand("")  # Should say "no thinking turns" and return
 
     @patch('sys.stdout', new_callable=StringIO)
@@ -884,10 +884,10 @@ class TestExpandCommand(unittest.TestCase):
         iface._show_expand("99")  # Should not crash
 
     def test_handle_expand_returns_true(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat._thinking_history = []
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         result = iface._handle_local_command("/expand")
         self.assertTrue(result)
 
@@ -896,7 +896,7 @@ class TestExpandInCommands(unittest.TestCase):
     """Test that /expand is registered as a command."""
 
     def test_expand_in_descriptions(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         self.assertIn("expand", SlashCommandCompleter.ALL_DESCRIPTIONS)
 
 
@@ -905,8 +905,8 @@ class TestSpinnerMechanism(unittest.TestCase):
 
     def test_start_and_stop_spinner(self):
         """Spinner starts and stops cleanly."""
-        from cli.claude_interface import ClaudeInterface
-        iface = ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        iface = NeoMindInterface(_make_mock_chat("coding"))
         stop = iface._start_spinner("Testing…")
         time.sleep(0.2)
         stop.set()
@@ -915,8 +915,8 @@ class TestSpinnerMechanism(unittest.TestCase):
 
     def test_spinner_writes_to_stderr(self):
         """Spinner output goes to stderr, not stdout."""
-        from cli.claude_interface import ClaudeInterface
-        iface = ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        iface = NeoMindInterface(_make_mock_chat("coding"))
         captured = StringIO()
         with patch('sys.stderr', captured):
             stop = iface._start_spinner("Test")
@@ -966,8 +966,8 @@ class TestCodeFenceFilter(unittest.TestCase):
     """Test _CodeFenceFilter that suppresses bash code blocks from display."""
 
     def _filter(self):
-        from cli.claude_interface import ClaudeInterface
-        return ClaudeInterface._CodeFenceFilter()
+        from cli.neomind_interface import NeoMindInterface
+        return NeoMindInterface._CodeFenceFilter()
 
     def test_plain_text_passes_through(self):
         f = self._filter()
@@ -1072,8 +1072,8 @@ class TestDynamicSpinnerLabel(unittest.TestCase):
     """Test that spinner supports dynamic label updates."""
 
     def test_spinner_has_label_ref(self):
-        from cli.claude_interface import ClaudeInterface
-        iface = ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        iface = NeoMindInterface(_make_mock_chat("coding"))
         stop = iface._start_spinner("Initial")
         self.assertTrue(hasattr(stop, '_label_ref'))
         self.assertEqual(stop._label_ref[0], "Initial")
@@ -1081,8 +1081,8 @@ class TestDynamicSpinnerLabel(unittest.TestCase):
         time.sleep(0.15)
 
     def test_update_spinner_changes_label(self):
-        from cli.claude_interface import ClaudeInterface
-        iface = ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        iface = NeoMindInterface(_make_mock_chat("coding"))
         stop = iface._start_spinner("Start")
         iface._update_spinner(stop, "Updated")
         self.assertEqual(stop._label_ref[0], "Updated")
@@ -1090,8 +1090,8 @@ class TestDynamicSpinnerLabel(unittest.TestCase):
         time.sleep(0.15)
 
     def test_dynamic_label_shows_in_output(self):
-        from cli.claude_interface import ClaudeInterface
-        iface = ClaudeInterface(_make_mock_chat("coding"))
+        from cli.neomind_interface import NeoMindInterface
+        iface = NeoMindInterface(_make_mock_chat("coding"))
         captured = StringIO()
         with patch('sys.stderr', captured):
             stop = iface._start_spinner("Label1")
@@ -1113,11 +1113,11 @@ class TestAgenticLoopSpinnerDisplay(unittest.TestCase):
     """Test that agentic loop uses spinner instead of verbose output after permission."""
 
     def _iface(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat._truncate_middle = MagicMock(side_effect=lambda x: x[:2000])
         chat.stream_response = MagicMock()
-        return ClaudeInterface(chat)
+        return NeoMindInterface(chat)
 
     @patch('builtins.input', return_value='y')
     def test_agentic_loop_starts_spinner(self, _):
@@ -1174,37 +1174,37 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
     """Test that _stream_and_render installs content filter in coding mode."""
 
     def test_filter_installed_in_coding_mode(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         filter_installed = []
         def mock_stream(prompt):
             filter_installed.append(getattr(chat, '_content_filter', None))
         chat.stream_response = MagicMock(side_effect=mock_stream)
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         iface._stream_and_render("test prompt")
         # During stream_response, _content_filter should have been set
         self.assertEqual(len(filter_installed), 1)
         self.assertIsNotNone(filter_installed[0])
 
     def test_filter_not_installed_in_chat_mode(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("chat")
         chat._content_filter = None  # Explicitly initialize (MagicMock auto-creates)
         filter_installed = []
         def mock_stream(prompt):
             filter_installed.append(chat._content_filter)
         chat.stream_response = MagicMock(side_effect=mock_stream)
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         iface._stream_and_render("test prompt")
         # In chat mode, _content_filter should NOT be set
         self.assertEqual(len(filter_installed), 1)
         self.assertIsNone(filter_installed[0])
 
     def test_filter_cleaned_up_after_render(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
         chat.stream_response = MagicMock()
-        iface = ClaudeInterface(chat)
+        iface = NeoMindInterface(chat)
         iface._stream_and_render("test")
         # After _stream_and_render completes, filter should be cleaned up
         self.assertIsNone(getattr(chat, '_content_filter', None))
@@ -1218,11 +1218,11 @@ class TestPermissionsCommand(unittest.TestCase):
     """Test the /permissions command for toggling permission mode at runtime."""
 
     def setUp(self):
-        from cli.claude_interface import ClaudeInterface
+        from cli.neomind_interface import NeoMindInterface
         from agent_config import agent_config
         agent_config.switch_mode("coding")
         self.mock_chat = _make_mock_chat(mode="coding")
-        self.interface = ClaudeInterface(self.mock_chat)
+        self.interface = NeoMindInterface(self.mock_chat)
         # Reset to normal
         agent_config.permission_mode = "normal"
 
@@ -1273,7 +1273,7 @@ class TestPermissionsCommand(unittest.TestCase):
         self.assertEqual(agent_config.permission_mode, old_mode)
 
     def test_permissions_in_descriptions(self):
-        from cli.claude_interface import SlashCommandCompleter
+        from cli.neomind_interface import SlashCommandCompleter
         self.assertIn("permissions", SlashCommandCompleter.ALL_DESCRIPTIONS)
 
 

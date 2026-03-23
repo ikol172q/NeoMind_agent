@@ -30,13 +30,13 @@ def interactive_main(mode: str = "chat"):
     if mode != agent_config.mode:
         agent_config.switch_mode(mode)
 
-    # Try Claude-like interface first (preferred)
+    # Try NeoMind interface first (preferred)
     try:
-        from cli.claude_interface import interactive_chat_claude_interface
-        interactive_chat_claude_interface(mode)
+        from cli.neomind_interface import interactive_chat
+        interactive_chat(mode)
         return
     except Exception as e:
-        print(f"Note: Claude interface unavailable ({e}), falling back to standard interface")
+        print(f"Note: NeoMind interface unavailable ({e}), falling back to standard interface")
 
     # Fallback chain
     try:
@@ -66,7 +66,7 @@ def main():
         description="neomind AI Agent — Chat, Coding, or Finance mode",
         epilog="Examples:\n"
                "  python main.py --mode chat     # General conversation\n"
-               "  python main.py --mode coding   # Claude CLI-like coding assistant\n"
+               "  python main.py --mode coding   # NeoMind coding assistant\n"
                "  python main.py --mode fin      # Personal finance & investment intelligence",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -81,7 +81,7 @@ def main():
         '--mode',
         default='chat',
         choices=['chat', 'coding', 'fin'],
-        help="Session mode: chat (conversation), coding (Claude CLI-like), or fin (finance intelligence). Default: chat"
+        help="Session mode: chat (conversation), coding (NeoMind), or fin (finance intelligence). Default: chat"
     )
     parser.add_argument(
         '--version',

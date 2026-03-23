@@ -1,6 +1,6 @@
 # agent/workflow/guards.py
 """
-Safety Guards — /careful, /freeze, /guard (from gstack pattern).
+Safety Guards — /careful, /freeze, /guard commands.
 
 Protects all 3 personalities from destructive operations:
 - /careful: warn before dangerous commands
