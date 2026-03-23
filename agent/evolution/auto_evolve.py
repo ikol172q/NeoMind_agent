@@ -415,7 +415,8 @@ class AutoEvolve:
         except Exception as e:
             logger.warning(f"Failed to generate retro report: {e}")
 
-        # Save retro file
+        # Save retro file (to evolution dir — existing behavior)
+        retro_content = ""
         try:
             retro_file = self.evolution_dir / f"retro-{week_end}.md"
             retro_content = self._format_retro(report)
@@ -424,6 +425,29 @@ class AutoEvolve:
             logger.info(f"Saved retro: {retro_file}")
         except Exception as e:
             logger.warning(f"Failed to save retro file: {e}")
+
+        # ── Vault integration: write retro + goals + promote patterns ────
+        # See: plans/2026-03-22_obsidian-vault-integration.md
+        try:
+            from agent.vault.writer import VaultWriter
+            vault = VaultWriter()
+            if retro_content:
+                vault.write_retro(retro_content, date=week_end)
+            vault.write_goals(report.improvements)
+            logger.info("Wrote retro and goals to vault")
+
+            # Promote validated patterns (3+ occurrences) to MEMORY.md
+            try:
+                from agent.memory.shared_memory import SharedMemory
+                from agent.vault.promoter import promote_patterns
+                mem = SharedMemory()
+                promoted = promote_patterns(mem, vault)
+                if promoted:
+                    logger.info(f"Promoted {promoted} patterns to vault MEMORY.md")
+            except Exception as pe:
+                logger.warning(f"Pattern promotion failed (non-fatal): {pe}")
+        except Exception as ve:
+            logger.warning(f"Vault write failed (non-fatal): {ve}")
 
         # Update state
         self.state["last_weekly_retro"] = datetime.now(timezone.utc).isoformat()

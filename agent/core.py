@@ -320,6 +320,33 @@ class NeoMindAgent:
         if agent_config.system_prompt:
             self.add_to_history("system", agent_config.system_prompt)
 
+        # ── Vault context injection ──────────────────────────────────────
+        # Reads MEMORY.md, current-goals.md, yesterday's journal from the
+        # Obsidian vault and injects as a system message.
+        # See: plans/2026-03-22_obsidian-vault-integration.md
+        # Set NEOMIND_DISABLE_VAULT=1 in tests to skip vault side-effects.
+        self._vault_reader = None
+        self._vault_writer = None
+        if not os.environ.get("NEOMIND_DISABLE_VAULT"):
+            try:
+                from agent.vault.reader import VaultReader
+                from agent.vault.writer import VaultWriter
+                self._vault_reader = VaultReader()
+                self._vault_writer = VaultWriter()
+                if self._vault_reader.vault_exists():
+                    vault_context = self._vault_reader.get_startup_context(
+                        mode=getattr(self, 'mode', 'chat')
+                    )
+                    if vault_context:
+                        self.add_to_history("system", vault_context)
+                        self._status_print("Injected vault context into system prompt", "debug")
+                else:
+                    # First run — initialize vault structure
+                    self._vault_writer.ensure_structure()
+                    self._status_print("Initialized vault structure (first run)", "debug")
+            except Exception as e:
+                self._status_print(f"Vault not available (non-fatal): {e}", "debug")
+
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
         # Initialize HTML-to-text converter if available
@@ -1986,6 +2013,34 @@ Remember: Always ask for permission before making changes!
         Handle /exit command (alias for /quit).
         """
         return self.handle_quit_command(command)
+
+    # ── Vault: session journal ──────────────────────────────────────────
+
+    def write_session_journal(self):
+        """Write a journal entry for the current session to the vault.
+
+        Called by the CLI on normal exit (Ctrl+D, /quit) and Ctrl+C.
+        Gracefully no-ops if vault is disabled or unavailable.
+        """
+        if os.environ.get("NEOMIND_DISABLE_VAULT") or self._vault_writer is None:
+            return
+        try:
+            # Gather lightweight stats from conversation history
+            user_msgs = [m for m in self.conversation_history if m.get("role") == "user"]
+            assistant_msgs = [m for m in self.conversation_history if m.get("role") == "assistant"]
+            tasks = [{"description": f"Handled {len(user_msgs)} user messages", "status": "done"}]
+            errors = [m.get("content", "")[:120] for m in self.conversation_history
+                      if m.get("role") == "system" and "error" in m.get("content", "").lower()][:5]
+            learnings = []  # Populated by future pattern extraction
+            self._vault_writer.write_journal_entry(
+                mode=self.mode,
+                tasks=tasks,
+                errors=errors,
+                learnings=learnings,
+                tokens_used=getattr(self, '_total_tokens_used', 0),
+            )
+        except Exception:
+            pass  # Non-fatal — never block exit
 
     # NEW: Webpage reading capabilities
 
