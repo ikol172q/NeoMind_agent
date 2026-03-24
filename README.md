@@ -772,7 +772,9 @@ NeoMind_agent/
 │       ├── hybrid_search.py     # Multi-source search with RRF
 │       ├── data_hub.py          # Market data (Finnhub/yfinance/AKShare/CoinGecko)
 │       ├── secure_memory.py     # Encrypted SQLite storage
-│       ├── news_digest.py       # News processing + conflict detection
+│       ├── news_digest.py       # News processing + debate engine + decision tracking
+│       ├── fin_rag.py           # Financial document RAG (FAISS + embeddings)
+│       ├── investment_personas.py # Value/Growth/Macro analysis personas
 │       ├── quant_engine.py      # Financial math (BS, DCF, VaR)
 │       ├── diagram_gen.py       # Mermaid diagram generator
 │       ├── dashboard.py         # HTML dashboard (Chart.js)
@@ -821,3 +823,126 @@ NeoMind's architecture draws inspiration from and integrates with the following 
 - **[OpenClaw](https://github.com/openclaw/openclaw)** — Inter-agent collaboration protocol. NeoMind connects to OpenClaw via WebSocket gateway for cross-bot message routing in Telegram groups, bidirectional memory bridge (SQLite↔Markdown), and domain-aware task handoff (NeoMind handles finance, OpenClaw handles general tasks).
 
 - **[Obsidian](https://obsidian.md/)** — Local-first markdown knowledge management. NeoMind writes structured `.md` files (journals, retros, goals, long-term memory) to `~/neomind-vault`; Obsidian serves as the human-readable viewer with Graph View, Bases (queryable YAML frontmatter), indexed search, and backlinks — all built-in, zero plugins required (Restricted Mode). Architecture inspired by [OpenClaw's SOUL.md/MEMORY.md pattern](https://docs.openclaw.ai/concepts/memory) and [Context Studios' 3-occurrence promotion threshold](https://www.contextstudios.ai/blog/how-to-build-a-self-learning-ai-agent-system-our-actual-architecture). See [integration plan](plans/2026-03-22_obsidian-vault-integration.md) and [troubleshooting](plans/OBSIDIAN_TROUBLESHOOTING.md).
+
+---
+
+## Finance Module — Research References & Roadmap
+
+NeoMind-Fin's design is informed by deep research across 40+ open-source projects, 15+ academic papers, and multiple commercial platforms. Below are the key references organized by which capability they informed.
+
+### Adversarial Debate Engine (`news_digest.py → debate()`)
+
+The debate engine forces Bull/Bear adversarial reasoning on every Thesis to combat confirmation bias — the #1 cause of retail investor losses.
+
+- **[TradingAgents](https://github.com/TauricResearch/TradingAgents)** — Multi-agent framework with Bullish/Bearish Researcher structured debate. [Paper](https://arxiv.org/abs/2412.20138).
+- **[Decision Protocols](https://github.com/lkaesberg/decision-protocols)** — Research finding: voting improves reasoning accuracy, consensus improves knowledge tasks. [ACL 2025](https://aclanthology.org/2025.findings-acl.606.pdf).
+- **[DebateLLM](https://github.com/instadeepai/DebateLLM)** — Multi-agent debate benchmark with diverse debate protocols and prompt strategies.
+- **[FREE-MAD](https://arxiv.org/pdf/2509.11035)** — No forced consensus; scoring all intermediate outputs yields better results than final-round-only.
+
+### Dynamic News Impact Scoring (`news_digest.py → _estimate_impact_probability()`)
+
+Replaced the hardcoded 0.7 impact probability with a 6-signal heuristic (category prior, sentiment strength, specificity, source trust, recency, social buzz).
+
+- **[FinBERT](https://huggingface.co/ProsusAI/finbert)** ([GitHub](https://github.com/ProsusAI/finBERT)) — Gold standard for financial sentiment classification (positive/negative/neutral). Planned as a future upgrade to replace keyword-based `_quick_sentiment()`.
+- **[FinGPT](https://github.com/AI4Finance-Foundation/FinGPT)** — Open-source financial LLM with RAG-enhanced sentiment analysis and low-cost LoRA fine-tuning.
+
+### Social Sentiment Signals (`data_hub.py → get_social_sentiment()`)
+
+Signal 6 in impact scoring: Finnhub Social Sentiment API provides Reddit + Twitter mention volume and sentiment polarity for any US stock symbol. High social buzz with aligned sentiment amplifies impact probability.
+
+- **[Finnhub Social Sentiment API](https://finnhub.io/docs/api/social-sentiment)** — Free-tier Reddit + Twitter mention/sentiment data. Already have Finnhub key — zero additional cost.
+- **[Adanos X Sentiment](https://adanos.org/x-stock-sentiment)** — X/Twitter stock sentiment API (future alternative data source).
+
+### Investment Personas (`investment_personas.py`)
+
+Three distinct analytical lenses (Value Investor, Growth Investor, Macro Strategist) with structured system prompts, weighted scoring rubrics, and red-flag lists. Used by `debate_with_personas()` for richer multi-perspective analysis.
+
+- **[AI Hedge Fund](https://github.com/virattt/ai-hedge-fund)** — 18-agent system with 12 famous investor personas (Buffett, Graham, Burry, Wood, Damodaran). Key insight: different personas surface different risks.
+- **[TradingAgents](https://github.com/TauricResearch/TradingAgents)** — Role-based agent architecture where Bull/Bear researchers + Risk Manager + Trader each bring domain-specific analysis.
+
+### Financial Document RAG (`fin_rag.py`)
+
+Local FAISS-based vector store for semantic search over earnings reports, SEC filings, research notes. Chunks documents, embeds with sentence-transformers, enables "What was Apple's revenue guidance?" queries over your personal document library.
+
+- **[KG-RAG](https://github.com/VectorInstitute/kg-rag)** — Knowledge Graph + RAG for SEC 10-Q multi-hop reasoning.
+- **[FinanceRAG](https://github.com/nik2401/FinanceRAG-Investment-Research-Assistant)** — 4-hour financial document analysis reduced to 3 seconds, 90%+ accuracy.
+- **[FinRobot](https://github.com/AI4Finance-Foundation/FinRobot)** — Financial CoT reasoning with document-grounded analysis.
+
+### Decision Tracking & Accuracy (`news_digest.py → checkpoint_thesis()`, `get_accuracy_stats()`)
+
+Every Thesis now records entry price and supports 30/60/90-day performance checkpoints, enabling "am I getting better?" self-reflection.
+
+- **[FinMem](https://github.com/pipiku915/FinMem-LLM-StockTrading)** — Layered memory trading agent with tunable cognitive span and self-evolution. Key insight: agents that learn from past predictions significantly outperform stateless agents.
+- **[AI Hedge Fund](https://github.com/virattt/ai-hedge-fund)** — 18-agent system with 12 famous investor personas (Buffett, Graham, Burry, Wood, Damodaran, etc.) and built-in backtester.
+
+### Architecture & Multi-Agent Patterns
+
+- **[AgenticTrading](https://github.com/Open-Finance-Lab/AgenticTrading)** — Most advanced agent trading architecture: DAG Planner + 8 Agent Pools + Neo4j memory + MCP/A2A/ACP protocol stack. NeurIPS 2025 Workshop.
+- **[FinRobot](https://github.com/AI4Finance-Foundation/FinRobot)** — Financial Chain-of-Thought (CoT) reasoning, auto-generated institutional-grade equity research reports (15+ chart types), DCF valuation. [Paper](https://arxiv.org/html/2405.14767v2).
+- **[Microsoft Qlib](https://github.com/microsoft/qlib)** — Full-stack quant platform: alpha mining → risk modeling → portfolio optimization → order execution.
+- **[ElizaOS](https://github.com/elizaOS/eliza)** — "WordPress for agents": on-chain trading, wallet management, social media integration, rich plugin ecosystem. Plugin architecture reference.
+- **[Multi-Agent Finance Assistant](https://github.com/vansh-121/Multi-Agent-AI-Finance-Assistant)** — 8-agent system: API/Scraping/RAG/Analysis/Language/Prediction/Chart/Voice. FAISS RAG + ML prediction.
+- **[AutoHedge](https://github.com/The-Swarm-Corporation/AutoHedge)** — Solana on-chain autonomous trading: Director → Quant → Risk → Execution pipeline.
+
+### Trading Bots & Strategy Execution
+
+- **[TradingGoose](https://github.com/TradingGoose/TradingGoose.github.io)** — Event-driven trading with Alpaca live execution, 3-perspective risk control (conservative/balanced/aggressive), Portfolio Manager veto.
+- **[LLM-TradeBot](https://github.com/EthanAlgoX/LLM-TradeBot)** — Live crypto trading with multi-timeframe sync and agent chatroom visualization.
+- **[ValueCell](https://github.com/ValueCell-ai/valuecell)** — Community-driven multi-agent finance platform with Discord webhooks and LanceDB vector storage.
+- **[QuantDinger](https://github.com/brokermr810/QuantDinger)** — Local AI quant workbench: "Vibe Coding" natural language → strategy → backtest → deploy, multi-market (Crypto/US/CN/HK/Forex).
+- **[Investment Portfolio AI Agent](https://github.com/shiv-rna/Investment-Portfolio-AI-Agent)** — ReAct Agent for portfolio analysis.
+- **[PrimoGPT](https://github.com/ivebotunac/PrimoGPT)** — FinRL + NLP fusion for trading.
+
+### Reinforcement Learning & Quantitative Models
+
+- **[FinRL](https://github.com/AI4Finance-Foundation/FinRL)** — Financial RL benchmark: 5 DRL agents (A2C/DDPG/PPO/TD3/SAC) with Stable Baselines 3, technical indicators + VIX integration.
+- **[QuantMuse](https://github.com/0xemmkty/QuantMuse)** — Risk parity + mean-variance optimization.
+- **[CALF](https://github.com/Hank0626/CALF)** — Cross-modal LLM fine-tuning for time-series forecasting (AAAI 2025).
+
+### Data Sources & Infrastructure
+
+- **[OpenBB](https://github.com/OpenBB-finance/OpenBB)** — Open-source Bloomberg Terminal alternative with 100+ data sources and MCP Server support.
+- **[Financial Datasets MCP](https://github.com/financial-datasets/mcp-server)** — MCP server for income statements, balance sheets, cash flow, stock prices, news.
+- **[Finance-Trading-AI-Agents-MCP](https://github.com/aitrados/finance-trading-ai-agents-mcp)** — Department-based MCP server mirroring real financial company operations.
+- **[adata](https://github.com/1nchaos/adata)** — Free A-share multi-source data fusion with anti-scraping.
+- **[Reddit Stock Sentiment Analyzer](https://github.com/Adith-Rai/Reddit-Stock-Sentiment-Analyzer)** — AWS Kafka + PySpark + Lambda pipeline for Reddit sentiment analysis.
+
+### Financial RAG / Document Analysis
+
+- **[KG-RAG](https://github.com/VectorInstitute/kg-rag)** — Knowledge Graph + RAG for SEC 10-Q multi-hop reasoning.
+- **[FinanceRAG](https://github.com/nik2401/FinanceRAG-Investment-Research-Assistant)** — 4-hour financial document analysis reduced to 3 seconds, 90%+ accuracy.
+- **[SEC-EDGAR Notebooks](https://github.com/neo4j-examples/sec-edgar-notebooks)** — GraphRAG + SEC EDGAR knowledge graph.
+- **[10K-Filings-Analyzer](https://github.com/frankwuyue/10K-Filings-Analyzer)** — RAG-powered SEC 10-K filing analysis.
+
+### Chinese Market / A-Share Specific
+
+- **[TradingAgents-CN](https://github.com/hsliuping/TradingAgents-CN)** — Chinese-enhanced TradingAgents for A-share/HK/US markets with Tongyi Qwen/DeepSeek LLMs.
+- **[ai_quant_trade](https://github.com/charliedream1/ai_quant_trade)** — Full-stack A-share quant: RL + DL + LLM + traditional strategies, 5000+ factors.
+- **[stock-scanner](https://github.com/DR-lin-eng/stock-scanner)** — AI A-share analysis with 25 financial indicators, supports ZhipuAI/Claude/GPT.
+- **[Hikyuu](https://github.com/fasiondog/hikyuu)** — C++/Python high-speed quant framework for Chinese markets.
+- **[Abu (阿布量化)](https://github.com/bbfamily/abu)** — Python full-asset quant system (stocks/options/futures/BTC).
+
+### Curated Lists (For Deep-Dives)
+
+- **[awesome-ai-in-finance](https://github.com/georgezouq/awesome-ai-in-finance)** — LLM & deep learning strategies for finance.
+- **[awesome-quant](https://github.com/wilsonfreitas/awesome-quant)** — Quantitative finance libraries and resources.
+- **[awesome-quant-ai](https://github.com/leoncuhk/awesome-quant-ai)** — AI-powered quantitative investment papers and tools.
+- **[awesome-systematic-trading](https://github.com/wangzhe3224/awesome-systematic-trading)** — Systematic trading strategies and frameworks.
+- **[Awesome-Quant-ML-Trading](https://github.com/grananqvist/Awesome-Quant-Machine-Learning-Trading)** — Machine learning for quantitative trading.
+- **[Financial-Machine-Learning](https://github.com/firmai/financial-machine-learning)** — Practical financial ML tools and notebooks.
+- **[Finance-LLMs](https://github.com/kennethleungty/Finance-LLMs)** — LLM implementations for financial services.
+- **[FinLLMs](https://github.com/adlnlp/FinLLMs)** — Financial LLM papers, benchmarks, and models.
+- **[LLMs-in-Finance](https://github.com/hananedupouy/LLMs-in-Finance)** — LLM + AI Agent applications in finance.
+- **[Autonomous-Agents](https://github.com/tmgthb/Autonomous-Agents)** — Daily-updated autonomous agent paper collection.
+- **[awesome-multi-agent-papers](https://github.com/kyegomez/awesome-multi-agent-papers)** — Multi-agent system research papers.
+- **[LLM4TS](https://github.com/liaoyuhua/LLM4TS)** — LLM for time-series forecasting papers and tools.
+- **[awesome-financial-time-series-forecasting](https://github.com/TongjiFinLab/awesome-financial-time-series-forecasting)** — Financial time-series forecasting papers and benchmarks.
+
+### Academic Papers
+
+- [TradingAgents Paper](https://arxiv.org/abs/2412.20138) — Multi-agent adversarial debate trading framework.
+- [Finance Agent Benchmark](https://arxiv.org/abs/2508.00828) — 537 expert questions, best model (o3) only 46.8% accuracy at $3.79/query.
+- [Toward Expert Investment Teams](https://arxiv.org/abs/2602.23330) — Fine-grained trading task decomposition with multi-agent LLM teams.
+- [FinReflectKG](https://arxiv.org/pdf/2508.17906) — Agent-constructed financial knowledge graphs from SEC 10-K filings.
+- [FREE-MAD](https://arxiv.org/pdf/2509.11035) — No forced consensus: scoring all intermediate outputs beats final-round-only.
+- [Decision Protocols (ACL 2025)](https://aclanthology.org/2025.findings-acl.606.pdf) — Voting improves reasoning accuracy, consensus improves knowledge tasks.

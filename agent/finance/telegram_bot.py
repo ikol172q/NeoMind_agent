@@ -341,6 +341,8 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("evidence", self._cmd_evidence))
         self._app.add_handler(CommandHandler("provider", self._cmd_provider))
         self._app.add_handler(CommandHandler("usage", self._cmd_usage))
+        self._app.add_handler(CommandHandler("persona", self._cmd_persona))
+        self._app.add_handler(CommandHandler("rag", self._cmd_rag))
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -854,11 +856,18 @@ class NeoMindTelegramBot:
     async def _cmd_subscribe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /subscribe — manage auto-push subscriptions for this chat.
 
-        /subscribe hn          — subscribe to HN push (every 4 hours, top 5, score≥100)
-        /subscribe hn off      — unsubscribe
-        /subscribe hn 2h       — push every 2 hours
-        /subscribe hn 50       — min score 50
-        /subscribe             — show current subscriptions
+        /subscribe hn             — subscribe to HN push (every 4 hours, top 5, score≥100)
+        /subscribe hn off         — unsubscribe
+        /subscribe hn 2h          — push every 2 hours
+        /subscribe hn 50          — min score 50
+        /subscribe digest         — daily market digest + thesis alerts (every 12h)
+        /subscribe digest 6h      — digest every 6 hours
+        /subscribe digest off     — unsubscribe
+        /subscribe                — show current subscriptions
+
+        Digest push is inspired by:
+            - ValueCell (https://github.com/ValueCell-ai/valuecell) — real-time alerts
+            - TradingGoose (https://github.com/TradingGoose/TradingGoose.github.io) — event-driven notifications
         """
         cid = update.message.chat_id
         args = list(context.args) if context.args else []
@@ -887,19 +896,25 @@ class NeoMindTelegramBot:
             return
 
         source = args[0].lower()
-        if source != "hn":
-            await update.message.reply_text("目前支持: <code>/subscribe hn</code>", parse_mode=ParseMode.HTML)
+        if source not in ("hn", "digest"):
+            await update.message.reply_text(
+                "支持:\n"
+                "<code>/subscribe hn</code> — Hacker News 推送\n"
+                "<code>/subscribe digest</code> — 市场摘要+论点预警",
+                parse_mode=ParseMode.HTML,
+            )
             return
 
         # Check for off/unsubscribe
         if len(args) > 1 and args[1] in ("off", "stop", "cancel", "取消"):
-            subs.setdefault(str(cid), {}).pop("hn", None)
+            subs.setdefault(str(cid), {}).pop(source, None)
             self._save_subscriptions(subs)
-            await update.message.reply_text("🔕 已取消 HN 推送")
+            label = "HN" if source == "hn" else "市场摘要"
+            await update.message.reply_text(f"🔕 已取消 {label} 推送")
             return
 
         # Parse optional params
-        interval_hours = 4
+        interval_hours = 4 if source == "hn" else 12
         min_score = 100
         for arg in args[1:]:
             if arg.endswith("h") and arg[:-1].isdigit():
@@ -907,25 +922,40 @@ class NeoMindTelegramBot:
             elif arg.isdigit():
                 min_score = int(arg)
 
-        subs.setdefault(str(cid), {})["hn"] = {
-            "enabled": True,
-            "interval_hours": interval_hours,
-            "min_score": min_score,
-            "limit": 5,
-            "last_push": 0,
-            "pushed_ids": [],  # track to avoid duplicates
-        }
-        self._save_subscriptions(subs)
-
-        await update.message.reply_text(
-            f"🔔 已订阅 Hacker News 推送\n\n"
-            f"频率: 每 {interval_hours} 小时\n"
-            f"最低分: {min_score}\n"
-            f"每次: 5 条\n\n"
-            f"<code>/subscribe hn off</code> 取消\n"
-            f"<code>/hn</code> 立即查看",
-            parse_mode=ParseMode.HTML,
-        )
+        if source == "hn":
+            subs.setdefault(str(cid), {})["hn"] = {
+                "enabled": True,
+                "interval_hours": interval_hours,
+                "min_score": min_score,
+                "limit": 5,
+                "last_push": 0,
+                "pushed_ids": [],
+            }
+            self._save_subscriptions(subs)
+            await update.message.reply_text(
+                f"🔔 已订阅 Hacker News 推送\n\n"
+                f"频率: 每 {interval_hours} 小时\n"
+                f"最低分: {min_score}\n"
+                f"每次: 5 条\n\n"
+                f"<code>/subscribe hn off</code> 取消\n"
+                f"<code>/hn</code> 立即查看",
+                parse_mode=ParseMode.HTML,
+            )
+        elif source == "digest":
+            subs.setdefault(str(cid), {})["digest"] = {
+                "enabled": True,
+                "interval_hours": interval_hours,
+                "last_push": 0,
+            }
+            self._save_subscriptions(subs)
+            await update.message.reply_text(
+                f"📊 已订阅市场摘要推送\n\n"
+                f"频率: 每 {interval_hours} 小时\n"
+                f"内容: 高影响新闻 · 源头冲突 · 论点变化 · 准确率\n\n"
+                f"<code>/subscribe digest off</code> 取消\n"
+                f"<code>/digest</code> 立即查看",
+                parse_mode=ParseMode.HTML,
+            )
 
     # ── Subscription Storage ─────────────────────────────────────
 
@@ -1023,8 +1053,295 @@ class NeoMindTelegramBot:
                 except Exception as e:
                     print(f"[bot] Failed to push HN to {chat_id}: {e}", flush=True)
 
+            # ── Digest subscription ───────────────────────────────
+            digest_cfg = chat_subs.get("digest", {})
+            if digest_cfg.get("enabled"):
+                d_interval = digest_cfg.get("interval_hours", 12) * 3600
+                d_last = digest_cfg.get("last_push", 0)
+
+                if now - d_last >= d_interval:
+                    try:
+                        text = await self._generate_digest_push()
+                        if text:
+                            await self._app.bot.send_message(
+                                chat_id=chat_id,
+                                text=text,
+                                parse_mode="HTML",
+                                disable_web_page_preview=True,
+                            )
+                            digest_cfg["last_push"] = now
+                            changed = True
+                            print(f"[bot] Pushed digest to {chat_id}", flush=True)
+                    except Exception as e:
+                        print(f"[bot] Failed to push digest to {chat_id}: {e}", flush=True)
+
         if changed:
             self._save_subscriptions(subs)
+
+    async def _generate_digest_push(self) -> str:
+        """Generate a compact Telegram digest summary.
+
+        Pulls from NewsDigestEngine, highlights:
+        1. Top 5 high-impact news (with dynamic probability scoring)
+        2. Source conflicts detected
+        3. Thesis alerts (reversals, low confidence, new checkpoints)
+        4. Accuracy stats (if available)
+
+        Inspired by:
+            - ValueCell alerts: https://github.com/ValueCell-ai/valuecell
+            - TradingGoose event-driven: https://github.com/TradingGoose/TradingGoose.github.io
+        """
+        lines = ["📊 <b>NeoMind 市场摘要</b>\n"]
+
+        digest_engine = self.components.get("digest") if self.components else None
+
+        # ── Section 1: Top news ──────────────────────────────────
+        if digest_engine:
+            try:
+                digest = await digest_engine.generate_digest()
+
+                if digest.items:
+                    lines.append("📰 <b>高影响新闻</b>")
+                    for item in digest.items[:5]:
+                        badge = "🔴" if item.impact_score >= 6 else "🟡" if item.impact_score >= 3 else "🟢"
+                        prob_str = f"{item.impact_probability:.0%}" if item.impact_probability != 0.7 else ""
+                        score_str = f" [{item.impact_score:.1f}"
+                        if prob_str:
+                            score_str += f" p={prob_str}"
+                        score_str += "]"
+                        lines.append(f"{badge} {item.title}{score_str}")
+                    lines.append(f"  <i>共 {len(digest.items)} 条, EN:{digest.en_count} ZH:{digest.zh_count}</i>\n")
+
+                # ── Section 2: Conflicts ─────────────────────────
+                if digest.conflicts:
+                    lines.append("⚡ <b>源头冲突</b>")
+                    for c in digest.conflicts[:3]:
+                        lines.append(
+                            f"  ⚠️ <b>{c.entity}</b>: "
+                            f"{c.claim_a.get('source', '?')} vs {c.claim_b.get('source', '?')} "
+                            f"[{c.severity}]"
+                        )
+                    lines.append("")
+
+            except Exception as e:
+                lines.append(f"<i>新闻获取失败: {str(e)[:50]}</i>\n")
+
+        # ── Section 3: Thesis alerts ─────────────────────────────
+        if digest_engine and digest_engine._theses:
+            alerts = []
+            for sym, thesis in digest_engine._theses.items():
+                if thesis.closed:
+                    continue
+                if thesis.reversal_flagged:
+                    alerts.append(f"🔄 <b>{sym}</b>: 反转预警! 反方证据累积超阈值")
+                elif thesis.confidence < 0.4:
+                    alerts.append(f"⚠️ <b>{sym}</b>: 置信度低 ({thesis.confidence:.0%})")
+                elif len(thesis.counter_evidence) >= 2:
+                    alerts.append(f"📉 <b>{sym}</b>: {len(thesis.counter_evidence)} 条反方证据")
+
+            if alerts:
+                lines.append("🎯 <b>论点预警</b>")
+                lines.extend(alerts[:5])
+                lines.append("")
+
+        # ── Section 4: Accuracy stats ────────────────────────────
+        if digest_engine:
+            stats = digest_engine.get_accuracy_stats()
+            if stats.get("total", 0) > 0:
+                lines.append("📈 <b>决策追踪</b>")
+                lines.append(
+                    f"  准确率: {stats['accuracy']:.0%} "
+                    f"({stats['correct']}/{stats['total']})"
+                )
+                if stats.get("bull_accuracy") is not None:
+                    lines.append(f"  看多: {stats['bull_accuracy']:.0%}")
+                if stats.get("bear_accuracy") is not None:
+                    lines.append(f"  看空: {stats['bear_accuracy']:.0%}")
+                lines.append("")
+
+        # ── Footer ───────────────────────────────────────────────
+        from datetime import datetime, timezone
+        now_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        lines.append(f"<i>{now_str}</i>")
+        lines.append("<code>/digest</code> 完整报告 | <code>/subscribe digest off</code> 取消")
+
+        return "\n".join(lines)
+
+    async def _cmd_persona(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /persona — multi-persona investment analysis.
+
+        Usage:
+            /persona AAPL          — all 3 personas analyze AAPL
+            /persona AAPL value    — value investor only
+            /persona list          — show available personas
+
+        References:
+            - AI Hedge Fund personas: https://github.com/virattt/ai-hedge-fund
+            - TradingAgents roles: https://github.com/TauricResearch/TradingAgents
+        """
+        args = context.args if context.args else []
+
+        if not args or args[0].lower() == "list":
+            try:
+                from agent.finance.investment_personas import PERSONAS
+            except ImportError:
+                from .investment_personas import PERSONAS
+
+            lines = ["🎭 <b>投资人格分析</b>\n"]
+            for key, p in PERSONAS.items():
+                lines.append(f"{p.icon} <b>{p.name}</b> (<code>/persona SYMBOL {key}</code>)")
+                lines.append(f"  {p.philosophy}")
+                lines.append(f"  周期: {p.typical_horizon}\n")
+            lines.append("用法: <code>/persona AAPL</code> (三人格同时分析)")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
+        symbol = args[0].upper()
+        persona_filter = args[1].lower() if len(args) > 1 else None
+
+        digest_engine = self.components.get("digest") if self.components else None
+        if not digest_engine:
+            await update.message.reply_text("⚠️ Digest engine 未初始化")
+            return
+
+        # Ensure thesis exists
+        if symbol not in digest_engine._theses:
+            await update.message.reply_text(
+                f"⚠️ {symbol} 没有活跃论点。先用 <code>/stock {symbol}</code> 建立分析。",
+                parse_mode="HTML",
+            )
+            return
+
+        result = digest_engine.debate_with_personas(symbol)
+        if "error" in result:
+            await update.message.reply_text(f"⚠️ {result['error']}")
+            return
+
+        lines = [f"🎭 <b>{symbol} 多人格分析</b>\n"]
+        lines.append(f"📈 当前方向: {result['base_debate']['direction']} "
+                     f"(信心: {result['base_debate']['confidence']:.0%})")
+        lines.append(f"🔍 判定: <b>{result['base_debate']['verdict']}</b>\n")
+
+        for p in result["persona_prompts"]:
+            if persona_filter and persona_filter not in p["persona_name"].lower():
+                continue
+            lines.append(f"{p['persona_icon']} <b>{p['persona_name']}</b> ({p['horizon']})")
+            lines.append(f"  理念: {p['philosophy']}")
+            lines.append(f"  关注: {', '.join(p['rubric_criteria'][:4])}")
+            if p["red_flags"]:
+                lines.append(f"  🚩 红线: {p['red_flags'][0]}")
+            lines.append("")
+
+        lines.append(f"<i>提示: 将 persona prompt 发送给 LLM 获取完整分析</i>")
+        text = "\n".join(lines)
+        # Truncate for Telegram 4096 limit
+        if len(text) > 4000:
+            text = text[:3990] + "\n..."
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def _cmd_rag(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /rag — financial document RAG queries.
+
+        Usage:
+            /rag query What was Apple's revenue guidance?
+            /rag query AAPL earnings outlook   — filtered by symbol
+            /rag stats                         — show index statistics
+            /rag ingest <filepath>             — ingest a document
+
+        References:
+            - KG-RAG: https://github.com/VectorInstitute/kg-rag
+            - FinanceRAG: https://github.com/nik2401/FinanceRAG-Investment-Research-Assistant
+        """
+        args = context.args if context.args else []
+
+        rag = self.components.get("rag") if self.components else None
+
+        if not args:
+            lines = [
+                "📚 <b>金融文档 RAG</b>\n",
+                "<code>/rag stats</code> — 索引统计",
+                "<code>/rag query &lt;问题&gt;</code> — 语义搜索",
+                "<code>/rag ingest &lt;路径&gt;</code> — 导入文档",
+            ]
+            if not rag:
+                lines.append("\n⚠️ RAG 未启用 (需要 faiss-cpu + sentence-transformers)")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+            return
+
+        subcmd = args[0].lower()
+
+        if subcmd == "stats":
+            if not rag:
+                await update.message.reply_text("⚠️ RAG 未启用 (pip install faiss-cpu sentence-transformers PyPDF2)")
+                return
+            stats = rag.get_stats()
+            lines = [
+                "📚 <b>RAG 索引统计</b>\n",
+                f"📄 文档数: {stats['total_documents']}",
+                f"🧩 分块数: {stats['total_chunks']}",
+                f"🔢 向量数: {stats['index_vectors']}",
+                f"🤖 模型: {stats['model']}",
+            ]
+            if stats.get("doc_types"):
+                lines.append(f"📂 类型: {stats['doc_types']}")
+            if stats.get("symbols"):
+                lines.append(f"📊 标的: {stats['symbols']}")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+        elif subcmd == "query" and len(args) > 1:
+            if not rag:
+                await update.message.reply_text("⚠️ RAG 未启用")
+                return
+            question = " ".join(args[1:])
+            # Check if first word after query is a symbol
+            symbol = None
+            if len(args) > 2 and args[1].isupper() and len(args[1]) <= 5:
+                symbol = args[1]
+                question = " ".join(args[2:])
+
+            results = rag.query(question, top_k=3, symbol=symbol)
+            if not results:
+                await update.message.reply_text("🔍 未找到相关文档。试试 <code>/rag ingest</code> 导入文档。", parse_mode="HTML")
+                return
+
+            lines = [f"🔍 <b>查询结果</b>: {question}\n"]
+            for r in results:
+                meta = r.chunk.metadata
+                src = meta.get("source_file", meta.get("source", "?"))
+                sym = f" ({meta['symbol']})" if meta.get("symbol") else ""
+                lines.append(f"<b>[{r.rank}]</b> {src}{sym} <i>(score: {r.score:.2f})</i>")
+                # Show first 200 chars of chunk
+                preview = r.chunk.text[:200].replace("<", "&lt;").replace(">", "&gt;")
+                lines.append(f"  {preview}...\n")
+            await update.message.reply_text("\n".join(lines), parse_mode="HTML")
+
+        elif subcmd == "ingest" and len(args) > 1:
+            if not rag:
+                await update.message.reply_text("⚠️ RAG 未启用")
+                return
+            filepath = " ".join(args[1:])
+            import os
+            if not os.path.exists(filepath):
+                await update.message.reply_text(f"❌ 文件不存在: {filepath}")
+                return
+            try:
+                # Guess symbol from filename
+                basename = os.path.basename(filepath).upper()
+                import re
+                sym_match = re.search(r'([A-Z]{1,5})', basename)
+                symbol = sym_match.group(1) if sym_match else None
+
+                n = rag.ingest_file(filepath, symbol=symbol)
+                await update.message.reply_text(
+                    f"✅ 已导入 <b>{os.path.basename(filepath)}</b>\n"
+                    f"生成 {n} 个分块" + (f", 标的: {symbol}" if symbol else ""),
+                    parse_mode="HTML",
+                )
+            except Exception as e:
+                await update.message.reply_text(f"❌ 导入失败: {str(e)[:200]}")
+
+        else:
+            await update.message.reply_text("用法: <code>/rag stats|query|ingest</code>", parse_mode="HTML")
 
     async def _cmd_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /usage — show LLM usage statistics."""

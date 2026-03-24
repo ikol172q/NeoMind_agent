@@ -18,6 +18,8 @@ __all__ = [
     'MobileSyncGateway',
     'SourceTrustTracker',
     'FinanceDashboard',
+    'FinRAG',
+    'InvestmentPersonas',
     'RSS_FEEDS',
 ]
 
@@ -92,5 +94,21 @@ def get_finance_components(config=None):
     except ImportError as e:
         components['sync'] = None
         print(f"⚠️  Mobile sync unavailable: {e}")
+
+    # ── Wave 2: RAG + Personas ─────────────────────────────────────
+    try:
+        from .fin_rag import FinRAG
+        components['rag'] = FinRAG()
+        # Wire RAG into digest engine for document-grounded debates
+        if components.get('digest'):
+            components['digest']._rag = components['rag']
+    except ImportError:
+        components['rag'] = None  # faiss-cpu / sentence-transformers not installed
+
+    try:
+        from .investment_personas import PERSONAS
+        components['personas'] = PERSONAS
+    except ImportError:
+        components['personas'] = None
 
     return components
