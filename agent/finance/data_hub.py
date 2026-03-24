@@ -580,3 +580,86 @@ class FinanceDataHub:
             lines.append(f"    {label}: {status}")
 
         return "\n".join(lines)
+
+    # ── Social Sentiment ─────────────────────────────────────────────
+
+    async def get_social_sentiment(
+        self,
+        symbol: str,
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch social sentiment data from Finnhub.
+
+        Returns aggregated Reddit + Twitter mention/sentiment for a symbol.
+        Finnhub endpoint: /stock/social-sentiment  (free tier supported)
+
+        Reference: https://finnhub.io/docs/api/social-sentiment
+
+        Returns:
+            Dict with keys: symbol, reddit_mentions, reddit_score,
+                            twitter_mentions, twitter_score, overall_score,
+                            source, timestamp
+            or None if unavailable.
+        """
+        if not self.finnhub_client:
+            return None
+
+        cache_key = f"social_sentiment_{symbol}"
+        cached = self.cache.get(cache_key, ttl=1800)  # 30-min cache
+        if cached:
+            return cached
+
+        try:
+            loop = asyncio.get_event_loop()
+            data = await loop.run_in_executor(
+                self._executor,
+                lambda: self.finnhub_client.stock_social_sentiment(symbol)
+            )
+
+            if not data:
+                return None
+
+            # Aggregate Reddit data
+            reddit = data.get("reddit", [])
+            reddit_mentions = sum(r.get("mention", 0) for r in reddit[-24:])
+            reddit_pos = sum(r.get("positiveMention", 0) for r in reddit[-24:])
+            reddit_neg = sum(r.get("negativeMention", 0) for r in reddit[-24:])
+            reddit_total = reddit_pos + reddit_neg
+            reddit_score = (reddit_pos / reddit_total) if reddit_total > 0 else 0.5
+
+            # Aggregate Twitter data
+            twitter = data.get("twitter", [])
+            twitter_mentions = sum(t.get("mention", 0) for t in twitter[-24:])
+            twitter_pos = sum(t.get("positiveMention", 0) for t in twitter[-24:])
+            twitter_neg = sum(t.get("negativeMention", 0) for t in twitter[-24:])
+            twitter_total = twitter_pos + twitter_neg
+            twitter_score = (twitter_pos / twitter_total) if twitter_total > 0 else 0.5
+
+            # Overall: weighted average (Twitter higher volume → lower weight per mention)
+            total_mentions = reddit_mentions + twitter_mentions
+            if total_mentions > 0:
+                overall_score = (
+                    reddit_score * reddit_mentions * 1.2 +
+                    twitter_score * twitter_mentions
+                ) / (reddit_mentions * 1.2 + twitter_mentions)
+            else:
+                overall_score = 0.5
+
+            result = {
+                "symbol": symbol,
+                "reddit_mentions": reddit_mentions,
+                "reddit_score": round(reddit_score, 3),
+                "twitter_mentions": twitter_mentions,
+                "twitter_score": round(twitter_score, 3),
+                "total_mentions": total_mentions,
+                "overall_score": round(overall_score, 3),
+                # Buzz level: how much attention relative to normal
+                "buzz_level": "high" if total_mentions > 100 else "medium" if total_mentions > 20 else "low",
+                "source": "Finnhub Social Sentiment",
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }
+
+            self.cache.set(cache_key, result)
+            return result
+
+        except Exception:
+            return None
