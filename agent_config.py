@@ -215,7 +215,21 @@ class AgentConfigManager:
 
     @property
     def model(self) -> str:
+        # Mode-specific model takes priority over base config
+        mode_model = self._active.get("model")
+        if mode_model:
+            return mode_model
         return self._agent.get("model", "deepseek-chat")
+
+    @property
+    def fallback_model(self) -> Optional[str]:
+        """Fallback model for the current mode (e.g., simpler tasks)."""
+        return self._active.get("fallback_model")
+
+    @property
+    def thinking_mode(self) -> bool:
+        """Whether the current mode prefers thinking/reasoning mode."""
+        return self._active.get("thinking_mode", False)
 
     @property
     def temperature(self) -> float:
