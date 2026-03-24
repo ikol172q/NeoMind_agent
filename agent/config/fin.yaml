@@ -113,6 +113,12 @@ finance:
   - en
   - zh
 mode: fin
+
+# Model override for this mode — Kimi K2.5 for deep financial reasoning
+model: kimi-k2.5
+thinking_mode: true
+fallback_model: deepseek-chat
+
 natural_language:
   confidence_threshold: 0.7
   enabled: true

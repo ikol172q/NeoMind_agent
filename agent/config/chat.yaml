@@ -1,6 +1,9 @@
 # chat.yaml — Chat mode configuration
 mode: chat
 
+# Model override for this mode (takes priority over base.yaml)
+model: deepseek-chat
+
 system_prompt: |
   You are neomind — an AI assistant built on First Principles Thinking.
 

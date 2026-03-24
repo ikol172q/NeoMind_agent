@@ -165,6 +165,28 @@ class NeoMindAgent:
             "max_output": 16000,     # 16K
             "default_max": 4096,
         },
+        # Moonshot / Kimi models
+        "moonshot-v1-128k": {
+            "max_context": 131072,   # 128K
+            "max_output": 8192,      # 8K
+            "default_max": 8192,
+        },
+        "kimi-k2.5": {
+            "max_context": 131072,   # 128K
+            "max_output": 65536,     # 64K (thinking mode)
+            "default_max": 16384,
+        },
+        # Qwen models (local via LiteLLM/Ollama)
+        "qwen3.5": {
+            "max_context": 131072,   # 128K
+            "max_output": 8192,      # 8K
+            "default_max": 8192,
+        },
+        "qwen-plus": {
+            "max_context": 1048576,  # 1M
+            "max_output": 16384,     # 16K
+            "default_max": 8192,
+        },
     }
 
     # Fallback specs when model is not in _MODEL_SPECS
@@ -185,11 +207,13 @@ class NeoMindAgent:
             "base_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1/chat/completions"),
             "models_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1") + "/models",
             "env_key": "LITELLM_API_KEY",
-            "model_prefixes": ["local"],
+            "model_prefixes": ["local", "qwen"],
             "fallback_models": [
                 {"id": "local", "owned_by": "ollama/qwen3"},
                 {"id": "deepseek-chat", "owned_by": "deepseek-via-litellm"},
                 {"id": "deepseek-reasoner", "owned_by": "deepseek-via-litellm"},
+                {"id": "qwen3.5", "owned_by": "ollama/qwen"},
+                {"id": "qwen-plus", "owned_by": "ollama/qwen"},
             ],
         },
         "deepseek": {
@@ -216,6 +240,16 @@ class NeoMindAgent:
                 {"id": "glm-4.5-flash", "owned_by": "z.ai"},
             ],
         },
+        "moonshot": {
+            "base_url": "https://api.moonshot.cn/v1/chat/completions",
+            "models_url": "https://api.moonshot.cn/v1/models",
+            "env_key": "MOONSHOT_API_KEY",
+            "model_prefixes": ["moonshot-", "kimi-"],
+            "fallback_models": [
+                {"id": "moonshot-v1-128k", "owned_by": "moonshot"},
+                {"id": "kimi-k2.5", "owned_by": "moonshot"},
+            ],
+        },
     }
 
     def _resolve_provider(self, model: str = None) -> dict:
@@ -234,8 +268,8 @@ class NeoMindAgent:
         if litellm_enabled:
             litellm_key = os.getenv("LITELLM_API_KEY", "")
             if litellm_key:
-                litellm_models = ["local", "deepseek-chat", "deepseek-reasoner"]
-                if model in litellm_models or model.startswith("local"):
+                litellm_models = ["local", "deepseek-chat", "deepseek-reasoner", "qwen3.5", "qwen-plus"]
+                if model in litellm_models or model.startswith("local") or model.startswith("qwen"):
                     base = os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
                     return {
                         "name": "litellm",
@@ -270,6 +304,8 @@ class NeoMindAgent:
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         # CHANGED: Use agent_config instead of hardcoded values
         self.model = model if model != "deepseek-chat" else agent_config.model
+        self.fallback_model = agent_config.fallback_model
+        self.thinking_mode = agent_config.thinking_mode
         # Mode configuration
         self.mode = agent_config.mode  # chat or coding
         self.workspace_manager = None  # Lazy initialization for coding mode
@@ -656,6 +692,13 @@ class NeoMindAgent:
 
         self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
         self.show_status_bar = agent_config.show_status_bar
+
+        # Update model for the new mode
+        self.model = agent_config.model
+        self.fallback_model = agent_config.fallback_model
+        self.thinking_mode = agent_config.thinking_mode
+        provider = self._resolve_provider(self.model)
+        self.base_url = provider["base_url"]
 
         if mode == "coding":
             self._initialize_workspace_manager()

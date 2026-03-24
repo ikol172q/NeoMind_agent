@@ -1,6 +1,11 @@
 # coding.yaml — Coding mode configuration
 mode: coding
 
+# Model override for this mode (takes priority over base.yaml)
+# Default: deepseek-chat; switch to glm-5 for complex tasks
+model: deepseek-chat
+fallback_model: null
+
 system_prompt: |
   You are neomind — an expert software engineer and CLI coding assistant
   built on First Principles Thinking.
