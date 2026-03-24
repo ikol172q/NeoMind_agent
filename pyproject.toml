@@ -58,6 +58,11 @@ finance = [
     "python-telegram-bot>=20.0",
     "playwright>=1.40.0",
 ]
+rag = [
+    "faiss-cpu>=1.7.4",
+    "sentence-transformers>=2.2.0",
+    "PyPDF2>=3.0.0",
+]
 dev = [
     "pytest",
     "black",

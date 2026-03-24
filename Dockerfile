@@ -28,7 +28,10 @@ RUN pip install --no-cache-dir \
     trafilatura duckduckgo-search lxml \
     html2text chardet tiktoken \
     python-telegram-bot \
-    playwright
+    playwright && \
+    # Optional: RAG dependencies (skippable in lightweight builds)
+    pip install --no-cache-dir \
+    faiss-cpu sentence-transformers PyPDF2 || true
 
 # Install Chromium for browser daemon
 RUN playwright install chromium && playwright install-deps chromium
