@@ -8,7 +8,7 @@ version = "0.2.0"
 description = "NeoMind — Multi-provider CLI coding agent and personal assistant"
 readme = "README.md"
 authors = [
-    {name = "neomind", email = "removed@example.com"}
+    {name = "neomind", email = "noreply@neomind.dev"}
 ]
 license = {file = "LICENSE"}
 keywords = ["neomind", "ai", "agent", "llm", "cli", "deepseek", "glm"]
