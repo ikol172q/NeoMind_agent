@@ -121,6 +121,7 @@ echo ""
 [ -n "$TAVILY_API_KEY" ]   && ok "Tavily: ✓"
 [ -n "$SERPER_API_KEY" ]   && ok "Serper: ✓"
 [ -n "$NEWSAPI_API_KEY" ]  && ok "NewsAPI: ✓"
+[ -n "$MOONSHOT_API_KEY" ]   && ok "Moonshot/Kimi: ✓"
 [ -n "$TELEGRAM_BOT_TOKEN" ] && ok "Telegram Bot: ✓"
 
 echo ""

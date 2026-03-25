@@ -241,8 +241,8 @@ class NeoMindAgent:
             ],
         },
         "moonshot": {
-            "base_url": "https://api.moonshot.cn/v1/chat/completions",
-            "models_url": "https://api.moonshot.cn/v1/models",
+            "base_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions",
+            "models_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/models",
             "env_key": "MOONSHOT_API_KEY",
             "model_prefixes": ["moonshot-", "kimi-"],
             "fallback_models": [
