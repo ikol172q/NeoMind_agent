@@ -449,17 +449,47 @@ class NeoMindTelegramBot:
         )
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /status — show bot and search engine status."""
+        """Handle /status — one-stop status: model, provider, search, memory."""
+        cid = update.message.chat_id
+        current_mode = self._store.get_mode(cid)
+        thinking = "ON 🧠" if getattr(self, '_thinking_enabled', False) else "OFF"
+
         lines = ["<b>NeoMind Status</b>\n"]
 
+        # ── Model & Provider ──
+        api_key, base_url, model = self._resolve_api(thinking=False, chat_id=cid)
+        _, _, think_model = self._resolve_api(thinking=True, chat_id=cid)
+        chain = self._get_provider_chain(thinking=False, chat_id=cid)
+        primary = chain[0]["name"] if chain else "none"
+
+        lines.append(f"🧩 模式: <b>{current_mode}</b> | 思考: {thinking}")
+        lines.append(f"🤖 模型: <code>{model}</code> via {primary}")
+        if think_model != model:
+            lines.append(f"🧠 思考模型: <code>{think_model}</code>")
+
+        # Show full provider chain
+        if len(chain) > 1:
+            fallbacks = ", ".join(f"{p['name']}:{p['model']}" for p in chain[1:])
+            lines.append(f"🔗 备选: {fallbacks}")
+
+        # LiteLLM health
+        state = self._state_mgr._read_state()
+        litellm_info = state.get("litellm", {})
+        config = self._state_mgr.get_bot_config("neomind")
+        provider_mode = config.get("provider_mode", "direct")
+        health = "🟢" if litellm_info.get("health_ok") else "🔴"
+        lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
+
+        # ── Search ──
         search = self.components.get("search")
         if search:
             t1 = len(search.tier1_sources)
             t2 = len(search.tier2_sources)
             t3 = len(search.tier3_sources)
-            lines.append(f"🔍 搜索引擎: {t1+t2+t3} 源 (T1:{t1} T2:{t2} T3:{t3})")
+            lines.append(f"\n🔍 搜索引擎: {t1+t2+t3} 源 (T1:{t1} T2:{t2} T3:{t3})")
             lines.append(f"   内容提取: {'✅' if search.extractor.available else '❌'}")
 
+        # ── Data & Memory ──
         data_hub = self.components.get("data_hub")
         if data_hub:
             lines.append("📊 数据源: Finnhub, yfinance, AKShare, CoinGecko")
@@ -471,9 +501,14 @@ class NeoMindTelegramBot:
         if sync:
             lines.append(f"📱 Sync 模式: {sync._mode}")
 
+        # ── Bot info ──
         lines.append(f"\n🤖 Bot: @{self.config.bot_username}")
         if self.config.openclaw_username:
             lines.append(f"🤝 OpenClaw: @{self.config.openclaw_username}")
+
+        lines.append(
+            f"\n<code>/provider litellm</code> | <code>direct</code> — 切换路由"
+        )
 
         await update.message.reply_text(
             "\n".join(lines),
@@ -538,9 +573,10 @@ class NeoMindTelegramBot:
 
     async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /think — toggle thinking (reasoning) mode."""
+        cid = update.message.chat_id
         self._thinking_enabled = not self._thinking_enabled
         status = "ON" if self._thinking_enabled else "OFF"
-        model = "deepseek-reasoner" if self._thinking_enabled else "deepseek-chat"
+        _, _, model = self._resolve_api(thinking=self._thinking_enabled, chat_id=cid)
         await update.message.reply_text(
             f"🧠 Thinking mode: <b>{status}</b>\n"
             f"Model: <code>{model}</code>\n\n"
@@ -669,7 +705,7 @@ class NeoMindTelegramBot:
 
         elif subcmd == "compact":
             # Force compact: halve the context if >50%, refuse if <30%
-            _, _, cur_model = self._resolve_api()
+            _, _, cur_model = self._resolve_api(chat_id=cid)
             max_ctx = self._MODEL_CONTEXT.get(cur_model, 128000)
             active_count = self._store.count_messages(cid, include_archived=False)
             history = self._store.get_recent_history(cid, limit=200)
@@ -720,7 +756,7 @@ class NeoMindTelegramBot:
             # Moved from standalone /setctx command
             val = rest[0] if rest else ""
             if not val:
-                _, _, cur_model = self._resolve_api()
+                _, _, cur_model = self._resolve_api(chat_id=cid)
                 current = self._MODEL_CONTEXT.get(cur_model, 128000)
                 await update.message.reply_text(
                     f"当前 context 上限: <b>{current:,}</b> tokens\n"
@@ -766,7 +802,7 @@ class NeoMindTelegramBot:
         """Handle /context — show context window usage."""
         cid = update.message.chat_id
         history = self._store.get_recent_history(cid, limit=100)
-        _, _, model = self._resolve_api(thinking=getattr(self, '_thinking_enabled', False))
+        _, _, model = self._resolve_api(thinking=getattr(self, '_thinking_enabled', False), chat_id=cid)
         max_ctx = self._MODEL_CONTEXT.get(model, 128000)
         used = self._estimate_history_tokens(history)
         total_count = self._store.count_messages(cid, include_archived=True)
@@ -1393,38 +1429,16 @@ class NeoMindTelegramBot:
         args = " ".join(context.args).lower() if context.args else ""
 
         if not args:
-            # Build status with resolved model names
+            # No duplicate status — point user to /status for full view
             config = self._state_mgr.get_bot_config("neomind")
             mode = config.get("provider_mode", "direct")
-            chain = self._get_provider_chain(thinking=False)
-
-            lines = [f"🔌 <b>LLM Provider (neomind)</b>\n"]
-            lines.append(f"Mode: <b>{mode}</b>")
-            lines.append(f"Updated: {config.get('updated_at', '?')} by {config.get('updated_by', '?')}\n")
-
-            lines.append("Provider chain:")
-            for i, p in enumerate(chain):
-                arrow = "▶" if i == 0 else "→"
-                actual = self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']
-                lines.append(f"  {arrow} {p['name']}: <code>{actual}</code>")
-
-            state = self._state_mgr._read_state()
-            litellm_info = state.get("litellm", {})
-            health = "🟢" if litellm_info.get("health_ok") else "🔴"
-            lines.append(f"\nLiteLLM: {health} {litellm_info.get('base_url', '?')}")
-
-            if mode == "litellm":
-                chat_actual = self._resolve_litellm_model(config.get('litellm_model', 'local'))
-                think_actual = self._resolve_litellm_model(config.get('thinking_model', 'deepseek-reasoner'))
-                lines.append(f"\n普通对话: <b>{chat_actual}</b> (Ollama, 免费)")
-                lines.append(f"Thinking: <b>{think_actual}</b>")
-
-            lines.append(
-                f"\n<code>/provider litellm</code> — 本地 Ollama\n"
-                f"<code>/provider direct</code> — 直连 API"
+            await update.message.reply_text(
+                f"🔌 当前路由: <b>{mode}</b>\n\n"
+                f"<code>/provider litellm</code> — 切换到本地 Ollama\n"
+                f"<code>/provider direct</code> — 切换到直连 API\n\n"
+                f"<i>完整状态请用 /status</i>",
+                parse_mode=ParseMode.HTML,
             )
-
-            await update.message.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
         elif args in ("litellm", "local", "ollama"):
             # Check if LITELLM_API_KEY is set
@@ -1438,7 +1452,8 @@ class NeoMindTelegramBot:
             config = self._state_mgr.set_provider_mode(
                 "neomind", "litellm", updated_by="telegram"
             )
-            new_chain = self._get_provider_chain(thinking=False)
+            cid = update.message.chat_id
+            new_chain = self._get_provider_chain(thinking=False, chat_id=cid)
             models = [
                 f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
                 for p in new_chain
@@ -1465,7 +1480,8 @@ class NeoMindTelegramBot:
             config = self._state_mgr.set_provider_mode(
                 "neomind", "direct", updated_by="telegram"
             )
-            new_chain = self._get_provider_chain(thinking=False)
+            cid = update.message.chat_id
+            new_chain = self._get_provider_chain(thinking=False, chat_id=cid)
             models = [
                 f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
                 for p in new_chain
@@ -1805,7 +1821,7 @@ class NeoMindTelegramBot:
             self._last_compact_notice = None
 
         # Post-response check
-        _, _, cur_model = self._resolve_api(thinking=thinking)
+        _, _, cur_model = self._resolve_api(thinking=thinking, chat_id=cid)
         post_notice = self._auto_compact_if_needed_db(cid, cur_model)
         if post_notice and "Auto-compacted" in post_notice:
             await msg.reply_text(post_notice)
@@ -1859,6 +1875,8 @@ class NeoMindTelegramBot:
         "deepseek-reasoner": 128000,
         "glm-5": 205000,
         "glm-4.5-flash": 128000,
+        "kimi-k2.5": 131072,
+        "moonshot-v1-128k": 131072,
     }
 
     def _get_history(self, chat_id: int = 0) -> list:
@@ -1868,21 +1886,49 @@ class NeoMindTelegramBot:
         """
         return self._store.get_recent_history(chat_id, limit=20)
 
-    def _resolve_api(self, thinking: bool = False) -> tuple:
-        """Returns (api_key, base_url, model) — picks first available provider."""
-        chain = self._get_provider_chain(thinking)
+    # ── Per-mode preferred provider mapping ──────────────────────
+    # Maps agent mode → provider name that should be tried first.
+    # If the preferred provider is in the chain, it gets promoted to index 0.
+    _MODE_PREFERRED_PROVIDER = {
+        "fin": "moonshot",      # Kimi K2.5 for financial reasoning
+        "coding": "deepseek",   # DeepSeek for coding
+        "chat": "deepseek",     # DeepSeek for general chat
+    }
+
+    def _resolve_api(self, thinking: bool = False, chat_id: int = 0) -> tuple:
+        """Returns (api_key, base_url, model) — picks first available provider.
+
+        When chat_id is given, re-orders the chain so the mode's preferred
+        provider comes first (e.g., fin mode → moonshot first).
+        """
+        chain = self._get_provider_chain(thinking, chat_id=chat_id)
         if chain:
             p = chain[0]
             return p["api_key"], p["base_url"], p["model"]
         return "", "", ""
 
-    def _get_provider_chain(self, thinking: bool = False) -> list:
+    def _get_provider_chain(self, thinking: bool = False, chat_id: int = 0) -> list:
         """Build ordered list of providers to try (primary → fallback).
 
-        Delegates to ProviderStateManager which reads mode from
-        provider-state.json and API keys from os.environ.
+        Delegates to ProviderStateManager, then re-orders based on the
+        chat's current mode so the preferred provider comes first.
         """
-        return self._state_mgr.get_provider_chain("neomind", thinking=thinking)
+        chain = self._state_mgr.get_provider_chain("neomind", thinking=thinking)
+
+        # Re-order chain based on per-chat mode preference
+        if chat_id:
+            mode = self._store.get_mode(chat_id)
+        else:
+            mode = "fin"  # default for Telegram bot
+        preferred = self._MODE_PREFERRED_PROVIDER.get(mode)
+        if preferred and len(chain) > 1:
+            # Move preferred provider to front, keep rest as fallback
+            preferred_items = [p for p in chain if p["name"] == preferred]
+            others = [p for p in chain if p["name"] != preferred]
+            if preferred_items:
+                chain = preferred_items + others
+
+        return chain
 
     def _resolve_litellm_model(self, alias: str) -> str:
         """Resolve a LiteLLM model alias (e.g. 'local') to the actual model
@@ -1976,16 +2022,16 @@ class NeoMindTelegramBot:
         history = self._store.get_recent_history(chat_id, limit=20)
 
         # Context management
-        api_key, base_url, model = self._resolve_api(thinking=False)
+        api_key, base_url, model = self._resolve_api(thinking=False, chat_id=chat_id)
         compact_notice = self._auto_compact_if_needed_db(chat_id, model)
 
         messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
         if not api_key:
-            return "⚠️ No API key configured (DEEPSEEK_API_KEY or ZAI_API_KEY)"
+            return "⚠️ No API key configured (DEEPSEEK_API_KEY, ZAI_API_KEY, or MOONSHOT_API_KEY)"
 
-        # Build provider chain: primary → fallback
-        providers = self._get_provider_chain(thinking=False)
+        # Build provider chain: primary → fallback (mode-aware ordering)
+        providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
 
         errors = []
         for provider in providers:
@@ -2110,8 +2156,8 @@ class NeoMindTelegramBot:
         # Load recent history from DB
         history = self._store.get_recent_history(chat_id, limit=20)
 
-        # Context management
-        providers = self._get_provider_chain(thinking=False)
+        # Context management (mode-aware provider ordering)
+        providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
         if not providers:
             await msg.reply_text("⚠️ No API key configured")
             return
@@ -2302,8 +2348,8 @@ class NeoMindTelegramBot:
         # Load recent history from DB
         history = self._store.get_recent_history(chat_id, limit=20)
 
-        # Context management
-        providers = self._get_provider_chain(thinking=True)
+        # Context management (mode-aware provider ordering)
+        providers = self._get_provider_chain(thinking=True, chat_id=chat_id)
         if not providers:
             await msg.reply_text("⚠️ No API key configured")
             return
@@ -2333,6 +2379,7 @@ class NeoMindTelegramBot:
             used_provider = None
             for provider in providers:
                 try:
+                    print(f"[llm-think] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
                     response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
                         p["base_url"],
                         headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
@@ -2342,8 +2389,12 @@ class NeoMindTelegramBot:
                     ))
                     if response.status_code == 200:
                         used_provider = provider
+                        print(f"[llm-think] ✅ Connected to {provider['name']}:{provider['model']}", flush=True)
                         break
-                except Exception:
+                    else:
+                        print(f"[llm-think] ❌ {provider['name']} returned {response.status_code}", flush=True)
+                except Exception as e:
+                    print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
                     continue  # try next provider
 
             if not response or response.status_code != 200:
@@ -2351,46 +2402,64 @@ class NeoMindTelegramBot:
                 await thinking_msg.edit_text(f"⚠️ API error: {status}")
                 return
 
-            # Step 3: Process SSE stream
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                line = line.decode("utf-8", errors="ignore")
-                if not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
+            # Step 3: Process SSE stream via queue (non-blocking)
+            # iter_lines() is synchronous and blocks the event loop,
+            # so we run it in a thread and feed chunks through a queue.
+            queue = asyncio.Queue()
 
+            def _stream_reader(resp, q):
+                """Read SSE lines in a thread, push parsed deltas to queue."""
                 try:
-                    chunk = json.loads(data_str)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-
-                    # Collect reasoning_content (thinking)
-                    rc = delta.get("reasoning_content", "")
-                    if rc:
-                        thinking_text += rc
-
-                    # Collect content (final answer)
-                    ct = delta.get("content", "")
-                    if ct:
-                        response_text += ct
-
-                    # Periodically update the thinking message
-                    now = asyncio.get_event_loop().time()
-                    if rc and (now - last_edit_time) >= EDIT_INTERVAL:
-                        last_edit_time = now
-                        display = self._format_thinking(thinking_text)
+                    for raw_line in resp.iter_lines():
+                        if not raw_line:
+                            continue
+                        line = raw_line.decode("utf-8", errors="ignore")
+                        if not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
                         try:
-                            await thinking_msg.edit_text(
-                                display,
-                                parse_mode=ParseMode.HTML,
-                            )
-                        except Exception:
-                            pass  # Telegram rate limit, skip this update
+                            chunk = json.loads(data_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            rc = delta.get("reasoning_content", "")
+                            ct = delta.get("content", "")
+                            if rc or ct:
+                                q.put_nowait(("chunk", rc, ct))
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+                except Exception:
+                    pass
+                q.put_nowait(("done", "", ""))
 
-                except (json.JSONDecodeError, IndexError, KeyError):
-                    continue
+            loop = asyncio.get_event_loop()
+            loop.run_in_executor(None, _stream_reader, response, queue)
+
+            # Consume chunks from queue, update Telegram message periodically
+            while True:
+                try:
+                    kind, rc, ct = await asyncio.wait_for(queue.get(), timeout=120)
+                except asyncio.TimeoutError:
+                    break
+                if kind == "done":
+                    break
+                if rc:
+                    thinking_text += rc
+                if ct:
+                    response_text += ct
+
+                # Periodically update the thinking message
+                now = time.time()
+                if rc and (now - last_edit_time) >= EDIT_INTERVAL:
+                    last_edit_time = now
+                    display = self._format_thinking(thinking_text)
+                    try:
+                        await thinking_msg.edit_text(
+                            display,
+                            parse_mode=ParseMode.HTML,
+                        )
+                    except Exception:
+                        pass  # Telegram rate limit, skip this update
 
             # Step 4: Final update of thinking message
             if thinking_text:
@@ -2404,6 +2473,11 @@ class NeoMindTelegramBot:
                     await thinking_msg.edit_text("🧠 <i>(no reasoning output)</i>", parse_mode=ParseMode.HTML)
                 except Exception:
                     pass
+
+            # Log completion
+            pname = used_provider['name'] if used_provider else '?'
+            pmodel = used_provider['model'] if used_provider else '?'
+            print(f"[llm-think] ✅ {pname}:{pmodel} done (think:{len(thinking_text)} chars, reply:{len(response_text)} chars)", flush=True)
 
             # Step 5: Send final response as a separate message
             if response_text.strip():
