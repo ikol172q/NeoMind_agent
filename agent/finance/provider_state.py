@@ -349,6 +349,15 @@ class ProviderStateManager:
                 "model": "glm-5" if thinking else "glm-4.5-flash",
             })
 
+        moonshot_key = os.getenv("MOONSHOT_API_KEY", "")
+        if moonshot_key:
+            providers.append({
+                "name": "moonshot",
+                "api_key": moonshot_key,
+                "base_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions",
+                "model": "kimi-k2.5" if thinking else "moonshot-v1-128k",
+            })
+
         return providers
 
     # ── Change Detection ──────────────────────────────────────────
