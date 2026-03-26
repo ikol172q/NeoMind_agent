@@ -45,6 +45,8 @@ DEFAULT_BOT_CONFIG = {
     "litellm_model": "local",
     "direct_model": "deepseek-chat",
     "thinking_model": "deepseek-reasoner",
+    "moonshot_model": "moonshot-v1-128k",
+    "moonshot_thinking_model": "kimi-k2.5",
     "updated_at": "",
     "updated_by": "system",
 }
@@ -99,6 +101,12 @@ def cmd_get(args):
         updated = bot.get("updated_at", "?")
         by = bot.get("updated_by", "?")
         print(f"{args[0]}: mode={mode} (by {by} at {updated})")
+        # Show model details
+        print(f"  direct_model:    {bot.get('direct_model', 'deepseek-chat')}")
+        print(f"  thinking_model:  {bot.get('thinking_model', 'deepseek-reasoner')}")
+        print(f"  litellm_model:   {bot.get('litellm_model', 'local')}")
+        print(f"  moonshot_model:  {bot.get('moonshot_model', 'moonshot-v1-128k')}")
+        print(f"  moonshot_think:  {bot.get('moonshot_thinking_model', 'kimi-k2.5')}")
     else:
         if not bots:
             print("No bots registered yet.")
@@ -108,10 +116,42 @@ def cmd_get(args):
             by = bot.get("updated_by", "?")
             print(f"{name}: mode={mode} (by {by})")
 
+    # Show available providers (from state, written by bot)
+    bot_cfg = bots.get(args[0] if args else "neomind", {})
+    ap = bot_cfg.get("available_providers", [])
+    if ap:
+        print("\nAvailable providers (from bot):")
+        for p in ap:
+            print(f"  ✅ {p['name']}: {p.get('model', '?')}")
+    else:
+        # Fallback: check env
+        print("\nConfigured providers (from env):")
+        providers = []
+        if os.getenv("DEEPSEEK_API_KEY"): providers.append("DeepSeek")
+        if os.getenv("ZAI_API_KEY"): providers.append("z.ai (GLM)")
+        if os.getenv("MOONSHOT_API_KEY"): providers.append("Moonshot (Kimi)")
+        if os.getenv("LITELLM_API_KEY"): providers.append("LiteLLM (Ollama)")
+        print(f"  {', '.join(providers) if providers else 'None (check .env)'}")
+
+    # Show per-mode routing (from state, written by bot)
+    mm = bot_cfg.get("mode_models", {})
+    if mm:
+        print("\nPer-mode model routing (from bot):")
+        for mode, info in mm.items():
+            prov = info.get("provider", "?")
+            model = info.get("model", "?")
+            think = info.get("thinking_model", "?")
+            if think and think != model:
+                print(f"  {mode}: {prov}/{model} (think: {think})")
+            else:
+                print(f"  {mode}: {prov}/{model}")
+    else:
+        print("\nPer-mode model routing: (bot not started yet)")
+
     # Also show health
     litellm = state.get("litellm", {})
     health = "healthy" if litellm.get("health_ok") else "unhealthy"
-    print(f"litellm: {health}")
+    print(f"\nlitellm: {health}")
 
 
 def cmd_set(args):

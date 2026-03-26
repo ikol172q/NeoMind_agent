@@ -48,7 +48,7 @@ elif [ "$TARGET" = "direct" ]; then
     # Restart container
     docker compose restart neomind-telegram 2>/dev/null
 
-    osascript -e 'display notification "已切换到 Direct DeepSeek/z.ai" with title "NeoMind" sound name "Glass"'
+    osascript -e 'display notification "已切换到直连 API (DeepSeek/z.ai/Kimi)" with title "NeoMind" sound name "Glass"'
 fi
 
 # Cleanup sed backup
