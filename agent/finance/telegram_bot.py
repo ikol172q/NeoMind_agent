@@ -271,6 +271,7 @@ class NeoMindTelegramBot:
         from .provider_state import ProviderStateManager
         self._state_mgr = ProviderStateManager()
         self._state_mgr.register_bot("neomind")
+        self._publish_mode_models_to_state()
         print(f"[bot] Chat history DB: {self._store.db_path}", flush=True)
 
         # Workflow modules — optional (graceful degradation on import error)
@@ -1473,6 +1474,7 @@ class NeoMindTelegramBot:
                 f"<i>此更改已同步到 xbar 菜单栏</i>",
                 parse_mode=ParseMode.HTML,
             )
+            self._publish_mode_models_to_state()  # sync to xbar
             if self._evidence_trail:
                 self._evidence_trail.log("provider", "switch_litellm", f"Switched to LiteLLM: {chat_actual}", mode=self._store.get_mode(update.message.chat_id))
 
@@ -1492,6 +1494,7 @@ class NeoMindTelegramBot:
                 f"<i>此更改已同步到 xbar 菜单栏</i>",
                 parse_mode=ParseMode.HTML,
             )
+            self._publish_mode_models_to_state()  # sync to xbar
             if self._evidence_trail:
                 self._evidence_trail.log("provider", "switch_direct", f"Switched to direct API", mode=self._store.get_mode(update.message.chat_id))
 
@@ -1929,6 +1932,56 @@ class NeoMindTelegramBot:
                 chain = preferred_items + others
 
         return chain
+
+    def _publish_mode_models_to_state(self):
+        """Write per-mode model routing + available providers to state file.
+
+        Called once at startup so xbar can dynamically display model info
+        without hardcoding. Re-called whenever provider config changes.
+        """
+        try:
+            # Build mode→model mapping from _MODE_PREFERRED_PROVIDER + provider chain
+            mode_models = {}
+            for mode, preferred_provider in self._MODE_PREFERRED_PROVIDER.items():
+                # Get the chain as if this mode were active
+                chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
+                think_chain = self._state_mgr.get_provider_chain("neomind", thinking=True)
+
+                # Find the preferred provider's models
+                normal_model = None
+                think_model = None
+                for p in chain:
+                    if p["name"] == preferred_provider:
+                        normal_model = p["model"]
+                        break
+                for p in think_chain:
+                    if p["name"] == preferred_provider:
+                        think_model = p["model"]
+                        break
+
+                # Fallback to first in chain
+                if not normal_model and chain:
+                    normal_model = chain[0]["model"]
+                    preferred_provider = chain[0]["name"]
+                if not think_model and think_chain:
+                    think_model = think_chain[0]["model"]
+
+                mode_models[mode] = {
+                    "provider": preferred_provider,
+                    "model": normal_model or "?",
+                    "thinking_model": think_model or "?",
+                }
+
+            self._state_mgr.update_mode_models("neomind", mode_models, updated_by="bot_startup")
+
+            # Also publish available providers list
+            all_chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
+            providers = [{"name": p["name"], "model": p["model"]} for p in all_chain]
+            self._state_mgr.update_available_providers("neomind", providers)
+
+            print(f"[bot] Published mode_models to state: {list(mode_models.keys())}", flush=True)
+        except Exception as e:
+            print(f"[bot] Warning: failed to publish mode_models: {e}", flush=True)
 
     def _resolve_litellm_model(self, alias: str) -> str:
         """Resolve a LiteLLM model alias (e.g. 'local') to the actual model

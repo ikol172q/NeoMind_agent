@@ -88,12 +88,36 @@ if [ "$MODE" = "error" ]; then
     exit 0
 fi
 
-# Current mode
+# Current mode — detect available cloud providers from .env
+NEOMIND_DIR="$HOME/Desktop/NeoMind_agent"
+ENV_FILE="$NEOMIND_DIR/.env"
+CLOUD_PROVIDERS=""
+if [ -f "$ENV_FILE" ]; then
+    /usr/bin/grep -q "^DEEPSEEK_API_KEY=.\+" "$ENV_FILE" && CLOUD_PROVIDERS="${CLOUD_PROVIDERS}DeepSeek/"
+    /usr/bin/grep -q "^ZAI_API_KEY=.\+" "$ENV_FILE" && CLOUD_PROVIDERS="${CLOUD_PROVIDERS}z.ai/"
+    /usr/bin/grep -q "^MOONSHOT_API_KEY=.\+" "$ENV_FILE" && CLOUD_PROVIDERS="${CLOUD_PROVIDERS}Kimi/"
+    CLOUD_PROVIDERS="${CLOUD_PROVIDERS%/}"  # trim trailing slash
+fi
+[ -z "$CLOUD_PROVIDERS" ] && CLOUD_PROVIDERS="No API keys"
+
 if [ "$MODE" = "litellm" ]; then
     echo "✅ Mode: LiteLLM (Local Ollama) | color=#00aa00"
     echo "   Free, private, lower latency | size=11 color=gray"
 else
-    echo "✅ Mode: Direct API (DeepSeek/z.ai) | color=#0088ff"
+    # Build provider list from state if available, fallback to .env detection
+    PROV_NAMES=$("$PYTHON" -c "
+import json
+try:
+    s = json.load(open('$STATE_FILE'))
+    ap = s.get('bots', {}).get('$BOT_NAME', {}).get('available_providers', [])
+    if ap:
+        print('/'.join(p['name'].capitalize() for p in ap))
+    else:
+        print('')
+except: print('')
+" 2>/dev/null)
+    [ -z "$PROV_NAMES" ] && PROV_NAMES="$CLOUD_PROVIDERS"
+    echo "✅ Mode: Direct API ($PROV_NAMES) | color=#0088ff"
     echo "   Higher quality, costs per token | size=11 color=gray"
 fi
 
@@ -109,6 +133,70 @@ else
 fi
 
 echo "Check Health Now | bash='$PYTHON' param1='$CTL' param2='health' terminal=false refresh=true"
+
+echo "---"
+
+# ── Per-mode model routing (read from state file, written by bot) ──
+MODE_MODELS=$("$PYTHON" -c "
+import json
+try:
+    s = json.load(open('$STATE_FILE'))
+    bot = s.get('bots', {}).get('$BOT_NAME', {})
+    mm = bot.get('mode_models', {})
+    ap = bot.get('available_providers', [])
+    # Print mode models
+    mode_icons = {'fin': '💰', 'chat': '💬', 'coding': '💻'}
+    for mode in ['fin', 'chat', 'coding']:
+        info = mm.get(mode, {})
+        if info:
+            m = info.get('model', '?')
+            t = info.get('thinking_model', '?')
+            prov = info.get('provider', '?')
+            if t and t != m:
+                print(f'MODE|{mode_icons.get(mode,\"\")} {mode}: {prov}/{m} (think: {t})')
+            else:
+                print(f'MODE|{mode_icons.get(mode,\"\")} {mode}: {prov}/{m}')
+    # Print available providers
+    for p in ap:
+        print(f'PROV|{p[\"name\"]}: {p.get(\"model\", \"?\")}')
+except Exception as e:
+    print(f'ERR|{e}')
+" 2>/dev/null)
+
+echo "Model Routing"
+has_modes=false
+while IFS= read -r line; do
+    tag="${line%%|*}"
+    val="${line#*|}"
+    if [ "$tag" = "MODE" ]; then
+        echo "-- $val | size=12"
+        has_modes=true
+    fi
+done <<< "$MODE_MODELS"
+if [ "$has_modes" = "false" ]; then
+    echo "-- (bot 未启动，暂无数据) | size=11 color=gray"
+fi
+
+# Show available cloud providers (from state, not .env)
+echo "---"
+echo "Cloud Providers"
+has_provs=false
+while IFS= read -r line; do
+    tag="${line%%|*}"
+    val="${line#*|}"
+    if [ "$tag" = "PROV" ]; then
+        echo "-- ✅ $val | color=#00aa00 size=12"
+        has_provs=true
+    fi
+done <<< "$MODE_MODELS"
+if [ "$has_provs" = "false" ]; then
+    # Fallback: detect from .env if bot hasn't written state yet
+    if [ -f "$ENV_FILE" ]; then
+        /usr/bin/grep -q "^DEEPSEEK_API_KEY=.\+" "$ENV_FILE" && echo "-- ✅ DeepSeek | color=#00aa00 size=12"
+        /usr/bin/grep -q "^ZAI_API_KEY=.\+" "$ENV_FILE" && echo "-- ✅ z.ai (GLM) | color=#00aa00 size=12"
+        /usr/bin/grep -q "^MOONSHOT_API_KEY=.\+" "$ENV_FILE" && echo "-- ✅ Moonshot (Kimi) | color=#00aa00 size=12"
+    fi
+fi
 
 echo "---"
 
@@ -156,6 +244,9 @@ fi
 # ── Tools ──────────────────────────────────────────────────────
 echo "Tools"
 echo "-- Show Full Status | bash='$PYTHON' param1='$CTL' param2='get' terminal=true"
+echo "-- View Bot Logs   | bash='$SCRIPT_DIR/view-bot-logs.sh' terminal=true"
+echo "-- View LLM Logs   | bash='$SCRIPT_DIR/view-llm-logs.sh' terminal=true"
+echo "-- Restart Bot      | bash='$SCRIPT_DIR/restart-bot.sh' terminal=false refresh=true"
 echo "-- Open State File | bash='open' param1='$STATE_FILE' terminal=false"
 echo "-- Open State Dir  | bash='open' param1='$STATE_DIR' terminal=false"
 echo "---"

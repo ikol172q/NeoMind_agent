@@ -56,6 +56,10 @@ DEFAULT_BOT_CONFIG = {
     "thinking_model": "deepseek-reasoner",
     "updated_at": "",
     "updated_by": "system",
+    # Per-mode model routing (written by bot on startup, read by xbar)
+    "mode_models": {},
+    # Available cloud providers (written by bot on startup)
+    "available_providers": [],
 }
 
 
@@ -294,6 +298,44 @@ class ProviderStateManager:
         logger.info(f"Set {bot_name} provider_mode={mode} by {updated_by}")
 
         return bots[bot_name]
+
+    # ── Mode Models (for xbar display) ───────────────────────
+
+    def update_mode_models(self, bot_name: str, mode_models: dict,
+                           updated_by: str = "bot"):
+        """Write per-mode model routing to state file (for xbar to read).
+
+        Args:
+            bot_name: e.g. "neomind"
+            mode_models: e.g. {"fin": {"model": "kimi-k2.5", "provider": "moonshot"},
+                               "chat": {"model": "deepseek-chat", "provider": "deepseek"}}
+            updated_by: who triggered the update
+        """
+        state = self._read_state()
+        bots = state.get("bots", {})
+        if bot_name not in bots:
+            self.register_bot(bot_name)
+            state = self._read_state()
+            bots = state["bots"]
+
+        bots[bot_name]["mode_models"] = mode_models
+        state["updated_at"] = _now_iso()
+        self._atomic_write(state)
+        logger.info(f"Updated mode_models for {bot_name}: {list(mode_models.keys())}")
+
+    def update_available_providers(self, bot_name: str, providers: list):
+        """Write list of available cloud providers to state file (for xbar).
+
+        Args:
+            bot_name: e.g. "neomind"
+            providers: e.g. [{"name": "deepseek", "ok": True},
+                             {"name": "moonshot", "ok": True}]
+        """
+        state = self._read_state()
+        bots = state.get("bots", {})
+        if bot_name in bots:
+            bots[bot_name]["available_providers"] = providers
+            self._atomic_write(state)
 
     # ── Provider Chain ────────────────────────────────────────────
 
