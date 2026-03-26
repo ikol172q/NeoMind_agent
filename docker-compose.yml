@@ -117,6 +117,40 @@ services:
     tty: true
     command: ["openclaw"]
 
+  # ── SearXNG Meta-Search Engine (optional — free, self-hosted, unlimited) ──
+  # Aggregates Google, Bing, DDG, and 70+ other engines.
+  # No API keys, no rate limits, no tracking.
+  #
+  # Start:  docker compose up searxng
+  # Use:    Set SEARXNG_URL=http://searxng:8080 in .env
+  #         NeoMind auto-detects and adds it as Tier 3 search source.
+  searxng:
+    image: searxng/searxng:latest
+    container_name: neomind-searxng
+    profiles: ["search", "full"]
+    environment:
+      - SEARXNG_BASE_URL=http://searxng:8080
+    volumes:
+      - searxng-data:/etc/searxng
+    ports:
+      - "${SEARXNG_PORT:-8888}:8080"
+    restart: unless-stopped
+    networks:
+      - neomind-net
+    # First-run auto-config: enable JSON output format
+    entrypoint: >
+      sh -c '
+        # Ensure settings.yaml enables json format
+        if [ ! -f /etc/searxng/settings.yml ]; then
+          cp /usr/local/searxng/searx/settings.yml /etc/searxng/settings.yml 2>/dev/null || true
+        fi
+        # Enable json format in search settings
+        if [ -f /etc/searxng/settings.yml ]; then
+          sed -i "s/- html/- html\n    - json/" /etc/searxng/settings.yml 2>/dev/null || true
+        fi
+        exec /sbin/tini -- /usr/local/searxng/dockerfiles/docker-entrypoint.sh
+      '
+
 networks:
   neomind-net:
     driver: bridge
@@ -125,3 +159,4 @@ volumes:
   neomind-data:
   openclaw-config:
   openclaw-workspace:
+  searxng-data:

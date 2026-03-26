@@ -60,7 +60,8 @@ from .command_executor import CommandExecutor, execute_safe, execute_git_safe
 from .safety import SafetyManager, safe_read_file, safe_write_file, safe_delete_file, is_path_safe, log_operation
 from .planner import Planner, plan_changes, GoalPlanner
 from .context_manager import ContextManager, HAS_TIKTOKEN
-from .search import OptimizedDuckDuckGoSearch
+from .search_legacy import OptimizedDuckDuckGoSearch  # legacy fallback
+from .search.engine import UniversalSearchEngine  # new multi-source engine
 from .natural_language import NaturalLanguageInterpreter
 from agent_config import agent_config
 
@@ -323,8 +324,17 @@ class NeoMindAgent:
         self.conversation_history = []
         self.context_manager = ContextManager(self.conversation_history)
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
-        # Searcher with configurable auto-search triggers
-        self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
+        # Searcher: Universal multi-source search engine (replaces DDG-only)
+        # Determines domain from current mode for query expansion tuning
+        _search_domain = "finance" if getattr(agent_config, 'mode', 'chat') == "fin" else "general"
+        try:
+            self.searcher = UniversalSearchEngine(
+                domain=_search_domain,
+                triggers=agent_config.auto_search_triggers,
+            )
+        except Exception:
+            # Fallback to legacy DDG-only search if new engine fails to init
+            self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
         # Formatter for consistent output
         self.formatter = Formatter()
         # Command executor for safe shell execution
@@ -704,6 +714,11 @@ class NeoMindAgent:
             self._initialize_workspace_manager()
         elif mode == "fin":
             self._initialize_finance_subsystems()
+
+        # Sync search engine domain with mode
+        search_domain = "finance" if mode == "fin" else "general"
+        if hasattr(self.searcher, 'set_domain'):
+            self.searcher.set_domain(search_domain)
 
         if old_mode != mode:
             self._safe_print(f"🔄 Switched from {old_mode} to {mode} mode.")
@@ -1086,8 +1101,21 @@ Remember: Always ask for permission before making changes!
                 "  • 'search codebase for TODO'  → local grep\n"
                 "  • 'search codebase to understand it' → AI analysis\n"
                 "  • 'search python asyncio tutorial'  → web search\n"
+                "  Subcommands:\n"
+                "  • /search status  — show search engine status & active sources\n"
                 "  Or use directly: /grep <pattern>  |  /find <name>"
             )
+
+        # Subcommands
+        q_stripped = query.strip().lower()
+        if q_stripped in ("status", "sources", "info"):
+            if hasattr(self.searcher, 'get_status'):
+                return self.searcher.get_status()
+            return f"Search engine: {type(self.searcher).__name__} (no status available)"
+        if q_stripped in ("metrics", "stats", "report"):
+            if hasattr(self.searcher, 'metrics'):
+                return self.searcher.metrics.format_report(all_time=(q_stripped == "report"))
+            return "Metrics not available (legacy search engine)."
 
         # Smart routing in coding mode
         if self.mode == "coding":
