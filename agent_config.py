@@ -20,13 +20,13 @@ class AgentConfigManager:
         self.config_dir = self.base_dir / "agent" / "config"
 
         # Load base config
-        self._base = self._load_yaml(self.config_dir / "base.yaml")
+        self._base = self._load_yaml(self.config_dir / "base.yaml") or {}
         self._agent_base = self._base.get("agent", {})
 
         # Load all mode configs
-        self._chat_cfg = self._load_yaml(self.config_dir / "chat.yaml")
-        self._coding_cfg = self._load_yaml(self.config_dir / "coding.yaml")
-        self._fin_cfg = self._load_yaml(self.config_dir / "fin.yaml")
+        self._chat_cfg = self._load_yaml(self.config_dir / "chat.yaml") or {}
+        self._coding_cfg = self._load_yaml(self.config_dir / "coding.yaml") or {}
+        self._fin_cfg = self._load_yaml(self.config_dir / "fin.yaml") or {}
 
         # Determine active mode
         self._mode = mode or os.getenv("IKOL_MODE", "chat")
@@ -79,6 +79,8 @@ class AgentConfigManager:
                     converted = converter(val)
                     if section == "agent":
                         self._agent[key] = converted
+                        # Also apply to active mode config to take priority
+                        self._active[key] = converted
                     elif section == "agent.context":
                         ctx = self._agent.setdefault("context", {})
                         ctx[key] = converted
@@ -432,6 +434,11 @@ class AgentConfigManager:
                 for part in parts[:-1]:
                     d = d.setdefault(part, {})
                 d[parts[-1]] = value
+                # Also update _active so mode-specific doesn't override agent updates
+                d_active = self._active
+                for part in parts[:-1]:
+                    d_active = d_active.setdefault(part, {})
+                d_active[parts[-1]] = value
             else:
                 parts = key.split(".")
                 d = self._active

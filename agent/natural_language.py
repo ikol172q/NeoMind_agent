@@ -165,6 +165,25 @@ class NaturalLanguageInterpreter:
                 (r"exit$", "/exit", 0.9),
                 (r"bye$", "/quit", 0.7),
             ],
+            # ── Web access patterns ─────────────────────────────────
+            'web_read': [
+                (r"(?:read|open|fetch|get|visit|访问|打开|读取)\s+(?:the\s+)?(?:webpage|page|site|url|网页|页面)?\s*(https?://[^\s]+)$", "/read {match}", 0.95),
+                (r"(?:read|open|fetch|get|visit|访问|打开|读取)\s+(https?://[^\s]+)$", "/read {match}", 0.95),
+                (r"(?:what's|what is)\s+(?:on|at|in)\s+(https?://[^\s]+)$", "/read {match}", 0.9),
+                (r"(?:summarize|sum up|摘要|总结)\s+(?:the\s+)?(?:webpage|page|site|url|网页)?\s*(https?://[^\s]+)$", "/read {match}", 0.9),
+                (r"帮我(?:读|看|打开|访问)\s*(https?://[^\s]+)$", "/read {match}", 0.95),
+            ],
+            'web_links': [
+                (r"(?:show|list|get|extract|find|提取|列出)\s+(?:all\s+)?links?\s+(?:from|on|in|of)\s+(https?://[^\s]+)$", "/links {match}", 0.95),
+                (r"(?:what|which)\s+links?\s+(?:are|does)\s+(?:on|in)\s+(https?://[^\s]+)$", "/links {match}", 0.9),
+                (r"(?:这个|那个)?(?:页面|网页|网站)(?:里|上|中)?(?:有什么|有哪些)链接\s*(https?://[^\s]+)?$", "/links {match}", 0.9),
+            ],
+            'web_crawl': [
+                (r"(?:crawl|scrape|spider|爬取|抓取)\s+(https?://[^\s]+)$", "/crawl {match}", 0.95),
+                (r"(?:crawl|scrape|爬取|抓取)\s+(?:the\s+)?(?:site|website|网站)\s+(https?://[^\s]+)$", "/crawl {match}", 0.95),
+                (r"(?:read|get|fetch)\s+(?:all|every|multiple)\s+pages?\s+(?:from|on|of)\s+(https?://[^\s]+)$", "/crawl {match}", 0.9),
+                (r"(?:深度|全面)?(?:读取|阅读|爬取)\s+(?:整个|全部)?(?:网站|站点)\s*(https?://[^\s]+)$", "/crawl {match}", 0.95),
+            ],
         }
 
     def _build_coding_patterns(self):

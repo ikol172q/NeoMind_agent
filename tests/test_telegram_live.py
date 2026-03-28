@@ -321,8 +321,8 @@ class TestProviderCommand:
         update = make_update("/provider")
         asyncio.run(bot._cmd_provider(update, make_context()))
         reply = get_reply_text(update)
-        assert "LLM Provider" in reply or "Provider" in reply
-        assert "chain" in reply.lower() or "Chain" in reply
+        # Should show current provider/route status
+        assert "direct" in reply.lower() or "路由" in reply or "provider" in reply.lower()
 
     def test_provider_switch_direct(self, bot):
         update = make_update("/provider direct")

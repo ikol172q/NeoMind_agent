@@ -111,7 +111,8 @@ class SearchResult:
         lines.append("")
 
         for i, item in enumerate(self.items[:max_items], 1):
-            lines.append(f"{i}. **{item.title}**")
+            tag = f"[{item.source}] " if item.source else ""
+            lines.append(f"{i}. {tag}**{item.title}**")
             lines.append(f"   Source: {item.original_source or item.domain} | {item.url}")
             if item.published:
                 lines.append(f"   Published: {item.published.strftime('%Y-%m-%d %H:%M UTC')}")

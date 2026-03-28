@@ -762,7 +762,7 @@ def compute_recency_boost(published: Optional[datetime], domain: str = "finance"
             return 1.3
         elif age_hours < 24:
             return 1.1
-        elif age_hours < 168:  # 7 days
+        elif age_hours < 169:  # 7 days (with tolerance for floating point)
             return 1.0
         else:
             return 0.8

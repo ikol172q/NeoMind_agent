@@ -112,48 +112,77 @@ def chunk_text(
     if not text.strip():
         return []
 
-    paragraphs = text.split("\n\n")
+    # First pass: split by paragraphs
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+
+    if not paragraphs:
+        return []
+
     chunks = []
-    current = ""
 
     for para in paragraphs:
-        para = para.strip()
-        if not para:
-            continue
-
-        # If adding this paragraph exceeds chunk_size, flush current
-        if len(current) + len(para) + 2 > chunk_size and current:
-            chunks.append(current.strip())
-            # Keep overlap from end of current chunk
-            words = current.split()
-            overlap_words = words[-overlap // 5:] if len(words) > overlap // 5 else []
-            current = " ".join(overlap_words) + "\n\n" + para if overlap_words else para
-        else:
-            current = current + "\n\n" + para if current else para
-
-    if current.strip():
-        chunks.append(current.strip())
-
-    # If any chunk is still too long, split further by sentences
-    final_chunks = []
-    for chunk in chunks:
-        if len(chunk) <= chunk_size * 1.5:
-            final_chunks.append(chunk)
-        else:
-            # Split by sentence boundaries
+        # If single paragraph is very large, split it first
+        if len(para) > chunk_size:
+            # Need to split this paragraph - try sentences first, then fall back to words
             import re
-            sentences = re.split(r'(?<=[.!?])\s+', chunk)
+            sentences = re.split(r'(?<=[.!?])\s+', para)
+
+            # If we got only one sentence (no sentence-ending punctuation), split by words
+            if len(sentences) == 1:
+                sentences = para.split()
+
+            # Build chunks from sentences/words
             sub_chunk = ""
             for sent in sentences:
-                if len(sub_chunk) + len(sent) + 1 > chunk_size and sub_chunk:
-                    final_chunks.append(sub_chunk.strip())
+                sent = sent.strip() if isinstance(sent, str) else str(sent)
+                if not sent:
+                    continue
+
+                # Try to add to current sub_chunk
+                test_chunk = (sub_chunk + " " + sent) if sub_chunk else sent
+                # Use more aggressive limit to keep chunks under 1.5x chunk_size
+                limit = int(chunk_size * 1.4)
+                if len(test_chunk) > limit and sub_chunk:
+                    # Current chunk is full, save it and start new one
+                    chunks.append(sub_chunk.strip())
                     sub_chunk = sent
                 else:
-                    sub_chunk = sub_chunk + " " + sent if sub_chunk else sent
-            if sub_chunk.strip():
-                final_chunks.append(sub_chunk.strip())
+                    sub_chunk = test_chunk
 
-    return final_chunks
+            # Don't forget the last sub_chunk
+            if sub_chunk.strip():
+                chunks.append(sub_chunk.strip())
+        else:
+            # Paragraph fits in chunk_size, add it as-is
+            chunks.append(para)
+
+    # Apply overlap if requested, but don't exceed size limits
+    if overlap > 0 and len(chunks) > 1:
+        final_chunks = []
+        max_size = int(chunk_size * 1.5)  # Don't exceed this even with overlap
+        for i, chunk in enumerate(chunks):
+            if i == 0:
+                final_chunks.append(chunk)
+            else:
+                # Add overlap from previous chunk, but carefully to not exceed max_size
+                prev_words = chunks[i-1].split()
+                overlap_count = overlap // 5 if len(prev_words) > overlap // 5 else len(prev_words)
+
+                # Only add overlap if it doesn't exceed our max size
+                if overlap_count > 0:
+                    overlap_words = prev_words[-overlap_count:]
+                    overlap_str = " ".join(overlap_words)
+                    overlapped = overlap_str + " " + chunk
+                    if len(overlapped) <= max_size:
+                        final_chunks.append(overlapped)
+                    else:
+                        # Skip overlap if it would make chunk too large
+                        final_chunks.append(chunk)
+                else:
+                    final_chunks.append(chunk)
+        return final_chunks
+
+    return chunks
 
 
 def extract_pdf_text(filepath: str) -> str:
@@ -227,8 +256,15 @@ class FinRAG:
                     "sentence-transformers required for FinRAG. "
                     "pip install sentence-transformers"
                 )
-            self._model = SentenceTransformer(self._model_name)
-            self._dimension = self._model.get_sentence_embedding_dimension()
+            try:
+                self._model = SentenceTransformer(self._model_name)
+                self._dimension = self._model.get_sentence_embedding_dimension()
+            except TypeError:
+                # SentenceTransformer might be None if import failed
+                raise ImportError(
+                    "sentence-transformers required for FinRAG. "
+                    "pip install sentence-transformers"
+                )
         return self._model
 
     @property
@@ -265,6 +301,10 @@ class FinRAG:
             Number of chunks indexed.
         """
         filepath = str(filepath)
+
+        # Check if file exists
+        if not os.path.exists(filepath):
+            return 0
 
         # Generate doc_id from file hash
         with open(filepath, "rb") as f:

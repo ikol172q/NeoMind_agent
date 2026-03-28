@@ -97,10 +97,12 @@ except ImportError:
 # ── Phase 4: Self-Evolution (optional/graceful degradation) ───────────────
 try:
     from .evolution.auto_evolve import AutoEvolve
+    from .evolution.scheduler import EvolutionScheduler
     HAS_EVOLUTION = True
 except ImportError:
     HAS_EVOLUTION = False
     AutoEvolve = None
+    EvolutionScheduler = None
 
 try:
     from .evolution.upgrade import NeoMindUpgrade
@@ -202,6 +204,24 @@ class NeoMindAgent:
         """Return the spec dict for a model, falling back to defaults."""
         return cls._MODEL_SPECS.get(model, cls._DEFAULT_SPEC)
 
+    # ── TokenSight proxy support ─────────────────────────────────────
+    # When TOKENSIGHT_PROXY_URL is set (e.g. http://host.docker.internal:8900),
+    # API calls route through TokenSight for usage tracking.
+    # Provider → proxy path mapping (litellm excluded — already a local proxy).
+    _TOKENSIGHT_PROXY_URL = os.getenv("TOKENSIGHT_PROXY_URL", "").rstrip("/")
+    _TOKENSIGHT_ROUTES = {
+        "deepseek": "/deepseek",
+        "zai": "/zai",
+        "moonshot": "/moonshot",
+    }
+
+    @classmethod
+    def _proxy_url(cls, provider_name: str, path: str) -> str:
+        """Build URL, routing through TokenSight proxy if configured."""
+        if cls._TOKENSIGHT_PROXY_URL and provider_name in cls._TOKENSIGHT_ROUTES:
+            return f"{cls._TOKENSIGHT_PROXY_URL}{cls._TOKENSIGHT_ROUTES[provider_name]}/{path}"
+        return ""
+
     # ── Provider registry ────────────────────────────────────────────
     _PROVIDERS = {
         "litellm": {
@@ -279,25 +299,30 @@ class NeoMindAgent:
                         "api_key": litellm_key,
                     }
 
-        # Standard provider matching
+        # Standard provider matching (with optional TokenSight proxy)
         for name, prov in self._PROVIDERS.items():
             if name == "litellm":
                 continue  # skip litellm in standard matching
             for prefix in prov["model_prefixes"]:
                 if model.startswith(prefix):
                     api_key = os.getenv(prov["env_key"], "")
+                    # Route through TokenSight proxy if configured
+                    proxy_base = self._proxy_url(name, "chat/completions")
+                    proxy_models = self._proxy_url(name, "models")
                     return {
                         "name": name,
-                        "base_url": prov["base_url"],
-                        "models_url": prov["models_url"],
+                        "base_url": proxy_base or prov["base_url"],
+                        "models_url": proxy_models or prov["models_url"],
                         "api_key": api_key,
                     }
         # Default: deepseek
         prov = self._PROVIDERS["deepseek"]
+        proxy_base = self._proxy_url("deepseek", "chat/completions")
+        proxy_models = self._proxy_url("deepseek", "models")
         return {
             "name": "deepseek",
-            "base_url": prov["base_url"],
-            "models_url": prov["models_url"],
+            "base_url": proxy_base or prov["base_url"],
+            "models_url": proxy_models or prov["models_url"],
             "api_key": self.api_key,
         }
 
@@ -359,6 +384,8 @@ class NeoMindAgent:
             confidence_threshold=self.natural_language_confidence_threshold
         ) if self.natural_language_enabled else None
         self.search_loop = None
+        self._browser_loop = None  # Dedicated event loop for BrowserDaemon async calls
+        self._last_links: Dict[int, str] = {}  # /links result: number → URL for follow-up
         self.available_models_cache = None  # NEW: Cache for available models
         self.available_models_cache_timestamp = 0  # NEW: Cache timestamp
 
@@ -392,6 +419,70 @@ class NeoMindAgent:
                     self._status_print("Initialized vault structure (first run)", "debug")
             except Exception as e:
                 self._status_print(f"Vault not available (non-fatal): {e}", "debug")
+
+        # ── Vault watcher for bidirectional sync ─────────────────────────
+        # Polls vault files every 50 turns to detect Obsidian edits
+        self._vault_watcher = None
+        self._response_turn_count = 0  # Track responses for periodic checks
+        if not os.environ.get("NEOMIND_DISABLE_VAULT") and self._vault_reader:
+            try:
+                from agent.vault.watcher import VaultWatcher
+                self._vault_watcher = VaultWatcher()
+            except Exception as e:
+                self._status_print(f"Vault watcher not available (non-fatal): {e}", "debug")
+
+        # ── Finance response validator ──────────────────────────────────
+        # Enforces the Five Iron Rules (plans/FINANCE_CORRECTNESS_RULES.md)
+        # Only active in fin mode; validates prices, calculations, sources.
+        self._finance_validator = None
+        try:
+            from agent.finance.response_validator import get_finance_validator
+            self._finance_validator = get_finance_validator(strict=False)
+            self._status_print("Finance response validator loaded", "debug")
+        except Exception as e:
+            self._status_print(f"Finance validator not available (non-fatal): {e}", "debug")
+
+        # ── Shared Memory (cross-personality learning) ───────────────────
+        # SQLite-backed memory shared across chat/coding/fin modes.
+        # Stores preferences, facts, patterns, feedback.
+        # Context summary injected as system message at startup.
+        self._shared_memory = None
+        if not os.environ.get("NEOMIND_DISABLE_MEMORY"):
+            try:
+                from agent.memory.shared_memory import SharedMemory
+                self._shared_memory = SharedMemory()
+                mem_context = self._shared_memory.get_context_summary(
+                    mode=getattr(self, 'mode', 'chat'), max_tokens=500
+                )
+                if mem_context:
+                    self.add_to_history("system",
+                        f"# User Context (from cross-personality memory)\n\n{mem_context}")
+                    self._status_print("Injected shared memory context", "debug")
+            except Exception as e:
+                self._status_print(f"SharedMemory not available (non-fatal): {e}", "debug")
+
+        # ── Skill system ────────────────────────────────────────────────
+        # Loads SKILL.md files and provides /skill, /skills commands.
+        # Active skill is injected as system message before LLM calls.
+        self._skill_loader = None
+        self._active_skill = None  # Currently activated Skill object
+        try:
+            from agent.skills.loader import get_skill_loader
+            self._skill_loader = get_skill_loader()
+            skill_count = self._skill_loader.count
+            self._status_print(f"Loaded {skill_count} skills", "debug")
+        except Exception as e:
+            self._status_print(f"Skill loader not available (non-fatal): {e}", "debug")
+
+        # ── Unified Logger ──────────────────────────────────────────────
+        # Central logging system with PII sanitization for all operations.
+        self._unified_logger = None
+        try:
+            from agent.logging import get_unified_logger
+            self._unified_logger = get_unified_logger()
+            self._status_print("Unified logger loaded", "debug")
+        except Exception as e:
+            self._status_print(f"Unified logger not available (non-fatal): {e}", "debug")
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -465,6 +556,19 @@ class NeoMindAgent:
             self.evolution = None
             self._status_print(f"⚠️  Evolution engine init failed: {e}", "debug")
 
+        # Lightweight auto-evolution scheduler
+        self.evolution_scheduler = None
+        self._turn_counter = 0
+        if self.evolution and HAS_EVOLUTION and EvolutionScheduler:
+            try:
+                self.evolution_scheduler = EvolutionScheduler(self.evolution)
+                actions = self.evolution_scheduler.on_session_start()
+                if actions:
+                    for action in actions:
+                        self._status_print(f"✨ {action}", "debug")
+            except Exception as e:
+                self._status_print(f"⚠️  Evolution scheduler init failed: {e}", "debug")
+
         # Upgrade manager (checks for updates, doesn't auto-upgrade)
         try:
             self.upgrader = NeoMindUpgrade() if HAS_UPGRADE else None
@@ -527,7 +631,12 @@ class NeoMindAgent:
             "/unfreeze": (self.handle_unfreeze_command, True),
             "/evidence": (self.handle_evidence_command, True),
             "/evolve": (self.handle_evolve_command, True),
+            "/dashboard": (self.handle_dashboard_command, True),
             "/upgrade": (self.handle_upgrade_command, True),
+            "/links": (self.handle_links_command, True),
+            "/crawl": (self.handle_crawl_command, True),
+            "/webmap": (self.handle_webmap_command, True),
+            "/logs": (self.handle_logs_command, True),
         }
 
     # Commands whose output should be added to conversation history
@@ -535,7 +644,7 @@ class NeoMindAgent:
     COMMANDS_FEED_TO_LLM = {
         "/run", "/grep", "/find", "/read", "/write", "/edit",
         "/git", "/code", "/analyze", "/fix", "/diff", "/test",
-        "/glob", "/ls", "/search", "/browse",
+        "/glob", "/ls", "/search", "/browse", "/links", "/crawl", "/webmap",
     }
 
     # Commands that should NOT feed to LLM (UI-only)
@@ -696,6 +805,32 @@ class NeoMindAgent:
         if new_prompt:
             self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
             self.add_to_history("system", new_prompt)
+
+        # Re-inject vault context for the new mode
+        if self._vault_reader and self._vault_reader.vault_exists():
+            try:
+                vault_context = self._vault_reader.get_startup_context(mode=mode)
+                if vault_context:
+                    self.add_to_history("system", vault_context)
+                    self._status_print("Re-injected vault context for new mode", "debug")
+            except Exception as e:
+                self._status_print(f"Vault re-injection failed (non-fatal): {e}", "debug")
+
+        # Re-inject shared memory context for the new mode
+        if self._shared_memory:
+            try:
+                mem_context = self._shared_memory.get_context_summary(mode=mode, max_tokens=500)
+                if mem_context:
+                    self.add_to_history("system",
+                        f"# User Context (from cross-personality memory)\n\n{mem_context}")
+                    self._status_print("Re-injected shared memory context for new mode", "debug")
+            except Exception as e:
+                self._status_print(f"SharedMemory re-injection failed (non-fatal): {e}", "debug")
+
+        # Clear active skill on mode switch (skill may not be available in new mode)
+        if self._active_skill and mode not in self._active_skill.modes:
+            self._safe_print(f"🔴 Deactivated skill '{self._active_skill.name}' (not available in {mode} mode)")
+            self._active_skill = None
 
         if self.interpreter:
             self.interpreter.confidence_threshold = agent_config.natural_language_confidence_threshold
@@ -1314,50 +1449,128 @@ Remember: Always ask for permission before making changes!
 
     def handle_skills_command(self, command: str) -> Optional[str]:
         """
-        Handle /skills command to list available skills/MCP servers.
+        Handle /skills command to list available skills.
 
         Usage:
-          /skills list    - List available skills
-          /skills refresh - Refresh skill discovery
-          /skills help    - Show help
+          /skills          - List skills for current mode
+          /skills all      - List all skills across all modes
+          /skills refresh  - Reload skill files from disk
+          /skills help     - Show help
         """
         command = command.strip().lower()
+
+        if not self._skill_loader:
+            return "⚠️ Skill system not loaded."
+
         if not command or command == "list":
-            skills = self.discover_mcp_servers()
-            if not skills:
-                return "No skills or MCP servers found."
-            result = ["Available skills:"]
-            for skill in skills:
-                result.append(f"  - {skill['name']} - {skill.get('description', 'No description')}")
-            return "\n".join(result)
+            output = self._skill_loader.format_skill_list(self.mode)
+            active = ""
+            if self._active_skill:
+                active = f"\n\n✅ Active skill: /{self._active_skill.name}"
+            return f"📚 Skills available in **{self.mode}** mode:\n{output}{active}"
+
+        elif command == "all":
+            output = self._skill_loader.format_skill_list(None)
+            return f"📚 All skills:\n{output}"
+
         elif command == "refresh":
-            # Force rediscovery
-            self._mcp_servers_cache = None
-            return "Skill cache cleared. Use /skills list to refresh."
+            count = self._skill_loader.load_all()
+            return f"🔄 Reloaded {count} skills from disk."
+
         elif command == "help":
             return (
                 "/skills command usage:\n"
-                "  /skills list    - List available skills\n"
-                "  /skills refresh - Refresh skill discovery\n"
-                "  /skills help    - Show this help"
+                "  /skills        — List skills for current mode\n"
+                "  /skills all    — List all skills\n"
+                "  /skills refresh — Reload from disk\n"
+                "  /skills help   — Show this help\n\n"
+                "Use /skill <name> to activate a skill."
             )
         else:
-            return "Unknown subcommand. Use 'list', 'refresh', or 'help'."
+            return "Unknown subcommand. Use /skills help for usage."
 
     def handle_skill_command(self, command: str) -> Optional[str]:
         """
-        Handle /skill command to invoke a specific skill.
+        Handle /skill command to activate/deactivate a skill.
 
         Usage:
-          /skill <skill_name> [args...]
+          /skill <name>   — Activate a skill (injects into system prompt)
+          /skill off      — Deactivate current skill
+          /skill status   — Show active skill info
         """
-        parts = command.strip().split(maxsplit=1)
-        if not parts:
-            return "Usage: /skill <skill_name> [args...]"
-        skill_name = parts[0]
-        args = parts[1] if len(parts) > 1 else ""
-        # For now, just return a placeholder
-        return f"Skill '{skill_name}' invocation not yet implemented. Args: '{args}'"
+        command = command.strip()
+
+        if not self._skill_loader:
+            return "⚠️ Skill system not loaded."
+
+        if not command:
+            return "Usage: /skill <name> | /skill off | /skill status"
+
+        if command.lower() == "off":
+            if self._active_skill:
+                name = self._active_skill.name
+                # Remove skill system message from history
+                self.conversation_history = [
+                    msg for msg in self.conversation_history
+                    if not (msg.get("role") == "system"
+                            and msg.get("content", "").startswith("## Active Skill:"))
+                ]
+                self._active_skill = None
+                return f"🔴 Deactivated skill: {name}"
+            return "No skill is currently active."
+
+        if command.lower() == "status":
+            if self._active_skill:
+                s = self._active_skill
+                return (
+                    f"✅ Active skill: {s.name} (v{s.version})\n"
+                    f"   {s.description}\n"
+                    f"   Category: {s.category} | Modes: {', '.join(s.modes)}"
+                )
+            return "No skill is currently active."
+
+        # Activate a skill
+        skill_name = command.split()[0].lstrip("/")
+        skill = self._skill_loader.get(skill_name)
+
+        if not skill:
+            # Fuzzy match: try partial name matching
+            candidates = [
+                s for s in self._skill_loader.get_skills_for_mode(self.mode)
+                if skill_name in s.name
+            ]
+            if len(candidates) == 1:
+                skill = candidates[0]
+            elif candidates:
+                names = ", ".join(f"/{c.name}" for c in candidates)
+                return f"Multiple matches: {names}. Be more specific."
+            else:
+                return f"❌ Skill '{skill_name}' not found. Use /skills to see available skills."
+
+        if self.mode not in skill.modes:
+            return (
+                f"⚠️ Skill '{skill.name}' is not available in {self.mode} mode. "
+                f"Available in: {', '.join(skill.modes)}"
+            )
+
+        # Deactivate previous skill if any
+        if self._active_skill:
+            self.conversation_history = [
+                msg for msg in self.conversation_history
+                if not (msg.get("role") == "system"
+                        and msg.get("content", "").startswith("## Active Skill:"))
+            ]
+
+        # Activate new skill
+        self._active_skill = skill
+        self.add_to_history("system", skill.to_system_prompt())
+
+        return (
+            f"✅ Activated skill: **{skill.name}** (v{skill.version})\n"
+            f"   {skill.description}\n\n"
+            f"The skill prompt has been injected. I'll follow its guidelines for subsequent responses.\n"
+            f"Use /skill off to deactivate."
+        )
 
     def discover_mcp_servers(self) -> List[Dict[str, str]]:
         """
@@ -2091,6 +2304,7 @@ Remember: Always ask for permission before making changes!
         """Write a journal entry for the current session to the vault.
 
         Called by the CLI on normal exit (Ctrl+D, /quit) and Ctrl+C.
+        Also triggers vault pattern promotion (SharedMemory → MEMORY.md).
         Gracefully no-ops if vault is disabled or unavailable.
         """
         if os.environ.get("NEOMIND_DISABLE_VAULT") or self._vault_writer is None:
@@ -2112,6 +2326,28 @@ Remember: Always ask for permission before making changes!
             )
         except Exception:
             pass  # Non-fatal — never block exit
+
+        # ── Evolution: ensure daily audit runs before session end ──────────
+        if self.evolution_scheduler:
+            try:
+                actions = self.evolution_scheduler.on_session_end()
+                if actions:
+                    for action in actions:
+                        self._status_print(f"✨ {action}", "debug")
+            except Exception:
+                pass  # Non-fatal — never block exit
+
+        # ── Vault Promoter: SharedMemory → MEMORY.md ─────────────────
+        # Promote patterns with 3+ occurrences to long-term vault memory.
+        # Runs at end of each session (lightweight — reads pattern counts, appends if needed).
+        if self._shared_memory and self._vault_writer:
+            try:
+                from agent.vault.promoter import promote_patterns
+                promoted = promote_patterns(self._shared_memory, self._vault_writer)
+                if promoted > 0:
+                    self._status_print(f"Promoted {promoted} patterns to MEMORY.md", "debug")
+            except Exception:
+                pass  # Non-fatal — never block exit
 
     # NEW: Webpage reading capabilities
 
@@ -2135,6 +2371,7 @@ Remember: Always ask for permission before making changes!
             strategies.append(self._try_html2text)
         if HAS_REQUESTS_HTML:
             strategies.append(self._try_requests_html)
+        strategies.append(self._try_playwright)
         strategies.append(self._try_fallback)
         
         best_result = None
@@ -2170,12 +2407,12 @@ Remember: Always ask for permission before making changes!
             downloaded = trafilatura.fetch_url(url)
             text = trafilatura.extract(
                 downloaded,
-                include_links=False,
+                include_links=True,         # Preserve links for sub-page navigation
                 include_images=False,
-                include_tables=False,
+                include_tables=True,         # Tables often contain key data
                 no_fallback=False,
-                include_formatting=False,  # Cleaner output
-                output_format='txt',       # Plain text
+                include_formatting=True,     # Keep structure (headers, lists)
+                output_format='txt',         # Plain text with markdown-style links
             )
 
             if text:
@@ -2285,6 +2522,36 @@ Remember: Always ask for permission before making changes!
             # Clean the text
             text = self._clean_text(text)
 
+            # ── Extract links from the page ──────────────────────────
+            search_root = main_content or soup.find('body') or soup
+            raw_links = search_root.find_all('a', href=True)
+            parsed_base = urlparse(url)
+
+            seen_hrefs = set()
+            link_lines = []
+            link_num = 0
+
+            for a_tag in raw_links:
+                href = a_tag['href'].strip()
+                link_text = a_tag.get_text(strip=True)[:80]
+                if not link_text or not href or href.startswith(('#', 'javascript:')):
+                    continue
+
+                # Resolve relative URLs
+                if href.startswith('/'):
+                    href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                elif not href.startswith(('http://', 'https://')):
+                    continue  # skip mailto:, tel:, etc.
+
+                if href in seen_hrefs:
+                    continue
+                seen_hrefs.add(href)
+                link_num += 1
+                link_lines.append(f"[{link_num}] {link_text} → {href}")
+
+            if link_lines:
+                text = text.strip() + "\n\n--- Links Found ---\n" + "\n".join(link_lines[:50])
+
             return text.strip()
         except Exception as e:
             print(f"Debug: BeautifulSoup error for {url}: {str(e)}")
@@ -2341,6 +2608,39 @@ Remember: Always ask for permission before making changes!
             text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
             return text.strip()
         except:
+            return None
+
+    # ── Browser sync bridge ─────────────────────────────────────────
+    def _browser_sync(self, command: str, args: List[str] = None) -> str:
+        """Sync wrapper for async BrowserDaemon — mirrors search_sync() pattern."""
+        if not self._browser_loop:
+            self._browser_loop = asyncio.new_event_loop()
+
+        from agent.browser.daemon import get_browser
+
+        async def _run():
+            browser = await get_browser()
+            return await browser.execute(command, args or [])
+
+        return self._browser_loop.run_until_complete(_run())
+
+    def _try_playwright(self, url: str, max_length: int) -> Optional[str]:
+        """Fallback to headless Chromium for JS-rendered pages.
+
+        Uses the BrowserDaemon singleton (Playwright) via sync bridge.
+        Only attempted when lighter strategies fail — Chromium cold-start
+        adds ~2-3 s on first call, <100 ms on subsequent calls.
+        """
+        try:
+            result = self._browser_sync("goto", [url])
+            if result and "Error" in result:
+                return None
+            text = self._browser_sync("text", [])
+            if text and len(text.strip()) > 100:
+                text = self._clean_text(text) if hasattr(self, '_clean_text') else text
+                return text[:max_length]
+            return None
+        except Exception:
             return None
 
     def _try_fallback(self, url: str, max_length: int) -> Optional[str]:
@@ -2560,6 +2860,17 @@ Remember: Always ask for permission before making changes!
             return self.formatter.error("Please provide a URL")
         
         url = ' '.join(parts)
+
+        # ── Follow-up from /links: "/read 3" reads link #3 ──────────
+        if url.isdigit() and self._last_links:
+            link_num = int(url)
+            if link_num in self._last_links:
+                url = self._last_links[link_num]
+                print(f"🔗 Following link #{link_num}: {url}")
+            else:
+                return self.formatter.error(
+                    f"Link #{link_num} not found. Available: {min(self._last_links)}–{max(self._last_links)}"
+                )
 
         # Check if this is a local file path
         if self._is_likely_file_path(url):
@@ -3866,6 +4177,36 @@ NeoMind Phase 4: Self-Evolution Closed Loop
         except Exception as e:
             return self.formatter.error(f"Evolution error: {e}")
 
+    def handle_dashboard_command(self, command: str) -> Optional[str]:
+        """Handle /dashboard command — generate HTML evolution metrics dashboard."""
+        try:
+            from agent.evolution.dashboard import generate_dashboard
+
+            # Generate dashboard and save to ~/.neomind/dashboard.html
+            dashboard_path = Path.home() / ".neomind" / "dashboard.html"
+            html = generate_dashboard(str(dashboard_path))
+
+            return self.formatter.success(
+                f"📊 Dashboard generated!\n\n"
+                f"Location: {dashboard_path}\n\n"
+                f"Open in browser to view:\n"
+                f"  - Health status and system checks\n"
+                f"  - Daily activity (7-day trend)\n"
+                f"  - Mode distribution (chat/coding/fin)\n"
+                f"  - Learning patterns\n"
+                f"  - Recent evidence trail\n"
+                f"  - Evolution timeline\n\n"
+                f"Size: {dashboard_path.stat().st_size / 1024:.1f} KB"
+            )
+
+        except ImportError:
+            return self.formatter.warning(
+                "Dashboard module not available. "
+                "Install evolution modules: pip install agent-evolution"
+            )
+        except Exception as e:
+            return self.formatter.error(f"Dashboard generation error: {e}")
+
     def handle_upgrade_command(self, command: str) -> Optional[str]:
         """Handle /upgrade command — check and manage updates."""
         if not HAS_UPGRADE or not self.upgrader:
@@ -3954,6 +4295,46 @@ Safe Upgrade Process:
             except Exception:
                 pass  # Gracefully ignore evidence logging failures
 
+    def _learn_patterns_from_turn(self, user_prompt: str, response: str) -> None:
+        """Extract lightweight patterns from a conversation turn and record to SharedMemory.
+
+        Called after every LLM response in stream_response().
+        Extracts: stock tickers, coding keywords, topic hints.
+        Non-fatal — exceptions are silently swallowed by caller.
+        """
+        import re
+        mode = self.mode
+
+        # 1. Stock tickers (fin mode — record frequently discussed symbols)
+        if mode == "fin":
+            tickers = re.findall(r'\$([A-Z]{1,5})\b', user_prompt)
+            for t in set(tickers):
+                self._shared_memory.record_pattern("frequent_stock", t, mode)
+            # Chinese stock codes
+            cn_codes = re.findall(r'\b([036]\d{5})\b', user_prompt)
+            for c in set(cn_codes):
+                self._shared_memory.record_pattern("frequent_stock", c, mode)
+
+        # 2. Coding language mentions (coding mode)
+        if mode == "coding":
+            lang_patterns = {
+                "python": r'\bpython\b', "javascript": r'\b(?:javascript|js|typescript|ts)\b',
+                "rust": r'\brust\b', "go": r'\bgolang|go\b', "java": r'\bjava\b',
+                "c++": r'\bc\+\+|cpp\b', "ruby": r'\bruby\b', "swift": r'\bswift\b',
+            }
+            prompt_lower = user_prompt.lower()
+            for lang, pat in lang_patterns.items():
+                if re.search(pat, prompt_lower):
+                    self._shared_memory.record_pattern("coding_language", lang, mode)
+
+        # 3. User corrections / feedback (any mode)
+        correction_triggers = ["不对", "错了", "wrong", "incorrect", "actually", "其实"]
+        prompt_lower = user_prompt.lower()
+        for trigger in correction_triggers:
+            if trigger in prompt_lower:
+                self._shared_memory.record_feedback("correction", user_prompt[:300], mode)
+                break
+
     def _check_guards(self, cmd: str) -> Tuple[bool, str]:
         """Helper to check safety guards. Returns (is_allowed, warning_msg)."""
         if not self.guard:
@@ -4000,7 +4381,19 @@ Safe Upgrade Process:
         main_content = main_content.strip()
 
         # Truncate to avoid token limits (adjust based on your context window)
-        max_chars = 6000
+        max_chars = 10000
+
+        # Separate links section (if present) so it survives truncation
+        links_section = ""
+        links_marker = "--- Links Found ---"
+        if links_marker in main_content:
+            split_pos = main_content.index(links_marker)
+            links_section = "\n\n" + main_content[split_pos:]
+            main_content = main_content[:split_pos].rstrip()
+            # Reserve space for links (cap links at 1500 chars)
+            links_section = links_section[:1500]
+            max_chars -= len(links_section)
+
         if len(main_content) > max_chars:
             # Try to find a good truncation point
             truncated = main_content[:max_chars]
@@ -4014,6 +4407,9 @@ Safe Upgrade Process:
             else:
                 main_content = truncated + "\n\n[Content truncated for context]"
 
+        # Re-attach links section
+        main_content = main_content + links_section
+
         # Add to conversation history
         self.add_to_history("user", f"""I've read the following webpage:
 
@@ -4025,6 +4421,612 @@ Safe Upgrade Process:
     Please remember this content. I may ask you questions about it.""")
 
         print("💡 Content added to AI memory. You can now ask questions about it!")
+
+    # ── /links command ─────────────────────────────────────────────
+    def handle_links_command(self, url_or_command: str) -> str:
+        """Extract and list all links from a webpage.
+
+        Usage:
+            /links <url>           — Fetch page and list all links (numbered)
+            /links                 — Re-show links from last /links or /read call
+
+        After running /links, use `/read N` to follow link #N.
+        """
+        if not url_or_command or url_or_command.strip() == "":
+            # Re-show cached links if available
+            if self._last_links:
+                return self._format_links_output(self._last_links)
+            return (
+                "🔗 /links <url>  — Extract all links from a webpage\n"
+                "After running /links, use /read N to follow link #N."
+            )
+
+        url = url_or_command.strip()
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
+        print(f"🔗 Extracting links from: {url}")
+
+        try:
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+            }
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+
+            soup = BeautifulSoup(response.text, 'html.parser')
+
+            # Remove nav/footer noise
+            for tag in ['nav', 'footer', 'aside']:
+                for el in soup.find_all(tag):
+                    el.decompose()
+
+            parsed_base = urlparse(url)
+            base_domain = parsed_base.netloc
+
+            internal_links = {}  # num → (text, href)
+            external_links = {}
+            seen = set()
+            num = 0
+
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href'].strip()
+                text = a_tag.get_text(strip=True)[:80]
+                if not text or not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
+                    continue
+
+                # Resolve relative
+                if href.startswith('/'):
+                    href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
+                elif not href.startswith(('http://', 'https://')):
+                    continue
+
+                if href in seen:
+                    continue
+                seen.add(href)
+                num += 1
+
+                parsed_href = urlparse(href)
+                if parsed_href.netloc == base_domain or parsed_href.netloc.endswith('.' + base_domain):
+                    internal_links[num] = (text, href)
+                else:
+                    external_links[num] = (text, href)
+
+            # Store for /read N follow-up
+            self._last_links = {}
+            all_links = {**internal_links, **external_links}
+            for n, (text, href) in all_links.items():
+                self._last_links[n] = href
+
+            # Format output
+            lines = [f"🔗 Links from: {url}", f"   Total: {len(all_links)}", ""]
+
+            if internal_links:
+                lines.append(f"── Internal ({len(internal_links)}) ──")
+                for n, (text, href) in internal_links.items():
+                    path = urlparse(href).path or '/'
+                    lines.append(f"  [{n}] {text} → {path}")
+                lines.append("")
+
+            if external_links:
+                lines.append(f"── External ({len(external_links)}) ──")
+                for n, (text, href) in external_links.items():
+                    lines.append(f"  [{n}] {text} → {href}")
+                lines.append("")
+
+            lines.append("💡 Use /read N to follow a link (e.g., /read 3)")
+
+            return "\n".join(lines)
+
+        except Exception as e:
+            return self.formatter.error(f"Failed to extract links from {url}: {e}")
+
+    def _format_links_output(self, links: Dict[int, str]) -> str:
+        """Re-display cached link list."""
+        lines = [f"🔗 Cached links ({len(links)} total):", ""]
+        for n, href in sorted(links.items()):
+            lines.append(f"  [{n}] {href}")
+        lines.append("")
+        lines.append("💡 Use /read N to follow a link")
+        return "\n".join(lines)
+
+    # ── /crawl command ─────────────────────────────────────────────
+    def handle_crawl_command(self, command: str) -> str:
+        """Crawl a website starting from a URL, following same-domain links.
+
+        Usage:
+            /crawl <url>                 — Crawl with depth=1, max 10 pages
+            /crawl <url> --depth 2       — Crawl up to 2 levels deep
+            /crawl <url> --max 20        — Crawl up to 20 pages
+            /crawl <url> --depth 2 --max 15
+        """
+        if not command or command.strip() == "":
+            return (
+                "🕷️ /crawl <url> [--depth N] [--max N]\n"
+                "  Crawl a website from the given URL.\n"
+                "  --depth N  Max link depth (default: 1)\n"
+                "  --max N    Max pages to crawl (default: 10, hard cap: 50)\n\n"
+                "Example: /crawl https://docs.example.com --depth 2 --max 15"
+            )
+
+        parts = command.strip().split()
+        url = None
+        max_depth = 1
+        max_pages = 10
+
+        # Parse args
+        i = 0
+        while i < len(parts):
+            if parts[i] == '--depth' and i + 1 < len(parts):
+                try:
+                    max_depth = int(parts[i + 1])
+                    i += 2
+                    continue
+                except ValueError:
+                    return self.formatter.error("--depth requires an integer")
+            elif parts[i] == '--max' and i + 1 < len(parts):
+                try:
+                    max_pages = min(int(parts[i + 1]), 50)  # Hard cap at 50
+                    i += 2
+                    continue
+                except ValueError:
+                    return self.formatter.error("--max requires an integer")
+            elif url is None:
+                url = parts[i]
+            i += 1
+
+        if not url:
+            return self.formatter.error("Please provide a URL to crawl.")
+
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
+        print(f"🕷️ Starting crawl: {url} (depth={max_depth}, max={max_pages})")
+
+        try:
+            from agent.web.extractor import WebExtractor
+            from agent.web.crawler import BFSCrawler
+            from agent.web.cache import URLCache
+
+            # Create extractor with browser fallback
+            cache = URLCache(ttl_seconds=1800)
+            extractor = WebExtractor(
+                browser_sync_fn=self._browser_sync,
+                cache=cache,
+            )
+            crawler = BFSCrawler(extractor, cache=cache, delay=1.0)
+
+            report = crawler.crawl(
+                url,
+                max_depth=max_depth,
+                max_pages=max_pages,
+            )
+
+            # Store crawl results for follow-up /read
+            self._crawl_results = {
+                page.url: page.content for page in report.ok_pages
+            }
+
+            # Add summary to AI memory (not full content — too large)
+            if report.ok_pages:
+                summary_content = report.all_content(max_chars_per_page=2000)
+                # Cap total at 12000 chars for memory
+                if len(summary_content) > 12000:
+                    summary_content = summary_content[:12000] + "\n\n[Crawl content truncated]"
+
+                self.add_to_history("user", f"""I've crawled the following website:
+
+Start URL: {url}
+Pages crawled: {len(report.ok_pages)}
+Total words: {report.total_words:,}
+
+{summary_content}
+
+Please remember this content. I may ask questions about it.""")
+
+                print("💡 Crawl content added to AI memory.")
+
+            return report.summary()
+
+        except ImportError as e:
+            return self.formatter.error(
+                f"Crawl module not available: {e}\n"
+                "Make sure agent/web/ package exists."
+            )
+        except Exception as e:
+            return self.formatter.error(f"Crawl failed: {e}")
+
+    # ── /webmap command ────────────────────────────────────────────
+    def handle_webmap_command(self, command: str) -> str:
+        """Generate a sitemap or discover site structure via crawling.
+
+        First attempts to fetch and parse sitemap.xml.
+        If not found, uses BFSCrawler to discover links (shallow crawl).
+        Displays as a tree structure for easy navigation.
+
+        Usage:
+            /webmap <url>               — Generate webmap from sitemap.xml or crawl
+            /webmap <url> --depth 2     — Crawl with custom depth if no sitemap
+
+        Stores discovered URLs in self._last_webmap for follow-up commands.
+        """
+        if not command or command.strip() == "":
+            return (
+                "🗺️  /webmap <url> [--depth N]\n"
+                "  Generate a site map from sitemap.xml or by crawling.\n"
+                "  --depth N  Max crawl depth if no sitemap found (default: 1)\n\n"
+                "Example: /webmap https://docs.example.com"
+            )
+
+        parts = command.strip().split()
+        url = None
+        max_depth = 1
+
+        # Parse args
+        i = 0
+        while i < len(parts):
+            if parts[i] == '--depth' and i + 1 < len(parts):
+                try:
+                    max_depth = int(parts[i + 1])
+                    i += 2
+                    continue
+                except ValueError:
+                    return self.formatter.error("--depth requires an integer")
+            elif url is None:
+                url = parts[i]
+            i += 1
+
+        if not url:
+            return self.formatter.error("Please provide a URL.")
+
+        if not url.startswith(('http://', 'https://')):
+            url = 'https://' + url
+
+        print(f"🗺️  Generating webmap for: {url}")
+
+        try:
+            from urllib.parse import urljoin, urlparse
+            import xml.etree.ElementTree as ET
+            import requests
+
+            # ── Step 1: Try to fetch sitemap.xml ──────────────────────
+            sitemap_url = urljoin(url, '/sitemap.xml')
+            print(f"  Checking for sitemap at: {sitemap_url}")
+
+            try:
+                headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                }
+                response = requests.get(sitemap_url, headers=headers, timeout=10)
+                response.raise_for_status()
+
+                # Parse sitemap
+                root = ET.fromstring(response.content)
+                sitemap_urls = []
+
+                # Handle standard sitemap namespace
+                namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
+                for url_elem in root.findall('.//sm:loc', namespace):
+                    if url_elem.text:
+                        sitemap_urls.append(url_elem.text)
+
+                if not sitemap_urls:
+                    # Try without namespace
+                    for url_elem in root.findall('.//loc'):
+                        if url_elem.text:
+                            sitemap_urls.append(url_elem.text)
+
+                if sitemap_urls:
+                    print(f"  Found sitemap.xml with {len(sitemap_urls)} URLs")
+                    self._last_webmap = sitemap_urls
+                    return self._format_webmap(url, sitemap_urls, source='sitemap.xml')
+
+            except requests.RequestException as e:
+                print(f"  Sitemap not found: {e}")
+
+            # ── Step 2: Fall back to BFS crawl ────────────────────────
+            print(f"  Falling back to crawl-based discovery (depth={max_depth})")
+
+            from agent.web.extractor import WebExtractor
+            from agent.web.crawler import BFSCrawler
+            from agent.web.cache import URLCache
+
+            cache = URLCache(ttl_seconds=1800)
+            extractor = WebExtractor(
+                browser_sync_fn=self._browser_sync,
+                cache=cache,
+            )
+            crawler = BFSCrawler(extractor, cache=cache, delay=0.5)
+
+            report = crawler.crawl(
+                url,
+                max_depth=max_depth,
+                max_pages=20,  # Keep it reasonable for webmap
+            )
+
+            # Extract URLs from crawled pages
+            crawled_urls = [page.url for page in report.ok_pages]
+            self._last_webmap = crawled_urls
+
+            return self._format_webmap(url, crawled_urls, source='crawl')
+
+        except ImportError as e:
+            return self.formatter.error(
+                f"Webmap module not available: {e}\n"
+                "Make sure requests and xml modules are available."
+            )
+        except Exception as e:
+            return self.formatter.error(f"Webmap generation failed: {e}")
+
+    def _format_webmap(self, base_url: str, urls: list, source: str = 'crawl') -> str:
+        """Format discovered URLs as a tree structure.
+
+        Args:
+            base_url: The starting URL for context.
+            urls: List of discovered URLs.
+            source: Where the URLs came from ('sitemap.xml' or 'crawl').
+
+        Returns:
+            Formatted tree string.
+        """
+        if not urls:
+            return "🗺️  No URLs discovered."
+
+        from urllib.parse import urlparse
+
+        parsed_base = urlparse(base_url)
+        base_domain = parsed_base.netloc
+        base_path = parsed_base.path.rstrip('/')
+
+        # Group URLs by path depth
+        url_tree = {}
+        for url_str in urls:
+            parsed = urlparse(url_str)
+            if parsed.netloc != base_domain:
+                continue
+
+            path = parsed.path.rstrip('/')
+            if path.startswith(base_path):
+                rel_path = path[len(base_path):].lstrip('/') or '/'
+            else:
+                rel_path = path.lstrip('/') or '/'
+
+            url_tree[rel_path] = url_str
+
+        # Sort by path depth and name
+        sorted_paths = sorted(url_tree.keys(), key=lambda p: (p.count('/'), p))
+
+        # Build output
+        lines = [
+            f"🗺️  Site map for {base_domain} (source: {source})",
+            f"  Found {len(url_tree)} URLs",
+            "",
+        ]
+
+        for path in sorted_paths:
+            depth = path.count('/') if path != '/' else 0
+            indent = "  " * (depth + 1)
+
+            # Truncate long paths
+            display_path = path if len(path) <= 60 else path[:57] + "..."
+            lines.append(f"{indent}{display_path}")
+
+        lines.append("")
+        lines.append(f"💡 URLs stored in /webmap results. Use /read <url> to view any page.")
+
+        return "\n".join(lines)
+
+
+    def handle_logs_command(self, command: str) -> Optional[str]:
+        """Handle /logs command for searching and viewing activity logs.
+
+        Usage:
+            /logs              - Show today's stats
+            /logs search <kw>  - Search logs for keyword
+            /logs stats        - Show weekly stats
+            /logs recent [N]   - Show N most recent entries (default: 10)
+            /logs cleanup [days] - Clean up logs older than N days
+        """
+        if not self._unified_logger:
+            return self.formatter.warning("Unified logger not initialized")
+
+        parts = command.strip().split(maxsplit=1) if command.strip() else []
+        subcommand = parts[0] if parts else ""
+        args = parts[1] if len(parts) > 1 else ""
+
+        try:
+            if not subcommand or subcommand == "":
+                # Default: show today's stats
+                stats = self._unified_logger.get_daily_stats()
+                return self._format_log_stats(stats, "today")
+
+            elif subcommand == "search":
+                if not args:
+                    return self.formatter.warning("/logs search requires a keyword")
+                results = self._unified_logger.search(args, limit=10)
+                return self._format_log_search_results(results, args)
+
+            elif subcommand == "stats":
+                # Weekly stats
+                stats = self._unified_logger.get_weekly_stats()
+                return self._format_log_weekly_stats(stats)
+
+            elif subcommand == "recent":
+                # Most recent entries
+                limit = 10
+                if args:
+                    try:
+                        limit = int(args)
+                    except ValueError:
+                        return self.formatter.error(f"Invalid limit: {args}")
+                results = self._unified_logger.query(limit=limit)
+                return self._format_log_recent(results, limit)
+
+            elif subcommand == "cleanup":
+                # Clean up old logs
+                keep_days = 90
+                if args:
+                    try:
+                        keep_days = int(args)
+                    except ValueError:
+                        return self.formatter.error(f"Invalid days: {args}")
+                deleted = self._unified_logger.cleanup_old_logs(keep_days)
+                return self.formatter.success(
+                    f"Cleaned up logs: deleted {deleted} files (kept logs from last {keep_days} days)"
+                )
+
+            else:
+                return self.formatter.error(
+                    f"Unknown /logs subcommand: {subcommand}\n"
+                    "Usage: /logs [search <kw>|stats|recent [N]|cleanup [days]]"
+                )
+
+        except Exception as e:
+            return self.formatter.error(f"Logs command failed: {e}")
+
+    def _format_log_stats(self, stats: dict, period: str = "today") -> str:
+        """Format daily log statistics."""
+        lines = [
+            f"📊 Log Statistics - {period.upper()}",
+            f"  Date: {stats.get('date', 'N/A')}",
+            f"  Total Events: {stats.get('total_events', 0)}",
+            f"  LLM Calls: {stats.get('by_type', {}).get('llm_call', 0)}",
+            f"  Commands: {stats.get('total_commands', 0)}",
+            f"  Errors: {stats.get('errors', 0)}",
+            f"  Total Tokens: {stats.get('total_tokens', 0):,}",
+            "",
+        ]
+
+        # Show breakdown by mode
+        by_mode = stats.get('by_mode', {})
+        if by_mode:
+            lines.append("  By Mode:")
+            for mode, count in sorted(by_mode.items(), key=lambda x: -x[1]):
+                lines.append(f"    {mode}: {count}")
+
+        # Show breakdown by type
+        by_type = stats.get('by_type', {})
+        if by_type:
+            lines.append("")
+            lines.append("  By Type:")
+            for log_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
+                lines.append(f"    {log_type}: {count}")
+
+        if stats.get('log_file'):
+            lines.append("")
+            lines.append(f"  Log File: {stats['log_file']}")
+            size_kb = stats.get('log_size_bytes', 0) / 1024
+            lines.append(f"  Log Size: {size_kb:.1f} KB")
+
+        return "\n".join(lines)
+
+    def _format_log_weekly_stats(self, stats: dict) -> str:
+        """Format weekly log statistics."""
+        lines = [
+            f"📊 Weekly Log Statistics",
+            f"  Period: {stats.get('period', 'N/A')}",
+            f"  Total Events: {stats.get('total_events', 0):,}",
+            f"  LLM Calls: {stats.get('by_type', {}).get('llm_call', 0)}",
+            f"  Commands: {stats.get('total_commands', 0)}",
+            f"  Errors: {stats.get('total_errors', 0)}",
+            f"  Total Tokens: {stats.get('total_tokens', 0):,}",
+            f"  Days with Activity: {stats.get('days_with_activity', 0)}/7",
+            "",
+        ]
+
+        # Show breakdown by mode
+        by_mode = stats.get('by_mode', {})
+        if by_mode:
+            lines.append("  By Mode:")
+            for mode, count in sorted(by_mode.items(), key=lambda x: -x[1]):
+                lines.append(f"    {mode}: {count}")
+
+        # Show breakdown by type
+        by_type = stats.get('by_type', {})
+        if by_type:
+            lines.append("")
+            lines.append("  By Type:")
+            for log_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
+                lines.append(f"    {log_type}: {count}")
+
+        return "\n".join(lines)
+
+    def _format_log_search_results(self, results: list, keyword: str) -> str:
+        """Format log search results."""
+        if not results:
+            return f"🔍 No logs found matching '{keyword}'"
+
+        lines = [
+            f"🔍 Search Results for '{keyword}' ({len(results)} matches)",
+            "",
+        ]
+
+        for i, entry in enumerate(results[:10], 1):
+            log_type = entry.get('type', 'unknown')
+            ts = entry.get('ts', 'N/A')
+            mode = entry.get('mode', 'unknown')
+
+            # Build a summary line
+            summary = f"[{log_type}] {ts} ({mode})"
+
+            # Add relevant details based on type
+            if log_type == 'llm_call':
+                tokens = entry.get('total_tokens', 0)
+                latency = entry.get('latency_ms', 0)
+                summary += f" | {tokens} tokens | {latency:.0f}ms"
+            elif log_type == 'command':
+                cmd = entry.get('cmd', '')[:50]
+                exit_code = entry.get('exit_code', -1)
+                summary += f" | {cmd} (exit: {exit_code})"
+            elif log_type == 'error':
+                error_msg = entry.get('message', '')[:60]
+                summary += f" | {error_msg}"
+
+            lines.append(f"  {i}. {summary}")
+
+        return "\n".join(lines)
+
+    def _format_log_recent(self, results: list, limit: int) -> str:
+        """Format recent log entries."""
+        if not results:
+            return "📭 No log entries found"
+
+        lines = [
+            f"📜 Most Recent {min(len(results), limit)} Log Entries",
+            "",
+        ]
+
+        for i, entry in enumerate(results[:limit], 1):
+            log_type = entry.get('type', 'unknown')
+            ts = entry.get('ts', 'N/A')
+            mode = entry.get('mode', 'unknown')
+
+            # Build entry line
+            summary = f"[{log_type}] {ts} ({mode})"
+
+            # Add relevant details
+            if log_type == 'llm_call':
+                model = entry.get('model', 'unknown')
+                tokens = entry.get('total_tokens', 0)
+                summary += f" | {model} | {tokens} tokens"
+            elif log_type == 'command':
+                cmd = entry.get('cmd', '')[:45]
+                exit_code = entry.get('exit_code', -1)
+                summary += f" | {cmd} (exit: {exit_code})"
+            elif log_type == 'error':
+                error_type = entry.get('error_type', 'unknown')
+                message = entry.get('message', '')[:40]
+                summary += f" | {error_type}: {message}"
+            elif log_type == 'search':
+                query = entry.get('query', '')[:40]
+                results_count = entry.get('results_count', 0)
+                summary += f" | '{query}' ({results_count} results)"
+
+            lines.append(f"  {i}. {summary}")
+
+        return "\n".join(lines)
 
     def _is_likely_file_path(self, path: str) -> bool:
         """
@@ -5103,8 +6105,22 @@ Please think step by step and provide your analysis:"""
             if prompt.startswith(prefix):
                 handler, strip_prefix = self.command_handlers[prefix]
                 arg = prompt[len(prefix):].strip() if strip_prefix else prompt
+                cmd_start_time = time.time()
                 response = handler(arg)
+                cmd_duration = (time.time() - cmd_start_time) * 1000  # Convert to ms
                 command_handled = True
+
+                # Log command execution to unified logger
+                if self._unified_logger:
+                    try:
+                        self._unified_logger.log_command(
+                            cmd=f"{prefix} {arg}" if arg else prefix,
+                            exit_code=0 if response is not None else 1,
+                            duration_ms=cmd_duration,
+                            mode=self.mode,
+                        )
+                    except Exception as e:
+                        self._status_print(f"Unified logger command log failed (non-fatal): {e}", "debug")
 
                 # Special handling for /fix and /analyze
                 if prefix in ["/fix", "/analyze"]:
@@ -5391,9 +6407,55 @@ Please think step by step and provide your analysis:"""
 
             # Add the complete response to history
             if full_response:
+                # ── Finance correctness validation (fin mode only) ──────────
+                if self.mode == "fin" and self._finance_validator:
+                    try:
+                        # Collect tool results from this turn's conversation
+                        # (messages added since the last user message)
+                        tool_results_this_turn = []
+                        for msg in reversed(self.conversation_history):
+                            if msg.get("role") == "user":
+                                break
+                            if msg.get("role") == "system" and "[Tool:" in msg.get("content", ""):
+                                tool_results_this_turn.append({"content": msg["content"]})
+                        vr = self._finance_validator.validate(full_response, tool_results_this_turn)
+                        if not vr.passed:
+                            disclaimer = self._finance_validator.build_disclaimer(vr)
+                            if disclaimer:
+                                full_response += disclaimer
+                                if content_was_displayed:
+                                    print(disclaimer, end="", flush=True)
+                            self._log_evidence(
+                                "finance_validation_warning",
+                                vr.summary()[:200],
+                                full_response[:200],
+                                severity="warning",
+                            )
+                    except Exception as e:
+                        self._status_print(f"Finance validation error (non-fatal): {e}", "debug")
+
                 self.add_to_history("assistant", full_response)
                 if content_was_displayed:
                     print()  # Clean newline after visible streaming output
+
+                # ── Periodic vault watcher check (every 50 turns) ──────────
+                if self._vault_watcher:
+                    self._response_turn_count += 1
+                    if self._response_turn_count >= 50:
+                        self._response_turn_count = 0
+                        try:
+                            changed_context = self._vault_watcher.get_changed_context(
+                                mode=getattr(self, 'mode', 'chat')
+                            )
+                            if changed_context:
+                                self.add_to_history("system", changed_context)
+                                self._vault_watcher.mark_seen()
+                                self._status_print(
+                                    "Detected vault changes from Obsidian — updated context",
+                                    "debug"
+                                )
+                        except Exception as e:
+                            self._status_print(f"Vault watcher check failed (non-fatal): {e}", "debug")
 
                 # ── Log to evidence trail ────────────────────────────────────
                 # Get the user's prompt (last user message before this response)
@@ -5403,6 +6465,43 @@ Please think step by step and provide your analysis:"""
                         user_prompt = msg["content"]
                         break
                 self._log_evidence("llm_call", user_prompt[:200], full_response[:200], severity="info")
+
+                # ── Log to unified logger ────────────────────────────────────
+                # Track LLM API calls with token usage and latency
+                if self._unified_logger:
+                    try:
+                        prompt_tokens = self.context_manager.count_conversation_tokens()
+                        completion_tokens = self.context_manager.count_tokens(full_response)
+                        latency_ms = (time.time() - start_time) * 1000 if start_time else 0
+                        self._unified_logger.log_llm_call(
+                            model=self.model,
+                            prompt_tokens=prompt_tokens,
+                            completion_tokens=completion_tokens,
+                            latency_ms=latency_ms,
+                            mode=self.mode,
+                            thinking_enabled=self.thinking_enabled,
+                        )
+                    except Exception as e:
+                        self._status_print(f"Unified logger LLM call failed (non-fatal): {e}", "debug")
+
+                # ── SharedMemory: learn from conversation ───────────────
+                # Record patterns from user prompts (lightweight extraction)
+                if self._shared_memory and user_prompt:
+                    try:
+                        self._learn_patterns_from_turn(user_prompt, full_response)
+                    except Exception:
+                        pass  # Non-fatal — never block response delivery
+
+                # ── Evolution: check for scheduled tasks every N turns ─────────
+                if self.evolution_scheduler:
+                    self._turn_counter += 1
+                    try:
+                        actions = self.evolution_scheduler.on_turn_complete(self._turn_counter)
+                        if actions:
+                            for action in actions:
+                                self._status_print(f"✨ {action}", "debug")
+                    except Exception:
+                        pass  # Non-fatal — never block response delivery
 
             # Store thinking content for expansion later
             if reasoning_content:
@@ -5680,12 +6779,36 @@ Please think step by step and provide your analysis:"""
         if text.startswith('/'):
             return None
 
-        # 1. URL detection
+        # 1. URL detection — bare URL or URL with surrounding context
         url_pattern = r'^(https?://[^\s]+)$'
         if re.match(url_pattern, text, re.IGNORECASE):
             self._safe_print(f"🔗 Detected URL: {text}")
             log_operation("url_detection", text, True, "auto_classified_as_url")
             return f"/read {text}"
+
+        # 1b. URL embedded in short text — "帮我看看 https://..." / "read https://..."
+        embedded_url = re.search(r'(https?://[^\s]+)', text)
+        if embedded_url and len(text) < 200:
+            url = embedded_url.group(1)
+            context = text[:embedded_url.start()].strip().lower()
+            # Crawl intent keywords
+            crawl_kw = {'crawl', 'spider', '爬取', '抓取', '爬', '全部', 'all pages', 'entire site', '整个', '全面'}
+            # Links intent keywords
+            links_kw = {'links', 'link', '链接', '所有链接', 'list links', 'extract links', '提取链接', '列出链接'}
+
+            if any(kw in context for kw in crawl_kw):
+                self._safe_print(f"🕷️ Detected crawl intent: {url}")
+                log_operation("url_detection", text, True, "auto_classified_as_crawl")
+                return f"/crawl {url}"
+            elif any(kw in context for kw in links_kw):
+                self._safe_print(f"🔗 Detected links intent: {url}")
+                log_operation("url_detection", text, True, "auto_classified_as_links")
+                return f"/links {url}"
+            else:
+                # Default: read the URL
+                self._safe_print(f"🔗 Detected URL in context: {url}")
+                log_operation("url_detection", text, True, "auto_classified_as_url_in_context")
+                return f"/read {url}"
 
         # 2. File path with optional line numbers (e.g., file.py:15, file.py:10-20)
         # Match whole string as a file path

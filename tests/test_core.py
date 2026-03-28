@@ -515,27 +515,28 @@ class TestCoreStatusBuffer(unittest.TestCase):
         """Test adding status messages."""
         agent = NeoMindAgent(api_key=self.test_api_key)
 
-        # Initial buffer should be empty
-        self.assertEqual(len(agent.status_buffer), 0)
+        # Record initial buffer size (may contain init debug messages)
+        initial_count = len(agent.status_buffer)
 
         # Add a status message
         agent.add_status_message("Test message", "info")
 
-        # Buffer should have one message
-        self.assertEqual(len(agent.status_buffer), 1)
-        message = agent.status_buffer[0]
+        # Buffer should have one more message
+        self.assertEqual(len(agent.status_buffer), initial_count + 1)
+        message = agent.status_buffer[-1]
         self.assertEqual(message["message"], "Test message")
         self.assertEqual(message["level"], "info")
         self.assertIsInstance(message["timestamp"], float)
 
         # Add another message with different level
         agent.add_status_message("Debug message", "debug")
-        self.assertEqual(len(agent.status_buffer), 2)
-        self.assertEqual(agent.status_buffer[1]["level"], "debug")
+        self.assertEqual(len(agent.status_buffer), initial_count + 2)
+        self.assertEqual(agent.status_buffer[-1]["level"], "debug")
 
     def test_get_status_messages(self):
         """Test retrieving status messages."""
         agent = NeoMindAgent(api_key=self.test_api_key)
+        agent.clear_status_buffer()  # Clear init debug messages
 
         # Add some messages
         agent.add_status_message("Info 1", "info")
@@ -569,7 +570,8 @@ class TestCoreStatusBuffer(unittest.TestCase):
         """Test clearing status buffer."""
         agent = NeoMindAgent(api_key=self.test_api_key)
 
-        # Add some messages
+        # Clear any init messages, then add our test messages
+        agent.clear_status_buffer()
         agent.add_status_message("Message 1", "info")
         agent.add_status_message("Message 2", "debug")
 
