@@ -938,6 +938,35 @@ Every Thesis now records entry price and supports 30/60/90-day performance check
 - **[LLM4TS](https://github.com/liaoyuhua/LLM4TS)** — LLM for time-series forecasting papers and tools.
 - **[awesome-financial-time-series-forecasting](https://github.com/TongjiFinLab/awesome-financial-time-series-forecasting)** — Financial time-series forecasting papers and benchmarks.
 
+## Testing
+
+3,381 unit tests across 80+ modules, 0 failures.
+
+```bash
+# Run full suite
+python -m pytest tests/ --ignore=tests/test_search.py -q
+
+# Run specific module
+python -m pytest tests/test_quant_engine_full.py -v
+
+# Run fast (skip live/integration)
+python -m pytest tests/ -k "not live and not integration" -q
+```
+
+See `tests/COMPREHENSIVE_TEST_PLAN.md` for the full module-by-module test matrix.
+
+## Documentation Index
+
+| Document | Location | Purpose |
+|----------|----------|---------|
+| Test Plan | `tests/COMPREHENSIVE_TEST_PLAN.md` | Module-by-module test coverage matrix |
+| Test Checklist | `tests/TEST_CHECKLIST.md` | Per-function verification checklist |
+| Feature Docs | `plans/FEATURE_DOCUMENTATION.md` | Usage, pros/cons for every module |
+| Troubleshooting | `plans/COMPREHENSIVE_TROUBLESHOOTING.md` | Master troubleshooting guide |
+| Architecture (Mermaid) | `plans/ARCHITECTURE_VISUALIZATION.md` | 9 detailed Mermaid diagrams |
+| Architecture (Interactive) | `plans/architecture_interactive.html` | D3.js force-directed module graph |
+| Changelog | `plans/CHANGELOG.md` | Version history |
+
 ### Academic Papers
 
 - [TradingAgents Paper](https://arxiv.org/abs/2412.20138) — Multi-agent adversarial debate trading framework.

@@ -20,6 +20,9 @@ class TestCommandHandlers(unittest.TestCase):
     def setUp(self):
         """Create agent with mocked dependencies."""
         self.agent = NeoMindAgent(api_key="dummy_key")
+        # Disable guard to allow file operations in tests
+        if self.agent.guard:
+            self.agent.guard.disable_guard()
         # Mock external dependencies
         self.agent.code_analyzer = Mock()
         self.agent.safety_manager = Mock()
@@ -529,67 +532,45 @@ class TestCommandHandlers(unittest.TestCase):
         self.assertIn("/mode chat", result)
 
     def test_handle_skills_command(self):
-        """Test /skills command."""
-        # Test list subcommand
-        with patch.object(self.agent, 'discover_mcp_servers') as mock_discover:
-            mock_discover.return_value = [
-                {"name": "skill1", "description": "First skill"},
-                {"name": "skill2", "description": "Second skill"}
-            ]
-            result = self.agent.handle_skills_command("list")
-            mock_discover.assert_called_once()
-            self.assertIn("Available skills:", result)
-            self.assertIn("skill1", result)
-            self.assertIn("skill2", result)
-            self.assertIn("First skill", result)
+        """Test /skills command with skill loader integration."""
+        # Test default (list for current mode)
+        result = self.agent.handle_skills_command("")
+        self.assertIn("Skills", result)
 
-        # Test list with no skills
-        with patch.object(self.agent, 'discover_mcp_servers') as mock_discover:
-            mock_discover.return_value = []
-            result = self.agent.handle_skills_command("list")
-            self.assertEqual(result, "No skills or MCP servers found.")
+        # Test 'all' subcommand
+        result = self.agent.handle_skills_command("all")
+        self.assertIn("All skills", result)
 
         # Test refresh subcommand
-        with patch.object(self.agent, '_mcp_servers_cache', 'cached'):
-            result = self.agent.handle_skills_command("refresh")
-            self.assertIsNone(self.agent._mcp_servers_cache)
-            self.assertIn("Skill cache cleared", result)
+        result = self.agent.handle_skills_command("refresh")
+        self.assertIn("Reloaded", result)
 
         # Test help
         result = self.agent.handle_skills_command("help")
-        self.assertIn("/skills command usage", result)
-        self.assertIn("list", result)
-        self.assertIn("refresh", result)
+        self.assertIn("/skills", result)
+        self.assertIn("help", result)
 
         # Test unknown subcommand
         result = self.agent.handle_skills_command("unknown")
         self.assertIn("Unknown subcommand", result)
 
-        # Test empty command (defaults to list)
-        with patch.object(self.agent, 'discover_mcp_servers') as mock_discover:
-            mock_discover.return_value = [{"name": "skill", "description": "desc"}]
-            result = self.agent.handle_skills_command("")
-            mock_discover.assert_called_once()
-            self.assertIn("Available skills:", result)
-
     def test_handle_skill_command(self):
         """Test /skill command."""
-        # Test with skill name and arguments
-        result = self.agent.handle_skill_command("skill1 arg1 arg2")
-        self.assertEqual(result, "Skill 'skill1' invocation not yet implemented. Args: 'arg1 arg2'")
-
-        # Test with just skill name
-        result = self.agent.handle_skill_command("skill1")
-        self.assertEqual(result, "Skill 'skill1' invocation not yet implemented. Args: ''")
+        # Test with non-existent skill name
+        result = self.agent.handle_skill_command("nonexistent_skill")
+        self.assertIn("not found", result)
 
         # Test empty command (usage)
         result = self.agent.handle_skill_command("")
-        self.assertEqual(result, "Usage: /skill <skill_name> [args...]")
+        self.assertIn("Usage", result)
 
-        # Test with extra spaces
-        result = self.agent.handle_skill_command("  skill1  arg1  ")
-        # Should strip and split correctly
-        self.assertEqual(result, "Skill 'skill1' invocation not yet implemented. Args: 'arg1'")
+        # Test status subcommand when no skill active
+        result = self.agent.handle_skill_command("status")
+        self.assertIn("No skill", result)
+
+        # Test off subcommand when no skill active
+        result = self.agent.handle_skill_command("off")
+        self.assertIn("No skill", result)
 
     def test_handle_task_command_create(self):
         """Test /task create command."""
