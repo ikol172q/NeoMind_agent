@@ -600,13 +600,14 @@ class FinanceDataHub:
                             source, timestamp
             or None if unavailable.
         """
-        if not self.finnhub_client:
-            return None
-
+        # Check cache first (works even if finnhub_client is unavailable)
         cache_key = f"social_sentiment_{symbol}"
         cached = self.cache.get(cache_key, ttl=1800)  # 30-min cache
         if cached:
             return cached
+
+        if not self.finnhub_client:
+            return None
 
         try:
             loop = asyncio.get_event_loop()

@@ -108,6 +108,7 @@ class MemoryBridge:
         self.export_dir = self.openclaw_dir / self.EXPORT_SUBDIR
 
         # Create directories
+        self.openclaw_dir.mkdir(parents=True, exist_ok=True)
         self.bridge_dir.mkdir(parents=True, exist_ok=True)
 
         # Load sync state

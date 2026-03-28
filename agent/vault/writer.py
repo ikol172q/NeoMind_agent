@@ -17,12 +17,92 @@ from agent.vault._config import get_vault_dir
 
 logger = logging.getLogger(__name__)
 
+# Common English words to exclude from wikification
+COMMON_WORDS = {
+    "THE", "AND", "FOR", "NOT", "ARE", "WAS", "HAS", "HAVE", "THIS", "THAT",
+    "WITH", "FROM", "TO", "BY", "ON", "IN", "IS", "BE", "AS", "AT", "OR",
+    "AN", "A", "BEEN", "BUT", "CAN", "HAD", "THEM", "THAN", "THEN", "WHAT",
+    "WHEN", "WHERE", "WHO", "WHICH", "WHY", "HOW", "ITS", "IF", "DO", "DOES",
+    "DID", "GET", "GOES", "MADE", "MAKE", "SOME", "SUCH", "OUR", "OUT", "ABOUT",
+}
+
 
 class VaultWriter:
     """Writes structured markdown to the vault."""
 
     def __init__(self, vault_dir: str = None):
         self.vault_dir = Path(vault_dir) if vault_dir else Path(get_vault_dir())
+
+    # ── Wikilinks ────────────────────────────────────────────────────────
+
+    def _wikify(self, text: str) -> str:
+        """Convert recognized entities to Obsidian [[wikilinks]].
+
+        Converts:
+        - Stock tickers ($AAPL) to [[$AAPL]]
+        - 6-digit Chinese stock codes (600519) to [[600519]]
+
+        Does not wikify:
+        - Content inside code blocks (``` ... ```)
+        - Content inside existing wikilinks ([[...]])
+        - Common English words (THE, AND, FOR, etc.)
+        """
+        # Protect code blocks
+        code_blocks = []
+        def preserve_code(match):
+            code_blocks.append(match.group(0))
+            return f"__CODE_BLOCK_{len(code_blocks) - 1}__"
+
+        text = re.sub(r"```[\s\S]*?```", preserve_code, text)
+
+        # Protect existing wikilinks
+        wikilinks = []
+        def preserve_wikilink(match):
+            wikilinks.append(match.group(0))
+            return f"__WIKILINK_{len(wikilinks) - 1}__"
+
+        text = re.sub(r"\[\[.*?\]\]", preserve_wikilink, text)
+
+        # Wikify stock tickers: $AAPL, $BRK, etc. (1-5 uppercase letters)
+        def wikify_ticker(match):
+            ticker = match.group(0)
+            # Don't wikify if already in wikilink format
+            if ticker.startswith("[["):
+                return ticker
+            return f"[[{ticker}]]"
+
+        text = re.sub(r"\$[A-Z]{1,5}\b", wikify_ticker, text)
+
+        # Wikify 6-digit Chinese stock codes (600519, 000858, etc.)
+        # Pattern: 6 digits that aren't already inside wikilinks
+        def wikify_chinese_stock(match):
+            code = match.group(0)
+            if code.startswith("[["):
+                return code
+            return f"[[{code}]]"
+
+        text = re.sub(r"\b([0-9]{6})\b", wikify_chinese_stock, text)
+
+        # Restore code blocks
+        for i, block in enumerate(code_blocks):
+            text = text.replace(f"__CODE_BLOCK_{i}__", block)
+
+        # Restore wikilinks
+        for i, link in enumerate(wikilinks):
+            text = text.replace(f"__WIKILINK_{i}__", link)
+
+        return text
+
+    def _wikify_learnings(self, learnings: List[str]) -> List[str]:
+        """Apply wikification to each learning string.
+
+        Args:
+            learnings: List of learning strings
+
+        Returns:
+            List of wikified learning strings
+        """
+        return [self._wikify(learning) for learning in learnings]
 
     # ── Structure ────────────────────────────────────────────────────────
 
@@ -80,6 +160,7 @@ class VaultWriter:
                 existing = filepath.read_text(encoding="utf-8")
                 session_time = datetime.now().strftime("%H:%M")
                 body = self._format_journal_body(tasks, errors, learnings)
+                body = self._wikify(body)
                 content = existing + f"\n\n---\n\n## Session {session_time}\n\n{body}\n"
             else:
                 # New file with frontmatter
@@ -97,6 +178,7 @@ class VaultWriter:
                     "session_duration_min": session_duration_min,
                 })
                 body = self._format_journal_body(tasks, errors, learnings)
+                body = self._wikify(body)
                 content = f"{fm}\n# Journal — {today}\n\n{body}\n"
 
             filepath.write_text(content, encoding="utf-8")
@@ -180,6 +262,7 @@ class VaultWriter:
 
         Only call this for patterns with 3+ occurrences (see promoter.py).
         Deduplicates: won't add if entry text already exists in the file.
+        Wikifies the entry text for stock tickers and codes.
         """
         self.ensure_structure()
         filepath = self.vault_dir / "MEMORY.md"
@@ -192,6 +275,9 @@ class VaultWriter:
                 logger.debug(f"Entry already in MEMORY.md: {entry[:50]}...")
                 return
 
+            # Wikify the entry
+            wikified_entry = self._wikify(entry)
+
             # Find section or create it
             section_header = f"## {section}"
             if section_header in content:
@@ -199,10 +285,10 @@ class VaultWriter:
                 idx = content.index(section_header) + len(section_header)
                 next_newline = content.index("\n", idx) if "\n" in content[idx:] else len(content)
                 insert_pos = idx + (next_newline - idx)
-                content = content[:insert_pos] + f"\n- {entry}" + content[insert_pos:]
+                content = content[:insert_pos] + f"\n- {wikified_entry}" + content[insert_pos:]
             else:
                 # Append new section at end
-                content = content.rstrip() + f"\n\n{section_header}\n- {entry}\n"
+                content = content.rstrip() + f"\n\n{section_header}\n- {wikified_entry}\n"
 
             # Update frontmatter entry count
             count = content.count("\n- ")

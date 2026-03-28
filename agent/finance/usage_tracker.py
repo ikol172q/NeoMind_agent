@@ -104,25 +104,44 @@ class UsageTracker:
 
     # ── Record ───────────────────────────────────────────────
 
-    def record(self, provider: str, model: str, tokens: int = 0,
+    def record(self, provider: str, model: str, tokens: int = 0, tokens_est: int = 0,
                latency_ms: int = 0, success: bool = True,
                chat_id: int = 0, error: str = ""):
-        """Record a single LLM call."""
+        """Record a single LLM call.
+
+        Args:
+            provider: Provider name (litellm, deepseek, etc.)
+            model: Model name (local, deepseek-chat, etc.)
+            tokens: Token count (legacy parameter name)
+            tokens_est: Token count (new parameter name, takes precedence)
+            latency_ms: Latency in milliseconds
+            success: Whether the call succeeded
+            chat_id: Chat ID associated with the call
+            error: Error message if failed
+        """
+        # Support both 'tokens' and 'tokens_est' parameters
+        token_count = tokens_est if tokens_est else tokens
+
         now = datetime.now(timezone.utc).isoformat()
 
         # Estimate cost
         cost_rate = COST_PER_1K_TOKENS.get(model, 0.0001)
-        cost = (tokens / 1000) * cost_rate
+        cost = (token_count / 1000) * cost_rate
 
         self._conn.execute("""
             INSERT INTO usage (provider, model, tokens_est, latency_ms, cost_est,
                                success, chat_id, error, timestamp)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (provider, model, tokens, latency_ms, cost, 1 if success else 0,
+        """, (provider, model, token_count, latency_ms, cost, 1 if success else 0,
               chat_id, error, now))
         self._conn.commit()
 
     # ── Query ────────────────────────────────────────────────
+
+    def count_records(self) -> int:
+        """Get total number of usage records in the database."""
+        result = self._conn.execute("SELECT COUNT(*) FROM usage").fetchone()
+        return result[0] if result else 0
 
     def get_today(self) -> Dict:
         """Get today's usage summary."""
@@ -176,6 +195,97 @@ class UsageTracker:
             FROM usage ORDER BY id DESC LIMIT ?
         """, (limit,)).fetchall()
         return [dict(r) for r in rows]
+
+    def get_by_model(self) -> Dict:
+        """Get usage statistics grouped by model."""
+        rows = self._conn.execute("""
+            SELECT model, COUNT(*) as calls, SUM(tokens_est) as tokens,
+                   SUM(cost_est) as cost, AVG(latency_ms) as avg_latency
+            FROM usage
+            GROUP BY model
+        """).fetchall()
+
+        result = {}
+        for r in rows:
+            result[r["model"]] = {
+                "calls": r["calls"],
+                "tokens": r["tokens"] or 0,
+                "cost": r["cost"] or 0.0,
+                "avg_latency": int(r["avg_latency"]) if r["avg_latency"] else 0,
+            }
+        return result
+
+    def get_by_provider(self) -> Dict:
+        """Get usage statistics grouped by provider."""
+        rows = self._conn.execute("""
+            SELECT provider, COUNT(*) as calls, SUM(tokens_est) as tokens,
+                   SUM(cost_est) as cost
+            FROM usage
+            GROUP BY provider
+        """).fetchall()
+
+        result = {}
+        for r in rows:
+            result[r["provider"]] = {
+                "calls": r["calls"],
+                "tokens": r["tokens"] or 0,
+                "cost": r["cost"] or 0.0,
+            }
+        return result
+
+    def get_by_chat_id(self, chat_id: int) -> Dict:
+        """Get usage statistics for a specific chat ID."""
+        rows = self._conn.execute("""
+            SELECT COUNT(*) as calls, SUM(tokens_est) as tokens, SUM(cost_est) as cost,
+                   AVG(latency_ms) as avg_latency
+            FROM usage
+            WHERE chat_id = ?
+        """, (chat_id,)).fetchall()
+
+        if rows and rows[0]["calls"]:
+            r = rows[0]
+            return {
+                "calls": r["calls"],
+                "tokens": r["tokens"] or 0,
+                "cost": r["cost"] or 0.0,
+                "avg_latency": int(r["avg_latency"]) if r["avg_latency"] else 0,
+            }
+        return {"calls": 0, "tokens": 0, "cost": 0.0, "avg_latency": 0}
+
+    def get_average_latency(self) -> int:
+        """Get average latency across all calls."""
+        result = self._conn.execute("""
+            SELECT AVG(latency_ms) as avg_latency FROM usage
+        """).fetchone()
+        if result and result["avg_latency"]:
+            return int(result["avg_latency"])
+        return 0
+
+    def get_max_latency(self) -> int:
+        """Get maximum latency across all calls."""
+        result = self._conn.execute("""
+            SELECT MAX(latency_ms) as max_latency FROM usage
+        """).fetchone()
+        if result and result["max_latency"]:
+            return result["max_latency"]
+        return 0
+
+    def count_by_status(self, success: bool = True) -> int:
+        """Count records by success/failure status."""
+        result = self._conn.execute("""
+            SELECT COUNT(*) as count FROM usage WHERE success = ?
+        """, (1 if success else 0,)).fetchone()
+        return result["count"] if result else 0
+
+    def clear_older_than_days(self, days: int) -> int:
+        """Delete records older than N days. Returns count of deleted records."""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        cursor = self._conn.execute(
+            "DELETE FROM usage WHERE timestamp < ?",
+            (cutoff,)
+        )
+        self._conn.commit()
+        return cursor.rowcount
 
     # ── For xbar (external read) ─────────────────────────────
 

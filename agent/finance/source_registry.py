@@ -98,34 +98,58 @@ class SourceTrustTracker:
     RECENCY_HALF_LIFE = 30 * 86400  # 30 days in seconds
     CONFIDENCE_DECAY_RATE = 0.005   # per day without updates
 
-    def __init__(self, storage_path: Optional[Path] = None):
-        self.storage_path = storage_path
+    def __init__(self, storage_path: Optional[Path] = None, db_path: Optional[str] = None):
+        # Support both storage_path (Path) and db_path (str) for compatibility
+        if db_path is not None:
+            self.storage_path = Path(db_path)
+        elif storage_path is not None:
+            self.storage_path = storage_path if isinstance(storage_path, Path) else Path(storage_path)
+        else:
+            self.storage_path = None
         self.sources: Dict[str, SourceRecord] = {}
+        # Map lowercase names to actual records (preserves case in record.name)
+        self._name_map: Dict[str, str] = {}
         self._init_defaults()
-        if storage_path:
+        if self.storage_path:
             self._load()
 
     def _init_defaults(self):
         """Initialize with known default trust scores."""
         for name, score in DEFAULT_TRUST.items():
-            self.sources[name] = SourceRecord(
+            record = SourceRecord(
                 name=name,
                 trust_score=score,
                 category=SOURCE_CATEGORIES.get(name, "unknown"),
                 last_updated=time.time(),
             )
+            self.sources[name] = record
+            self._name_map[name.lower()] = name
 
     def get(self, source_name: str, default: float = 0.5) -> float:
         """Get trust score for a source. Returns default for unknown sources."""
-        source_name = source_name.lower().strip()
-        record = self.sources.get(source_name)
+        normalized = source_name.lower().strip()
+        key = self._name_map.get(normalized)
+        if key is None:
+            return default
+        record = self.sources.get(key)
         if record is None:
             return default
         return record.trust_score
 
     def get_record(self, source_name: str) -> Optional[SourceRecord]:
-        """Get full record for a source."""
-        return self.sources.get(source_name.lower().strip())
+        """Get full record for a source. Creates default if not found."""
+        normalized = source_name.lower().strip()
+        key = self._name_map.get(normalized)
+
+        if key is not None:
+            return self.sources.get(key)
+
+        # Return a default record for unknown sources
+        return SourceRecord(
+            name=source_name,
+            category=SOURCE_CATEGORIES.get(normalized, "unknown"),
+            trust_score=0.5
+        )
 
     def report_accuracy(self, source_name: str, accurate: bool):
         """
@@ -135,31 +159,44 @@ class SourceTrustTracker:
             source_name: Name of the source
             accurate: Whether the claim turned out to be accurate
         """
-        source_name = source_name.lower().strip()
-        if source_name not in self.sources:
-            self.sources[source_name] = SourceRecord(
-                name=source_name,
-                category=SOURCE_CATEGORIES.get(source_name, "unknown"),
-            )
+        normalized = source_name.lower().strip()
 
-        record = self.sources[source_name]
+        # Get or create the key for this source
+        key = self._name_map.get(normalized, source_name)
+
+        if key not in self.sources:
+            self.sources[key] = SourceRecord(
+                name=source_name,
+                category=SOURCE_CATEGORIES.get(normalized, "unknown"),
+            )
+            self._name_map[normalized] = key
+        else:
+            # Update the name to match the provided casing
+            self.sources[key].name = source_name
+
+        record = self.sources[key]
         record.total_reports += 1
         if accurate:
             record.accurate_reports += 1
 
-        # Recalculate trust with recency weighting
-        if record.total_reports >= 3:
-            base_trust = record.accuracy_rate
-            # Blend with default trust (prior) using Bayesian-like update
-            prior = DEFAULT_TRUST.get(source_name, 0.5)
-            weight = min(record.total_reports / 20.0, 1.0)  # full weight at 20 reports
-            record.trust_score = weight * base_trust + (1 - weight) * prior
-        else:
-            # Not enough data, keep close to default
-            record.trust_score = DEFAULT_TRUST.get(source_name, 0.5)
+        # Recalculate trust score immediately
+        base_trust = record.accuracy_rate
+        prior = DEFAULT_TRUST.get(normalized, 0.5)
+        weight = min(record.total_reports / 20.0, 1.0)  # full weight at 20 reports
+        record.trust_score = weight * base_trust + (1 - weight) * prior
 
         record.last_updated = time.time()
         self._save()
+
+    def record_report(self, source_name: str, accurate: bool):
+        """
+        Alias for report_accuracy() for test compatibility.
+
+        Args:
+            source_name: Name of the source
+            accurate: Whether the report was accurate
+        """
+        self.report_accuracy(source_name, accurate)
 
     def get_all_scores(self) -> Dict[str, float]:
         """Get all source trust scores as a dict."""
@@ -179,15 +216,13 @@ class SourceTrustTracker:
             return
         try:
             data = json.loads(self.storage_path.read_text())
-            for name, record_data in data.items():
-                if name in self.sources:
-                    # Update existing with persisted data
-                    self.sources[name].total_reports = record_data.get("total_reports", 0)
-                    self.sources[name].accurate_reports = record_data.get("accurate_reports", 0)
-                    self.sources[name].trust_score = record_data.get("trust_score", 0.5)
-                    self.sources[name].last_updated = record_data.get("last_updated", 0)
-                else:
-                    self.sources[name] = SourceRecord(**record_data)
+            for key, record_data in data.items():
+                record = SourceRecord(**record_data)
+                # Get display name from record data
+                display_name = record_data.get("name", key)
+                self.sources[key] = record
+                # Update name mapping
+                self._name_map[display_name.lower().strip()] = key
         except (json.JSONDecodeError, TypeError, KeyError) as e:
             print(f"Warning: Failed to load source trust data: {e}")
 
@@ -201,6 +236,92 @@ class SourceTrustTracker:
             self.storage_path.write_text(json.dumps(data, indent=2))
         except Exception as e:
             print(f"Warning: Failed to save source trust data: {e}")
+
+    def update_scores(self):
+        """
+        Recalculate trust scores for all sources.
+        This is called by report_accuracy automatically,
+        but provided as public method for test compatibility.
+        """
+        for record in self.sources.values():
+            if record.total_reports > 0:
+                base_trust = record.accuracy_rate
+                normalized = record.name.lower().strip()
+                prior = DEFAULT_TRUST.get(normalized, 0.5)
+                weight = min(record.total_reports / 20.0, 1.0)
+                record.trust_score = weight * base_trust + (1 - weight) * prior
+
+    def apply_breaking_news_bonus(self, source_name: str, bonus_amount: float):
+        """
+        Apply a bonus to a source for breaking news early/accurately.
+
+        Args:
+            source_name: Name of the source
+            bonus_amount: Bonus to add to trust score (e.g., 0.1 for +0.1)
+        """
+        normalized = source_name.lower().strip()
+        key = self._name_map.get(normalized)
+        if key and key in self.sources:
+            record = self.sources[key]
+            record.trust_score = min(record.trust_score + bonus_amount, 1.0)
+            record.last_updated = time.time()
+            self._save()
+
+    def apply_correction_penalty(self, source_name: str, penalty_amount: float):
+        """
+        Apply a penalty for reporting that required correction.
+
+        Args:
+            source_name: Name of the source
+            penalty_amount: Penalty to subtract from trust score (e.g., 0.15 for -0.15)
+        """
+        normalized = source_name.lower().strip()
+        key = self._name_map.get(normalized)
+        if key and key in self.sources:
+            record = self.sources[key]
+            record.trust_score = max(record.trust_score - penalty_amount, 0.0)
+            record.last_updated = time.time()
+            self._save()
+
+    def list_all(self) -> list:
+        """
+        Get all sources that have been tracked (excluding defaults not yet reported).
+
+        Returns:
+            List of SourceRecord objects, sorted by trust score (highest first)
+        """
+        # Only return sources that have actual reports (not just defaults)
+        tracked = [r for r in self.sources.values() if r.total_reports > 0]
+        return sorted(tracked, key=lambda r: r.trust_score, reverse=True)
+
+    def reset_source(self, source_name: str):
+        """
+        Reset tracking for a single source.
+
+        Args:
+            source_name: Name of the source to reset
+        """
+        normalized = source_name.lower().strip()
+        key = self._name_map.get(normalized)
+        if key and key in self.sources:
+            record = self.sources[key]
+            record.total_reports = 0
+            record.accurate_reports = 0
+            record.trust_score = DEFAULT_TRUST.get(normalized, 0.5)
+            record.last_updated = time.time()
+            self._save()
+
+    def reset_all(self):
+        """Reset all tracked sources (removes custom reports, keeps defaults)."""
+        # Remove all sources with custom reports
+        self.sources = {}
+        self._name_map = {}
+        self._init_defaults()
+        self._save()
+
+    def save(self):
+        """Explicitly save the tracker state to disk."""
+        self._save()
 
     def format_report(self) -> str:
         """Format a human-readable trust report."""

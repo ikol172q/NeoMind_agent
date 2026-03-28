@@ -70,6 +70,7 @@ class ChatStore:
 
     def _init_db(self):
         """Create tables if they don't exist."""
+        # Create tables without indices first
         self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS chats (
                 chat_id     INTEGER PRIMARY KEY,
@@ -91,9 +92,6 @@ class ChatStore:
                 archived    INTEGER DEFAULT 0,
                 FOREIGN KEY (chat_id) REFERENCES chats(chat_id)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_messages_chat
-                ON messages(chat_id, archived, id);
         """)
         self._conn.commit()
 
@@ -110,6 +108,27 @@ class ChatStore:
         except sqlite3.OperationalError:
             self._conn.execute("ALTER TABLE chats ADD COLUMN mode TEXT DEFAULT 'fin'")
             self._conn.commit()
+
+        # Migration: add archived column to messages if missing
+        try:
+            self._conn.execute("SELECT archived FROM messages LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE messages ADD COLUMN archived INTEGER DEFAULT 0")
+            self._conn.commit()
+
+        # Migration: add archived column to chats if missing
+        try:
+            self._conn.execute("SELECT archived FROM chats LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE chats ADD COLUMN archived INTEGER DEFAULT 0")
+            self._conn.commit()
+
+        # Create index after all migrations
+        self._conn.execute("""
+            CREATE INDEX IF NOT EXISTS idx_messages_chat
+                ON messages(chat_id, archived, id)
+        """)
+        self._conn.commit()
 
     # ── Per-Chat Mode ────────────────────────────────────────────
 

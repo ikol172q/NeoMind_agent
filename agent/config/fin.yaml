@@ -195,6 +195,62 @@ system_prompt: "You are neomind — a Personal Finance & Investment Intelligence
   - Continuous accuracy feedback: Track prediction outcomes for self-improvement
   \n"
 temperature: 0.3
+
+# Auto-search triggers — edit this list to control when NeoMind searches the web.
+# These are plain keywords (case-insensitive). The system also has hardcoded
+# regex patterns for Chinese/English, so this list is additive.
+# To disable auto-search entirely, set enabled: false.
+auto_search:
+  enabled: true
+  triggers:
+    # Time-sensitive
+    - today
+    - yesterday
+    - this week
+    - this month
+    - latest
+    - recent
+    - current
+    - now
+    - "2026"
+    - "2025"
+    - "2024"
+    # Finance-specific
+    - stock
+    - price
+    - earnings
+    - revenue
+    - dividend
+    - IPO
+    - 新股
+    - 财报
+    - 利率
+    - 降息
+    - 加息
+    - GDP
+    - CPI
+    - 通胀
+    - 失业率
+    # Market events
+    - breaking
+    - announcement
+    - release
+    - merger
+    - acquisition
+    - bankruptcy
+    - recall
+    - 暴跌
+    - 暴涨
+    - 熔断
+    # Asset-specific
+    - crypto
+    - bitcoin
+    - BTC
+    - ETH
+    - 黄金
+    - 原油
+    - 美债
+
 workspace:
   auto_read_files: false
   auto_scan: false
