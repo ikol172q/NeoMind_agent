@@ -75,3 +75,10 @@ credentials.json
 token.json
 # TokenSight (local only)
 tokensight/
+
+# Test mock artifacts (leaked by MagicMock in tests)
+<MagicMock*
+
+# Architecture visualization (local reference only)
+plans/architecture_interactive.html
+plans/ARCHITECTURE_VISUALIZATION.md

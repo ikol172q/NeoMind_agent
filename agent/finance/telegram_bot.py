@@ -44,6 +44,7 @@ logger = logging.getLogger("neomind.telegram")
 
 try:
     from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram.error import RetryAfter
     from telegram.ext import (
         Application, ApplicationBuilder,
         CommandHandler, MessageHandler, CallbackQueryHandler,
@@ -274,6 +275,26 @@ class NeoMindTelegramBot:
         self._publish_mode_models_to_state()
         print(f"[bot] Chat history DB: {self._store.db_path}", flush=True)
 
+        # Config editor — allows NeoMind to edit its own prompts/config
+        from .config_editor import ConfigEditor
+        self._config_editor = ConfigEditor()
+        overrides = self._config_editor.load()
+        if overrides:
+            print(f"[bot] Loaded config overrides: {list(overrides.keys())}", flush=True)
+
+        # Web extractor — optional (for /read, /links, /crawl in Telegram)
+        self._web_extractor = None
+        self._web_cache = None
+        self._last_links: Dict[int, Dict[int, str]] = {}  # chat_id → {num: url}
+        try:
+            from agent.web.extractor import WebExtractor
+            from agent.web.cache import URLCache
+            self._web_cache = URLCache(ttl_seconds=1800)
+            self._web_extractor = WebExtractor(cache=self._web_cache)
+            print("[bot] ✅ WebExtractor loaded (web commands enabled)", flush=True)
+        except ImportError as e:
+            logger.warning(f"WebExtractor unavailable (web commands disabled): {e}")
+
         # Workflow modules — optional (graceful degradation on import error)
         try:
             from agent.workflow.sprint import SprintManager
@@ -344,6 +365,12 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("usage", self._cmd_usage))
         self._app.add_handler(CommandHandler("persona", self._cmd_persona))
         self._app.add_handler(CommandHandler("rag", self._cmd_rag))
+        self._app.add_handler(CommandHandler("tune", self._cmd_tune))
+        # Web commands: /read, /links, /crawl
+        self._app.add_handler(CommandHandler("read", self._cmd_web_read))
+        self._app.add_handler(CommandHandler("links", self._cmd_web_links))
+        self._app.add_handler(CommandHandler("crawl", self._cmd_web_crawl))
+
         # Catch all /neo_* commands
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
@@ -438,6 +465,14 @@ class NeoMindTelegramBot:
             "<code>/sprint new [goal]</code> — 结构化任务流程\n"
             "<code>/careful</code> — 开关安全护栏\n"
             "<code>/evidence</code> — 操作审计日志\n"
+            "<code>/tune</code> — 自调优 (修改 prompt/搜索触发词)\n"
+            "\n"
+            "── 🌐 <b>网页</b> ──\n"
+            "<code>/read</code> &lt;url&gt; — 读取网页内容\n"
+            "<code>/links</code> &lt;url&gt; — 提取页面链接\n"
+            "<code>/crawl</code> &lt;url&gt; — 爬取同域页面\n"
+            "<code>/read N</code> — 跟读 /links 中第 N 个链接\n"
+            "<i>也可直接发 URL，自动读取并分析</i>\n"
             "\n"
             "── 🔧 <b>管理</b> ──\n"
             "<code>/clear</code> — 归档对话 (LLM 重开)\n"
@@ -1380,6 +1415,211 @@ class NeoMindTelegramBot:
         else:
             await update.message.reply_text("用法: <code>/rag stats|query|ingest</code>", parse_mode="HTML")
 
+    async def _cmd_tune(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /tune — let NeoMind edit its own prompts and config.
+
+        Usage:
+            /tune status              — show current overrides
+            /tune reset               — reset all overrides to defaults
+            /tune reset fin           — reset only fin mode
+            /tune prompt <text>       — append instructions to current mode's prompt
+            /tune prompt.set <text>   — replace current mode's extra prompt entirely
+            /tune trigger add <words> — add search trigger keywords
+            /tune trigger del <words> — remove search trigger keywords
+            /tune set <key> <value>   — set an arbitrary config key
+            /tune <natural language>  — describe what you want changed (NeoMind figures it out)
+        """
+        args = context.args if context.args else []
+        msg = update.message
+        chat_id = msg.chat_id
+        current_mode = self._store.get_mode(chat_id) if chat_id else "fin"
+        editor = self._config_editor
+
+        if not args:
+            help_text = (
+                "🔧 <b>/tune — 自调优</b>\n\n"
+                "让 NeoMind 修改自己的 prompt 和配置：\n\n"
+                "<code>/tune status</code> — 查看当前覆盖配置\n"
+                "<code>/tune reset</code> — 重置所有自定义配置\n"
+                "<code>/tune prompt 回复更简洁</code> — 追加 prompt 指令\n"
+                "<code>/tune prompt.set 你是一个...</code> — 替换 prompt\n"
+                "<code>/tune trigger add 半导体 AI芯片</code> — 加搜索触发词\n"
+                "<code>/tune trigger del 半导体</code> — 删搜索触发词\n\n"
+                "也可以用自然语言：\n"
+                "<code>/tune 搜索科技新股相关的内容时自动搜索</code>\n"
+                "<code>/tune 回复的时候少用 bullet points</code>"
+            )
+            await msg.reply_text(help_text, parse_mode=ParseMode.HTML)
+            return
+
+        subcmd = args[0].lower()
+
+        # /tune status
+        if subcmd == "status":
+            status = editor.format_status()
+            await msg.reply_text(status, parse_mode=ParseMode.HTML)
+            return
+
+        # /tune reset [mode]
+        if subcmd == "reset":
+            if len(args) > 1:
+                mode = args[1].lower()
+                editor.reset_mode(mode)
+                await msg.reply_text(f"✅ 已重置 [{mode}] 模式的自定义配置")
+            else:
+                editor.reset_all()
+                await msg.reply_text("✅ 已重置所有自定义配置，恢复默认")
+            # Clear cached regex so it rebuilds
+            if hasattr(self, '_search_trigger_re'):
+                del self._search_trigger_re
+            return
+
+        # /tune prompt <text> — append to extra prompt
+        if subcmd == "prompt" and len(args) > 1:
+            text = " ".join(args[1:])
+            editor.append_to_prompt(current_mode, text)
+            await msg.reply_text(
+                f"✅ 已追加 prompt 指令到 [{current_mode}] 模式：\n"
+                f"<code>{text[:200]}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # /tune prompt.set <text> — replace extra prompt
+        if subcmd == "prompt.set" and len(args) > 1:
+            text = " ".join(args[1:])
+            editor.set_extra_prompt(current_mode, text)
+            await msg.reply_text(
+                f"✅ 已设置 [{current_mode}] 模式额外 prompt：\n"
+                f"<code>{text[:200]}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # /tune trigger add/del <words>
+        if subcmd == "trigger" and len(args) > 2:
+            action = args[1].lower()
+            words = args[2:]
+            if action == "add":
+                editor.add_search_triggers(words, mode=current_mode)
+                # Clear cached regex
+                if hasattr(self, '_search_trigger_re'):
+                    del self._search_trigger_re
+                await msg.reply_text(
+                    f"✅ 已添加搜索触发词: {', '.join(words)}\n"
+                    f"模式: [{current_mode}]",
+                )
+                return
+            elif action in ("del", "delete", "remove"):
+                editor.remove_search_triggers(words, mode=current_mode)
+                if hasattr(self, '_search_trigger_re'):
+                    del self._search_trigger_re
+                await msg.reply_text(f"✅ 已移除搜索触发词: {', '.join(words)}")
+                return
+
+        # /tune set <key> <value>
+        if subcmd == "set" and len(args) > 2:
+            key = args[1]
+            value = " ".join(args[2:])
+            # Try to parse as number/bool
+            if value.lower() in ("true", "yes"):
+                value = True
+            elif value.lower() in ("false", "no"):
+                value = False
+            else:
+                try:
+                    value = float(value) if "." in value else int(value)
+                except ValueError:
+                    pass
+            editor.set_setting(current_mode, key, value)
+            await msg.reply_text(
+                f"✅ [{current_mode}] {key} = {value}",
+            )
+            return
+
+        # Fallback: natural language — use LLM to interpret and apply
+        instruction = " ".join(args)
+        await msg.chat.send_action(ChatAction.TYPING)
+
+        # Ask the LLM to interpret the tune instruction
+        interpret_prompt = (
+            "You are NeoMind's config editor. The user wants to adjust NeoMind's behavior.\n"
+            "Interpret their instruction and output EXACTLY ONE of these commands:\n\n"
+            "PROMPT_APPEND|<mode>|<text>  — append text to the mode's system prompt\n"
+            "TRIGGER_ADD|<mode>|<word1>,<word2>,...  — add search trigger keywords\n"
+            "TRIGGER_DEL|<mode>|<word1>,<word2>,...  — remove search trigger keywords\n"
+            "SET|<mode>|<key>|<value>  — set a config key\n"
+            "UNKNOWN|<explanation>  — if you can't understand the instruction\n\n"
+            f"Current mode: {current_mode}\n"
+            f"User instruction: {instruction}\n\n"
+            "Output only the command, nothing else."
+        )
+
+        try:
+            import requests as req
+            api_key, base_url, model = self._resolve_api(thinking=False, chat_id=chat_id)
+            if not api_key:
+                await msg.reply_text("⚠️ No API key for LLM interpretation")
+                return
+
+            resp = await asyncio.get_event_loop().run_in_executor(None, lambda: req.post(
+                base_url,
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": interpret_prompt}],
+                    "max_tokens": 200, "temperature": 0.1,
+                },
+                timeout=15,
+            ))
+
+            if resp.status_code != 200:
+                await msg.reply_text(f"⚠️ LLM error: {resp.status_code}")
+                return
+
+            result = resp.json()["choices"][0]["message"]["content"].strip()
+            parts = result.split("|")
+            cmd = parts[0] if parts else "UNKNOWN"
+
+            if cmd == "PROMPT_APPEND" and len(parts) >= 3:
+                mode, text = parts[1], "|".join(parts[2:])
+                editor.append_to_prompt(mode, text)
+                await msg.reply_text(
+                    f"🔧 已理解并执行：\n"
+                    f"追加 [{mode}] prompt：<code>{text[:300]}</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+            elif cmd == "TRIGGER_ADD" and len(parts) >= 3:
+                mode, words = parts[1], parts[2].split(",")
+                words = [w.strip() for w in words if w.strip()]
+                editor.add_search_triggers(words, mode=mode)
+                if hasattr(self, '_search_trigger_re'):
+                    del self._search_trigger_re
+                await msg.reply_text(f"🔧 已理解并执行：\n添加搜索触发词: {', '.join(words)}")
+            elif cmd == "TRIGGER_DEL" and len(parts) >= 3:
+                mode, words = parts[1], parts[2].split(",")
+                words = [w.strip() for w in words if w.strip()]
+                editor.remove_search_triggers(words, mode=mode)
+                if hasattr(self, '_search_trigger_re'):
+                    del self._search_trigger_re
+                await msg.reply_text(f"🔧 已理解并执行：\n移除搜索触发词: {', '.join(words)}")
+            elif cmd == "SET" and len(parts) >= 4:
+                mode, key, value = parts[1], parts[2], parts[3]
+                editor.set_setting(mode, key, value)
+                await msg.reply_text(f"🔧 已理解并执行：\n[{mode}] {key} = {value}")
+            else:
+                explanation = "|".join(parts[1:]) if len(parts) > 1 else "无法理解指令"
+                await msg.reply_text(
+                    f"🤔 我不太确定怎么执行这个调整。\n{explanation}\n\n"
+                    f"试试更具体的命令：\n"
+                    f"<code>/tune prompt 你的指令</code>\n"
+                    f"<code>/tune trigger add 关键词</code>",
+                    parse_mode=ParseMode.HTML,
+                )
+
+        except Exception as e:
+            await msg.reply_text(f"⚠️ 调优失败: {str(e)[:200]}")
+
     async def _cmd_usage(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /usage — show LLM usage statistics."""
         args = " ".join(context.args).lower() if context.args else ""
@@ -1644,6 +1884,250 @@ class NeoMindTelegramBot:
             output = trail.format_recent(10)
             await update.message.reply_text(output)
 
+    # ── Web Commands (/read, /links, /crawl) ─────────────────────────
+
+    async def _cmd_web_read(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /read <url> — extract and display webpage content."""
+        msg = update.message
+        args = msg.text.split(maxsplit=1)
+        if len(args) < 2:
+            await msg.reply_text(
+                "用法: <code>/read &lt;url&gt;</code>\n"
+                "示例: <code>/read https://example.com</code>\n\n"
+                "也可以 <code>/read 3</code> 跟读上次 /links 结果中的第 3 个链接",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await self._react(msg, "👀")
+        await msg.chat.send_action(ChatAction.TYPING)
+
+        url_or_num = args[1].strip()
+
+        # Support /read N (follow link from last /links result)
+        if url_or_num.isdigit():
+            chat_links = self._last_links.get(msg.chat_id, {})
+            num = int(url_or_num)
+            if num in chat_links:
+                url_or_num = chat_links[num]
+            else:
+                await msg.reply_text(f"⚠️ 链接 #{num} 不存在。先用 /links 提取链接列表")
+                await self._react(msg, "❌")
+                return
+
+        if not self._web_extractor:
+            await msg.reply_text("⚠️ WebExtractor 未加载，请安装 web 依赖: pip install 'neomind[web]'")
+            await self._react(msg, "❌")
+            return
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._web_extractor.extract(url_or_num, max_length=10000, include_links=True)
+            )
+            if not result.ok:
+                await msg.reply_text(f"⚠️ 无法读取: {result.error}")
+                await self._react(msg, "❌")
+                return
+
+            # Format output
+            header = f"📄 <b>{html.escape(result.title or '(no title)')}</b>\n"
+            header += f"🔗 {html.escape(result.url)}\n"
+            header += f"📊 {result.word_count:,} words · via {result.strategy}\n\n"
+
+            # Truncate content for Telegram (4096 char limit)
+            max_content = 3500 - len(header)
+            content = result.content[:max_content]
+            if len(result.content) > max_content:
+                content += "\n\n... (内容已截断，完整内容已注入 AI 记忆)"
+
+            await self._send_long_message(msg, header + html.escape(content))
+
+            # Store links for /read N follow-up
+            if result.links:
+                self._last_links[msg.chat_id] = {
+                    i: link.href for i, link in enumerate(result.links[:50], 1)
+                }
+
+            # Inject into LLM context for follow-up questions
+            self._store.add_message(
+                msg.chat_id, "system",
+                f"[Web page content from {result.url}]\nTitle: {result.title}\n\n{result.content[:6000]}",
+                msg.chat.type or "private",
+            )
+
+            await self._react(msg, "✅")
+        except Exception as e:
+            logger.error(f"/read failed: {e}")
+            await msg.reply_text(f"⚠️ 读取失败: {e}")
+            await self._react(msg, "❌")
+
+    async def _cmd_web_links(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /links <url> — extract and list all links from a page."""
+        msg = update.message
+        args = msg.text.split(maxsplit=1)
+
+        # /links with no args → re-show last result
+        if len(args) < 2:
+            chat_links = self._last_links.get(msg.chat_id, {})
+            if chat_links:
+                lines = ["📎 <b>上次提取的链接：</b>\n"]
+                for num, href in sorted(chat_links.items()):
+                    lines.append(f"[{num}] {html.escape(href)}")
+                await self._send_long_message(msg, "\n".join(lines))
+                return
+            await msg.reply_text(
+                "用法: <code>/links &lt;url&gt;</code>\n"
+                "示例: <code>/links https://example.com</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await self._react(msg, "👀")
+        await msg.chat.send_action(ChatAction.TYPING)
+
+        url = args[1].strip()
+        if not self._web_extractor:
+            await msg.reply_text("⚠️ WebExtractor 未加载")
+            await self._react(msg, "❌")
+            return
+
+        try:
+            result = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: self._web_extractor.extract(url, max_length=5000, include_links=True)
+            )
+            if not result.links:
+                await msg.reply_text("⚠️ 未找到链接")
+                await self._react(msg, "❌")
+                return
+
+            # Classify links
+            internal = [l for l in result.links if l.is_internal]
+            external = [l for l in result.links if not l.is_internal]
+
+            lines = [f"📎 <b>{html.escape(result.title or url)}</b>\n"]
+            lines.append(f"共 {len(result.links)} 个链接 (内部: {len(internal)}, 外部: {len(external)})\n")
+
+            for i, link in enumerate(result.links[:50], 1):
+                tag = "🏠" if link.is_internal else "🌐"
+                text = html.escape(link.text[:50]) if link.text else "(no text)"
+                lines.append(f"[{i}] {tag} {text}\n    → {html.escape(link.href)}")
+
+            lines.append(f"\n💡 用 <code>/read N</code> 读取对应链接的内容")
+
+            # Store for /read N
+            self._last_links[msg.chat_id] = {
+                i: link.href for i, link in enumerate(result.links[:50], 1)
+            }
+
+            await self._send_long_message(msg, "\n".join(lines))
+            await self._react(msg, "✅")
+        except Exception as e:
+            logger.error(f"/links failed: {e}")
+            await msg.reply_text(f"⚠️ 链接提取失败: {e}")
+            await self._react(msg, "❌")
+
+    async def _cmd_web_crawl(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /crawl <url> [--depth N] [--max N] — BFS crawl a site."""
+        msg = update.message
+        args = msg.text.split()
+
+        if len(args) < 2:
+            await msg.reply_text(
+                "用法: <code>/crawl &lt;url&gt; [--depth N] [--max N]</code>\n"
+                "示例: <code>/crawl https://docs.example.com --depth 2 --max 15</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        await self._react(msg, "👀")
+        await msg.chat.send_action(ChatAction.TYPING)
+        await msg.reply_text("🕷️ 开始爬取，请稍候...")
+
+        if not self._web_extractor:
+            await msg.reply_text("⚠️ WebExtractor 未加载")
+            await self._react(msg, "❌")
+            return
+
+        # Parse arguments
+        url = args[1]
+        max_depth = 1
+        max_pages = 10
+        for i, arg in enumerate(args):
+            if arg == "--depth" and i + 1 < len(args) and args[i + 1].isdigit():
+                max_depth = min(int(args[i + 1]), 3)  # Cap at 3
+            if arg == "--max" and i + 1 < len(args) and args[i + 1].isdigit():
+                max_pages = min(int(args[i + 1]), 30)  # Cap at 30
+
+        try:
+            from agent.web.crawler import BFSCrawler
+            crawler = BFSCrawler(
+                extractor=self._web_extractor,
+                cache=self._web_cache,
+                delay=1.0,
+            )
+
+            report = await asyncio.get_event_loop().run_in_executor(
+                None, lambda: crawler.crawl(url, max_depth=max_depth, max_pages=max_pages)
+            )
+
+            summary = report.summary()
+            await self._send_long_message(msg, html.escape(summary))
+
+            # Inject crawled content into LLM memory
+            all_content = report.all_content(max_chars_per_page=2000)
+            if all_content:
+                self._store.add_message(
+                    msg.chat_id, "system",
+                    f"[Crawled {len(report.ok_pages)} pages from {url}]\n\n{all_content[:12000]}",
+                    msg.chat.type or "private",
+                )
+
+            await self._react(msg, "✅")
+        except ImportError:
+            await msg.reply_text("⚠️ crawler 模块未找到，请确认 agent/web/ 包完整")
+            await self._react(msg, "❌")
+        except Exception as e:
+            logger.error(f"/crawl failed: {e}")
+            await msg.reply_text(f"⚠️ 爬取失败: {e}")
+            await self._react(msg, "❌")
+
+    # ── URL Auto-detection for LLM context ─────────────────────────
+
+    _URL_RE = re.compile(r'https?://[^\s<>"\']+')
+
+    async def _auto_fetch_urls(self, text: str, chat_id: int, chat_type: str) -> Optional[str]:
+        """If message contains URLs, auto-fetch content and return context string.
+
+        Returns context to inject before LLM call, or None if no URLs / extractor unavailable.
+        """
+        if not self._web_extractor:
+            return None
+
+        urls = self._URL_RE.findall(text)
+        if not urls:
+            return None
+
+        # Limit to first 2 URLs to avoid abuse
+        urls = urls[:2]
+        contexts = []
+
+        for url in urls:
+            try:
+                result = await asyncio.get_event_loop().run_in_executor(
+                    None, lambda u=url: self._web_extractor.extract(u, max_length=6000, include_links=False)
+                )
+                if result.ok:
+                    contexts.append(
+                        f"[Auto-fetched web content from {result.url}]\n"
+                        f"Title: {result.title}\n\n{result.content[:4000]}"
+                    )
+            except Exception as e:
+                logger.debug(f"Auto-fetch failed for {url}: {e}")
+
+        if contexts:
+            return "\n\n---\n\n".join(contexts)
+        return None
+
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands with helpful suggestions."""
         text = update.message.text or ""
@@ -1662,6 +2146,13 @@ class NeoMindTelegramBot:
             "/bitcoin": "/crypto BTC",
             "/config": "/status",
             "/settings": "/status",
+            "/fetch": "/read",
+            "/open": "/read",
+            "/visit": "/read",
+            "/webpage": "/read",
+            "/link": "/links",
+            "/spider": "/crawl",
+            "/scrape": "/crawl",
         }
 
         suggestion = suggestions.get(cmd)
@@ -1797,6 +2288,19 @@ class NeoMindTelegramBot:
                 await self._react(msg, "❌")
                 return
 
+        # 1.5 Auto-fetch URLs in message → inject as LLM context
+        if self._web_extractor and self._URL_RE.search(text):
+            try:
+                web_ctx = await self._auto_fetch_urls(text, msg.chat_id, msg.chat.type or "private")
+                if web_ctx:
+                    self._store.add_message(
+                        msg.chat_id, "system", web_ctx,
+                        msg.chat.type or "private",
+                    )
+                    logger.info(f"Auto-fetched URL content injected ({len(web_ctx)} chars)")
+            except Exception as e:
+                logger.debug(f"Auto-fetch failed: {e}")
+
         # 2. Everything else → send to DeepSeek LLM (always streaming)
         thinking = getattr(self, '_thinking_enabled', False)
         self._last_compact_notice = None
@@ -1831,6 +2335,165 @@ class NeoMindTelegramBot:
 
     # ── LLM Shared Helpers ──────────────────────────────────────────
 
+    # ── Auto-search augmentation ────────────────────────────────────
+
+    # Hardcoded fallback patterns (used when YAML has no auto_search config)
+    # NOTE: re.IGNORECASE is set at compile time — do NOT use (?i) inline flags
+    #       here, because Python 3.11+ rejects (?i) when it's not at position 0
+    #       of the entire combined pattern.
+    _DEFAULT_SEARCH_PATTERNS = [
+        # Chinese triggers
+        r"最近|最新|今[天日]|昨[天日]|本[周月]|上[周月]|现在|目前|当前",
+        r"新闻|消息|行情|走势|涨跌|收盘|开盘|盘[前后]",
+        r"分析|研究|调研|比较|对比|评[测估价]|推荐|建议",
+        r"搜[索一下]|查[一下找]|帮我[找查看搜]|有没有",
+        r"IPO|上市|发[行布]|公[告布]",
+        # English triggers (case handled by re.IGNORECASE flag)
+        r"latest|recent|today|yesterday|this week|current|now",
+        r"news|market|price|stock|crypto|earnings|report",
+        r"search|find|look up|what happened|any updates",
+        r"compare|analyze|research|recommend",
+    ]
+
+    def _build_search_trigger_re(self) -> re.Pattern:
+        """Build the search trigger regex, merging YAML config + hardcoded patterns.
+
+        Reads `auto_search.triggers` from the active mode's YAML config and
+        combines them with the default patterns. This means you can add new
+        trigger words simply by editing fin.yaml / chat.yaml — no code changes.
+        """
+        patterns = list(self._DEFAULT_SEARCH_PATTERNS)
+
+        # Load extra triggers from YAML (all modes)
+        try:
+            from agent_config import AgentConfigManager
+            for mode in ["fin", "chat", "coding"]:
+                try:
+                    cfg = AgentConfigManager(mode=mode)
+                    raw = cfg._active if hasattr(cfg, '_active') else {}
+                    auto_search = raw.get("auto_search", {})
+                    yaml_triggers = auto_search.get("triggers", [])
+                    if yaml_triggers:
+                        # Escape each trigger word and combine with |
+                        escaped = [re.escape(str(t)) for t in yaml_triggers]
+                        patterns.append("|".join(escaped))
+                except Exception:
+                    continue
+        except ImportError:
+            pass
+
+        # Load extra triggers from /tune overrides (persistent volume)
+        if hasattr(self, '_config_editor'):
+            override_triggers = self._config_editor.get_extra_search_triggers()
+            if override_triggers:
+                escaped = [re.escape(str(t)) for t in override_triggers]
+                patterns.append("|".join(escaped))
+
+        # Use re.IGNORECASE globally — never use (?i) inline in sub-patterns
+        return re.compile("|".join(patterns), re.IGNORECASE)
+
+    def _should_search(self, text: str) -> bool:
+        """Decide if a user message would benefit from web search augmentation.
+
+        Returns True for queries that ask about recent events, market data,
+        news, or anything that needs up-to-date information beyond LLM training.
+        Returns False for greetings, simple commands, meta questions, etc.
+
+        Trigger patterns come from:
+        1. Hardcoded defaults (_DEFAULT_SEARCH_PATTERNS)
+        2. YAML config auto_search.triggers (editable without code changes)
+        """
+        # Skip very short messages (greetings, etc.)
+        if len(text.strip()) < 6:
+            return False
+        # Skip if it's a command
+        if text.strip().startswith("/"):
+            return False
+
+        # Lazy-init the compiled regex (built once, reused)
+        if not hasattr(self, '_search_trigger_re'):
+            self._search_trigger_re = self._build_search_trigger_re()
+
+        return bool(self._search_trigger_re.search(text))
+
+    async def _augment_with_search(self, query: str, chat_id: int = 0) -> tuple:
+        """Run web search and return (context_str, source_footer).
+
+        Returns:
+            context_str: Text to inject as a system message before the user query.
+                         Empty string if search failed or unavailable.
+            source_footer: HTML footer like "🔍 Sources: DDG, Brave, GNews"
+                           Empty string if no search was done.
+        """
+        search_engine = self.components.get("search") if self.components else None
+        if not search_engine:
+            return "", ""
+
+        try:
+            print(f"[auto-search] Searching: {query[:80]}", flush=True)
+            # Hard timeout: if search takes >15s, skip it and let LLM answer without it
+            try:
+                result = await asyncio.wait_for(
+                    search_engine.search(
+                        query, max_results=8, extract_content=True, expand_queries=True,
+                    ),
+                    timeout=15.0,
+                )
+            except asyncio.TimeoutError:
+                print("[auto-search] ⏱️ Timed out (15s), skipping", flush=True)
+                return "", ""
+
+            if not result or not result.items:
+                print("[auto-search] No results", flush=True)
+                return "", ""
+
+            # Format results for LLM context
+            lines = [
+                f"[Web Search Results — {len(result.items)} results from {', '.join(result.sources_used)}]",
+                "",
+            ]
+            for i, item in enumerate(result.items[:8], 1):
+                tag = f"[{item.source}]" if item.source else ""
+                lines.append(f"{i}. {tag} {item.title}")
+                lines.append(f"   URL: {item.url}")
+                if item.published:
+                    lines.append(f"   Date: {item.published.strftime('%Y-%m-%d')}")
+                content = item.full_text[:800] if item.full_text else item.snippet[:400]
+                if content:
+                    lines.append(f"   {content}")
+                lines.append("")
+
+            lines.append(
+                "[INSTRUCTION: Use these search results to ground your response with real data. "
+                "Cite sources when referencing specific facts. Do NOT fabricate information.]"
+            )
+
+            context_str = "\n".join(lines)
+
+            # Build source footer for Telegram display
+            src_names = sorted(set(result.sources_used))
+            # Make short readable names
+            name_map = {
+                "ddg_en": "DDG", "ddg_zh": "DDG", "duckduckgo": "DDG",
+                "gnews_en": "GNews", "gnews_zh": "GNews", "google_news_rss": "GNews",
+                "brave": "Brave", "serper": "Serper", "tavily": "Tavily",
+                "newsapi": "NewsAPI", "jina": "Jina", "searxng": "SearXNG",
+                "rss": "RSS", "exa": "Exa", "youcom": "You.com",
+                "perplexity": "Perplexity",
+            }
+            display_names = sorted(set(
+                name_map.get(s, s) for s in src_names
+            ))
+            rerank_tag = " · reranked" if getattr(result, "reranked", False) else ""
+            footer = f"\n\n<i>🔍 Sources: {', '.join(display_names)}{rerank_tag}</i>"
+
+            print(f"[auto-search] ✅ {len(result.items)} results from {display_names}", flush=True)
+            return context_str, footer
+
+        except Exception as e:
+            print(f"[auto-search] ❌ Error: {e}", flush=True)
+            return "", ""
+
     def _get_system_prompt(self, chat_id: int = 0) -> str:
         """Load the full system prompt from YAML config for the chat's mode.
 
@@ -1856,6 +2519,46 @@ class NeoMindTelegramBot:
             "用户可以用 /help 查看命令列表。"
         )
 
+        # Search awareness: tell LLM it has auto-search
+        search_engine = self.components.get("search") if self.components else None
+        if search_engine:
+            src_names = []
+            for name in list(getattr(search_engine, 'tier1_sources', {}).keys()):
+                src_names.append(name)
+            for name in list(getattr(search_engine, 'tier2_sources', {}).keys()):
+                src_names.append(name)
+            for name in list(getattr(search_engine, 'tier3_sources', {}).keys()):
+                src_names.append(name)
+            sources_str = ", ".join(src_names) if src_names else "web"
+            telegram_context += (
+                "\n\nSEARCH CAPABILITY:\n"
+                f"你拥有自动网络搜索能力（{sources_str}）。"
+                "当用户提问涉及实时信息、最新数据、新闻、行情、或任何你训练数据可能过时的内容时，"
+                "系统会自动搜索并将结果以 [Web Search Results] 的格式注入上下文。\n"
+                "规则：\n"
+                "- 如果上下文中有 [Web Search Results]，优先使用搜索结果中的数据，而非训练数据\n"
+                "- 引用具体事实时标注来源（如 \"据 Reuters 报道\"）\n"
+                "- 如果搜索结果与你的知识冲突，以搜索结果为准并说明差异\n"
+                "- 如果搜索结果不够充分，明确告知用户并给出你的推理（标注为推理而非事实）\n"
+                "- 绝不编造数据、价格、日期、百分比等数值信息\n"
+            )
+
+        # Self-tuning awareness
+        telegram_context += (
+            "\n\nSELF-TUNING CAPABILITY:\n"
+            "你拥有自调优能力。用户可以通过 /tune 命令修改你的行为，修改即时生效无需重启。\n"
+            "适用场景：\n"
+            "- 如果用户对你的回复风格不满意（太长、太短、格式不对），主动建议：\"你可以用 /tune prompt <指令> 来调整我的回复风格\"\n"
+            "- 如果用户反复问某类话题但搜索没触发，建议：\"你可以用 /tune trigger add <关键词> 让我自动搜索这类话题\"\n"
+            "- 如果用户说\"记住这个偏好\"，用 /tune 来持久化\n"
+            "示例：\n"
+            "  /tune prompt 回复更简洁    — 追加 prompt 指令\n"
+            "  /tune trigger add 半导体   — 添加搜索触发词\n"
+            "  /tune status              — 查看当前自定义配置\n"
+            "  /tune reset               — 恢复默认\n"
+            "注意：不要每次都提 /tune，只在用户明确表达不满或要求调整时才建议。\n"
+        )
+
         # Append active sprint context if sprint is active
         sprint_context = ""
         if self._sprint_mgr:
@@ -1870,7 +2573,14 @@ class NeoMindTelegramBot:
             except Exception as e:
                 logger.debug(f"Failed to append sprint context: {e}")
 
-        return base_prompt + telegram_context + sprint_context
+        # Append user-defined prompt overrides (from /tune)
+        extra_prompt = ""
+        if hasattr(self, '_config_editor'):
+            extra = self._config_editor.get_extra_prompt(current_mode)
+            if extra:
+                extra_prompt = f"\n\nUSER CUSTOMIZATIONS:\n{extra}"
+
+        return base_prompt + telegram_context + sprint_context + extra_prompt
 
     # Context window limits per model
     _MODEL_CONTEXT = {
@@ -2080,6 +2790,13 @@ class NeoMindTelegramBot:
 
         messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
+        # Auto-search augmentation for non-streaming mode
+        search_footer = ""
+        if self._should_search(user_message):
+            search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
+            if search_ctx:
+                messages.insert(-1, {"role": "system", "content": search_ctx})
+
         if not api_key:
             return "⚠️ No API key configured (DEEPSEEK_API_KEY, ZAI_API_KEY, or MOONSHOT_API_KEY)"
 
@@ -2128,6 +2845,8 @@ class NeoMindTelegramBot:
                     self._last_compact_notice = compact_notice
                     if provider != providers[0]:
                         reply += f"\n\n<i>⚡ via {provider['model']} (primary unavailable)</i>"
+                    if search_footer:
+                        reply += search_footer
                     return reply
 
                 err_detail = f"{provider['name']}:{provider['model']} HTTP {response.status_code}"
@@ -2222,12 +2941,20 @@ class NeoMindTelegramBot:
         if compact_notice:
             self._last_compact_notice = compact_notice
 
+        # Auto-search augmentation: inject web results if the query warrants it
+        search_footer = ""
+        if self._should_search(user_message):
+            search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
+            if search_ctx:
+                # Insert search context as a system message right before the user's last message
+                messages.insert(-1, {"role": "system", "content": search_ctx})
+
         # Send placeholder
         live_msg = await msg.reply_text("💭 ...")
 
         response_text = ""
         last_edit_time = 0
-        EDIT_INTERVAL = 1.5  # Telegram allows ~30 edits/min, this stays well under
+        EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
             # Try providers in order
@@ -2235,6 +2962,7 @@ class NeoMindTelegramBot:
             used_provider = None
             for provider in providers:
                 try:
+                    print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
                     response = await asyncio.get_event_loop().run_in_executor(
                         None, lambda p=provider: req.post(
                             p["base_url"],
@@ -2250,6 +2978,7 @@ class NeoMindTelegramBot:
                         break
                     else:
                         print(f"[llm-stream] ❌ {provider['name']} returned {response.status_code}", flush=True)
+                        continue  # try next provider
                 except Exception as e:
                     print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
                     continue
@@ -2278,49 +3007,22 @@ class NeoMindTelegramBot:
                     if ct:
                         response_text += ct
 
-                    # Periodically edit the live message
+                    # Periodically edit the live message (stop editing once near limit,
+                    # but KEEP collecting tokens — never break the stream loop)
                     now = asyncio.get_event_loop().time()
-                    if ct and (now - last_edit_time) >= EDIT_INTERVAL:
+                    if ct and (now - last_edit_time) >= EDIT_INTERVAL and len(response_text) <= 3900:
                         last_edit_time = now
-                        # Only edit if within Telegram's limit
-                        display = response_text
-                        if len(display) > 3900:
-                            # Approaching limit — stop editing, will send rest as new msg
-                            break
-                        display = self._md_to_html(display)
-                        try:
-                            await live_msg.edit_text(
-                                display + " ▍",
-                                parse_mode=ParseMode.HTML,
-                                disable_web_page_preview=True,
-                            )
-                        except Exception:
-                            pass  # Telegram rate limit, skip this update
+                        display = self._md_to_html(response_text)
+                        await self._safe_edit(
+                            live_msg,
+                            display + " ▍",
+                            max_retries=0,  # don't retry during streaming, just skip
+                            parse_mode=ParseMode.HTML,
+                            disable_web_page_preview=True,
+                        )
 
                 except (json.JSONDecodeError, IndexError, KeyError):
                     continue
-
-            # Drain remaining tokens if we broke out early due to length
-            if response_text and len(response_text) <= 3900:
-                pass  # already got everything
-            else:
-                for line in response.iter_lines():
-                    if not line:
-                        continue
-                    line = line.decode("utf-8", errors="ignore")
-                    if not line.startswith("data: "):
-                        continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        ct = delta.get("content", "")
-                        if ct:
-                            response_text += ct
-                    except Exception:
-                        continue
 
             latency = int((time.time() - t_start) * 1000)
 
@@ -2337,23 +3039,61 @@ class NeoMindTelegramBot:
 
                 self._store.add_message(chat_id, "assistant", response_text.strip(), chat_type)
 
+                # Small delay before final edit — avoid rate-limit from last streaming edit
+                await asyncio.sleep(0.3)
+
                 # Final update: edit the live message with complete text
                 final_html = self._md_to_html(response_text.strip())
+                if search_footer:
+                    final_html += search_footer
+
+                # Also prepare a plain-text version (guaranteed safe for Telegram)
+                plain_text = re.sub(r'<[^>]+>', '', final_html)
+
                 if len(final_html) <= self.config.max_message_length:
+                    edited_ok = False
                     try:
                         await live_msg.edit_text(
                             final_html,
                             parse_mode=ParseMode.HTML,
                             disable_web_page_preview=True,
                         )
-                    except Exception:
+                        edited_ok = True
+                    except Exception as e:
+                        logger.warning(f"Final HTML edit failed: {e}")
                         try:
                             await live_msg.edit_text(
-                                re.sub(r'<[^>]+>', '', final_html),
+                                plain_text[:self.config.max_message_length],
                                 disable_web_page_preview=True,
                             )
+                            edited_ok = True
+                        except Exception as e2:
+                            logger.warning(f"Final plain edit also failed: {e2}")
+
+                    # Last resort: if edit failed, send fresh THEN delete old
+                    if not edited_ok:
+                        await self._send_long_message(msg, response_text.strip(), html_suffix=search_footer)
+                        try:
+                            await live_msg.delete()
                         except Exception:
                             pass
+
+                elif len(plain_text) <= self.config.max_message_length:
+                    # HTML is too long but plain text fits in one message
+                    try:
+                        await live_msg.edit_text(
+                            plain_text,
+                            disable_web_page_preview=True,
+                        )
+                    except Exception as e:
+                        logger.warning(f"Plain edit failed: {e}")
+                        sent = await self._safe_send(msg, plain_text, disable_web_page_preview=True)
+                        if sent:
+                            try:
+                                await live_msg.delete()
+                            except Exception:
+                                pass
+
                 else:
                     # Text exceeds one message — edit first chunk, send rest as new messages
                     chunks = self._split_message(final_html)
@@ -2364,20 +3104,36 @@ class NeoMindTelegramBot:
                             disable_web_page_preview=True,
                         )
                     except Exception:
-                        await live_msg.edit_text(
-                            re.sub(r'<[^>]+>', '', chunks[0]),
-                            disable_web_page_preview=True,
-                        )
+                        plain_chunk = re.sub(r'<[^>]+>', '', chunks[0])
+                        try:
+                            await live_msg.edit_text(
+                                plain_chunk[:self.config.max_message_length],
+                                disable_web_page_preview=True,
+                            )
+                        except Exception as e:
+                            logger.warning(f"Chunk[0] edit failed: {e}")
+                            # Send everything as new messages THEN delete old
+                            await self._send_long_message(msg, response_text.strip(), html_suffix=search_footer)
+                            try:
+                                await live_msg.delete()
+                            except Exception:
+                                pass
+                            chunks = []  # Skip remaining chunk loop
+
                     for i, chunk in enumerate(chunks[1:], 1):
                         await asyncio.sleep(0.5)
                         try:
                             await msg.reply_text(chunk, parse_mode=ParseMode.HTML,
                                                  disable_web_page_preview=True)
                         except Exception:
-                            await msg.reply_text(
-                                re.sub(r'<[^>]+>', '', chunk),
-                                disable_web_page_preview=True,
-                            )
+                            plain_chunk = re.sub(r'<[^>]+>', '', chunk)
+                            try:
+                                await msg.reply_text(
+                                    plain_chunk[:self.config.max_message_length],
+                                    disable_web_page_preview=True,
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send chunk {i+1}/{len(chunks)}: {e}")
             else:
                 await live_msg.edit_text("⚠️ LLM 未生成回复")
 
@@ -2411,6 +3167,13 @@ class NeoMindTelegramBot:
         compact_notice = self._auto_compact_if_needed_db(chat_id, model)
         messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
+        # Auto-search augmentation for thinking mode
+        search_footer = ""
+        if self._should_search(user_message):
+            search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
+            if search_ctx:
+                messages.insert(-1, {"role": "system", "content": search_ctx})
+
         # Show compact notice if triggered
         if compact_notice:
             await msg.reply_text(compact_notice)
@@ -2424,7 +3187,7 @@ class NeoMindTelegramBot:
         thinking_text = ""
         response_text = ""
         last_edit_time = 0
-        EDIT_INTERVAL = 2.0  # edit Telegram message at most every 2 seconds
+        EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
             # Step 2: Stream the response (try providers in order)
@@ -2446,6 +3209,7 @@ class NeoMindTelegramBot:
                         break
                     else:
                         print(f"[llm-think] ❌ {provider['name']} returned {response.status_code}", flush=True)
+                        continue  # try next provider
                 except Exception as e:
                     print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
                     continue  # try next provider
@@ -2506,13 +3270,12 @@ class NeoMindTelegramBot:
                 if rc and (now - last_edit_time) >= EDIT_INTERVAL:
                     last_edit_time = now
                     display = self._format_thinking(thinking_text)
-                    try:
-                        await thinking_msg.edit_text(
-                            display,
-                            parse_mode=ParseMode.HTML,
-                        )
-                    except Exception:
-                        pass  # Telegram rate limit, skip this update
+                    await self._safe_edit(
+                        thinking_msg,
+                        display,
+                        max_retries=0,  # don't retry during streaming, just skip
+                        parse_mode=ParseMode.HTML,
+                    )
 
             # Step 4: Final update of thinking message
             if thinking_text:
@@ -2538,7 +3301,8 @@ class NeoMindTelegramBot:
                     chat_id, "assistant", response_text.strip(), chat_type,
                     thinking=thinking_text,
                 )
-                await self._send_long_message(msg, response_text.strip())
+                await self._send_long_message(msg, response_text.strip(),
+                                               html_suffix=search_footer)
             else:
                 await msg.reply_text("⚠️ No response generated")
 
@@ -2556,52 +3320,113 @@ class NeoMindTelegramBot:
         - Visually indented with a left border (clearly distinct from response)
         - Collapsed by default when long (user taps to expand)
         - Italic for extra visual separation
-        """
-        # Truncate for Telegram's 4096 char limit (leave room for tags)
-        max_len = 3800
-        if len(text) > max_len:
-            text = text[-max_len:]
-            text = "…\n" + text
 
-        escaped = html.escape(text)
+        During streaming (final=False): shows the last 3800 chars (live preview).
+        Final message (final=True): keeps full text — caller is responsible for
+        splitting into multiple messages if the result exceeds 4096 chars.
+        """
         header = "🧠 <b>Thinking</b>" if final else "🧠 <b>Thinking...</b>"
 
-        return (
-            f"{header}\n"
-            f"<blockquote expandable>{escaped}</blockquote>"
-        )
+        if not final:
+            # Live preview: truncate to tail (only most recent thinking matters)
+            max_len = 3800
+            if len(text) > max_len:
+                text = text[-max_len:]
+                text = "…\n" + text
 
-    async def _send_long_message(self, msg, text: str):
+        escaped = html.escape(text)
+        result = f"{header}\n<blockquote expandable>{escaped}</blockquote>"
+
+        if final and len(result) > 4096:
+            # Telegram limit: truncate to last N chars that fit
+            # Overhead = header + tags ≈ 80 chars
+            overhead = len(header) + len("\n<blockquote expandable>") + len("</blockquote>")
+            usable = 4096 - overhead - 10  # 10 chars safety margin
+            if usable > 0:
+                truncated = text[-usable:]
+                truncated = "…(thinking truncated)\n" + truncated
+                escaped = html.escape(truncated)
+                result = f"{header}\n<blockquote expandable>{escaped}</blockquote>"
+
+        return result
+
+    @staticmethod
+    async def _safe_edit(message, text: str, max_retries: int = 2, **kwargs):
+        """Edit a message with RetryAfter handling. Returns True on success."""
+        for attempt in range(max_retries + 1):
+            try:
+                await message.edit_text(text, **kwargs)
+                return True
+            except RetryAfter as e:
+                if attempt < max_retries:
+                    wait = min(e.retry_after + 1, 30)
+                    logger.info(f"Telegram rate limit, waiting {wait}s (attempt {attempt + 1})")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.warning(f"RetryAfter exhausted after {max_retries} retries")
+                    return False
+            except Exception as e:
+                logger.warning(f"Edit failed: {e}")
+                return False
+        return False
+
+    @staticmethod
+    async def _safe_send(msg, text: str, max_retries: int = 2, **kwargs):
+        """Send a message with RetryAfter handling. Returns the sent message or None."""
+        for attempt in range(max_retries + 1):
+            try:
+                return await msg.reply_text(text, **kwargs)
+            except RetryAfter as e:
+                if attempt < max_retries:
+                    wait = min(e.retry_after + 1, 30)
+                    logger.info(f"Telegram rate limit, waiting {wait}s (attempt {attempt + 1})")
+                    await asyncio.sleep(wait)
+                else:
+                    logger.warning(f"RetryAfter exhausted after {max_retries} retries")
+                    return None
+            except Exception as e:
+                logger.warning(f"Send failed: {e}")
+                return None
+        return None
+
+    async def _send_long_message(self, msg, text: str, html_suffix: str = ""):
         """Send a message, splitting if it exceeds Telegram's 4096 char limit.
 
         - Converts markdown to Telegram HTML (with proper escaping)
         - Splits long messages at safe boundaries
         - Falls back to plain text per-chunk if HTML fails
         - Adds small delay between chunks to avoid Telegram rate limits
+
+        Args:
+            html_suffix: Pre-formatted HTML to append AFTER md→html conversion
+                         (e.g., search source footer). Won't be escaped.
         """
         # Convert markdown-style links to HTML
         text = self._md_to_html(text)
+        if html_suffix:
+            text += html_suffix
 
         if len(text) <= self.config.max_message_length:
-            try:
-                await msg.reply_text(text, parse_mode=ParseMode.HTML,
-                                     disable_web_page_preview=True)
-            except Exception as e:
-                logger.warning(f"HTML send failed ({e}), retrying as plain text")
-                # Fallback: send without formatting
+            sent = await self._safe_send(
+                msg, text, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            if not sent:
+                logger.warning("HTML send failed, retrying as plain text")
                 plain = re.sub(r'<[^>]+>', '', text)
-                await msg.reply_text(plain, disable_web_page_preview=True)
+                await self._safe_send(msg, plain, disable_web_page_preview=True)
         else:
             # Split into chunks
             chunks = self._split_message(text)
             for i, chunk in enumerate(chunks):
-                try:
-                    await msg.reply_text(chunk, parse_mode=ParseMode.HTML,
-                                         disable_web_page_preview=True)
-                except Exception as e:
-                    logger.warning(f"HTML chunk {i+1}/{len(chunks)} failed ({e}), sending plain")
+                sent = await self._safe_send(
+                    msg, chunk, parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+                if not sent:
+                    logger.warning(f"HTML chunk {i+1}/{len(chunks)} failed, sending plain")
                     plain = re.sub(r'<[^>]+>', '', chunk)
-                    await msg.reply_text(plain, disable_web_page_preview=True)
+                    await self._safe_send(msg, plain, disable_web_page_preview=True)
                 # Small delay between chunks to respect Telegram rate limits
                 if i < len(chunks) - 1:
                     await asyncio.sleep(0.5)

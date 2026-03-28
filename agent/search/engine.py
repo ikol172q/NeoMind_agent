@@ -251,7 +251,8 @@ class UniversalSearchEngine:
 
         elapsed = time.time() - start
         text = result.format_for_llm(max_items=8, include_full_text=True)
-        header = f" [{elapsed:.2f}s | {len(result.sources_used)} sources"
+        src_names = ", ".join(result.sources_used) if result.sources_used else "none"
+        header = f"🔍 [{elapsed:.2f}s | {src_names}"
         if result.reranked:
             header += " | reranked"
         if result.cached:

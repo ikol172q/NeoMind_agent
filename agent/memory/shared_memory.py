@@ -348,6 +348,10 @@ class SharedMemory:
             for row in rows
         ]
 
+    def get_all_patterns(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Alias for get_patterns() — returns all patterns (used by vault promoter)."""
+        return self.get_patterns(pattern_type=None, limit=limit)
+
     # ── Feedback ─────────────────────────────────────────────────────────
 
     def record_feedback(self, feedback_type: str, content: str, source_mode: str) -> int:

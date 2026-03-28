@@ -465,7 +465,7 @@ class FinanceDashboard:
 
             html += f"""
             <div class="prediction {cls}">
-                <div class="prediction-header">
+                <div class="pred-header">
                     <span><strong>{_esc(p.get("symbol", "?"))}</strong> — {direction.upper()}</span>
                     <span>
                         <span class="confidence-bar">
@@ -563,9 +563,16 @@ class FinanceDashboard:
         chart_type = "'bar'"
         index_axis = "'y'" if horizontal else "'x'"
 
+        # Build legend HTML to include dataset labels
+        legend_html = ""
+        for i, ds in enumerate(datasets):
+            color = ds.get("color", colors[i % len(colors)])
+            legend_html += f'<span style="display:inline-block; margin-right:15px;"><span style="display:inline-block; width:12px; height:12px; background-color:{color}; margin-right:4px;"></span>{_esc(ds["label"])}</span>'
+
         html = f"""
         <div class="card">
             <div class="section-title">{_esc(title)}</div>
+            <div style="margin-bottom:10px; font-size:0.9rem;">{legend_html}</div>
             <div class="chart-container">
                 <canvas id="{chart_id}"></canvas>
             </div>
@@ -666,20 +673,25 @@ class FinanceDashboard:
         html = '<div class="card">\n<div class="section-title">Source Trust Scores</div>\n'
         for name, score in sorted_sources[:20]:
             pct = int(score * 100)
+            # Color code by trust level
             if score >= 0.85:
+                color_class = "accent-green"
                 color = "var(--accent-green)"
             elif score >= 0.70:
-                color = "var(--accent-blue)"
-            elif score >= 0.50:
+                color_class = "accent-yellow"
                 color = "var(--accent-yellow)"
+            elif score >= 0.50:
+                color_class = "accent-blue"
+                color = "var(--accent-blue)"
             else:
+                color_class = "accent-red"
                 color = "var(--accent-red)"
 
             html += f"""
             <div class="trust-row">
                 <span class="trust-name">{_esc(name)}</span>
                 <div class="trust-bar">
-                    <div class="trust-fill" style="width:{pct}%; background:{color}"></div>
+                    <div class="trust-fill {color_class}" style="width:{pct}%; background:{color}"></div>
                 </div>
                 <span class="trust-value">{score:.2f}</span>
             </div>

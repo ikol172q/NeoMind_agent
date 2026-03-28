@@ -1,27 +1,53 @@
 ---
 name: retro
-description: Weekly self-retrospective — analyze evidence, compare with last retro, generate 3 improvements, update system prompt
-modes: [shared]
-allowed-tools: [Bash, Read, Edit, WebSearch]
-version: 1.0.0
+description: Weekly self-retrospective — mode-specific sprint analysis with dialogue patterns and operational metrics. Write results to vault via write_retro.
+modes: [chat, coding, fin]
+allowed-tools: [Bash, Read, Edit, WebSearch, Grep]
+version: 2.0.0
 ---
 
 # Retro — Weekly Self-Retrospective
 
-You are conducting a weekly retrospective on YOUR OWN performance as an agent.
-Goal: identify patterns, improve decision-making, evolve system prompts.
+You are conducting a weekly retrospective on YOUR OWN performance as an agent in the current mode.
+Goal: identify patterns, improve decision-making, evolve system prompts, and persist learnings to vault.
+
+**Current Mode Context:** This retro focuses on [chat/coding/fin] mode performance, but cross-mode patterns are noted.
 
 ## Workflow
 
-### 1. Gather This Week's Evidence Trail
-- Review all sessions from the past 7 days
-- Collect statistics:
-  - Number of tasks attempted
+### 1. Gather This Week's Evidence Trail (Mode-Specific)
+
+**For all modes:**
+- Review all sessions from the past 7 days in this mode
+- Sprint statistics:
+  - Number of sprints completed
+  - Total tasks attempted / completed / failed
   - Success rate (% completed successfully)
   - Average task duration
   - Tools used most frequently
   - Errors/blockers encountered
   - User satisfaction signals (explicit feedback, task complexity, rework needed)
+
+**Chat Mode specific:**
+- Dialogue patterns: response length, tone, question-asking style
+- Search usage: frequency and effectiveness
+- User preferences learned (language, format, depth)
+- Engagement metrics: user follow-ups, satisfaction signals
+
+**Coding Mode specific:**
+- Sprints completed (count, average duration)
+- Code review effectiveness: issues found per review
+- Test coverage changes
+- Performance metrics: build time, test run time
+- Deployment frequency and success rate
+
+**Finance Mode specific:**
+- Trade analysis quality: prediction accuracy vs actual
+- Risk management: positions held, compliance with limits
+- Research depth: sources consulted, analysis rigor
+- Decision speed: time from analysis to decision
+- Operational security: any credential or PII risks detected
+
 - Look for patterns: recurring mistakes, successful strategies, bottlenecks
 
 ### 2. Analyze: What Went Well / What Failed
@@ -72,10 +98,17 @@ Action: Pre-load 3 most-common file paths; improve search patterns
 Timeline: Next week
 ```
 
-### 5. Save to Evolution File
-- Create/update: `~/.neomind/evolution/retro-YYYY-MM-DD.md`
+### 5. Save to Evolution File & Vault
+
+**Local file:**
+- Create: `~/.neomind/evolution/retro-YYYY-MM-DD-[mode].md`
 - Include: summary, patterns, 3 improvements, metrics from last retro
 - Keep previous retros (don't overwrite)
+
+**Vault persistence:**
+- Call `write_retro(mode, summary, patterns, improvements)` to persist to vault
+- This makes the retro accessible to all modes for cross-mode learning
+- Vault stores encrypted, timestamped entries with mode context
 
 ### 6. Update System Prompt Based on Learnings
 If there are learnings that should affect how I operate:
@@ -144,3 +177,8 @@ Timeline: ...
 - Compare WEEK-TO-WEEK: are we trending up or down?
 - Update system prompts based on learnings (within safety constraints)
 - Save all retro files for long-term pattern analysis
+- **Mode-aware:** track mode-specific metrics separately, but note cross-mode learnings
+- **Vault always:** every retro must be written to vault via `write_retro()` for institutional memory
+- **Sprint context:** reference specific sprints by ID and outcomes
+- **Dialogue analysis:** chat mode should include samples of successful vs unsuccessful interactions
+- **Cross-mode sharing:** improvements in one mode inform other modes (e.g., efficiency in coding → chat response speed)

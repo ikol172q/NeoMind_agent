@@ -256,6 +256,8 @@ PERSONAS: Dict[str, InvestmentPersona] = {
 def get_persona(name: str) -> Optional[InvestmentPersona]:
     """Get a persona by name (case-insensitive, partial match)."""
     name = name.lower().strip()
+    if not name:  # Empty string should return None
+        return None
     if name in PERSONAS:
         return PERSONAS[name]
     # Partial match

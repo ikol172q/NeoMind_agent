@@ -373,13 +373,23 @@ class ProviderStateManager:
                 "model": thinking_model if thinking else litellm_model,
             })
 
+        # TokenSight proxy: route through proxy when configured for usage tracking
+        ts_proxy = os.getenv("TOKENSIGHT_PROXY_URL", "").rstrip("/")
+
+        def _url(provider_name: str, direct_url: str) -> str:
+            """Use TokenSight proxy URL if configured, otherwise direct."""
+            proxy_map = {"deepseek": "/deepseek", "zai": "/zai", "moonshot": "/moonshot"}
+            if ts_proxy and provider_name in proxy_map:
+                return f"{ts_proxy}{proxy_map[provider_name]}/chat/completions"
+            return direct_url
+
         if ds_key:
             direct_model = config.get("direct_model", "deepseek-chat")
             thinking_model = config.get("thinking_model", "deepseek-reasoner")
             providers.append({
                 "name": "deepseek",
                 "api_key": ds_key,
-                "base_url": "https://api.deepseek.com/chat/completions",
+                "base_url": _url("deepseek", "https://api.deepseek.com/chat/completions"),
                 "model": thinking_model if thinking else direct_model,
             })
 
@@ -387,7 +397,7 @@ class ProviderStateManager:
             providers.append({
                 "name": "zai",
                 "api_key": zai_key,
-                "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
+                "base_url": _url("zai", "https://api.z.ai/api/paas/v4/chat/completions"),
                 "model": "glm-5" if thinking else "glm-4.5-flash",
             })
 
@@ -396,7 +406,7 @@ class ProviderStateManager:
             providers.append({
                 "name": "moonshot",
                 "api_key": moonshot_key,
-                "base_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions",
+                "base_url": _url("moonshot", os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions"),
                 "model": "kimi-k2.5" if thinking else "moonshot-v1-128k",
             })
 
@@ -422,8 +432,8 @@ class ProviderStateManager:
             updated_by = config.get("updated_by", "unknown")
             self._last_known_mode[bot_name] = current_mode
             return (
-                f"🔌 Provider 已被远程切换: <b>{last_mode}</b> → <b>{current_mode}</b>"
-                f"\n<i>(由 {updated_by} 触发)</i>"
+                f"🔄 Provider mode changed externally (by {updated_by}) "
+                f"from <b>{last_mode}</b> to <b>{current_mode}</b>"
             )
 
         self._last_known_mode[bot_name] = current_mode
