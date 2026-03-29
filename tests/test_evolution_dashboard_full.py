@@ -11,8 +11,10 @@ class TestCollectMetrics:
     """Tests for collect_metrics()."""
 
     def test_returns_dict_with_required_keys(self):
-        with patch.dict("sys.modules", {"agent.evolution.auto_evolve": MagicMock()}):
-            metrics = collect_metrics()
+        # Don't mock the whole sys.modules entry — it leaks MagicMock objects
+        # that get passed to sqlite3.connect() as file paths.
+        # Instead, just call collect_metrics() directly; it handles missing data gracefully.
+        metrics = collect_metrics()
         assert "timestamp" in metrics
         assert "health" in metrics
         assert "daily_stats" in metrics
