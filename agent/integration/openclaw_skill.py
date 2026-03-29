@@ -301,10 +301,8 @@ class OpenClawFinanceSkill:
             return f"⚠️ Computation error: {e}"
 
     async def _handle_portfolio(self, args: str, msg: IncomingMessage) -> str:
-        """View portfolio."""
-        if not self._memory:
-            return "⚠️ Memory not available."
-        return "📁 Portfolio view — coming in Phase 3.\nUse /watchlist to manage tracked assets."
+        """View portfolio — delegate to LLM for personality-aware handling."""
+        return None  # Return None to let LLM routing handle it
 
     async def _handle_predict(self, args: str, msg: IncomingMessage) -> str:
         """Log a prediction."""
@@ -345,16 +343,12 @@ class OpenClawFinanceSkill:
         return f"🔔 Alert feature — coming in Phase 4.\nWill push via {msg.channel} when triggered."
 
     async def _handle_compare(self, args: str, msg: IncomingMessage) -> str:
-        """Compare assets."""
-        if not args:
-            return "Usage: /compare AAPL MSFT\nCompare two or more assets."
-        return "📊 Compare feature — coming in Phase 3."
+        """Compare — delegate to LLM for personality-aware handling."""
+        return None  # Return None to let LLM routing handle it
 
     async def _handle_watchlist(self, args: str, msg: IncomingMessage) -> str:
-        """Manage watchlist."""
-        if not args:
-            return "Usage: /watchlist [add|remove] <symbol>\n  /watchlist — show current list"
-        return "👁 Watchlist management — coming in Phase 3."
+        """Watchlist — delegate to LLM for personality-aware handling."""
+        return None  # Return None to let LLM routing handle it
 
     async def _handle_risk(self, args: str, msg: IncomingMessage) -> str:
         """Risk assessment."""
