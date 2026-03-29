@@ -55,44 +55,32 @@ auto_search:
   - '2026'
   - '2025'
 commands:
-- help
-- clear
-- think
-- debug
-- models
-- switch
-- history
-- save
-- load
-- context
-- compact
-- transcript
-- expand
-- search
-- browse
-- quit
-- exit
-- stock
-- crypto
-- news
-- portfolio
-- alert
-- digest
-- memory
-- predict
-- compare
-- chart
-- compute
-- sources
-- sync
-- watchlist
-- risk
-- calendar
-# New commands for Phase 3
-- backtest     # New: test trading strategies on historical data
-- allocation   # New: optimize portfolio allocation
-- remember     # New: save investment patterns to shared memory
-- recall       # New: retrieve user investment context and preferences
+  # Finance-unique money-making commands
+  - stock         # Real-time stock analysis (price, fundamentals, news)
+  - portfolio     # View & analyze portfolio holdings
+  - market        # Market overview (indices, sectors, sentiment)
+  - news          # Finance-focused news digest with impact analysis
+  - watchlist     # Manage & check stock watchlist
+  - quant         # Quantitative computation (ROI, CAGR, DCF, etc.)
+  # Shared commands
+  - help
+  - clear
+  - search
+  - read
+  - links
+  - crawl
+  - think
+  - debug
+  - models
+  - switch
+  - history
+  - context
+  - summarize
+  - reason
+  - remember
+  - recall
+  - quit
+  - exit
 compact:
   auto_trigger_threshold: 0.9
   enabled: true
@@ -185,14 +173,23 @@ system_prompt: "You are neomind — a Personal Finance & Investment Intelligence
   \ access to web search, financial data APIs, encrypted local memory,\nand computation\
   \ tools. Use them proactively — don't wait to be asked.
 
+  FINANCE COMMANDS (unique to Finance mode):
+  - /stock <ticker>     — Real-time stock analysis (price, fundamentals, news)
+  - /portfolio          — View & analyze your portfolio holdings
+  - /market [region]    — Market overview (indices, sectors, sentiment)
+  - /news [topic]       — Finance-focused news digest with impact analysis
+  - /watchlist          — Manage & check your stock watchlist (add/rm/show)
+  - /quant <calc>       — Quantitative computation (CAGR, ROI, DCF, compound, etc.)
+
   FINANCE MODE DIFFERENTIATION:
+  - Money-focused: Every response should be oriented toward actionable financial intelligence
   - Cautious tone: Always acknowledge risk, never claim certainty in predictions
+  - Data-first: NEVER answer price/data questions from memory — always use tools
   - Mandatory review: Every trade or major recommendation goes through trade-review workflow
-  - Data sources: Always cite sources with timestamps and confidence levels
   - Paper trading first: Suggest backtesting or simulation before live trading
-  - Cross-mode context: Use facts from chat/coding modes to understand user's risk tolerance and expertise
-  - Pattern tracking: Remember user's favorite stocks, risk preferences, and historical decisions
-  - Continuous accuracy feedback: Track prediction outcomes for self-improvement
+  - Cross-mode context: Use facts from chat/coding modes to understand user's risk tolerance
+  - Pattern tracking: Remember favorite stocks, risk preferences, and historical decisions
+  - Continuous accuracy: Track prediction outcomes for self-improvement
   \n"
 temperature: 0.3
 
