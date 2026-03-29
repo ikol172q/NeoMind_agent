@@ -1,6 +1,33 @@
 # NeoMind 搜索引擎使用指南
 
-> 版本: 2.0 | 更新日期: 2026-03-25
+> 版本: 2.1 | 更新日期: 2026-03-25
+
+---
+
+## 当前启用状态
+
+| 搜索源 / 组件 | 状态 | 费用 | 说明 |
+|---------------|------|------|------|
+| **DuckDuckGo** (en + zh) | ✅ 已启用 | 免费无限 | Tier 1，自动启用 |
+| **Google News RSS** (en + zh) | ✅ 已启用 | 免费无限 | Tier 1，自动启用 |
+| **Brave Search** | ✅ 已启用 | $5/月 | Tier 2，BRAVE_API_KEY 已配置 |
+| **SearXNG** (自托管) | ✅ 已启用 | 免费无限 | Tier 3，SEARXNG_URL 已配置 |
+| **FlashRank** (语义 reranking) | ✅ 已启用 | 免费无限 | ~4MB CPU 模型，自动加载 |
+| **Query Router** | ✅ 已启用 | — | 自动分类 news/tech/finance/academic/general |
+| **Query Expansion** | ✅ 已启用 | — | 同义词 + 中英跨语言 + 时间 + 改写 |
+| **双层缓存** | ✅ 已启用 | — | 内存 5min + SQLite 24h |
+| **搜索指标追踪** | ✅ 已启用 | — | JSONL 日志 + /search report |
+| Serper.dev | ⬚ 未启用 | 注册送 2500 次（一次性） | 设置 SERPER_API_KEY 启用 |
+| Tavily | ⬚ 未启用 | 1000 次/月（每月重置） | 设置 TAVILY_API_KEY 启用 |
+| NewsAPI | ⬚ 未启用 | 100 次/天（每天重置） | 设置 NEWSAPI_API_KEY 启用 |
+| Jina AI | ⬚ 未启用 | 有免费额度 | 设置 JINA_API_KEY 启用 |
+| Exa.ai | ⬚ 未启用 | 注册送 1000 credits（一次性） | 设置 EXA_API_KEY + pip install exa_py |
+| You.com | ⬚ 未启用 | 按用量计费 | 设置 YOUCOM_API_KEY 启用 |
+| Perplexity Sonar | ⬚ 未启用 | ~$5/1k 次 | 设置 PERPLEXITY_API_KEY 启用 |
+| Cohere Rerank | ⬚ 未启用 | 按用量计费 | 设置 COHERE_API_KEY + pip install cohere |
+| 本地向量搜索 (FAISS) | ⬚ 未启用 | 免费 | pip install faiss-cpu sentence-transformers |
+| MCP 搜索服务器 | ⬚ 未启用 | 免费 | pip install mcp，然后 python -m agent.search.mcp_server |
+| ScrapeGraphAI | ⬚ 未启用 | 免费（需 LLM） | pip install scrapegraphai |
 
 ---
 
@@ -65,76 +92,65 @@ NeoMind 的搜索引擎**零配置即可工作**——不需要任何 API key，
 
 ---
 
-## 搜索源配置
+## 搜索源详细说明
 
-### Tier 1 — 免费无限（自动启用，无需配置）
+### Tier 1 — 免费无限（自动启用，无需配置） ✅ 当前使用中
 
 | 搜索源 | 说明 | 状态 |
 |--------|------|------|
-| **DuckDuckGo** | 通用搜索，英文/中文双区域 | 自动启用 |
-| **Google News RSS** | 新闻搜索，英文/中文 | 自动启用 |
+| **DuckDuckGo** | 通用搜索，英文/中文双区域 | ✅ 已启用 |
+| **Google News RSS** | 新闻搜索，英文/中文 | ✅ 已启用 |
 
 这两个源不需要任何配置，安装后即可使用。
 
-### Tier 2 — 免费有额度（设置 API key 后启用）
+### Tier 2 — API key 启用（部分已启用）
 
 在 `.env` 文件中添加对应的 API key 即可启用。每个源都是可选的，添加越多搜索质量越好。
 
-| 搜索源 | 环境变量 | 免费额度 | 注册链接 | 推荐度 |
-|--------|----------|----------|----------|--------|
-| **Brave Search** | `BRAVE_API_KEY` | 注册送 $5 credit ≈ 1000 次/月 | [brave.com/search/api](https://brave.com/search/api/) | ⭐⭐⭐⭐⭐ |
-| **Serper.dev** | `SERPER_API_KEY` | 注册送 2500 次 | [serper.dev](https://serper.dev/) | ⭐⭐⭐⭐⭐ |
-| **Tavily** | `TAVILY_API_KEY` | 1000 次/月免费 | [tavily.com](https://www.tavily.com/) | ⭐⭐⭐⭐ |
-| **NewsAPI** | `NEWSAPI_API_KEY` | 100 次/天免费 | [newsapi.org](https://newsapi.org/) | ⭐⭐⭐⭐ |
-| **Jina AI** | `JINA_API_KEY` | 有免费额度 | [jina.ai/reader](https://jina.ai/reader/) | ⭐⭐⭐⭐ |
-| **Exa.ai** | `EXA_API_KEY` | 注册送 1000 credits | [exa.ai](https://exa.ai/) | ⭐⭐⭐⭐ |
-| **You.com** | `YOUCOM_API_KEY` | 有免费层 | [you.com](https://you.com/) | ⭐⭐⭐⭐ |
-| **Perplexity Sonar** | `PERPLEXITY_API_KEY` | 有限免费 | [perplexity.ai](https://docs.perplexity.ai/) | ⭐⭐⭐⭐ |
+| 搜索源 | 环境变量 | 免费额度 | 注册链接 | 当前状态 |
+|--------|----------|----------|----------|----------|
+| **Brave Search** | `BRAVE_API_KEY` | $5/月（持续） | [brave.com/search/api](https://brave.com/search/api/) | ✅ 已启用 |
+| **Serper.dev** | `SERPER_API_KEY` | 注册送 2500 次（一次性） | [serper.dev](https://serper.dev/) | ⬚ 未启用 |
+| **Tavily** | `TAVILY_API_KEY` | 1000 次/月（每月重置） | [tavily.com](https://www.tavily.com/) | ⬚ 未启用 |
+| **NewsAPI** | `NEWSAPI_API_KEY` | 100 次/天（每天重置） | [newsapi.org](https://newsapi.org/) | ⬚ 未启用 |
+| **Jina AI** | `JINA_API_KEY` | 有免费额度 | [jina.ai/reader](https://jina.ai/reader/) | ⬚ 未启用 |
+| **Exa.ai** | `EXA_API_KEY` | 注册送 1000 credits（一次性） | [exa.ai](https://exa.ai/) | ⬚ 未启用 |
+| **You.com** | `YOUCOM_API_KEY` | 按用量计费 | [you.com](https://you.com/) | ⬚ 未启用 |
+| **Perplexity Sonar** | `PERPLEXITY_API_KEY` | ~$5/1k 次 | [perplexity.ai](https://docs.perplexity.ai/) | ⬚ 未启用 |
 
-**推荐顺序**: 如果只想加 1-2 个，优先加 **Brave** 和 **Serper**——一个独立索引 + 一个 Google 结果，互补性最强。
+**如何启用未启用的源**: 在 `.env` 中去掉注释并填入 API key，重启容器即可。
 
-### Tier 3 — 自托管（无限制，需要 Docker）
+**推荐下一步**: 加 **Tavily**（每月重置 1000 次免费）和 **NewsAPI**（每天重置 100 次免费），这两个是持续免费的。
 
-| 搜索源 | 环境变量 | 说明 |
-|--------|----------|------|
-| **SearXNG** | `SEARXNG_URL` | 元搜索引擎，聚合 70+ 搜索引擎 |
+### Tier 3 — 自托管（无限制） ✅ 当前使用中
+
+| 搜索源 | 环境变量 | 说明 | 当前状态 |
+|--------|----------|------|----------|
+| **SearXNG** | `SEARXNG_URL` | 元搜索引擎，聚合 70+ 搜索引擎 | ✅ 已启用 |
 
 启动方式：
 ```bash
-# 使用 docker-compose 一键启动
-docker compose --profile search up -d searxng
-
-# 默认地址
-# SEARXNG_URL=http://localhost:8888
+docker compose up -d searxng
 ```
 
 ---
 
-## .env 配置示例
+## 当前 .env 搜索配置
 
 ```bash
-# 复制 .env.example 到 .env
-cp .env.example .env
+# ── 当前已启用 ──
+BRAVE_API_KEY=BSA...（已配置）
+SEARXNG_URL=http://searxng:8080
 
-# ── 搜索 API Keys（所有都是可选的）──
-
-# 推荐优先配置这两个：
-BRAVE_API_KEY=BSA...your_key_here
-SERPER_API_KEY=...your_key_here
-
-# 可选（进一步提升质量）：
-TAVILY_API_KEY=tvly-...your_key_here
-NEWSAPI_API_KEY=...your_key_here
-JINA_API_KEY=jina_...your_key_here
-EXA_API_KEY=...your_key_here
-YOUCOM_API_KEY=...your_key_here
-PERPLEXITY_API_KEY=pplx-...your_key_here
-
-# 高精度 Reranker（替代 FlashRank，付费）：
-COHERE_API_KEY=...your_key_here
-
-# 自托管 SearXNG：
-SEARXNG_URL=http://localhost:8888
+# ── 未启用（去掉注释 + 填 key 即可启用）──
+# SERPER_API_KEY=
+# TAVILY_API_KEY=
+# NEWSAPI_API_KEY=
+# JINA_API_KEY=
+# EXA_API_KEY=
+# YOUCOM_API_KEY=
+# PERPLEXITY_API_KEY=
+# COHERE_API_KEY=
 ```
 
 ---
@@ -166,13 +182,7 @@ python -m agent.search.diagnose
 python -m agent.search.diagnose --live
 ```
 
-诊断工具会检查：
-- 依赖安装情况（duckduckgo-search, feedparser, flashrank, trafilatura 等）
-- API key 配置状态
-- 搜索引擎初始化状态
-- Query Router 分类测试
-- Query Expansion 扩展测试
-- (--live) 实际搜索端到端测试
+诊断工具会检查：依赖安装情况、API key 配置状态、搜索引擎初始化状态、Query Router 分类测试、Query Expansion 扩展测试、(--live) 实际搜索端到端测试。
 
 ---
 
@@ -207,12 +217,7 @@ python -m agent.search.diagnose --live
 
 ## 搜索质量监控
 
-搜索指标自动记录到 `~/.neomind/search_metrics.jsonl`，包括：
-- 每次搜索的延迟（毫秒）
-- 使用/失败的搜索源
-- 结果数量和内容提取数量
-- 查询类型分类
-- 缓存命中情况
+搜索指标自动记录到 `~/.neomind/search_metrics.jsonl`，包括：每次搜索的延迟（毫秒）、使用/失败的搜索源、结果数量和内容提取数量、查询类型分类、缓存命中情况。
 
 使用 `/search report` 查看聚合报告，包含 P50/P95 延迟、缓存命中率、各源使用频率等。
 
@@ -225,7 +230,7 @@ python -m agent.search.diagnose --live
 pip install duckduckgo-search feedparser trafilatura
 ```
 
-### 推荐安装（含 FlashRank reranker）
+### 推荐安装（含 FlashRank reranker）← 当前使用
 ```bash
 pip install duckduckgo-search feedparser trafilatura flashrank aiohttp lxml
 ```
@@ -235,126 +240,66 @@ pip install duckduckgo-search feedparser trafilatura flashrank aiohttp lxml
 pip install duckduckgo-search feedparser trafilatura flashrank aiohttp lxml crawl4ai exa_py
 ```
 
-### Docker（含 SearXNG）
+### Docker（含 SearXNG）← 当前使用
 ```bash
-docker compose --profile full up -d
+docker compose up -d searxng
+docker compose build neomind-telegram
+docker compose up -d neomind-telegram
 ```
 
 ---
 
-## 付费选项（Placeholder）
+## 未启用的付费选项
 
-以下为付费方案，已在代码中预留接口，但**默认未启用**。等有需要时设置 API key 即可激活：
+以下方案已在代码中实现完整适配器，设置 API key 即可激活。当前均未启用。
 
 ### Exa.ai 语义搜索
 - **用途**: 基于 embedding 的语义搜索，适合探索性和复杂查询
-- **价格**: 按用量计费，注册送 1000 credits
+- **价格**: 按用量计费，注册送 1000 credits（一次性）
 - **启用**: 设置 `EXA_API_KEY` 并安装 `pip install exa_py`
-- **状态**: ✅ 已实现完整适配器
+- **代码状态**: ✅ 已实现完整适配器
 
 ### Cohere Rerank
 - **用途**: 高精度语义 reranker，比 FlashRank 准确率高 20-35%
 - **价格**: 按用量计费
 - **启用**: 设置 `COHERE_API_KEY` 并安装 `pip install cohere`
-- **状态**: ✅ 已实现完整适配器，设置 key 后自动优先于 FlashRank
+- **代码状态**: ✅ 已实现完整适配器，设置 key 后自动优先于 FlashRank
 - **注意**: 日常使用 FlashRank（免费）已足够，Cohere 适合高价值查询场景
 
 ### You.com API
 - **用途**: SimpleQA 93% 准确率，Web Search + AI Snippets
 - **价格**: 按用量计费
 - **启用**: 设置 `YOUCOM_API_KEY`
-- **状态**: ✅ 已实现完整适配器
+- **代码状态**: ✅ 已实现完整适配器
 
 ### Perplexity Sonar API
 - **用途**: 返回带引用的 LLM 生成回答，适合需要直接答案的场景
 - **价格**: ~$5/1k 次（sonar），~$1/1k（sonar-small）
 - **启用**: 设置 `PERPLEXITY_API_KEY`
-- **状态**: ✅ 已实现完整适配器
+- **代码状态**: ✅ 已实现完整适配器
 
 ---
 
-## 本地向量搜索（可选）
+## 未启用的可选组件
 
-NeoMind 可以将历史搜索结果存储为向量，用于语义相似度检索。适合"之前搜过类似的吗？"类场景。
+### 本地向量搜索（FAISS）
+- **用途**: 将历史搜索结果存储为向量，语义相似度检索
+- **安装**: `pip install faiss-cpu sentence-transformers`
+- **工作方式**: 搜索结果自动后台索引，数据存 `~/.neomind/vector_store/`
+- **代码状态**: ✅ 已实现，装包即可自动启用
 
-### 安装
-```bash
-pip install faiss-cpu sentence-transformers
-```
+### MCP 搜索服务器
+- **用途**: 通过 MCP 协议暴露搜索能力给外部 agent/IDE
+- **安装**: `pip install mcp`
+- **启动**: `python -m agent.search.mcp_server`
+- **提供工具**: `web_search`, `search_status`, `search_metrics`
+- **代码状态**: ✅ 已实现
 
-### 工作原理
-- 使用 `all-MiniLM-L6-v2`（~80MB）生成 embeddings
-- FAISS 做快速向量检索（CPU，无需 GPU）
-- 搜索结果自动在后台索引
-- 数据存储在 `~/.neomind/vector_store/`
-
-### 使用
-向量搜索在引擎内部自动工作——每次搜索的结果都会被索引。如果需要手动查询相似历史：
-
-```python
-from agent.search import LocalVectorStore
-store = LocalVectorStore()
-similar = store.find_similar("之前搜过的某个话题", top_k=5)
-```
-
----
-
-## MCP 搜索服务器（可选）
-
-NeoMind 的搜索能力可以通过 MCP（Model Context Protocol）协议暴露给外部 agent 和 IDE。
-
-### 安装
-```bash
-pip install mcp
-```
-
-### 启动
-```bash
-python -m agent.search.mcp_server
-```
-
-### 提供的工具
-| MCP Tool | 说明 |
-|----------|------|
-| `web_search` | 多源搜索（query, max_results, domain） |
-| `search_status` | 搜索引擎状态 |
-| `search_metrics` | 搜索质量指标 |
-
-### 在 Claude Code 中使用
-在 `.mcp.json` 中添加：
-```json
-{
-  "mcpServers": {
-    "neomind-search": {
-      "command": "python",
-      "args": ["-m", "agent.search.mcp_server"]
-    }
-  }
-}
-```
-
----
-
-## ScrapeGraphAI 结构化提取（可选）
-
-用自然语言描述想要提取什么数据，适合从网页中提取结构化信息（产品表格、价格列表等）。
-
-### 安装
-```bash
-pip install scrapegraphai
-```
-
-### 使用
-```python
-from agent.search import ScrapeGraphAIExtractor
-extractor = ScrapeGraphAIExtractor()
-data = await extractor.extract_structured(
-    url="https://example.com/products",
-    prompt="Extract all product names and prices as a list"
-)
-```
-
-需要一个 LLM 后端（默认使用 DeepSeek，通过 `DEEPSEEK_API_KEY`）。
+### ScrapeGraphAI 结构化提取
+- **用途**: 用自然语言描述数据提取需求，适合网页结构化数据
+- **安装**: `pip install scrapegraphai`
+- **需要**: LLM 后端（默认 DeepSeek，通过 `DEEPSEEK_API_KEY`）
+- **代码状态**: ✅ 已实现
 
 ---
 
@@ -397,4 +342,10 @@ A: 是的，第一次使用时会自动下载 ~4MB 模型到缓存目录。
 A: 金融模式会调整信任权重（偏向金融新闻源）、使用更快的时间衰减（小时级半衰期），以及更长的缓存 TTL（15 分钟）。
 
 **Q: SearXNG 需要额外的服务器吗？**
-A: 不需要独立服务器，`docker compose --profile search up -d searxng` 会在本地启动一个容器。资源占用很低。
+A: 不需要独立服务器，`docker compose up -d searxng` 会在本地启动一个容器。资源占用很低。
+
+**Q: 怎么启用新的搜索源？**
+A: 在 `.env` 中添加对应的 API key，然后 `docker compose restart neomind-telegram`。引擎会自动检测并启用。
+
+**Q: 免费额度用完了怎么办？**
+A: 去掉 `.env` 中对应的 key（或注释掉），引擎会自动 fallback 到其他可用源。DDG + Google News RSS + SearXNG 永远免费。

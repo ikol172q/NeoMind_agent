@@ -540,16 +540,36 @@ else:
 p("--")
 
 # TokenSight proxy
+TS_PLIST = HOME / "Library" / "LaunchAgents" / "com.tokensight.proxy.plist"
+TS_INSTALL = NEOMIND_DIR / "tokensight" / "install-service.sh"
+TS_UNINSTALL = NEOMIND_DIR / "tokensight" / "uninstall-service.sh"
+ts_service_loaded = False
+try:
+    r = subprocess.run(
+        ["launchctl", "print", f"gui/{os.getuid()}/com.tokensight.proxy"],
+        capture_output=True, timeout=3,
+    )
+    ts_service_loaded = r.returncode == 0
+except Exception:
+    pass
+
 if tokensight_ok:
     p(f"--✅ TokenSight Proxy — 运行中 (port {TOKENSIGHT_PORT}) | color=green")
-    p("----🔷 Z.ai → localhost:8900/zai | font=Menlo size=11")
+    p("----🔷 Z.ai     → localhost:8900/zai | font=Menlo size=11")
     p("----🟡 DeepSeek → localhost:8900/deepseek | font=Menlo size=11")
-    p("----🟢 OpenAI → localhost:8900/openai | font=Menlo size=11")
+    p("----🌙 Moonshot → localhost:8900/moonshot | font=Menlo size=11")
+    p("----🏠 Ollama   → localhost:8900/ollama | font=Menlo size=11")
+    p("----🟢 OpenAI   → localhost:8900/openai | font=Menlo size=11")
+    if ts_service_loaded:
+        p("----服务: 已注册 (开机自启) | color=green size=11")
+    else:
+        p("----服务: 未注册 (手动启动) | color=orange size=11")
+        p(f"----📦 安装为系统服务 | bash={TS_INSTALL} terminal=true refresh=true")
 else:
     p(f"--🔴 TokenSight Proxy — 未运行 | color=#ef4444")
-    ts_cmd = NEOMIND_DIR / "tokensight" / "TokenSight.command"
-    if ts_cmd.exists():
-        p(f"----▶️ Start Proxy | bash={ts_cmd} terminal=true")
+    if ts_service_loaded:
+        p("----服务已注册但未运行 — 检查日志 | color=orange size=11")
+    p(f"----▶️ 安装并启动服务 | bash={TS_INSTALL} terminal=true refresh=true")
 
 p("---")
 
@@ -808,6 +828,8 @@ if ds_balance:
 else:
     p("----🟡 DeepSeek: (未配置/无法获取) | color=#666")
 p("----🔷 Z.ai: Pay-as-you-go (无余额 API) | color=#06b6d4")
+p("----🌙 Kimi: Pay-as-you-go (无余额 API) | color=#7c3aed")
+p("----🏠 Ollama: 本地免费 | color=#e879f9")
 
 p("--")
 
@@ -917,6 +939,11 @@ if ollama_ok:
     p("--🛑 停止 Ollama | bash=/usr/bin/pkill param1=-f param2=ollama terminal=false refresh=true")
 else:
     p("--▶️  启动 Ollama | bash=/usr/bin/open param1=-a param2=Ollama terminal=false refresh=true")
+
+if tokensight_ok:
+    p(f"--🛑 停止 TokenSight | bash={TS_UNINSTALL} terminal=true refresh=true")
+else:
+    p(f"--▶️  启动 TokenSight | bash={TS_INSTALL} terminal=true refresh=true")
 
 restart_script = ACTIONS_DIR / "restart-all.sh"
 p(f"--🔄 全部重启 | bash={restart_script} terminal=false refresh=true")
