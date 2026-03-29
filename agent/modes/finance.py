@@ -230,13 +230,26 @@ class FinancePersonality(BasePersonality, SharedCommandsMixin):
         ticker = parts[0].upper().lstrip("$")
         detail = parts[1].lower() if len(parts) > 1 else "brief"
 
-        # Try QuantEngine / DataHub for real data
+        # Try DataHub for real data (async → run in event loop)
         data_hub = self._get_finance_component('data_hub')
         if data_hub:
             try:
-                data = data_hub.get_stock_data(ticker)
-                if data:
-                    return self._format_stock_data(ticker, data, detail)
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # Already in async context — can't await directly
+                        import concurrent.futures
+                        with concurrent.futures.ThreadPoolExecutor() as pool:
+                            quote = pool.submit(
+                                asyncio.run, data_hub.get_quote(ticker)
+                            ).result(timeout=10)
+                    else:
+                        quote = loop.run_until_complete(data_hub.get_quote(ticker))
+                except RuntimeError:
+                    quote = asyncio.run(data_hub.get_quote(ticker))
+                if quote:
+                    return self._format_stock_data(ticker, quote, detail)
             except Exception:
                 pass
 
@@ -258,18 +271,29 @@ class FinancePersonality(BasePersonality, SharedCommandsMixin):
         except Exception as e:
             return f"❌ Stock analysis failed: {e}"
 
-    def _format_stock_data(self, ticker, data, detail):
-        """Format real stock data from DataHub."""
-        lines = [f"📈 ${ticker} — Real-time Data"]
-        if hasattr(data, 'price'):
-            lines.append(f"Price: ${data.price:.2f}")
-        if hasattr(data, 'change_pct'):
-            emoji = "🟢" if data.change_pct >= 0 else "🔴"
-            lines.append(f"Change: {emoji} {data.change_pct:+.2f}%")
-        if hasattr(data, 'market_cap'):
-            lines.append(f"Market Cap: {data.market_cap}")
-        if detail == "full" and hasattr(data, 'summary'):
-            lines.append(f"\n{data.summary}")
+    def _format_stock_data(self, ticker, quote, detail):
+        """Format real StockQuote data from DataHub."""
+        lines = [f"📈 ${ticker} — {quote.name or ticker}"]
+        if quote.price:
+            lines.append(f"Price: {quote.price.render()}")
+        emoji = "🟢" if quote.change_pct >= 0 else "🔴"
+        lines.append(f"Change: {emoji} {quote.change:+.2f} ({quote.change_pct:+.2f}%)")
+        if quote.volume:
+            lines.append(f"Volume: {quote.volume:,}")
+        lines.append(f"Range: {quote.low:.2f} — {quote.high:.2f} (Open: {quote.open:.2f})")
+        if quote.market_cap:
+            cap = quote.market_cap
+            if cap >= 1e12:
+                lines.append(f"Market Cap: ${cap/1e12:.2f}T")
+            elif cap >= 1e9:
+                lines.append(f"Market Cap: ${cap/1e9:.2f}B")
+            else:
+                lines.append(f"Market Cap: ${cap/1e6:.0f}M")
+        if quote.pe_ratio:
+            lines.append(f"P/E: {quote.pe_ratio:.1f}")
+        lines.append(f"Market: {quote.market_status} ({quote.currency})")
+        if detail == "full":
+            lines.append(f"\nPrev Close: {quote.prev_close:.2f}")
         return "\n".join(lines)
 
     def _fin_handle_portfolio_command(self, arg):
