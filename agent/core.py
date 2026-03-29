@@ -117,175 +117,40 @@ class NeoMindAgent:
     Supports multiple providers (DeepSeek, z.ai) via OpenAI-compatible APIs.
     """
 
-    # ── Provider registry ─────────────────────────────────────────────────
-    # Each provider: base_url for /chat/completions, models_url for listing,
-    # env_key for the API key environment variable, and model_prefixes to
-    # auto-detect which provider a model belongs to.
-    # ── Per-model specs ────────────────────────────────────────────────
-    # max_context  = total context window (input + output)
-    # max_output   = hard cap on completion tokens the API will return
-    # default_max  = sensible default for max_tokens in normal requests
-    _MODEL_SPECS = {
-        # DeepSeek models
-        "deepseek-chat": {
-            "max_context": 131072,   # 128K
-            "max_output": 8192,      # 8K
-            "default_max": 8192,
-        },
-        "deepseek-coder": {
-            "max_context": 131072,
-            "max_output": 8192,
-            "default_max": 8192,
-        },
-        "deepseek-reasoner": {
-            "max_context": 131072,   # 128K
-            "max_output": 65536,     # 64K (thinking mode)
-            "default_max": 16384,
-        },
-        # z.ai GLM models
-        "glm-5": {
-            "max_context": 205000,   # ~200K
-            "max_output": 128000,    # 128K
-            "default_max": 16384,
-        },
-        "glm-4.7": {
-            "max_context": 200000,   # 200K
-            "max_output": 32000,     # 32K
-            "default_max": 8192,
-        },
-        "glm-4.7-flash": {
-            "max_context": 200000,   # 200K
-            "max_output": 32000,     # 32K
-            "default_max": 8192,
-        },
-        "glm-4.5": {
-            "max_context": 128000,   # 128K
-            "max_output": 16000,     # 16K
-            "default_max": 8192,
-        },
-        "glm-4.5-flash": {
-            "max_context": 128000,   # 128K
-            "max_output": 16000,     # 16K
-            "default_max": 4096,
-        },
-        # Moonshot / Kimi models
-        "moonshot-v1-128k": {
-            "max_context": 131072,   # 128K
-            "max_output": 8192,      # 8K
-            "default_max": 8192,
-        },
-        "kimi-k2.5": {
-            "max_context": 131072,   # 128K
-            "max_output": 65536,     # 64K (thinking mode)
-            "default_max": 16384,
-        },
-        # Qwen models (local via LiteLLM/Ollama)
-        "qwen3.5": {
-            "max_context": 131072,   # 128K
-            "max_output": 8192,      # 8K
-            "default_max": 8192,
-        },
-        "qwen-plus": {
-            "max_context": 1048576,  # 1M
-            "max_output": 16384,     # 16K
-            "default_max": 8192,
-        },
-    }
+    # ── Provider & Model constants (delegated to agent.services.llm_provider) ──
+    # Kept as class-level aliases for backward compatibility with tests/code
+    # that reference NeoMindAgent._MODEL_SPECS, ._PROVIDERS, etc.
+    from agent.services.llm_provider import (
+        MODEL_SPECS as _MODEL_SPECS,
+        DEFAULT_SPEC as _DEFAULT_SPEC,
+        PROVIDERS as _PROVIDERS,
+        get_model_spec as _get_model_spec_func,
+        proxy_url as _proxy_url_func,
+    )
 
-    # Fallback specs when model is not in _MODEL_SPECS
-    _DEFAULT_SPEC = {
-        "max_context": 131072,
-        "max_output": 8192,
-        "default_max": 8192,
-    }
+    _TOKENSIGHT_PROXY_URL = os.getenv("TOKENSIGHT_PROXY_URL", "").rstrip("/")
+    _TOKENSIGHT_ROUTES = {"deepseek": "/deepseek", "zai": "/zai", "moonshot": "/moonshot"}
 
     @classmethod
     def _get_model_spec(cls, model: str) -> dict:
         """Return the spec dict for a model, falling back to defaults."""
-        return cls._MODEL_SPECS.get(model, cls._DEFAULT_SPEC)
-
-    # ── TokenSight proxy support ─────────────────────────────────────
-    # When TOKENSIGHT_PROXY_URL is set (e.g. http://host.docker.internal:8900),
-    # API calls route through TokenSight for usage tracking.
-    # Provider → proxy path mapping (litellm excluded — already a local proxy).
-    _TOKENSIGHT_PROXY_URL = os.getenv("TOKENSIGHT_PROXY_URL", "").rstrip("/")
-    _TOKENSIGHT_ROUTES = {
-        "deepseek": "/deepseek",
-        "zai": "/zai",
-        "moonshot": "/moonshot",
-    }
+        return cls._get_model_spec_func(model)
 
     @classmethod
     def _proxy_url(cls, provider_name: str, path: str) -> str:
         """Build URL, routing through TokenSight proxy if configured."""
-        if cls._TOKENSIGHT_PROXY_URL and provider_name in cls._TOKENSIGHT_ROUTES:
-            return f"{cls._TOKENSIGHT_PROXY_URL}{cls._TOKENSIGHT_ROUTES[provider_name]}/{path}"
-        return ""
-
-    # ── Provider registry ────────────────────────────────────────────
-    _PROVIDERS = {
-        "litellm": {
-            "base_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1/chat/completions"),
-            "models_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1") + "/models",
-            "env_key": "LITELLM_API_KEY",
-            "model_prefixes": ["local", "qwen"],
-            "fallback_models": [
-                {"id": "local", "owned_by": "ollama/qwen3"},
-                {"id": "deepseek-chat", "owned_by": "deepseek-via-litellm"},
-                {"id": "deepseek-reasoner", "owned_by": "deepseek-via-litellm"},
-                {"id": "qwen3.5", "owned_by": "ollama/qwen"},
-                {"id": "qwen-plus", "owned_by": "ollama/qwen"},
-            ],
-        },
-        "deepseek": {
-            "base_url": "https://api.deepseek.com/chat/completions",
-            "models_url": "https://api.deepseek.com/models",
-            "env_key": "DEEPSEEK_API_KEY",
-            "model_prefixes": ["deepseek-"],
-            "fallback_models": [
-                {"id": "deepseek-chat", "owned_by": "deepseek"},
-                {"id": "deepseek-coder", "owned_by": "deepseek"},
-                {"id": "deepseek-reasoner", "owned_by": "deepseek"},
-            ],
-        },
-        "zai": {
-            "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
-            "models_url": "https://api.z.ai/api/paas/v4/models",
-            "env_key": "ZAI_API_KEY",
-            "model_prefixes": ["glm-"],
-            "fallback_models": [
-                {"id": "glm-5", "owned_by": "z.ai"},
-                {"id": "glm-4.7", "owned_by": "z.ai"},
-                {"id": "glm-4.7-flash", "owned_by": "z.ai"},
-                {"id": "glm-4.5", "owned_by": "z.ai"},
-                {"id": "glm-4.5-flash", "owned_by": "z.ai"},
-            ],
-        },
-        "moonshot": {
-            "base_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions",
-            "models_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/models",
-            "env_key": "MOONSHOT_API_KEY",
-            "model_prefixes": ["moonshot-", "kimi-"],
-            "fallback_models": [
-                {"id": "moonshot-v1-128k", "owned_by": "moonshot"},
-                {"id": "kimi-k2.5", "owned_by": "moonshot"},
-            ],
-        },
-    }
+        return cls._proxy_url_func(provider_name, path)
 
     def _resolve_provider(self, model: str = None) -> dict:
         """Resolve which provider config to use for a given model.
 
         Returns a dict with keys: base_url, models_url, api_key, name.
-
-        When LITELLM_ENABLED=true, "local" and "deepseek-*" models route
-        through the LiteLLM proxy (which handles Ollama fallback internally).
-        Otherwise falls back to direct DeepSeek/z.ai API calls.
+        Implementation references PROVIDERS and proxy_url from llm_provider module.
         """
+        from agent.services.llm_provider import PROVIDERS, proxy_url
         model = model or self.model
         litellm_enabled = os.getenv("LITELLM_ENABLED", "").lower() in ("true", "1", "yes")
 
-        # If litellm is enabled and model is routable through it
         if litellm_enabled:
             litellm_key = os.getenv("LITELLM_API_KEY", "")
             if litellm_key:
@@ -299,26 +164,24 @@ class NeoMindAgent:
                         "api_key": litellm_key,
                     }
 
-        # Standard provider matching (with optional TokenSight proxy)
-        for name, prov in self._PROVIDERS.items():
+        for name, prov in PROVIDERS.items():
             if name == "litellm":
-                continue  # skip litellm in standard matching
+                continue
             for prefix in prov["model_prefixes"]:
                 if model.startswith(prefix):
                     api_key = os.getenv(prov["env_key"], "")
-                    # Route through TokenSight proxy if configured
-                    proxy_base = self._proxy_url(name, "chat/completions")
-                    proxy_models = self._proxy_url(name, "models")
+                    proxy_base = proxy_url(name, "chat/completions")
+                    proxy_models = proxy_url(name, "models")
                     return {
                         "name": name,
                         "base_url": proxy_base or prov["base_url"],
                         "models_url": proxy_models or prov["models_url"],
                         "api_key": api_key,
                     }
-        # Default: deepseek
-        prov = self._PROVIDERS["deepseek"]
-        proxy_base = self._proxy_url("deepseek", "chat/completions")
-        proxy_models = self._proxy_url("deepseek", "models")
+
+        prov = PROVIDERS["deepseek"]
+        proxy_base = proxy_url("deepseek", "chat/completions")
+        proxy_models = proxy_url("deepseek", "models")
         return {
             "name": "deepseek",
             "base_url": proxy_base or prov["base_url"],
@@ -349,28 +212,24 @@ class NeoMindAgent:
         self.conversation_history = []
         self.context_manager = ContextManager(self.conversation_history)
         self.thinking_enabled = agent_config.thinking_enabled  # CHANGED
-        # Searcher: Universal multi-source search engine (replaces DDG-only)
-        # Determines domain from current mode for query expansion tuning
-        _search_domain = "finance" if getattr(agent_config, 'mode', 'chat') == "fin" else "general"
-        try:
-            self.searcher = UniversalSearchEngine(
-                domain=_search_domain,
-                triggers=agent_config.auto_search_triggers,
-            )
-        except Exception:
-            # Fallback to legacy DDG-only search if new engine fails to init
-            self.searcher = OptimizedDuckDuckGoSearch(triggers=agent_config.auto_search_triggers)
-        # Formatter for consistent output
-        self.formatter = Formatter()
-        # Command executor for safe shell execution
-        self.command_executor = CommandExecutor()
-        # Self-iteration setup
+        # ── ServiceRegistry (owns ALL shared service creation) ────────────
+        # P3-A: ServiceRegistry is the single source of truth for services.
+        # core.py attributes (self.formatter, self.searcher, etc.) are backward-
+        # compat aliases that point to the same objects created by ServiceRegistry.
+        from agent.services import ServiceRegistry
+        self.services = ServiceRegistry(config=agent_config)
+
+        # Self-iteration setup (needed before safety_manager)
         self.agent_root = os.path.dirname(os.path.abspath(__file__))
-        # Safety manager for file operations (after agent_root is defined)
-        self.safety_manager = SafetyManager(os.getcwd(), agent_root=self.agent_root)
-        # Help system for command documentation
-        self.help_system = HelpSystem()
+
+        # ── Backward-compat aliases (all created once by ServiceRegistry) ──
+        self.searcher = self.services.search
+        self.formatter = self.services.formatter
+        self.command_executor = self.services.command_executor
+        self.safety_manager = self.services.safety
+        self.help_system = self.services.help_system
         self.self_iteration = None  # Lazy initialization
+
         # Auto-features configuration
         self.enable_auto_search = agent_config.auto_search_enabled
         self.auto_search_enabled = agent_config.auto_search_enabled
@@ -379,10 +238,8 @@ class NeoMindAgent:
         self.natural_language_confidence_threshold = agent_config.natural_language_confidence_threshold
         self.safety_confirm_file_operations = agent_config.safety_confirm_file_operations
         self.safety_confirm_code_changes = agent_config.safety_confirm_code_changes
-        # Natural language interpreter
-        self.interpreter = NaturalLanguageInterpreter(
-            confidence_threshold=self.natural_language_confidence_threshold
-        ) if self.natural_language_enabled else None
+        # Natural language interpreter (via ServiceRegistry)
+        self.interpreter = self.services.nl_interpreter
         self.search_loop = None
         self._browser_loop = None  # Dedicated event loop for BrowserDaemon async calls
         self._last_links: Dict[int, str] = {}  # /links result: number → URL for follow-up
@@ -394,46 +251,34 @@ class NeoMindAgent:
             self.add_to_history("system", agent_config.system_prompt)
 
         # ── Vault context injection ──────────────────────────────────────
-        # Reads MEMORY.md, current-goals.md, yesterday's journal from the
-        # Obsidian vault and injects as a system message.
-        # See: plans/2026-03-22_obsidian-vault-integration.md
-        # Set NEOMIND_DISABLE_VAULT=1 in tests to skip vault side-effects.
+        # ServiceRegistry creates VaultReader/Writer/Watcher lazily.
+        # We trigger creation here and inject context into conversation.
         self._vault_reader = None
         self._vault_writer = None
-        if not os.environ.get("NEOMIND_DISABLE_VAULT"):
+        self._vault_watcher = None
+        self._response_turn_count = 0
+        vault = self.services.vault  # triggers lazy init
+        if vault:
+            self._vault_reader = vault.get('reader')
+            self._vault_writer = vault.get('writer')
+            self._vault_watcher = vault.get('watcher')
             try:
-                from agent.vault.reader import VaultReader
-                from agent.vault.writer import VaultWriter
-                self._vault_reader = VaultReader()
-                self._vault_writer = VaultWriter()
-                if self._vault_reader.vault_exists():
+                if self._vault_reader and self._vault_reader.vault_exists():
                     vault_context = self._vault_reader.get_startup_context(
                         mode=getattr(self, 'mode', 'chat')
                     )
                     if vault_context:
                         self.add_to_history("system", vault_context)
                         self._status_print("Injected vault context into system prompt", "debug")
-                else:
-                    # First run — initialize vault structure
+                elif self._vault_writer:
                     self._vault_writer.ensure_structure()
                     self._status_print("Initialized vault structure (first run)", "debug")
             except Exception as e:
-                self._status_print(f"Vault not available (non-fatal): {e}", "debug")
-
-        # ── Vault watcher for bidirectional sync ─────────────────────────
-        # Polls vault files every 50 turns to detect Obsidian edits
-        self._vault_watcher = None
-        self._response_turn_count = 0  # Track responses for periodic checks
-        if not os.environ.get("NEOMIND_DISABLE_VAULT") and self._vault_reader:
-            try:
-                from agent.vault.watcher import VaultWatcher
-                self._vault_watcher = VaultWatcher()
-            except Exception as e:
-                self._status_print(f"Vault watcher not available (non-fatal): {e}", "debug")
+                self._status_print(f"Vault context injection failed (non-fatal): {e}", "debug")
 
         # ── Finance response validator ──────────────────────────────────
-        # Enforces the Five Iron Rules (plans/FINANCE_CORRECTNESS_RULES.md)
-        # Only active in fin mode; validates prices, calculations, sources.
+        # Now handled by FinancePersonality.on_activate(), but kept for
+        # backward compat until core.py's inline validation is fully removed.
         self._finance_validator = None
         try:
             from agent.finance.response_validator import get_finance_validator
@@ -442,15 +287,11 @@ class NeoMindAgent:
         except Exception as e:
             self._status_print(f"Finance validator not available (non-fatal): {e}", "debug")
 
-        # ── Shared Memory (cross-personality learning) ───────────────────
-        # SQLite-backed memory shared across chat/coding/fin modes.
-        # Stores preferences, facts, patterns, feedback.
-        # Context summary injected as system message at startup.
-        self._shared_memory = None
-        if not os.environ.get("NEOMIND_DISABLE_MEMORY"):
+        # ── Shared Memory context injection ──────────────────────────────
+        # ServiceRegistry creates SharedMemory lazily. We inject context here.
+        self._shared_memory = self.services.memory  # triggers lazy init
+        if self._shared_memory:
             try:
-                from agent.memory.shared_memory import SharedMemory
-                self._shared_memory = SharedMemory()
                 mem_context = self._shared_memory.get_context_summary(
                     mode=getattr(self, 'mode', 'chat'), max_tokens=500
                 )
@@ -459,30 +300,21 @@ class NeoMindAgent:
                         f"# User Context (from cross-personality memory)\n\n{mem_context}")
                     self._status_print("Injected shared memory context", "debug")
             except Exception as e:
-                self._status_print(f"SharedMemory not available (non-fatal): {e}", "debug")
+                self._status_print(f"SharedMemory context injection failed (non-fatal): {e}", "debug")
 
         # ── Skill system ────────────────────────────────────────────────
-        # Loads SKILL.md files and provides /skill, /skills commands.
-        # Active skill is injected as system message before LLM calls.
-        self._skill_loader = None
-        self._active_skill = None  # Currently activated Skill object
-        try:
-            from agent.skills.loader import get_skill_loader
-            self._skill_loader = get_skill_loader()
-            skill_count = self._skill_loader.count
-            self._status_print(f"Loaded {skill_count} skills", "debug")
-        except Exception as e:
-            self._status_print(f"Skill loader not available (non-fatal): {e}", "debug")
+        self._skill_loader = self.services.skills  # triggers lazy init
+        self._active_skill = None
+        if self._skill_loader:
+            try:
+                self._status_print(f"Loaded {self._skill_loader.count} skills", "debug")
+            except Exception:
+                pass
 
         # ── Unified Logger ──────────────────────────────────────────────
-        # Central logging system with PII sanitization for all operations.
-        self._unified_logger = None
-        try:
-            from agent.logging import get_unified_logger
-            self._unified_logger = get_unified_logger()
+        self._unified_logger = self.services.logger  # triggers lazy init
+        if self._unified_logger:
             self._status_print("Unified logger loaded", "debug")
-        except Exception as e:
-            self._status_print(f"Unified logger not available (non-fatal): {e}", "debug")
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -507,81 +339,58 @@ class NeoMindAgent:
         self.code_analyzer = None
         self.code_changes_pending = []  # Store proposed changes
 
-        # Task manager for task tracking
-        self.task_manager = TaskManager()
-        # Goal planner for generating and executing plans
+        # ── More backward-compat aliases (via ServiceRegistry) ──────────
+        self.task_manager = self.services.task_manager
+        # Goal planner (not yet in ServiceRegistry — standalone)
         self.goal_planner = GoalPlanner()
 
-        # ── Workflow modules (graceful degradation) ──────────────────────────
-        # Evidence Trail — auto-log all operations
-        try:
-            self.evidence = EvidenceTrail() if HAS_EVIDENCE else None
-        except Exception as e:
-            self.evidence = None
-            self._status_print(f"⚠️  Evidence trail init failed: {e}", "debug")
-
-        # Safety Guard — auto-check dangerous operations
-        try:
-            self.guard = SafetyGuard() if HAS_GUARDS else None
-        except Exception as e:
-            self.guard = None
-            self._status_print(f"⚠️  Safety guard init failed: {e}", "debug")
-
-        # Sprint Manager — structured task execution
-        try:
-            self.sprint_mgr = SprintManager() if HAS_SPRINT else None
-            self.current_sprint_id = None  # Track active sprint
-        except Exception as e:
-            self.sprint_mgr = None
-            self.current_sprint_id = None
-            self._status_print(f"⚠️  Sprint manager init failed: {e}", "debug")
-
-        # Review Dispatcher — mode-aware review prompts
-        try:
-            self.review_dispatcher = ReviewDispatcher() if HAS_REVIEW else None
-        except Exception as e:
-            self.review_dispatcher = None
-            self._status_print(f"⚠️  Review dispatcher init failed: {e}", "debug")
-
-        # ── Phase 4: Self-Evolution Engine ────────────────────────────────
-        # Startup health check (fast: ~1-2 seconds)
-        try:
-            self.evolution = AutoEvolve() if HAS_EVOLUTION else None
-            if self.evolution:
-                health = self.evolution.run_startup_check()
-                if health.issues:
-                    for issue in health.issues[:3]:  # Show first 3 issues
-                        self._status_print(f"⚠️  Health: {issue}", "debug")
-        except Exception as e:
-            self.evolution = None
-            self._status_print(f"⚠️  Evolution engine init failed: {e}", "debug")
-
-        # Lightweight auto-evolution scheduler
-        self.evolution_scheduler = None
+        # ── Workflow modules (via ServiceRegistry lazy init) ──────────────
+        self.evidence = self.services.evidence
+        self.guard = self.services.guard
+        self.sprint_mgr = self.services.sprint_mgr
+        self.current_sprint_id = None  # Track active sprint
+        self.review_dispatcher = self.services.review
+        self.evolution = self.services.evolution
+        self.evolution_scheduler = self.services.evolution_scheduler
         self._turn_counter = 0
-        if self.evolution and HAS_EVOLUTION and EvolutionScheduler:
-            try:
-                self.evolution_scheduler = EvolutionScheduler(self.evolution)
-                actions = self.evolution_scheduler.on_session_start()
-                if actions:
-                    for action in actions:
-                        self._status_print(f"✨ {action}", "debug")
-            except Exception as e:
-                self._status_print(f"⚠️  Evolution scheduler init failed: {e}", "debug")
+        self.upgrader = self.services.upgrader
 
-        # Upgrade manager (checks for updates, doesn't auto-upgrade)
-        try:
-            self.upgrader = NeoMindUpgrade() if HAS_UPGRADE else None
-        except Exception as e:
-            self.upgrader = None
-            self._status_print(f"⚠️  Upgrade manager init failed: {e}", "debug")
+        # ── Personality system (Phase B: personalities drive command routing) ──
+        # Register personalities first, then build command handlers.
+        # If personality registration fails, _setup_command_handlers() falls back
+        # to legacy hardcoded handlers.
+        self._personalities = {}
+        self._active_personality = None
+        self._register_personalities()
 
         # Command registry for unified routing
         self.command_handlers = {}
         self._setup_command_handlers()
 
     def _setup_command_handlers(self) -> None:
-        """Initialize command handler registry."""
+        """Initialize command handler registry.
+
+        Phase B: If personality system is available, builds handlers from
+        shared + personality-specific. Falls back to legacy hardcoded map.
+        """
+        if self._active_personality:
+            self._rebuild_command_handlers()
+        else:
+            self._setup_legacy_command_handlers()
+
+    def _rebuild_command_handlers(self) -> None:
+        """Build command handlers from personality system.
+
+        Merges SharedCommandsMixin handlers + active personality's unique handlers.
+        Personality-specific handlers override shared handlers with same prefix.
+        """
+        # Start with shared commands (available in ALL modes)
+        self.command_handlers = dict(self._active_personality.get_shared_command_handlers())
+        # Overlay personality-specific commands (may override shared ones)
+        self.command_handlers.update(self._active_personality.get_command_handlers())
+
+    def _setup_legacy_command_handlers(self) -> None:
+        """Legacy command handler registry (fallback when personality system unavailable)."""
         # Mapping: prefix -> (handler, strip_prefix)
         self.command_handlers = {
             "/search": (self.handle_search, True),
@@ -638,6 +447,41 @@ class NeoMindAgent:
             "/webmap": (self.handle_webmap_command, True),
             "/logs": (self.handle_logs_command, True),
         }
+
+    def _register_personalities(self) -> None:
+        """Register all personality modes and wire ServiceRegistry.
+
+        Creates a ServiceRegistry bridged to core's existing service instances,
+        then instantiates personality objects that use it.
+        Phase C will move real command implementations into personalities,
+        accessing services via self.services.X instead of self.core.X.
+        """
+        try:
+            from agent.services import ServiceRegistry
+            from agent.modes.chat import ChatPersonality
+            from agent.modes.coding import CodingPersonality
+            from agent.modes.finance import FinancePersonality
+
+            # Reuse the ServiceRegistry created in __init__ (line ~400)
+            # Do NOT create a duplicate — self.services already owns service creation
+            services = self.services
+            if services is None:
+                services = ServiceRegistry(core_ref=self, config=agent_config)
+                self.services = services
+
+            self._personalities = {
+                'chat': ChatPersonality(self, services),
+                'coding': CodingPersonality(self, services),
+                'fin': FinancePersonality(self, services),
+            }
+            # Set active personality based on current mode
+            self._active_personality = self._personalities.get(self.mode)
+        except Exception as e:
+            # Graceful degradation: if personality system fails, core.py works as before
+            self._status_print(f"⚠️  Personality registration failed: {e}", "debug")
+            self.services = None
+            self._personalities = {}
+            self._active_personality = None
 
     # Commands whose output should be added to conversation history
     # so the LLM can reason about tool results
@@ -806,31 +650,9 @@ class NeoMindAgent:
             self.conversation_history = [msg for msg in self.conversation_history if msg["role"] != "system"]
             self.add_to_history("system", new_prompt)
 
-        # Re-inject vault context for the new mode
-        if self._vault_reader and self._vault_reader.vault_exists():
-            try:
-                vault_context = self._vault_reader.get_startup_context(mode=mode)
-                if vault_context:
-                    self.add_to_history("system", vault_context)
-                    self._status_print("Re-injected vault context for new mode", "debug")
-            except Exception as e:
-                self._status_print(f"Vault re-injection failed (non-fatal): {e}", "debug")
-
-        # Re-inject shared memory context for the new mode
-        if self._shared_memory:
-            try:
-                mem_context = self._shared_memory.get_context_summary(mode=mode, max_tokens=500)
-                if mem_context:
-                    self.add_to_history("system",
-                        f"# User Context (from cross-personality memory)\n\n{mem_context}")
-                    self._status_print("Re-injected shared memory context for new mode", "debug")
-            except Exception as e:
-                self._status_print(f"SharedMemory re-injection failed (non-fatal): {e}", "debug")
-
-        # Clear active skill on mode switch (skill may not be available in new mode)
-        if self._active_skill and mode not in self._active_skill.modes:
-            self._safe_print(f"🔴 Deactivated skill '{self._active_skill.name}' (not available in {mode} mode)")
-            self._active_skill = None
+        # NOTE: Vault re-injection, shared memory re-injection, and skill
+        # compatibility checks are now handled by each personality's on_activate().
+        # See: chat.py, coding.py, finance.py
 
         if self.interpreter:
             self.interpreter.confidence_threshold = agent_config.natural_language_confidence_threshold
@@ -845,20 +667,74 @@ class NeoMindAgent:
         provider = self._resolve_provider(self.model)
         self.base_url = provider["base_url"]
 
-        if mode == "coding":
-            self._initialize_workspace_manager()
-        elif mode == "fin":
-            self._initialize_finance_subsystems()
+        # NOTE: Workspace init, finance init, and search domain sync are now
+        # handled by each personality's on_activate().
 
-        # Sync search engine domain with mode
-        search_domain = "finance" if mode == "fin" else "general"
-        if hasattr(self.searcher, 'set_domain'):
-            self.searcher.set_domain(search_domain)
+        # ── Activate personality (owns mode-specific setup) ────────────
+        if self._personalities and mode in self._personalities:
+            old_personality = self._active_personality
+            if old_personality:
+                try:
+                    old_personality.on_deactivate()
+                except Exception:
+                    pass  # Non-critical
+            self._active_personality = self._personalities[mode]
+            try:
+                self._active_personality.on_activate()
+            except Exception as e:
+                # Personality activation failed — fall back to manual init
+                self._status_print(f"Personality on_activate failed: {e}", "warning")
+                self._fallback_mode_init(mode)
+            self._rebuild_command_handlers()
 
         if old_mode != mode:
             self._safe_print(f"🔄 Switched from {old_mode} to {mode} mode.")
 
         return True
+
+    def _fallback_mode_init(self, mode: str):
+        """Fallback mode initialization if personality on_activate() fails.
+
+        Replicates the essential setup that personalities normally handle,
+        so the agent remains functional even if a personality class is broken.
+        """
+        # Search domain
+        search_domain = {"fin": "finance", "coding": "code"}.get(mode, "general")
+        if hasattr(self, 'searcher') and hasattr(self.searcher, 'set_domain'):
+            self.searcher.set_domain(search_domain)
+
+        # Workspace (coding only)
+        if mode == "coding":
+            self._initialize_workspace_manager()
+
+        # Finance subsystems
+        if mode == "fin":
+            self._initialize_finance_subsystems()
+
+        # Vault context
+        if self._vault_reader and self._vault_reader.vault_exists():
+            try:
+                vault_context = self._vault_reader.get_startup_context(mode=mode)
+                if vault_context:
+                    self.add_to_history("system", vault_context)
+            except Exception:
+                pass
+
+        # Shared memory
+        if self._shared_memory:
+            try:
+                mem_context = self._shared_memory.get_context_summary(mode=mode, max_tokens=500)
+                if mem_context:
+                    self.add_to_history("system",
+                        f"# User Context (from cross-personality memory)\n\n{mem_context}")
+            except Exception:
+                pass
+
+        # Skill compatibility
+        if self._active_skill and mode not in self._active_skill.modes:
+            self._safe_print(
+                f"🔴 Deactivated skill '{self._active_skill.name}' (not available in {mode} mode)")
+            self._active_skill = None
 
     def _initialize_finance_subsystems(self):
         """Lazy-init finance components when switching to fin mode."""
@@ -1227,206 +1103,20 @@ Remember: Always ask for permission before making changes!
             q = q.replace(filler, "")
         return q.strip().strip("\"'")
 
+    # ── P3-C: Extracted to general_commands.py — thin delegates for backward compat ──
+
     def handle_search(self, query: str) -> str:
-        """Process search command — smart routing between LLM, grep, and web."""
-        if not query or query.strip() == "":
-            return (
-                "Usage: /search <query>\n"
-                "  Routes automatically:\n"
-                "  • 'search codebase for TODO'  → local grep\n"
-                "  • 'search codebase to understand it' → AI analysis\n"
-                "  • 'search python asyncio tutorial'  → web search\n"
-                "  Subcommands:\n"
-                "  • /search status  — show search engine status & active sources\n"
-                "  Or use directly: /grep <pattern>  |  /find <name>"
-            )
-
-        # Subcommands
-        q_stripped = query.strip().lower()
-        if q_stripped in ("status", "sources", "info"):
-            if hasattr(self.searcher, 'get_status'):
-                return self.searcher.get_status()
-            return f"Search engine: {type(self.searcher).__name__} (no status available)"
-        if q_stripped in ("metrics", "stats", "report"):
-            if hasattr(self.searcher, 'metrics'):
-                return self.searcher.metrics.format_report(all_time=(q_stripped == "report"))
-            return "Metrics not available (legacy search engine)."
-
-        # Smart routing in coding mode
-        if self.mode == "coding":
-            intent = self._classify_search_intent(query)
-
-            if intent == "llm":
-                # Comprehension task — gather context and pass to LLM
-                self._safe_print("🧠 Detected codebase comprehension request — gathering context...")
-                context = self._gather_codebase_context()
-                prompt = f"{query}\n\nHere is the project structure and key files:\n{context}"
-                self.add_to_history("user", prompt)
-                return None  # Signal to caller: proceed to LLM streaming
-
-            if intent == "grep":
-                pattern = self._extract_grep_pattern(query)
-                self._safe_print(f"🔍 Detected code search — running /grep {pattern}")
-                return self.handle_grep_command(pattern)
-
-        # Web search
-        if not self.search_enabled:
-            return "Search is disabled. Enable it in config or use a different search method."
-
-        if not self.search_loop:
-            self.search_loop = asyncio.new_event_loop()
-
-        try:
-            success, result = self.search_loop.run_until_complete(
-                self.searcher.search(query.strip())
-            )
-        except Exception as e:
-            success, result = False, f"Search error: {e}"
-
-        if success:
-            self.add_search_results_to_history('web', query.strip(), result)
-        else:
-            self.add_to_history("system", f"Web search failed for '{query.strip()}': {result}")
-        return result
-
-    def _gather_codebase_context(self) -> str:
-        """Gather project structure and key file previews for LLM comprehension."""
-        import os
-        parts = []
-
-        # 1. Project tree (top-level + one level deep)
-        cwd = os.getcwd()
-        if self.code_analyzer:
-            cwd = self.code_analyzer.root_path
-        try:
-            entries = sorted(os.listdir(cwd))
-            tree_lines = []
-            for entry in entries:
-                full = os.path.join(cwd, entry)
-                if entry.startswith(".") and entry in (".git", ".venv", "__pycache__", ".mypy_cache"):
-                    continue
-                if os.path.isdir(full):
-                    tree_lines.append(f"  {entry}/")
-                    try:
-                        subs = sorted(os.listdir(full))[:15]
-                        for s in subs:
-                            if s.startswith(".") or s == "__pycache__":
-                                continue
-                            sub_full = os.path.join(full, s)
-                            suffix = "/" if os.path.isdir(sub_full) else ""
-                            tree_lines.append(f"    {s}{suffix}")
-                        if len(subs) > 15:
-                            tree_lines.append(f"    ... ({len(os.listdir(full)) - 15} more)")
-                    except OSError:
-                        pass
-                else:
-                    tree_lines.append(f"  {entry}")
-            parts.append("Project structure:\n" + "\n".join(tree_lines))
-        except OSError:
-            pass
-
-        # 2. Key files — read first ~30 lines of important files
-        key_files = ["README.md", "pyproject.toml", "setup.py", "main.py",
-                     "agent_config.py", "Makefile", "requirements.txt"]
-        for fname in key_files:
-            fpath = os.path.join(cwd, fname)
-            if os.path.isfile(fpath):
-                try:
-                    with open(fpath, "r", errors="replace") as f:
-                        lines = f.readlines()[:30]
-                    preview = "".join(lines)
-                    if len(lines) == 30:
-                        preview += "\n... (truncated)"
-                    parts.append(f"── {fname} ──\n{preview}")
-                except OSError:
-                    pass
-
-        return "\n\n".join(parts) if parts else "(Could not read project structure)"
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_search
+        return handle_search(self, query)
 
     def handle_auto_command(self, subcommand: str) -> Optional[str]:
-        """
-        Handle /auto command for controlling auto-features.
-        Subcommands:
-          search on/off     - Toggle auto-search
-          interpret on/off  - Toggle natural language interpretation
-          status           - Show current auto-feature settings
-        """
-        subcommand = subcommand.strip().lower()
-        parts = subcommand.split()
-        if not parts:
-            return self._show_auto_status()
-
-        if parts[0] == 'search' and len(parts) == 2:
-            value = parts[1]
-            if value in ('on', 'enable', 'true'):
-                self.auto_search_enabled = True
-                success = agent_config.update_value("agent.auto_features.auto_search.enabled", True)
-                return f"Auto-search enabled {'(config saved)' if success else '(config save failed)'}"
-            elif value in ('off', 'disable', 'false'):
-                self.auto_search_enabled = False
-                success = agent_config.update_value("agent.auto_features.auto_search.enabled", False)
-                return f"Auto-search disabled {'(config saved)' if success else '(config save failed)'}"
-            else:
-                return "Usage: /auto search on|off"
-
-        elif parts[0] == 'interpret' and len(parts) == 2:
-            value = parts[1]
-            if value in ('on', 'enable', 'true'):
-                self.natural_language_enabled = True
-                if not self.interpreter:
-                    self.interpreter = NaturalLanguageInterpreter(
-                        confidence_threshold=self.natural_language_confidence_threshold
-                    )
-                success = agent_config.update_value("agent.auto_features.natural_language.enabled", True)
-                return f"Natural language interpretation enabled {'(config saved)' if success else '(config save failed)'}"
-            elif value in ('off', 'disable', 'false'):
-                self.natural_language_enabled = False
-                self.interpreter = None
-                success = agent_config.update_value("agent.auto_features.natural_language.enabled", False)
-                return f"Natural language interpretation disabled {'(config saved)' if success else '(config save failed)'}"
-            else:
-                return "Usage: /auto interpret on|off"
-
-        elif parts[0] == 'status':
-            return self._show_auto_status()
-
-        elif parts[0] == 'help':
-            return self._show_auto_help()
-
-        else:
-            return self._show_auto_help()
-
-    def _show_auto_status(self) -> str:
-        """Return status of auto-features."""
-        status_lines = []
-        status_lines.append("🤖 Auto-feature Status:")
-        status_lines.append(f"  • Auto-search: {'ENABLED' if self.auto_search_enabled else 'DISABLED'}")
-        status_lines.append(f"  • Natural language interpretation: {'ENABLED' if self.natural_language_enabled else 'DISABLED'}")
-        if self.interpreter:
-            status_lines.append(f"  • Confidence threshold: {self.interpreter.confidence_threshold}")
-        status_lines.append(f"  • Safety confirmations: File ops={self.safety_confirm_file_operations}, Code changes={self.safety_confirm_code_changes}")
-        return "\n".join(status_lines)
-
-    def _show_auto_help(self) -> str:
-        """Return help for /auto command."""
-        help_lines = []
-        help_lines.append("🤖 /auto command usage:")
-        help_lines.append("  /auto search on|off      - Enable/disable auto-search")
-        help_lines.append("  /auto interpret on|off   - Enable/disable natural language interpretation")
-        help_lines.append("  /auto status            - Show current auto-feature settings")
-        help_lines.append("  /auto help              - Show this help")
-        return "\n".join(help_lines)
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_auto_command
+        return handle_auto_command(self, subcommand)
 
     def handle_mode_command(self, command: str) -> Optional[str]:
-        """
-        Handle /mode command for switching between chat and coding modes.
-
-        Usage:
-          /mode chat      - Switch to chat mode
-          /mode coding    - Switch to coding mode
-          /mode status    - Show current mode
-          /mode help      - Show help
-        """
+        """Handle /mode command for switching between chat, coding, and fin modes."""
         command = command.strip().lower()
         if not command or command == "status":
             return f"Current mode: {self.mode}"
@@ -1436,6 +1126,9 @@ Remember: Always ask for permission before making changes!
         elif command == "coding":
             success = self.switch_mode("coding")
             return "Switched to coding mode." if success else "Failed to switch to coding mode."
+        elif command == "fin":
+            success = self.switch_mode("fin")
+            return "Switched to fin mode." if success else "Failed to switch to fin mode."
         elif command == "help":
             return (
                 "/mode command usage:\n"
@@ -1448,129 +1141,14 @@ Remember: Always ask for permission before making changes!
             return "Invalid mode. Use 'chat', 'coding', 'status', or 'help'."
 
     def handle_skills_command(self, command: str) -> Optional[str]:
-        """
-        Handle /skills command to list available skills.
-
-        Usage:
-          /skills          - List skills for current mode
-          /skills all      - List all skills across all modes
-          /skills refresh  - Reload skill files from disk
-          /skills help     - Show help
-        """
-        command = command.strip().lower()
-
-        if not self._skill_loader:
-            return "⚠️ Skill system not loaded."
-
-        if not command or command == "list":
-            output = self._skill_loader.format_skill_list(self.mode)
-            active = ""
-            if self._active_skill:
-                active = f"\n\n✅ Active skill: /{self._active_skill.name}"
-            return f"📚 Skills available in **{self.mode}** mode:\n{output}{active}"
-
-        elif command == "all":
-            output = self._skill_loader.format_skill_list(None)
-            return f"📚 All skills:\n{output}"
-
-        elif command == "refresh":
-            count = self._skill_loader.load_all()
-            return f"🔄 Reloaded {count} skills from disk."
-
-        elif command == "help":
-            return (
-                "/skills command usage:\n"
-                "  /skills        — List skills for current mode\n"
-                "  /skills all    — List all skills\n"
-                "  /skills refresh — Reload from disk\n"
-                "  /skills help   — Show this help\n\n"
-                "Use /skill <name> to activate a skill."
-            )
-        else:
-            return "Unknown subcommand. Use /skills help for usage."
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_skills_command
+        return handle_skills_command(self, command)
 
     def handle_skill_command(self, command: str) -> Optional[str]:
-        """
-        Handle /skill command to activate/deactivate a skill.
-
-        Usage:
-          /skill <name>   — Activate a skill (injects into system prompt)
-          /skill off      — Deactivate current skill
-          /skill status   — Show active skill info
-        """
-        command = command.strip()
-
-        if not self._skill_loader:
-            return "⚠️ Skill system not loaded."
-
-        if not command:
-            return "Usage: /skill <name> | /skill off | /skill status"
-
-        if command.lower() == "off":
-            if self._active_skill:
-                name = self._active_skill.name
-                # Remove skill system message from history
-                self.conversation_history = [
-                    msg for msg in self.conversation_history
-                    if not (msg.get("role") == "system"
-                            and msg.get("content", "").startswith("## Active Skill:"))
-                ]
-                self._active_skill = None
-                return f"🔴 Deactivated skill: {name}"
-            return "No skill is currently active."
-
-        if command.lower() == "status":
-            if self._active_skill:
-                s = self._active_skill
-                return (
-                    f"✅ Active skill: {s.name} (v{s.version})\n"
-                    f"   {s.description}\n"
-                    f"   Category: {s.category} | Modes: {', '.join(s.modes)}"
-                )
-            return "No skill is currently active."
-
-        # Activate a skill
-        skill_name = command.split()[0].lstrip("/")
-        skill = self._skill_loader.get(skill_name)
-
-        if not skill:
-            # Fuzzy match: try partial name matching
-            candidates = [
-                s for s in self._skill_loader.get_skills_for_mode(self.mode)
-                if skill_name in s.name
-            ]
-            if len(candidates) == 1:
-                skill = candidates[0]
-            elif candidates:
-                names = ", ".join(f"/{c.name}" for c in candidates)
-                return f"Multiple matches: {names}. Be more specific."
-            else:
-                return f"❌ Skill '{skill_name}' not found. Use /skills to see available skills."
-
-        if self.mode not in skill.modes:
-            return (
-                f"⚠️ Skill '{skill.name}' is not available in {self.mode} mode. "
-                f"Available in: {', '.join(skill.modes)}"
-            )
-
-        # Deactivate previous skill if any
-        if self._active_skill:
-            self.conversation_history = [
-                msg for msg in self.conversation_history
-                if not (msg.get("role") == "system"
-                        and msg.get("content", "").startswith("## Active Skill:"))
-            ]
-
-        # Activate new skill
-        self._active_skill = skill
-        self.add_to_history("system", skill.to_system_prompt())
-
-        return (
-            f"✅ Activated skill: **{skill.name}** (v{skill.version})\n"
-            f"   {skill.description}\n\n"
-            f"The skill prompt has been injected. I'll follow its guidelines for subsequent responses.\n"
-            f"Use /skill off to deactivate."
-        )
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_skill_command
+        return handle_skill_command(self, command)
 
     def discover_mcp_servers(self) -> List[Dict[str, str]]:
         """
@@ -1619,497 +1197,74 @@ Remember: Always ask for permission before making changes!
         return servers
 
     def handle_models_command(self, command: str) -> Optional[str]:
-        """
-        Handle /models command with various subcommands
-
-        Args:
-            command: The full command string (e.g., "/models list", "/models switch deepseek-chat")
-        
-        Returns:
-            Response message or None
-        """
-        parts = command.split()
-        
-        if len(parts) == 1:  # Just "/models"
-            self.print_models()
-            return None
-        elif len(parts) >= 2:
-            subcommand = parts[1].lower()
-
-            if subcommand in ["list", "show", "ls"]:
-                self.print_models(force_refresh=len(parts) > 2 and parts[2] == "--refresh")
-                return None
-            elif subcommand in ["switch", "use", "set"]:
-                # Handle: /models switch <model> (agent)
-                #         /models switch agent <model>
-                if len(parts) == 3:
-                    # /models switch <model> - default to agent
-                    model_id = parts[2]
-                    success = self.set_model(model_id)
-                    return "Model switched successfully." if success else "Failed to switch model."
-                elif len(parts) == 4:
-                    target = parts[2].lower()
-                    model_id = parts[3]
-                    if target in ["agent", "a"]:
-                        success = self.set_model(model_id)
-                        return "Model switched successfully." if success else "Failed to switch model."
-                    else:
-                        print(f"Unknown target: {target}. Use 'agent'.")
-                        print("Usage: /models switch [agent] <model_id>")
-                        return None
-                else:
-                    print("Usage: /models switch [agent] <model_id>")
-                    print("Examples:")
-                    print("  /models switch deepseek-reasoner          # Switch to DeepSeek model")
-                    print("  /models switch glm-5                      # Switch to z.ai model")
-                    print("  /models switch agent deepseek-reasoner    # Switch model (explicit)")
-                    return None
-            elif subcommand in ["current", "active"]:
-                print(f"\nCurrent model: {self.model}")
-                return None
-            elif subcommand in ["help", "?"]:
-                print("""
-/models commands:
-  /models                    - Show available models
-  /models list              - List all available models
-  /models list --refresh    - Force refresh model list
-  /models switch <model>    - Switch agent model (backward compatible)
-  /models switch agent <model> - Switch agent model
-  /models current           - Show current agent model
-  /models help              - Show this help
-                """.strip())
-                return None
-            else:
-                print(f"Unknown subcommand: {subcommand}")
-                print("Try: /models help")
-                return None
-
-        return None
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_models_command
+        return handle_models_command(self, command)
 
     def handle_task_command(self, command: str) -> Optional[str]:
-        """
-        Handle /task command for task management.
-        Subcommands:
-          create <description> - Create a new task
-          list [status]        - List tasks (optional status filter: todo, in_progress, done)
-          update <id> <status> - Update task status
-          delete <id>          - Delete task
-          clear                - Delete all tasks
-        """
-        if not command.strip():
-            return self._show_task_help()
-
-        parts = command.strip().split()
-        subcommand = parts[0].lower()
-
-        if subcommand == "create":
-            if len(parts) < 2:
-                return "Usage: /task create <description>"
-            description = " ".join(parts[1:])
-            task = self.task_manager.create_task(description)
-            return f"✅ Task created with ID: {task.id}\nDescription: {task.description}"
-
-        elif subcommand == "list":
-            status_filter = None
-            if len(parts) > 1:
-                status_filter = parts[1].lower()
-                if status_filter not in ("todo", "in_progress", "done"):
-                    return f"Invalid status filter '{status_filter}'. Use: todo, in_progress, done"
-            tasks = self.task_manager.list_tasks(status_filter)
-            if not tasks:
-                return "📭 No tasks found." + (f" (filter: {status_filter})" if status_filter else "")
-
-            result = ["📋 Task List" + (f" (filter: {status_filter})" if status_filter else "")]
-            for task in tasks:
-                status_emoji = {"todo": "⭕", "in_progress": "🔄", "done": "✅"}.get(task.status, "❓")
-                result.append(f"  {status_emoji} [{task.id}] {task.description}")
-                result.append(f"     Status: {task.status}, Created: {task.created_at[:10]}")
-            return "\n".join(result)
-
-        elif subcommand == "update":
-            if len(parts) != 3:
-                return "Usage: /task update <task_id> <status>"
-            task_id, new_status = parts[1], parts[2].lower()
-            if new_status not in ("todo", "in_progress", "done"):
-                return f"Invalid status '{new_status}'. Use: todo, in_progress, done"
-            success = self.task_manager.update_task_status(task_id, new_status)
-            if success:
-                return f"✅ Task {task_id} updated to '{new_status}'"
-            else:
-                return f"❌ Task {task_id} not found"
-
-        elif subcommand == "delete":
-            if len(parts) != 2:
-                return "Usage: /task delete <task_id>"
-            task_id = parts[1]
-            success = self.task_manager.delete_task(task_id)
-            if success:
-                return f"✅ Task {task_id} deleted"
-            else:
-                return f"❌ Task {task_id} not found"
-
-        elif subcommand == "clear":
-            if len(parts) != 1:
-                return "Usage: /task clear"
-            count = self.task_manager.clear_all_tasks()
-            return f"✅ Cleared {count} tasks"
-
-        elif subcommand in ("help", "?"):
-            return self._show_task_help()
-
-        else:
-            return f"Unknown subcommand: {subcommand}\n{self._show_task_help()}"
-
-    def _show_task_help(self) -> str:
-        """Return help for /task command."""
-        help_lines = [
-            "📋 /task command usage:",
-            "  /task create <description>      - Create a new task",
-            "  /task list [status]             - List tasks (optional status filter)",
-            "  /task update <id> <status>      - Update task status (todo, in_progress, done)",
-            "  /task delete <id>               - Delete task",
-            "  /task clear                     - Delete all tasks",
-            "  /task help                      - Show this help",
-            "",
-            "Examples:",
-            "  /task create \"Refactor auth module\"",
-            "  /task list",
-            "  /task list in_progress",
-            "  /task update abc123 done",
-        ]
-        return "\n".join(help_lines)
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_task_command
+        return handle_task_command(self, command)
 
     def handle_plan_command(self, command: str) -> Optional[str]:
-        """
-        Handle /plan command for generating and managing plans.
-        Subcommands:
-          <goal>               - Generate a plan for a goal
-          list [status]        - List plans (optional status filter)
-          delete <id>          - Delete plan
-          show <id>            - Show plan details
-        """
-        if not command.strip():
-            return self._show_plan_help()
-
-        parts = command.strip().split()
-        # If first part is not a known subcommand, treat as goal
-        if parts[0].lower() not in ("list", "delete", "show", "help"):
-            goal = command.strip()
-            plan = self.goal_planner.generate_plan(goal, self)
-            steps_count = len(plan.get("steps", []))
-            return (
-                f"📋 Plan generated with ID: {plan['id']}\n"
-                f"Goal: {plan['goal']}\n"
-                f"Steps: {steps_count}\n"
-                f"Status: {plan['status']}\n"
-                f"Use /execute {plan['id']} to start execution."
-            )
-
-        subcommand = parts[0].lower()
-
-        if subcommand == "list":
-            status_filter = None
-            if len(parts) > 1:
-                status_filter = parts[1].lower()
-                if status_filter not in ("pending", "in_progress", "completed", "failed"):
-                    return f"Invalid status filter '{status_filter}'. Use: pending, in_progress, completed, failed"
-            plans = self.goal_planner.list_plans(status_filter)
-            if not plans:
-                return "📭 No plans found." + (f" (filter: {status_filter})" if status_filter else "")
-
-            result = ["📋 Plan List" + (f" (filter: {status_filter})" if status_filter else "")]
-            for plan in plans:
-                status_emoji = {"pending": "⭕", "in_progress": "🔄", "completed": "✅", "failed": "❌"}.get(plan.get("status"), "❓")
-                result.append(f"  {status_emoji} [{plan['id']}] {plan.get('goal', 'No goal')}")
-                result.append(f"     Steps: {len(plan.get('steps', []))}, Status: {plan.get('status')}, Created: {plan.get('created_at', '')[:10]}")
-            return "\n".join(result)
-
-        elif subcommand == "delete":
-            if len(parts) != 2:
-                return "Usage: /plan delete <plan_id>"
-            plan_id = parts[1]
-            success = self.goal_planner.delete_plan(plan_id)
-            if success:
-                return f"✅ Plan {plan_id} deleted"
-            else:
-                return f"❌ Plan {plan_id} not found"
-
-        elif subcommand == "show":
-            if len(parts) != 2:
-                return "Usage: /plan show <plan_id>"
-            plan_id = parts[1]
-            plan = self.goal_planner.get_plan(plan_id)
-            if not plan:
-                return f"❌ Plan {plan_id} not found"
-
-            result = [f"📋 Plan: {plan.get('goal', 'No goal')}"]
-            result.append(f"ID: {plan['id']}")
-            result.append(f"Status: {plan.get('status')}")
-            result.append(f"Created: {plan.get('created_at')}")
-            result.append(f"Steps ({len(plan.get('steps', []))}):")
-            for i, step in enumerate(plan.get("steps", [])):
-                current_mark = " →" if i == plan.get("current_step", 0) else "  "
-                result.append(f"{current_mark} {i+1}. {step.get('description', 'No description')}")
-                result.append(f"    Action: {step.get('action', 'N/A')}")
-                if step.get("details"):
-                    result.append(f"    Details: {step.get('details')}")
-                if step.get("dependencies"):
-                    result.append(f"    Depends on: {step.get('dependencies')}")
-            return "\n".join(result)
-
-        elif subcommand in ("help", "?"):
-            return self._show_plan_help()
-
-        else:
-            return f"Unknown subcommand: {subcommand}\n{self._show_plan_help()}"
-
-    def _show_plan_help(self) -> str:
-        """Return help for /plan command."""
-        help_lines = [
-            "📋 /plan command usage:",
-            "  /plan <goal>                 - Generate a plan for a goal",
-            "  /plan list [status]          - List plans (optional status filter)",
-            "  /plan delete <id>            - Delete plan",
-            "  /plan show <id>              - Show plan details",
-            "  /plan help                   - Show this help",
-            "",
-            "Status filters: pending, in_progress, completed, failed",
-            "",
-            "Examples:",
-            "  /plan \"Add user authentication\"",
-            "  /plan list",
-            "  /plan show abc123",
-        ]
-        return "\n".join(help_lines)
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_plan_command
+        return handle_plan_command(self, command)
 
     def handle_execute_command(self, command: str) -> Optional[str]:
-        """
-        Handle /execute command to execute a plan.
-        Usage: /execute <plan_id>
-        """
-        if not command.strip():
-            return "Usage: /execute <plan_id>"
-
-        parts = command.strip().split()
-        if len(parts) != 1:
-            return "Usage: /execute <plan_id>"
-
-        plan_id = parts[0]
-        plan = self.goal_planner.get_plan(plan_id)
-        if not plan:
-            return f"❌ Plan {plan_id} not found"
-
-        # Update plan status to in_progress if pending
-        if plan.get("status") == "pending":
-            self.goal_planner.update_plan_status(plan_id, "in_progress")
-
-        current_step = self.goal_planner.get_current_step(plan_id)
-        if not current_step:
-            # No more steps, plan completed
-            self.goal_planner.update_plan_status(plan_id, "completed")
-            return f"✅ Plan {plan_id} already completed!"
-
-        step_num = plan.get("current_step", 0) + 1
-        total_steps = len(plan.get("steps", []))
-
-        result = [
-            f"🚀 Executing Plan: {plan.get('goal', 'No goal')}",
-            f"Step {step_num}/{total_steps}: {current_step.get('description', 'No description')}",
-            f"Action: {current_step.get('action', 'N/A')}",
-        ]
-        if current_step.get("details"):
-            result.append(f"Details: {current_step.get('details')}")
-
-        result.append("\n📝 The AI will now help you execute this step.")
-        result.append("You can use commands like /write, /run, /git, etc.")
-        result.append(f"After completing, run /execute {plan_id} again to advance to next step.")
-        return "\n".join(result)
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_execute_command
+        return handle_execute_command(self, command)
 
     def handle_switch_command(self, command: str) -> Optional[str]:
-        """
-        Handle /switch command to switch model.
-        Usage: /switch <model_id>
-        """
-        if not command.strip():
-            return "Usage: /switch <model_id>"
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_switch_command
+        return handle_switch_command(self, command)
 
-        model_id = command.strip()
-        success = self.set_model(model_id)
-        if success:
-            return f"✅ Switched model to {model_id}"
-        else:
-            return f"❌ Failed to switch model to {model_id}"
+    # ── LLM-analysis commands (summarize, translate, generate, reason, debug, explain, refactor)
+    # Real implementations moved to SharedCommandsMixin (agent/services/shared_commands.py).
+    # Thin wrappers kept for backward compat — tests call self.agent.handle_X_command().
 
     def handle_summarize_command(self, command: str) -> Optional[str]:
-        """
-        Handle /summarize command to summarize text or code.
-        Usage: /summarize <text>
-        """
-        if not command.strip():
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_summarize_command(command)
+        if not command or not command.strip():
             return "Usage: /summarize <text>"
-
-        text = command.strip()
-        prompt = f"Summarize the following content concisely:\n\n{text}"
-        messages = [{"role": "user", "content": prompt}]
+        prompt = f"Summarize the following content concisely:\n\n{command.strip()}"
         try:
-            response = self.generate_completion(messages, temperature=0.3, max_tokens=1000)
-            return f"📝 Summary:\n{response}"
+            return f"📝 Summary:\n{self.generate_completion([{'role': 'user', 'content': prompt}], temperature=0.3, max_tokens=1000)}"
         except Exception as e:
             return f"❌ Failed to generate summary: {e}"
 
     def handle_translate_command(self, command: str) -> Optional[str]:
-        """
-        Handle /translate command to translate text.
-        Usage: /translate <text> [to <language>]
-        Default language: English
-        """
-        if not command.strip():
-            return "Usage: /translate <text> [to <language>]"
-
-        # Parse language (simple)
-        parts = command.strip().split()
-        text = command
-        target_language = "English"
-
-        # Look for "to" keyword
-        if " to " in command.lower():
-            # Simple split on " to "
-            import re
-            match = re.search(r'^(.*?) to (.+)$', command, re.IGNORECASE)
-            if match:
-                text = match.group(1).strip()
-                target_language = match.group(2).strip()
-
-        prompt = f"Translate the following text to {target_language}:\n\n{text}"
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            response = self.generate_completion(messages, temperature=0.3, max_tokens=1000)
-            return f"🌐 Translation to {target_language}:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to translate: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_translate_command(command)
+        return "Usage: /translate <text> [to <language>]"
 
     def handle_generate_command(self, command: str) -> Optional[str]:
-        """
-        Handle /generate command to generate content.
-        Usage: /generate <prompt>
-        """
-        if not command.strip():
-            return "Usage: /generate <prompt>"
-
-        prompt = command.strip()
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            response = self.generate_completion(messages, temperature=0.7, max_tokens=2000)
-            return f"🎨 Generated content:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to generate content: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_generate_command(command)
+        return "Usage: /generate <prompt>"
 
     def handle_reason_command(self, command: str) -> Optional[str]:
-        """
-        Handle /reason command for chain-of-thought reasoning.
-        Usage: /reason <problem>
-        """
-        if not command.strip():
-            return "Usage: /reason <problem>"
-
-        problem = command.strip()
-        prompt = f"Solve the following problem using step-by-step reasoning:\n\n{problem}"
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            # Temporarily switch to reasoning model if available
-            original_model = self.model
-            if "reason" not in original_model.lower():
-                # Try to switch to a reasoning model
-                self.set_model("deepseek-reasoner")
-                response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
-                # Switch back
-                self.set_model(original_model)
-            else:
-                response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
-            return f"🤔 Reasoning:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to reason: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_reason_command(command)
+        return "Usage: /reason <problem>"
 
     def handle_debug_command(self, command: str) -> Optional[str]:
-        """
-        Handle /debug command to debug code.
-        Usage: /debug <file_path> or /debug <code snippet>
-        """
-        if not command.strip():
-            return "Usage: /debug <file_path> or /debug <code snippet>"
-
-        # Check if argument is a file path
-        import os
-        if os.path.exists(command.strip()):
-            # Read file
-            safe, reason, content = self.safety_manager.safe_read_file(command.strip())
-            if not safe:
-                return f"❌ Cannot read file: {reason}"
-            code = content
-            source = f"file: {command.strip()}"
-        else:
-            code = command.strip()
-            source = "provided code"
-
-        prompt = f"Debug the following code from {source}. Identify bugs, errors, and suggest fixes:\n\n```\n{code}\n```"
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
-            return f"🐛 Debug analysis for {source}:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to debug: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_debug_command(command)
+        return "Usage: /debug <file_path> or /debug <code snippet>"
 
     def handle_explain_command(self, command: str) -> Optional[str]:
-        """
-        Handle /explain command to explain code.
-        Usage: /explain <file_path> or /explain <code snippet>
-        """
-        if not command.strip():
-            return "Usage: /explain <file_path> or /explain <code snippet>"
-
-        import os
-        if os.path.exists(command.strip()):
-            safe, reason, content = self.safety_manager.safe_read_file(command.strip())
-            if not safe:
-                return f"❌ Cannot read file: {reason}"
-            code = content
-            source = f"file: {command.strip()}"
-        else:
-            code = command.strip()
-            source = "provided code"
-
-        prompt = f"Explain the following code from {source} in simple terms:\n\n```\n{code}\n```"
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
-            return f"📚 Explanation of {source}:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to explain: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_explain_command(command)
+        return "Usage: /explain <file_path> or /explain <code snippet>"
 
     def handle_refactor_command(self, command: str) -> Optional[str]:
-        """
-        Handle /refactor command to suggest refactoring improvements.
-        Usage: /refactor <file_path>
-        """
-        if not command.strip():
-            return "Usage: /refactor <file_path>"
-
-        file_path = command.strip()
-        import os
-        if not os.path.exists(file_path):
-            return f"❌ File not found: {file_path}"
-
-        safe, reason, content = self.safety_manager.safe_read_file(file_path)
-        if not safe:
-            return f"❌ Cannot read file: {reason}"
-
-        prompt = f"Suggest refactoring improvements for the following code. Focus on readability, performance, and maintainability:\n\n```\n{content}\n```"
-        messages = [{"role": "user", "content": prompt}]
-        try:
-            response = self.generate_completion(messages, temperature=0.3, max_tokens=2000)
-            return f"🔧 Refactoring suggestions for {file_path}:\n{response}"
-        except Exception as e:
-            return f"❌ Failed to generate refactoring suggestions: {e}"
+        if hasattr(self, '_active_personality') and self._active_personality:
+            return self._active_personality._shared_handle_refactor_command(command)
+        return "Usage: /refactor <file_path>"
 
     def handle_grep_command(self, command: str) -> Optional[str]:
         """
@@ -2237,43 +1392,9 @@ Remember: Always ask for permission before making changes!
         return "\n".join(result)
 
     def handle_context_command(self, command: str) -> Optional[str]:
-        """
-        Handle /context command to manage conversation context.
-        Usage: /context [status|compress|clear|help]
-        """
-        command = command.strip().lower()
-        if not command or command == "status":
-            stats = self.context_manager.get_context_usage()
-            lines = [
-                "📊 Context Status:",
-                f"  • Tokens used: {stats['total_tokens']} / {stats['max_context_tokens']} ({stats['percent_used']:.1%})",
-                f"  • Warning threshold: {stats['warning_threshold']:.0%} ({stats['warning_tokens']} tokens)",
-                f"  • Break threshold: {stats['break_threshold']:.0%} ({stats['break_tokens']} tokens)",
-                f"  • Near limit: {stats['is_near_limit']}",
-                f"  • Over break threshold: {stats['is_over_break']}",
-            ]
-            if HAS_TIKTOKEN:
-                lines.append("  • Token counting: tiktoken (cl100k_base)")
-            else:
-                lines.append("  • Token counting: approximate (chars/4)")
-            return "\n".join(lines)
-        elif command == "compress":
-            result = self.context_manager.compress_history()
-            return f"✅ Compressed history: {result['original_tokens']} → {result['compressed_tokens']} tokens (-{result['token_reduction']})"
-        elif command == "clear":
-            self.conversation_history.clear()
-            self._ensure_system_prompt()
-            return "✅ Conversation history cleared. System prompt re-added."
-        elif command == "help":
-            return (
-                "/context commands:\n"
-                "  status    - Show token usage and limits\n"
-                "  compress  - Compress history to reduce tokens\n"
-                "  clear     - Clear conversation history\n"
-                "  help      - Show this help"
-            )
-        else:
-            return f"Unknown subcommand: {command}. Use /context help for usage."
+        """Delegate to general_commands module."""
+        from agent.services.general_commands import handle_context_command
+        return handle_context_command(self, command)
 
     def handle_think_command(self, command: str) -> Optional[str]:
         """
@@ -2398,217 +1519,25 @@ Remember: Always ask for permission before making changes!
         else:
             return self.formatter.error(f"Failed to extract content from {url}. All strategies failed.")
 
+    # ── Web content extraction (delegated to agent.web.content_extraction) ──
+    # Thin wrappers preserved for backward compat — all real logic is now in
+    # agent/web/content_extraction.py (Tier 2C extraction).
+
     def _try_trafilatura(self, url: str, max_length: int) -> Optional[str]:
-        """Try using trafilatura with encoding handling"""
-        if not HAS_TRAFILATURA:
-            return None
-
-        try:
-            downloaded = trafilatura.fetch_url(url)
-            text = trafilatura.extract(
-                downloaded,
-                include_links=True,         # Preserve links for sub-page navigation
-                include_images=False,
-                include_tables=True,         # Tables often contain key data
-                no_fallback=False,
-                include_formatting=True,     # Keep structure (headers, lists)
-                output_format='txt',         # Plain text with markdown-style links
-            )
-
-            if text:
-                # Clean the text
-                text = self._clean_text(text)
-
-            return text
-        except:
-            return None
+        from agent.web.content_extraction import try_trafilatura
+        return try_trafilatura(url, max_length)
 
     def _try_beautifulsoup(self, url: str, max_length: int) -> Optional[str]:
-        """Try BeautifulSoup extraction with proper encoding handling"""
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-                'Accept-Charset': 'utf-8, iso-8859-1, utf-16, *;q=0.7',
-            }
-
-            # Special headers for specific sites
-            if 'github.com' in url:
-                headers['Accept'] = 'application/vnd.github.v3+json'
-            elif 'bilibili.com' in url:
-                headers['Referer'] = 'https://www.bilibili.com'
-                headers['Accept-Charset'] = 'utf-8, gb2312, gbk, *;q=0.7'
-
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-
-            # Detect encoding
-            encoding = None
-
-            # 1. Check HTTP header
-            if response.encoding:
-                encoding = response.encoding.lower()
-
-            # 2. Check HTML meta tag
-            soup_for_encoding = BeautifulSoup(response.content[:5000], 'html.parser')
-            meta_charset = soup_for_encoding.find('meta', charset=True)
-            if meta_charset:
-                encoding = meta_charset['charset'].lower()
-            else:
-                meta_http_equiv = soup_for_encoding.find('meta', attrs={'http-equiv': 'Content-Type'})
-                if meta_http_equiv and 'content' in meta_http_equiv.attrs:
-                    content_value = meta_http_equiv['content'].lower()
-                    if 'charset=' in content_value:
-                        encoding = content_value.split('charset=')[1].split(';')[0].strip()
-
-            # 3. Use chardet as fallback
-            if not encoding:
-                detected = chardet.detect(response.content)
-                encoding = detected.get('encoding', 'utf-8').lower()
-
-            # Normalize encoding names
-            encoding_map = {
-                'gb2312': 'gbk',
-                'gbk': 'gbk',
-                'gb18030': 'gb18030',
-                'big5': 'big5',
-                'shift_jis': 'shift_jis',
-                'euc-jp': 'euc-jp',
-                'utf-8': 'utf-8',
-                'utf8': 'utf-8',
-                'ascii': 'utf-8',
-            }
-
-            encoding = encoding_map.get(encoding, 'utf-8')
-
-            # Decode with proper encoding
-            try:
-                content = response.content.decode(encoding, errors='replace')
-            except (UnicodeDecodeError, LookupError):
-                # Try UTF-8 as fallback
-                content = response.content.decode('utf-8', errors='replace')
-
-            # Now parse with BeautifulSoup
-            soup = BeautifulSoup(content, 'html.parser')
-
-            # Remove unwanted elements
-            for tag in ['script', 'style', 'nav', 'footer', 'header', 
-                       'aside', 'form', 'iframe', 'noscript', 'svg']:
-                for element in soup.find_all(tag):
-                    element.decompose()
-
-            # Try to find main content first
-            main_selectors = [
-                'main', 'article', '[role="main"]', '.main-content',
-                '.content', '.post-content', '.article-content',
-                '#content', '.markdown-body',  # GitHub
-                '.video-info', '.video-desc',   # Bilibili
-            ]
-
-            main_content = None
-            for selector in main_selectors:
-                main_content = soup.select_one(selector)
-                if main_content:
-                    break
-
-            if main_content:
-                text = main_content.get_text(separator='\n', strip=True)
-            else:
-                # Fallback to body
-                body = soup.find('body')
-                text = body.get_text(separator='\n', strip=True) if body else ""
-
-            # Clean the text
-            text = self._clean_text(text)
-
-            # ── Extract links from the page ──────────────────────────
-            search_root = main_content or soup.find('body') or soup
-            raw_links = search_root.find_all('a', href=True)
-            parsed_base = urlparse(url)
-
-            seen_hrefs = set()
-            link_lines = []
-            link_num = 0
-
-            for a_tag in raw_links:
-                href = a_tag['href'].strip()
-                link_text = a_tag.get_text(strip=True)[:80]
-                if not link_text or not href or href.startswith(('#', 'javascript:')):
-                    continue
-
-                # Resolve relative URLs
-                if href.startswith('/'):
-                    href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
-                elif not href.startswith(('http://', 'https://')):
-                    continue  # skip mailto:, tel:, etc.
-
-                if href in seen_hrefs:
-                    continue
-                seen_hrefs.add(href)
-                link_num += 1
-                link_lines.append(f"[{link_num}] {link_text} → {href}")
-
-            if link_lines:
-                text = text.strip() + "\n\n--- Links Found ---\n" + "\n".join(link_lines[:50])
-
-            return text.strip()
-        except Exception as e:
-            print(f"Debug: BeautifulSoup error for {url}: {str(e)}")
-            return None
+        from agent.web.content_extraction import try_beautifulsoup
+        return try_beautifulsoup(url, max_length)
 
     def _try_html2text(self, url: str, max_length: int) -> Optional[str]:
-        """Try html2text conversion with encoding handling"""
-        if not HAS_HTML2TEXT or self.html_converter is None:
-            return None
-        try:
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-
-            # Detect encoding
-            try:
-                detected = chardet.detect(response.content)
-                encoding = detected.get('encoding', 'utf-8').lower()
-                content = response.content.decode(encoding, errors='replace')
-            except:
-                content = response.content.decode('utf-8', errors='replace')
-
-            # Configure html2text for better Chinese support
-            self.html_converter.unicode_snob = True  # Use Unicode
-            self.html_converter.escape_snob = False  # Don't escape
-            self.html_converter.links_each_paragraph = False
-            self.html_converter.body_width = 0  # No width limit
-
-            # Convert HTML to markdown-like text
-            text = self.html_converter.handle(content)
-
-            # Clean the text
-            text = self._clean_text(text)
-
-            return text.strip()
-        except:
-            return None
+        from agent.web.content_extraction import try_html2text
+        return try_html2text(url, max_length, getattr(self, 'html_converter', None))
 
     def _try_requests_html(self, url: str, max_length: int) -> Optional[str]:
-        """Try JavaScript rendering for dynamic sites"""
-        if not self.session:
-            return None
-
-        try:
-            r = self.session.get(url, timeout=20)
-            # Render JavaScript (adjust timeout based on site)
-            render_timeout = 30 if 'bilibili.com' in url else 15
-            r.html.render(timeout=render_timeout, sleep=2)
-
-            # Try to get text
-            text = r.html.text
-
-            # Clean up
-            text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-            return text.strip()
-        except:
-            return None
+        from agent.web.content_extraction import try_requests_html
+        return try_requests_html(url, max_length, getattr(self, 'session', None))
 
     # ── Browser sync bridge ─────────────────────────────────────────
     def _browser_sync(self, command: str, args: List[str] = None) -> str:
@@ -2625,180 +1554,34 @@ Remember: Always ask for permission before making changes!
         return self._browser_loop.run_until_complete(_run())
 
     def _try_playwright(self, url: str, max_length: int) -> Optional[str]:
-        """Fallback to headless Chromium for JS-rendered pages.
-
-        Uses the BrowserDaemon singleton (Playwright) via sync bridge.
-        Only attempted when lighter strategies fail — Chromium cold-start
-        adds ~2-3 s on first call, <100 ms on subsequent calls.
-        """
+        """Fallback to headless Chromium for JS-rendered pages."""
         try:
             result = self._browser_sync("goto", [url])
             if result and "Error" in result:
                 return None
             text = self._browser_sync("text", [])
             if text and len(text.strip()) > 100:
-                text = self._clean_text(text) if hasattr(self, '_clean_text') else text
+                text = self._clean_text(text)
                 return text[:max_length]
             return None
         except Exception:
             return None
 
     def _try_fallback(self, url: str, max_length: int) -> Optional[str]:
-        """Last resort fallback"""
-        try:
-            response = requests.get(url, timeout=10)
-            # Try to extract text between tags
-            text = re.sub(r'<[^>]+>', ' ', response.text)
-            text = re.sub(r'\s+', ' ', text)
-            return text.strip()
-        except:
-            return None
+        from agent.web.content_extraction import try_fallback
+        return try_fallback(url, max_length)
 
     def _score_content(self, content: str) -> int:
-        """Score content quality (0-100) with language checking"""
-        if not content:
-            return 0
-
-        # First, clean the content
-        content = self._clean_text(content)
-
-        score = 0
-
-        # Check for valid text (not just gibberish)
-        # Count Chinese characters
-        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', content))
-        # Count English words (basic detection)
-        english_words = len(re.findall(r'\b[a-zA-Z]{2,}\b', content))
-
-        # Penalize if there are weird character sequences
-        weird_sequences = len(re.findall(r'[Ã©äåçèéêëìíîïðñòóôõöøùúûüýþÿ]', content))
-        if weird_sequences > len(content) * 0.1:  # More than 10% weird chars
-            return 0  # Definitely gibberish
-
-        # If we have both Chinese and English, that's good
-        if chinese_chars > 10 and english_words > 10:
-            score += 30
-        elif chinese_chars > 20:
-            score += 25
-        elif english_words > 20:
-            score += 25
-        else:
-            # Might not be meaningful content
-            return 10
-
-        # Length score (more content is better)
-        length = len(content)
-        if length > 1000:
-            score += 40
-        elif length > 500:
-            score += 20
-        elif length > 100:
-            score += 10
-
-        # Sentence structure score
-        sentences = re.findall(r'[.!?。！？]+', content)
-        if len(sentences) > 5:
-            score += 30
-
-        return min(score, 100)
+        from agent.web.content_extraction import score_content
+        return score_content(content)
 
     def _format_result(self, url: str, content: str, score: int) -> str:
-        """Format the final result with language info"""
-        if len(content) > 20000:
-            content = content[:20000] + f"\n\n[Content truncated. Original: {len(content)} chars]"
-        
-        # Clean content one more time
-        content = self._clean_text(content)
+        from agent.web.content_extraction import format_result
+        return format_result(url, content, score)
 
-        # Get page title if possible
-        title = "Unknown Title"
-        try:
-            response = requests.get(url, timeout=5)
-            soup = BeautifulSoup(response.content, 'html.parser')
-            if soup.title and soup.title.string:
-                title = self._clean_text(soup.title.string.strip())
-        except:
-            pass
-
-        # Detect language
-        chinese_chars = len(re.findall(r'[\u4e00-\u9fff]', content))
-        english_words = len(re.findall(r'\b[a-zA-Z]{3,}\b', content))
-
-        if chinese_chars > english_words:
-            language = "中文 (Chinese)"
-        elif english_words > chinese_chars:
-            language = "English"
-        else:
-            language = "Mixed/Unknown"
-        
-        # Quality indicator
-        quality = "🟢 High" if score > 70 else "🟡 Medium" if score > 40 else "🔴 Low"
-        
-        result = f"""📄 PAGE: {title}
-🔗 URL: {url}
-🌐 Language: {language}
-📊 Quality: {quality} ({score}/100)
-📏 Length: {len(content)} characters
-{"-" * 60}
-
-{content}
-
-{"-" * 60}
-✅ End of content from: {url}"""
-        
-        return result
-    
     def _clean_text(self, text: str) -> str:
-        """
-        Clean text by fixing encoding issues, removing HTML entities, and normalizing
-        """
-        if not text:
-            return ""
-        
-        # 1. Unescape HTML entities (convert &lt; to <, etc.)
-        text = html.unescape(text)
-
-        # 2. Fix common encoding issues
-        # Replace common mojibake patterns
-        replacements = {
-            'Ã¡': 'á', 'Ã©': 'é', 'Ã³': 'ó', 'Ãº': 'ú', 'Ã±': 'ñ',
-            'Ã': 'Á', 'Ã': 'É', 'Ã': 'Ó', 'Ã': 'Ú', 'Ã': 'Ñ',
-            'Ã¤': 'ä', 'Ã«': 'ë', 'Ã¶': 'ö', 'Ã¼': 'ü', 'Ã': 'ß',
-            'Ã': 'Ä', 'Ã': 'Ë', 'Ã': 'Ö', 'Ã': 'Ü',
-            'â€™': "'", 'â€œ': '"', 'â€': '"', 'â€"': '-', 'â€¢': '•',
-            'â€¦': '…', 'â€"': '—', 'â€"': '–',
-            'Â': ' ',  # Remove extra spaces from UTF-8 BOM issues
-        }
-
-        for wrong, correct in replacements.items():
-            text = text.replace(wrong, correct)
-        
-        # 3. Remove control characters and excessive whitespace
-        # Remove non-printable characters except common whitespace
-        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
-        
-        # 4. Normalize line endings and whitespace
-        text = re.sub(r'\r\n', '\n', text)  # Windows to Unix
-        text = re.sub(r'\r', '\n', text)    # Old Mac to Unix
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)  # Multiple blank lines
-        text = re.sub(r'[ \t]{2,}', ' ', text)        # Multiple spaces/tabs
-
-        # 5. Clean up specific patterns
-        # Remove HTML comments
-        text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
-        # Remove inline JavaScript
-        text = re.sub(r'javascript:', '', text, flags=re.IGNORECASE)
-        # Remove data URLs
-        text = re.sub(r'data:[^ ]+;base64,[^ ]+', '', text)
-
-        # 6. Preserve Chinese and other Unicode characters
-        # Keep Chinese, Japanese, Korean characters and common punctuation
-        text = re.sub(r'[^\u0000-\uFFFF]', '', text)  # Remove non-BMP characters if any
-
-        # 7. Remove empty lines at start/end
-        text = text.strip()
-
-        return text
+        from agent.web.content_extraction import clean_text
+        return clean_text(text)
 
     def handle_read_command(self, url_or_command: str) -> str:
         """
@@ -3396,470 +2179,29 @@ Note: This is an alias for /code apply.
                 return self.formatter.error(f"No help available for '{command}'. Available commands: {', '.join(sorted(help_texts.keys()))}")
 
     def handle_diff_command(self, command: str) -> str:
-        """Handle /diff command.
-
-        Usage:
-          /diff <file1> <file2>        - Compare two files
-          /diff --git <file>           - Show git diff for file
-          /diff --backup <file>        - Compare with latest backup
-
-        Examples:
-          /diff old.py new.py
-          /diff --git agent/core.py
-        """
-        if not command or command.strip() == "":
-            help_text = """
-📝 /diff Command Usage:
-  /diff <file1> <file2>        - Compare two files
-  /diff --git <file>           - Show git diff for file
-  /diff --backup <file>        - Compare with latest backup
-  /diff --help                 - Show this help
-
-Examples:
-  /diff old.py new.py
-  /diff --git agent/core.py
-            """.strip()
-            return help_text
-
-        parts = command.split()
-        if parts[0] == '--git':
-            # Git diff implementation
-            if len(parts) < 2:
-                return self.formatter.error("Please specify a file for git diff")
-            file_path = parts[1]
-            try:
-                import subprocess
-                result = subprocess.run(
-                    ['git', 'diff', file_path],
-                    capture_output=True,
-                    text=True,
-                    cwd=os.getcwd()
-                )
-                if result.stdout:
-                    return f"🔀 Git diff for {file_path}:\n\n{result.stdout}"
-                else:
-                    return f"📭 No changes for {file_path} in git"
-            except Exception as e:
-                return self.formatter.error(f"Error running git diff: {str(e)}")
-        elif parts[0] == '--backup':
-            # Compare with backup
-            if len(parts) < 2:
-                return self.formatter.error("Please specify a file for backup comparison")
-            file_path = parts[1]
-            # Find latest backup
-            backup_dir = os.path.join(self.safety_manager.workspace_root, '.safety_backups')
-            if not os.path.exists(backup_dir):
-                return f"📭 No backup directory found at {backup_dir}"
-            base_name = os.path.basename(file_path)
-            import glob
-            pattern = os.path.join(backup_dir, f"{base_name}.backup_*")
-            backups = glob.glob(pattern)
-            if not backups:
-                return f"📭 No backups found for {file_path}"
-            # Extract timestamp from filename: {base}.backup_{timestamp}
-            def extract_timestamp(path):
-                import re
-                match = re.search(r'\.backup_(\d+)$', os.path.basename(path))
-                return int(match.group(1)) if match else 0
-            latest_backup = max(backups, key=extract_timestamp)
-            # Read backup content
-            safe, reason, backup_content = self.safety_manager.safe_read_file(latest_backup)
-            if not safe:
-                return f"❌ Cannot read backup file {latest_backup}: {reason}"
-            # Read current file
-            if not self.code_analyzer:
-                self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
-            success, msg, current_content = self.code_analyzer.read_file_safe(file_path)
-            if not success:
-                return self.formatter.error(f"Cannot read {file_path}: {msg}")
-            # Generate diff
-            lines1 = backup_content.splitlines(keepends=True)
-            lines2 = current_content.splitlines(keepends=True)
-            diff = difflib.unified_diff(
-                lines1, lines2,
-                fromfile=f"backup: {os.path.basename(latest_backup)}",
-                tofile=f"current: {file_path}",
-                lineterm=''
-            )
-            diff_result = ''.join(diff)
-            if diff_result:
-                return f"🔀 Diff between backup and current {file_path}:\n\n{diff_result}"
-            else:
-                return self.formatter.success(f"File {file_path} is identical to latest backup")
-        else:
-            # Compare two files
-            if len(parts) < 2:
-                return self.formatter.error("Please specify two files to compare")
-            file1, file2 = parts[0], parts[1]
-            try:
-                # Read both files
-                if not self.code_analyzer:
-                    self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
-                success1, msg1, content1 = self.code_analyzer.read_file_safe(file1)
-                success2, msg2, content2 = self.code_analyzer.read_file_safe(file2)
-                if not success1:
-                    return self.formatter.error(f"Cannot read {file1}: {msg1}")
-                if not success2:
-                    return self.formatter.error(f"Cannot read {file2}: {msg2}")
-
-                # Generate diff
-                lines1 = content1.splitlines(keepends=True)
-                lines2 = content2.splitlines(keepends=True)
-                diff = difflib.unified_diff(
-                    lines1, lines2,
-                    fromfile=file1,
-                    tofile=file2,
-                    lineterm=''
-                )
-                diff_result = ''.join(diff)
-                if diff_result:
-                    return f"🔀 Diff between {file1} and {file2}:\n\n{diff_result}"
-                else:
-                    return self.formatter.success(f"Files {file1} and {file2} are identical")
-            except Exception as e:
-                return self.formatter.error(f"Error comparing files: {str(e)}")
+        """Handle /diff command — delegates to file_commands module."""
+        from agent.services.file_commands import handle_diff_command
+        return handle_diff_command(self, command)
 
     def handle_browse_command(self, command: str) -> str:
-        """Handle /browse command.
-
-        Usage:
-          /browse [path]              - Browse directory (default: current)
-          /browse --details [path]    - Show detailed listing
-          /browse --filter <ext>      - Filter by extension (e.g., .py)
-          /browse --help              - Show help
-
-        Examples:
-          /browse
-          /browse agent/
-          /browse --details src/
-          /browse --filter .py
-        """
-        if not command or command.strip() == "":
-            path = os.getcwd()
-        else:
-            path = command.strip()
-
-        # Parse flags
-        details = False
-        filter_ext = None
-        parts = path.split()
-        actual_path = os.getcwd()
-
-        i = 0
-        while i < len(parts):
-            if parts[i] == '--details':
-                details = True
-                parts.pop(i)
-            elif parts[i] == '--filter':
-                if i + 1 < len(parts):
-                    filter_ext = parts[i + 1]
-                    parts.pop(i)  # Remove --filter
-                    parts.pop(i)  # Remove the extension
-                else:
-                    return self.formatter.error("Missing extension after --filter")
-            elif parts[i] == '--help':
-                help_text = """
-📁 /browse Command Usage:
-  /browse [path]              - Browse directory (default: current)
-  /browse --details [path]    - Show detailed listing with sizes
-  /browse --filter <ext>      - Filter by extension (e.g., .py)
-  /browse --help              - Show this help
-
-Examples:
-  /browse                     # Browse current directory
-  /browse agent/              # Browse agent directory
-  /browse --details src/      # Detailed listing of src/
-  /browse --filter .py        # Show only Python files
-                """.strip()
-                return help_text
-            else:
-                # This is the path
-                if i == len(parts) - 1:  # Last part
-                    actual_path = parts[i]
-                    if not os.path.isabs(actual_path):
-                        actual_path = os.path.join(os.getcwd(), actual_path)
-                i += 1
-
-        # If no path specified and we consumed all parts with flags
-        if actual_path is None:
-            actual_path = os.getcwd()
-
-        try:
-            if not os.path.exists(actual_path):
-                return self.formatter.error(f"Path does not exist: {actual_path}")
-            if not os.path.isdir(actual_path):
-                return self.formatter.error(f"Not a directory: {actual_path}")
-
-            # List directory
-            items = os.listdir(actual_path)
-
-            # Separate directories and files
-            dirs = []
-            files = []
-            for item in items:
-                item_path = os.path.join(actual_path, item)
-                if os.path.isdir(item_path):
-                    dirs.append(item)
-                else:
-                    if filter_ext and not item.endswith(filter_ext):
-                        continue
-                    files.append(item)
-
-            # Sort
-            dirs.sort()
-            files.sort()
-
-            # Build result
-            result = f"📁 Directory: {actual_path}\n"
-            result += f"📊 Items: {len(dirs)} directories, {len(files)} files"
-            if filter_ext:
-                result += f" (filtered: *{filter_ext})"
-            result += "\n\n"
-
-            # Show directories
-            if dirs:
-                result += "📂 Directories:\n"
-                for d in dirs[:20]:  # Limit to 20
-                    result += f"  • {d}/\n"
-                if len(dirs) > 20:
-                    result += f"  ... and {len(dirs) - 20} more directories\n"
-                result += "\n"
-
-            # Show files
-            if files:
-                result += "📄 Files:\n"
-                for f in files[:30]:  # Limit to 30
-                    if details:
-                        try:
-                            size = os.path.getsize(os.path.join(actual_path, f))
-                            size_str = f"{size:,} bytes"
-                            if size > 1024:
-                                size_str = f"{size/1024:.1f} KB"
-                            result += f"  • {f} ({size_str})\n"
-                        except:
-                            result += f"  • {f}\n"
-                    else:
-                        result += f"  • {f}\n"
-                if len(files) > 30:
-                    result += f"  ... and {len(files) - 30} more files\n"
-
-            result += f"\n💡 Use '/browse --details {actual_path}' for detailed listing"
-            result += f"\n💡 Use '/read {actual_path}/<file>' to read a file"
-
-            return result
-        except Exception as e:
-            return self.formatter.error(f"Error browsing directory: {str(e)}")
+        """Handle /browse command — delegates to file_commands module."""
+        from agent.services.file_commands import handle_browse_command
+        return handle_browse_command(self, command)
 
     def handle_undo_command(self, command: str) -> str:
-        """Handle /undo command.
-
-        Usage:
-          /undo list [n]              - List recent changes (default: 5)
-          /undo last                  - Revert last change
-          /undo <change_id>           - Revert specific change by index
-          /undo --help                - Show help
-
-        Change ID is shown in /undo list output.
-        """
-        if not command or command.strip() == "":
-            command = "list 5"
-
-        parts = command.split()
-        action = parts[0].lower()
-
-        if action == '--help':
-            help_text = """
-↩️ /undo Command Usage:
-  /undo list [n]              - List recent changes (default: 5)
-  /undo last                  - Revert last change
-  /undo <change_id>           - Revert specific change by index
-  /undo --help                - Show this help
-
-Examples:
-  /undo list                 # List 5 most recent changes
-  /undo list 10              # List 10 most recent changes
-  /undo last                 # Revert last change
-  /undo 2                    # Revert change with ID 2
-            """.strip()
-            return help_text
-
-        if action == 'list':
-            limit = 5
-            if len(parts) > 1:
-                try:
-                    limit = int(parts[1])
-                except ValueError:
-                    return self.formatter.error(f"Invalid limit: {parts[1]}")
-
-            si = self._get_self_iteration()
-            changes = si.get_change_history(limit=limit)
-            if not changes:
-                return "📭 No change history found."
-
-            result = f"📜 Recent Changes (last {len(changes)}):\n\n"
-            for i, change in enumerate(changes):
-                timestamp = change.get('timestamp', 0)
-                dt = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(timestamp))
-                file_path = change.get('file_path', 'unknown')
-                desc = change.get('description', 'No description')
-                backup = change.get('backup', 'No backup')
-                result += f"{i+1}. [{dt}] {file_path}\n"
-                result += f"   Description: {desc}\n"
-                if backup and os.path.exists(backup):
-                    result += f"   Backup: {backup} ✓\n"
-                result += "\n"
-            result += "💡 Use '/undo <number>' to revert a specific change"
-            return result
-
-        elif action == 'last':
-            # Revert last change
-            si = self._get_self_iteration()
-            changes = si.get_change_history(limit=1)
-            if not changes:
-                return "📭 No changes to undo."
-            change = changes[0]
-            return self._revert_change(change)
-
-        else:
-            # Try to parse as number
-            try:
-                change_id = int(action)
-                si = self._get_self_iteration()
-                changes = si.get_change_history(limit=change_id + 10)  # Get enough
-                if change_id < 1 or change_id > len(changes):
-                    return self.formatter.error(f"Invalid change ID. Use '/undo list' to see available IDs.")
-                change = changes[change_id - 1]  # 1-indexed
-                return self._revert_change(change)
-            except ValueError:
-                return self.formatter.error(f"Invalid command: {command}. Use '/undo --help' for usage.")
+        """Handle /undo command — delegates to file_commands module."""
+        from agent.services.file_commands import handle_undo_command
+        return handle_undo_command(self, command)
 
     def _revert_change(self, change: dict) -> str:
-        """Revert a change by restoring from backup."""
-        try:
-            file_path = change.get('file_path')
-            backup_path = change.get('backup')
-            description = change.get('description', 'Unknown change')
-
-            if not file_path:
-                return self.formatter.error("Cannot revert: missing file path in change record")
-            if not backup_path:
-                return self.formatter.error("Cannot revert: no backup path in change record")
-            if not os.path.exists(backup_path):
-                return self.formatter.error(f"Cannot revert: backup file not found: {backup_path}")
-
-            # Read backup content
-            success, message, backup_content = self.safety_manager.safe_read_file(backup_path)
-            if not success:
-                return self.formatter.error(f"Cannot read backup: {message}")
-
-            # Write back to original file
-            success, message, _ = self.safety_manager.safe_write_file(file_path, backup_content, create_backup=False)
-            if not success:
-                return self.formatter.error(f"Cannot write original file: {message}")
-
-            # Log the revert
-            si = self._get_self_iteration()
-            si.log_change({
-                'timestamp': time.time(),
-                'file_path': file_path,
-                'description': f'Reverted: {description}',
-                'backup': backup_path,
-                'status': 'reverted',
-                'original_change': change.get('timestamp')
-            })
-
-            return f"{self.formatter.success(f'Reverted change: {description}')}\n📄 File restored from: {backup_path}"
-        except Exception as e:
-            return self.formatter.error(f"Error reverting change: {str(e)}")
+        """Revert a change — delegates to file_commands module."""
+        from agent.services.file_commands import _revert_change
+        return _revert_change(self, change)
 
     def handle_test_command(self, command: str) -> str:
-        """Handle /test command.
-
-        Usage:
-          /test                       - Run basic development tests (dev_test.py)
-          /test unit                  - Run unit tests (if available)
-          /test all                   - Run all available tests
-          /test --help                - Show help
-        """
-        if not command or command.strip() == "":
-            command = "basic"
-
-        cmd = command.strip().lower()
-        if cmd == '--help':
-            help_text = """
-🧪 /test Command Usage:
-  /test                       - Run basic development tests (dev_test.py)
-  /test unit                  - Run unit tests (if available)
-  /test all                   - Run all available tests
-  /test --help                - Show this help
-
-Examples:
-  /test              # Run basic tests
-  /test unit         # Run unit tests
-            """.strip()
-            return help_text
-
-        try:
-            if cmd == 'basic' or cmd == 'dev' or cmd == '':
-                # Run dev_test.py
-                test_path = os.path.join(self.agent_root, "..", "dev_test.py")
-                test_path = os.path.abspath(test_path)
-                if not os.path.exists(test_path):
-                    return self.formatter.error(f"Test file not found: {test_path}")
-
-                import subprocess
-                result = subprocess.run(
-                    [sys.executable, test_path],
-                    capture_output=True,
-                    text=True,
-                    timeout=60,
-                    cwd=os.path.dirname(test_path)
-                )
-
-                output = result.stdout
-                if result.stderr:
-                    output += f"\n\nSTDERR:\n{result.stderr}"
-
-                if result.returncode == 0:
-                    return self.formatter.success(f"Tests passed:\n\n{output}")
-                else:
-                    return self.formatter.error(f"Tests failed (exit code: {result.returncode}):\n\n{output}")
-
-            elif cmd == 'unit':
-                # Try to run pytest
-                try:
-                    import subprocess
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pytest", "tests/", "-v"],
-                        capture_output=True,
-                        text=True,
-                        timeout=120,
-                        cwd=os.getcwd()
-                    )
-                    output = result.stdout
-                    if result.stderr:
-                        output += f"\n\nSTDERR:\n{result.stderr}"
-
-                    if result.returncode == 0:
-                        return self.formatter.success(f"Unit tests passed:\n\n{output}")
-                    else:
-                        return self.formatter.error(f"Unit tests failed (exit code: {result.returncode}):\n\n{output}")
-                except FileNotFoundError:
-                    return self.formatter.error("pytest not found. Install with: pip install pytest")
-                except Exception as e:
-                    return self.formatter.error(f"Error running unit tests: {str(e)}")
-
-            elif cmd == 'all':
-                # Run both
-                basic_result = self.handle_test_command('basic')
-                unit_result = self.handle_test_command('unit')
-                return f"🧪 ALL TESTS\n\n{'='*60}\nBASIC TESTS:\n{basic_result}\n\n{'='*60}\nUNIT TESTS:\n{unit_result}"
-            else:
-                return self.formatter.error(f"Unknown test command: {command}. Use '/test --help' for usage.")
-        except subprocess.TimeoutExpired:
-            return self.formatter.error("Test execution timed out")
-        except Exception as e:
-            return self.formatter.error(f"Error running tests: {str(e)}")
+        """Handle /test command — delegates to file_commands module."""
+        from agent.services.file_commands import handle_test_command
+        return handle_test_command(self, command)
 
     def handle_apply_command(self, command: str) -> str:
         """Handle /apply command (alias for /code apply).
@@ -3888,402 +2230,52 @@ Note: This is an alias for /code apply. See '/help code' for more details.
         else:
             return self._code_apply_changes()
 
-    # ── Workflow command handlers ────────────────────────────────────────────
+    # ── Workflow command handlers (delegates to agent.services.workflow_commands) ──
 
     def handle_sprint_command(self, command: str) -> Optional[str]:
-        """Handle /sprint command for structured task execution.
-
-        Usage:
-          /sprint start <goal>     - Start a new sprint with a goal
-          /sprint status           - Show current sprint status
-          /sprint advance           - Complete phase and move to next
-          /sprint skip              - Skip current phase
-          /sprint complete <output> - Mark current phase as done with output
-          /sprint help              - Show sprint help
-        """
-        if not HAS_SPRINT or not self.sprint_mgr:
-            return self.formatter.warning("Sprint module not available. Install workflow modules.")
-
-        try:
-            parts = command.strip().split(maxsplit=2) if command.strip() else []
-            subcommand = parts[0] if parts else "status"
-
-            if subcommand == "start":
-                if len(parts) < 2:
-                    return self.formatter.error("Usage: /sprint start <goal>")
-                goal = " ".join(parts[1:])
-                sprint = self.sprint_mgr.create(goal, mode=self.mode)
-                self.current_sprint_id = sprint.id
-                return self.formatter.success(f"✅ Sprint started: {sprint.id}\n" + self.sprint_mgr.format_status(sprint.id))
-
-            elif subcommand == "status":
-                if not self.current_sprint_id:
-                    return self.formatter.info("No active sprint. Use: /sprint start <goal>")
-                return self.formatter.info(self.sprint_mgr.format_status(self.current_sprint_id))
-
-            elif subcommand == "advance":
-                if not self.current_sprint_id:
-                    return self.formatter.error("No active sprint")
-                next_phase = self.sprint_mgr.advance(self.current_sprint_id)
-                if next_phase:
-                    return self.formatter.success(f"▶️ Advanced to phase: {next_phase.name}\n" + self.sprint_mgr.format_status(self.current_sprint_id))
-                else:
-                    self.current_sprint_id = None
-                    return self.formatter.success("✅ Sprint completed!")
-
-            elif subcommand == "skip":
-                if not self.current_sprint_id:
-                    return self.formatter.error("No active sprint")
-                next_phase = self.sprint_mgr.skip_phase(self.current_sprint_id)
-                if next_phase:
-                    return self.formatter.success(f"⏭️  Skipped to phase: {next_phase.name}\n" + self.sprint_mgr.format_status(self.current_sprint_id))
-                else:
-                    self.current_sprint_id = None
-                    return self.formatter.success("✅ Sprint completed!")
-
-            elif subcommand == "complete":
-                if not self.current_sprint_id:
-                    return self.formatter.error("No active sprint")
-                output = " ".join(parts[1:]) if len(parts) > 1 else ""
-                self.sprint_mgr.complete_phase(self.current_sprint_id, output=output)
-                return self.formatter.success(f"✅ Phase output recorded.\n" + self.sprint_mgr.format_status(self.current_sprint_id))
-
-            elif subcommand == "help":
-                help_text = """
-📋 /sprint Command — Structured Task Execution
-
-Available subcommands:
-  /sprint start <goal>      - Start a new sprint (auto-detects mode-specific phases)
-  /sprint status            - Show current sprint progress
-  /sprint advance           - Complete current phase and move to next
-  /sprint skip              - Skip current phase and move to next
-  /sprint complete <output> - Record output/notes for current phase
-  /sprint help              - Show this help
-
-Example workflow:
-  /sprint start "Fix authentication bug"
-  /sprint status                           # See progress
-  /sprint complete "Analyzed root cause"   # Add notes
-  /sprint advance                          # Move to next phase
-"""
-                return help_text.strip()
-
-            else:
-                return self.formatter.error(f"Unknown sprint subcommand: {subcommand}")
-
-        except Exception as e:
-            return self.formatter.error(f"Sprint error: {e}")
+        """Handle /sprint command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_sprint_command
+        return handle_sprint_command(self, command)
 
     def handle_careful_command(self, command: str) -> Optional[str]:
-        """Handle /careful command — warn before dangerous operations."""
-        if not HAS_GUARDS or not self.guard:
-            return self.formatter.warning("Guards module not available. Install workflow modules.")
-
-        try:
-            if not command.strip() or command.strip() == "status":
-                return self.guard.get_status()
-            elif command.strip() == "on":
-                self.guard.enable_careful()
-                return self.formatter.success("🟢 Careful mode ON — warnings enabled for dangerous commands")
-            elif command.strip() == "off":
-                self.guard.disable_careful()
-                return self.formatter.info("⚪ Careful mode OFF — no warnings")
-            else:
-                return self.formatter.error("Usage: /careful [on|off|status]")
-        except Exception as e:
-            return self.formatter.error(f"Guard error: {e}")
+        """Handle /careful command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_careful_command
+        return handle_careful_command(self, command)
 
     def handle_freeze_command(self, command: str) -> Optional[str]:
-        """Handle /freeze command — restrict edits to one directory."""
-        if not HAS_GUARDS or not self.guard:
-            return self.formatter.warning("Guards module not available. Install workflow modules.")
-
-        try:
-            if not command.strip():
-                return self.formatter.error("Usage: /freeze <directory>")
-            directory = command.strip()
-            self.guard.enable_freeze(directory)
-            return self.formatter.success(f"🧊 Frozen to: {directory}\n   Edits restricted to this directory and subdirs.\n   Use /unfreeze to remove restriction.")
-        except Exception as e:
-            return self.formatter.error(f"Freeze error: {e}")
+        """Handle /freeze command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_freeze_command
+        return handle_freeze_command(self, command)
 
     def handle_guard_command(self, command: str) -> Optional[str]:
-        """Handle /guard command — enable both /careful and /freeze."""
-        if not HAS_GUARDS or not self.guard:
-            return self.formatter.warning("Guards module not available. Install workflow modules.")
-
-        try:
-            if not command.strip() or command.strip() == "status":
-                return self.guard.get_status()
-            elif command.strip() == "on":
-                self.guard.enable_guard()
-                return self.formatter.success("🛡️  Full guard enabled — /careful + /freeze (with current directory)")
-            elif command.strip().startswith("on "):
-                directory = command.strip()[3:].strip()
-                self.guard.enable_guard(directory)
-                return self.formatter.success(f"🛡️  Full guard enabled\n   Careful: ON\n   Frozen to: {directory}")
-            elif command.strip() == "off":
-                self.guard.disable_guard()
-                return self.formatter.info("⚪ Guard disabled")
-            else:
-                return self.formatter.error("Usage: /guard [on [dir]|off|status]")
-        except Exception as e:
-            return self.formatter.error(f"Guard error: {e}")
+        """Handle /guard command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_guard_command
+        return handle_guard_command(self, command)
 
     def handle_unfreeze_command(self, command: str) -> Optional[str]:
-        """Handle /unfreeze command — remove edit restrictions."""
-        if not HAS_GUARDS or not self.guard:
-            return self.formatter.warning("Guards module not available. Install workflow modules.")
-
-        try:
-            self.guard.disable_freeze()
-            return self.formatter.success("🧊 Freeze removed — edits allowed everywhere")
-        except Exception as e:
-            return self.formatter.error(f"Unfreeze error: {e}")
+        """Handle /unfreeze command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_unfreeze_command
+        return handle_unfreeze_command(self, command)
 
     def handle_evidence_command(self, command: str) -> Optional[str]:
-        """Handle /evidence command — view audit trail."""
-        if not HAS_EVIDENCE or not self.evidence:
-            return self.formatter.warning("Evidence module not available. Install workflow modules.")
-
-        try:
-            parts = command.strip().split() if command.strip() else []
-            subcommand = parts[0] if parts else "recent"
-
-            if subcommand == "recent":
-                limit = int(parts[1]) if len(parts) > 1 else 10
-                return self.evidence.format_recent(limit=limit)
-
-            elif subcommand == "stats":
-                stats = self.evidence.get_stats()
-                lines = ["📊 Evidence Trail Statistics", "=" * 40]
-                lines.append(f"Total entries: {stats.get('total', 0)}")
-                if "by_action" in stats:
-                    lines.append("\nBy action:")
-                    for action, count in sorted(stats["by_action"].items()):
-                        lines.append(f"  {action}: {count}")
-                lines.append(f"\nLog size: {stats.get('log_size_kb', 0)} KB")
-                lines.append(f"Location: {stats.get('log_path', 'N/A')}")
-                return "\n".join(lines)
-
-            elif subcommand == "filter":
-                if len(parts) < 2:
-                    return self.formatter.error("Usage: /evidence filter <action>")
-                action = parts[1]
-                entries = self.evidence.get_by_action(action)
-                if not entries:
-                    return self.formatter.info(f"No evidence entries for action: {action}")
-                lines = [f"📋 Evidence for action: {action}", "=" * 40]
-                for e in entries[-10:]:
-                    ts = e.get("ts", "")[:16]
-                    lines.append(f"[{ts}] {e.get('input', '')[:60]}")
-                return "\n".join(lines)
-
-            elif subcommand == "help":
-                help_text = """
-📋 /evidence Command — Audit Trail Viewer
-
-Available subcommands:
-  /evidence recent [limit]  - Show recent entries (default: 10)
-  /evidence stats           - Show statistics
-  /evidence filter <action> - Filter by action type
-  /evidence help            - Show this help
-
-Example:
-  /evidence recent 20
-  /evidence filter command
-"""
-                return help_text.strip()
-
-            else:
-                return self.formatter.error(f"Unknown evidence subcommand: {subcommand}")
-
-        except Exception as e:
-            return self.formatter.error(f"Evidence error: {e}")
+        """Handle /evidence command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_evidence_command
+        return handle_evidence_command(self, command)
 
     def handle_evolve_command(self, command: str) -> Optional[str]:
-        """Handle /evolve command — view self-evolution status."""
-        if not HAS_EVOLUTION or not self.evolution:
-            return self.formatter.warning("Evolution module not available. Install evolution modules.")
-
-        try:
-            parts = command.strip().split() if command.strip() else []
-            subcommand = parts[0] if parts else "status"
-
-            if subcommand == "status":
-                return self.evolution.get_evolution_summary()
-
-            elif subcommand == "daily":
-                report = self.evolution.run_daily_audit()
-                lines = ["📊 Daily Audit Report", "=" * 50]
-                lines.append(f"Date: {report.date}")
-                lines.append(f"Total calls: {report.total_calls}")
-                lines.append(f"Errors: {report.errors}")
-                lines.append(f"Fallbacks: {report.fallbacks}")
-                if report.most_frequent_action:
-                    lines.append(f"Top action: {report.most_frequent_action}")
-                if report.issues:
-                    lines.append("\nIssues detected:")
-                    for issue in report.issues:
-                        lines.append(f"  - {issue}")
-                return "\n".join(lines)
-
-            elif subcommand == "weekly":
-                report = self.evolution.run_weekly_retro()
-                lines = ["📈 Weekly Retrospective", "=" * 50]
-                lines.append(f"Week: {report.week_start} to {report.week_end}")
-                lines.append(f"Sessions: {report.total_sessions}")
-                lines.append(f"Tasks: {report.total_tasks}")
-                lines.append(f"Success rate: {report.success_rate:.1f}%")
-                if report.top_tools:
-                    lines.append(f"Top tools: {', '.join(report.top_tools)}")
-                return "\n".join(lines)
-
-            elif subcommand == "health":
-                report = self.evolution.run_startup_check()
-                lines = ["🏥 Health Check", "=" * 50]
-                lines.append(f"Checks passed: {report.checks_passed}")
-                lines.append(f"Checks failed: {report.checks_failed}")
-                if report.issues:
-                    lines.append("\nIssues:")
-                    for issue in report.issues:
-                        lines.append(f"  ⚠️  {issue}")
-                else:
-                    lines.append("\n✓ All systems healthy")
-                return "\n".join(lines)
-
-            elif subcommand == "help":
-                help_text = """
-📈 /evolve Command — Self-Evolution Status
-
-Available subcommands:
-  /evolve status  - Show overall evolution status
-  /evolve daily   - Run daily audit
-  /evolve weekly  - Run weekly retrospective
-  /evolve health  - Run health check
-  /evolve help    - Show this help
-
-NeoMind Phase 4: Self-Evolution Closed Loop
-- Learns from feedback and conversations
-- Adjusts preferences automatically
-- Generates weekly retros
-- Tracks improvement over time
-"""
-                return help_text.strip()
-
-            else:
-                return self.formatter.error(f"Unknown evolve subcommand: {subcommand}")
-
-        except Exception as e:
-            return self.formatter.error(f"Evolution error: {e}")
+        """Handle /evolve command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_evolve_command
+        return handle_evolve_command(self, command)
 
     def handle_dashboard_command(self, command: str) -> Optional[str]:
-        """Handle /dashboard command — generate HTML evolution metrics dashboard."""
-        try:
-            from agent.evolution.dashboard import generate_dashboard
-
-            # Generate dashboard and save to ~/.neomind/dashboard.html
-            dashboard_path = Path.home() / ".neomind" / "dashboard.html"
-            html = generate_dashboard(str(dashboard_path))
-
-            return self.formatter.success(
-                f"📊 Dashboard generated!\n\n"
-                f"Location: {dashboard_path}\n\n"
-                f"Open in browser to view:\n"
-                f"  - Health status and system checks\n"
-                f"  - Daily activity (7-day trend)\n"
-                f"  - Mode distribution (chat/coding/fin)\n"
-                f"  - Learning patterns\n"
-                f"  - Recent evidence trail\n"
-                f"  - Evolution timeline\n\n"
-                f"Size: {dashboard_path.stat().st_size / 1024:.1f} KB"
-            )
-
-        except ImportError:
-            return self.formatter.warning(
-                "Dashboard module not available. "
-                "Install evolution modules: pip install agent-evolution"
-            )
-        except Exception as e:
-            return self.formatter.error(f"Dashboard generation error: {e}")
+        """Handle /dashboard command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_dashboard_command
+        return handle_dashboard_command(self, command)
 
     def handle_upgrade_command(self, command: str) -> Optional[str]:
-        """Handle /upgrade command — check and manage updates."""
-        if not HAS_UPGRADE or not self.upgrader:
-            return self.formatter.warning("Upgrade module not available. Install upgrade modules.")
-
-        try:
-            parts = command.strip().split() if command.strip() else []
-            subcommand = parts[0] if parts else "check"
-
-            if subcommand == "check":
-                has_updates, new_version = self.upgrader.check_for_updates()
-                if has_updates:
-                    lines = ["🎉 Updates Available!", "=" * 50]
-                    lines.append(f"Current version: {self.upgrader.get_current_version()}")
-                    lines.append(f"New version: {new_version}")
-                    lines.append(f"\nChangelog:\n{self.upgrader.get_changelog_diff()}")
-                    lines.append("\nRun '/upgrade perform' to install updates.")
-                    return "\n".join(lines)
-                else:
-                    return self.formatter.info(f"✓ You're on the latest version: {self.upgrader.get_current_version()}")
-
-            elif subcommand == "changelog":
-                changelog = self.upgrader.get_changelog_diff()
-                return f"📝 Changelog:\n\n{changelog}"
-
-            elif subcommand == "perform":
-                lines = ["⚠️  Upgrade will:"]
-                lines.append("1. Backup current version")
-                lines.append("2. Pull latest from origin/main")
-                lines.append("3. Verify installation")
-                lines.append("4. Rollback if errors detected")
-                lines.append("\nAre you sure? Run with '--confirm' to proceed.")
-                if "--confirm" in command:
-                    success, message = self.upgrader.upgrade(confirmed=True)
-                    if success:
-                        return self.formatter.success(message)
-                    else:
-                        return self.formatter.error(message)
-                return "\n".join(lines)
-
-            elif subcommand == "history":
-                history = self.upgrader.get_upgrade_history()
-                if not history:
-                    return self.formatter.info("No upgrade history yet.")
-                lines = ["📋 Upgrade History", "=" * 50]
-                for entry in history[-10:]:
-                    ts = entry.get("timestamp", "?")[:19]
-                    upgrade_type = entry.get("type", "?")
-                    version = entry.get("version", "?")
-                    lines.append(f"[{ts}] {upgrade_type}: {version}")
-                return "\n".join(lines)
-
-            elif subcommand == "help":
-                help_text = """
-🔄 /upgrade Command — Update Management
-
-Available subcommands:
-  /upgrade check           - Check for available updates
-  /upgrade changelog       - Show what changed
-  /upgrade perform         - Perform safe upgrade
-  /upgrade perform --confirm - Actually install updates
-  /upgrade history         - Show upgrade history
-  /upgrade help            - Show this help
-
-Safe Upgrade Process:
-1. Backup current version (git tag)
-2. Pull latest code
-3. Verify installation
-4. Rollback on errors
-"""
-                return help_text.strip()
-
-            else:
-                return self.formatter.error(f"Unknown upgrade subcommand: {subcommand}")
-
-        except Exception as e:
-            return self.formatter.error(f"Upgrade error: {e}")
+        """Handle /upgrade command — delegates to workflow_commands module."""
+        from agent.services.workflow_commands import handle_upgrade_command
+        return handle_upgrade_command(self, command)
 
     # ── Workflow integration helpers ────────────────────────────────────────
 
@@ -4423,610 +2415,54 @@ Safe Upgrade Process:
         print("💡 Content added to AI memory. You can now ask questions about it!")
 
     # ── /links command ─────────────────────────────────────────────
+    # ── Web command handlers (delegates to agent.web.web_commands) ──────
+
     def handle_links_command(self, url_or_command: str) -> str:
-        """Extract and list all links from a webpage.
+        """Handle /links command — delegates to web_commands module."""
+        from agent.web.web_commands import handle_links_command
+        return handle_links_command(self, url_or_command)
 
-        Usage:
-            /links <url>           — Fetch page and list all links (numbered)
-            /links                 — Re-show links from last /links or /read call
+    def _format_links_output(self, links):
+        """Format links output — delegates to content_extraction module."""
+        from agent.web.content_extraction import format_links_output
+        return format_links_output(links)
 
-        After running /links, use `/read N` to follow link #N.
-        """
-        if not url_or_command or url_or_command.strip() == "":
-            # Re-show cached links if available
-            if self._last_links:
-                return self._format_links_output(self._last_links)
-            return (
-                "🔗 /links <url>  — Extract all links from a webpage\n"
-                "After running /links, use /read N to follow link #N."
-            )
-
-        url = url_or_command.strip()
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-
-        print(f"🔗 Extracting links from: {url}")
-
-        try:
-            headers = {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
-            }
-            response = requests.get(url, headers=headers, timeout=15)
-            response.raise_for_status()
-
-            soup = BeautifulSoup(response.text, 'html.parser')
-
-            # Remove nav/footer noise
-            for tag in ['nav', 'footer', 'aside']:
-                for el in soup.find_all(tag):
-                    el.decompose()
-
-            parsed_base = urlparse(url)
-            base_domain = parsed_base.netloc
-
-            internal_links = {}  # num → (text, href)
-            external_links = {}
-            seen = set()
-            num = 0
-
-            for a_tag in soup.find_all('a', href=True):
-                href = a_tag['href'].strip()
-                text = a_tag.get_text(strip=True)[:80]
-                if not text or not href or href.startswith(('#', 'javascript:', 'mailto:', 'tel:')):
-                    continue
-
-                # Resolve relative
-                if href.startswith('/'):
-                    href = f"{parsed_base.scheme}://{parsed_base.netloc}{href}"
-                elif not href.startswith(('http://', 'https://')):
-                    continue
-
-                if href in seen:
-                    continue
-                seen.add(href)
-                num += 1
-
-                parsed_href = urlparse(href)
-                if parsed_href.netloc == base_domain or parsed_href.netloc.endswith('.' + base_domain):
-                    internal_links[num] = (text, href)
-                else:
-                    external_links[num] = (text, href)
-
-            # Store for /read N follow-up
-            self._last_links = {}
-            all_links = {**internal_links, **external_links}
-            for n, (text, href) in all_links.items():
-                self._last_links[n] = href
-
-            # Format output
-            lines = [f"🔗 Links from: {url}", f"   Total: {len(all_links)}", ""]
-
-            if internal_links:
-                lines.append(f"── Internal ({len(internal_links)}) ──")
-                for n, (text, href) in internal_links.items():
-                    path = urlparse(href).path or '/'
-                    lines.append(f"  [{n}] {text} → {path}")
-                lines.append("")
-
-            if external_links:
-                lines.append(f"── External ({len(external_links)}) ──")
-                for n, (text, href) in external_links.items():
-                    lines.append(f"  [{n}] {text} → {href}")
-                lines.append("")
-
-            lines.append("💡 Use /read N to follow a link (e.g., /read 3)")
-
-            return "\n".join(lines)
-
-        except Exception as e:
-            return self.formatter.error(f"Failed to extract links from {url}: {e}")
-
-    def _format_links_output(self, links: Dict[int, str]) -> str:
-        """Re-display cached link list."""
-        lines = [f"🔗 Cached links ({len(links)} total):", ""]
-        for n, href in sorted(links.items()):
-            lines.append(f"  [{n}] {href}")
-        lines.append("")
-        lines.append("💡 Use /read N to follow a link")
-        return "\n".join(lines)
-
-    # ── /crawl command ─────────────────────────────────────────────
     def handle_crawl_command(self, command: str) -> str:
-        """Crawl a website starting from a URL, following same-domain links.
+        """Handle /crawl command — delegates to web_commands module."""
+        from agent.web.web_commands import handle_crawl_command
+        return handle_crawl_command(self, command)
 
-        Usage:
-            /crawl <url>                 — Crawl with depth=1, max 10 pages
-            /crawl <url> --depth 2       — Crawl up to 2 levels deep
-            /crawl <url> --max 20        — Crawl up to 20 pages
-            /crawl <url> --depth 2 --max 15
-        """
-        if not command or command.strip() == "":
-            return (
-                "🕷️ /crawl <url> [--depth N] [--max N]\n"
-                "  Crawl a website from the given URL.\n"
-                "  --depth N  Max link depth (default: 1)\n"
-                "  --max N    Max pages to crawl (default: 10, hard cap: 50)\n\n"
-                "Example: /crawl https://docs.example.com --depth 2 --max 15"
-            )
-
-        parts = command.strip().split()
-        url = None
-        max_depth = 1
-        max_pages = 10
-
-        # Parse args
-        i = 0
-        while i < len(parts):
-            if parts[i] == '--depth' and i + 1 < len(parts):
-                try:
-                    max_depth = int(parts[i + 1])
-                    i += 2
-                    continue
-                except ValueError:
-                    return self.formatter.error("--depth requires an integer")
-            elif parts[i] == '--max' and i + 1 < len(parts):
-                try:
-                    max_pages = min(int(parts[i + 1]), 50)  # Hard cap at 50
-                    i += 2
-                    continue
-                except ValueError:
-                    return self.formatter.error("--max requires an integer")
-            elif url is None:
-                url = parts[i]
-            i += 1
-
-        if not url:
-            return self.formatter.error("Please provide a URL to crawl.")
-
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-
-        print(f"🕷️ Starting crawl: {url} (depth={max_depth}, max={max_pages})")
-
-        try:
-            from agent.web.extractor import WebExtractor
-            from agent.web.crawler import BFSCrawler
-            from agent.web.cache import URLCache
-
-            # Create extractor with browser fallback
-            cache = URLCache(ttl_seconds=1800)
-            extractor = WebExtractor(
-                browser_sync_fn=self._browser_sync,
-                cache=cache,
-            )
-            crawler = BFSCrawler(extractor, cache=cache, delay=1.0)
-
-            report = crawler.crawl(
-                url,
-                max_depth=max_depth,
-                max_pages=max_pages,
-            )
-
-            # Store crawl results for follow-up /read
-            self._crawl_results = {
-                page.url: page.content for page in report.ok_pages
-            }
-
-            # Add summary to AI memory (not full content — too large)
-            if report.ok_pages:
-                summary_content = report.all_content(max_chars_per_page=2000)
-                # Cap total at 12000 chars for memory
-                if len(summary_content) > 12000:
-                    summary_content = summary_content[:12000] + "\n\n[Crawl content truncated]"
-
-                self.add_to_history("user", f"""I've crawled the following website:
-
-Start URL: {url}
-Pages crawled: {len(report.ok_pages)}
-Total words: {report.total_words:,}
-
-{summary_content}
-
-Please remember this content. I may ask questions about it.""")
-
-                print("💡 Crawl content added to AI memory.")
-
-            return report.summary()
-
-        except ImportError as e:
-            return self.formatter.error(
-                f"Crawl module not available: {e}\n"
-                "Make sure agent/web/ package exists."
-            )
-        except Exception as e:
-            return self.formatter.error(f"Crawl failed: {e}")
-
-    # ── /webmap command ────────────────────────────────────────────
     def handle_webmap_command(self, command: str) -> str:
-        """Generate a sitemap or discover site structure via crawling.
+        """Handle /webmap command — delegates to web_commands module."""
+        from agent.web.web_commands import handle_webmap_command
+        return handle_webmap_command(self, command)
 
-        First attempts to fetch and parse sitemap.xml.
-        If not found, uses BFSCrawler to discover links (shallow crawl).
-        Displays as a tree structure for easy navigation.
-
-        Usage:
-            /webmap <url>               — Generate webmap from sitemap.xml or crawl
-            /webmap <url> --depth 2     — Crawl with custom depth if no sitemap
-
-        Stores discovered URLs in self._last_webmap for follow-up commands.
-        """
-        if not command or command.strip() == "":
-            return (
-                "🗺️  /webmap <url> [--depth N]\n"
-                "  Generate a site map from sitemap.xml or by crawling.\n"
-                "  --depth N  Max crawl depth if no sitemap found (default: 1)\n\n"
-                "Example: /webmap https://docs.example.com"
-            )
-
-        parts = command.strip().split()
-        url = None
-        max_depth = 1
-
-        # Parse args
-        i = 0
-        while i < len(parts):
-            if parts[i] == '--depth' and i + 1 < len(parts):
-                try:
-                    max_depth = int(parts[i + 1])
-                    i += 2
-                    continue
-                except ValueError:
-                    return self.formatter.error("--depth requires an integer")
-            elif url is None:
-                url = parts[i]
-            i += 1
-
-        if not url:
-            return self.formatter.error("Please provide a URL.")
-
-        if not url.startswith(('http://', 'https://')):
-            url = 'https://' + url
-
-        print(f"🗺️  Generating webmap for: {url}")
-
-        try:
-            from urllib.parse import urljoin, urlparse
-            import xml.etree.ElementTree as ET
-            import requests
-
-            # ── Step 1: Try to fetch sitemap.xml ──────────────────────
-            sitemap_url = urljoin(url, '/sitemap.xml')
-            print(f"  Checking for sitemap at: {sitemap_url}")
-
-            try:
-                headers = {
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                }
-                response = requests.get(sitemap_url, headers=headers, timeout=10)
-                response.raise_for_status()
-
-                # Parse sitemap
-                root = ET.fromstring(response.content)
-                sitemap_urls = []
-
-                # Handle standard sitemap namespace
-                namespace = {'sm': 'http://www.sitemaps.org/schemas/sitemap/0.9'}
-                for url_elem in root.findall('.//sm:loc', namespace):
-                    if url_elem.text:
-                        sitemap_urls.append(url_elem.text)
-
-                if not sitemap_urls:
-                    # Try without namespace
-                    for url_elem in root.findall('.//loc'):
-                        if url_elem.text:
-                            sitemap_urls.append(url_elem.text)
-
-                if sitemap_urls:
-                    print(f"  Found sitemap.xml with {len(sitemap_urls)} URLs")
-                    self._last_webmap = sitemap_urls
-                    return self._format_webmap(url, sitemap_urls, source='sitemap.xml')
-
-            except requests.RequestException as e:
-                print(f"  Sitemap not found: {e}")
-
-            # ── Step 2: Fall back to BFS crawl ────────────────────────
-            print(f"  Falling back to crawl-based discovery (depth={max_depth})")
-
-            from agent.web.extractor import WebExtractor
-            from agent.web.crawler import BFSCrawler
-            from agent.web.cache import URLCache
-
-            cache = URLCache(ttl_seconds=1800)
-            extractor = WebExtractor(
-                browser_sync_fn=self._browser_sync,
-                cache=cache,
-            )
-            crawler = BFSCrawler(extractor, cache=cache, delay=0.5)
-
-            report = crawler.crawl(
-                url,
-                max_depth=max_depth,
-                max_pages=20,  # Keep it reasonable for webmap
-            )
-
-            # Extract URLs from crawled pages
-            crawled_urls = [page.url for page in report.ok_pages]
-            self._last_webmap = crawled_urls
-
-            return self._format_webmap(url, crawled_urls, source='crawl')
-
-        except ImportError as e:
-            return self.formatter.error(
-                f"Webmap module not available: {e}\n"
-                "Make sure requests and xml modules are available."
-            )
-        except Exception as e:
-            return self.formatter.error(f"Webmap generation failed: {e}")
-
-    def _format_webmap(self, base_url: str, urls: list, source: str = 'crawl') -> str:
-        """Format discovered URLs as a tree structure.
-
-        Args:
-            base_url: The starting URL for context.
-            urls: List of discovered URLs.
-            source: Where the URLs came from ('sitemap.xml' or 'crawl').
-
-        Returns:
-            Formatted tree string.
-        """
-        if not urls:
-            return "🗺️  No URLs discovered."
-
-        from urllib.parse import urlparse
-
-        parsed_base = urlparse(base_url)
-        base_domain = parsed_base.netloc
-        base_path = parsed_base.path.rstrip('/')
-
-        # Group URLs by path depth
-        url_tree = {}
-        for url_str in urls:
-            parsed = urlparse(url_str)
-            if parsed.netloc != base_domain:
-                continue
-
-            path = parsed.path.rstrip('/')
-            if path.startswith(base_path):
-                rel_path = path[len(base_path):].lstrip('/') or '/'
-            else:
-                rel_path = path.lstrip('/') or '/'
-
-            url_tree[rel_path] = url_str
-
-        # Sort by path depth and name
-        sorted_paths = sorted(url_tree.keys(), key=lambda p: (p.count('/'), p))
-
-        # Build output
-        lines = [
-            f"🗺️  Site map for {base_domain} (source: {source})",
-            f"  Found {len(url_tree)} URLs",
-            "",
-        ]
-
-        for path in sorted_paths:
-            depth = path.count('/') if path != '/' else 0
-            indent = "  " * (depth + 1)
-
-            # Truncate long paths
-            display_path = path if len(path) <= 60 else path[:57] + "..."
-            lines.append(f"{indent}{display_path}")
-
-        lines.append("")
-        lines.append(f"💡 URLs stored in /webmap results. Use /read <url> to view any page.")
-
-        return "\n".join(lines)
-
+    def _format_webmap(self, base_url, urls, source='crawl'):
+        """Format webmap output — delegates to content_extraction module."""
+        from agent.web.content_extraction import format_webmap
+        return format_webmap(base_url, urls, source)
 
     def handle_logs_command(self, command: str) -> Optional[str]:
-        """Handle /logs command for searching and viewing activity logs.
+        """Handle /logs command — delegates to web_commands module."""
+        from agent.web.web_commands import handle_logs_command
+        return handle_logs_command(self, command)
 
-        Usage:
-            /logs              - Show today's stats
-            /logs search <kw>  - Search logs for keyword
-            /logs stats        - Show weekly stats
-            /logs recent [N]   - Show N most recent entries (default: 10)
-            /logs cleanup [days] - Clean up logs older than N days
-        """
-        if not self._unified_logger:
-            return self.formatter.warning("Unified logger not initialized")
+    # ── Log formatting (delegated to agent.services.log_commands) ──────
+    def _format_log_stats(self, stats, period="today"):
+        from agent.services.log_commands import format_log_stats
+        return format_log_stats(stats, period)
 
-        parts = command.strip().split(maxsplit=1) if command.strip() else []
-        subcommand = parts[0] if parts else ""
-        args = parts[1] if len(parts) > 1 else ""
+    def _format_log_weekly_stats(self, stats):
+        from agent.services.log_commands import format_log_weekly_stats
+        return format_log_weekly_stats(stats)
 
-        try:
-            if not subcommand or subcommand == "":
-                # Default: show today's stats
-                stats = self._unified_logger.get_daily_stats()
-                return self._format_log_stats(stats, "today")
+    def _format_log_search_results(self, results, keyword):
+        from agent.services.log_commands import format_log_search_results
+        return format_log_search_results(results, keyword)
 
-            elif subcommand == "search":
-                if not args:
-                    return self.formatter.warning("/logs search requires a keyword")
-                results = self._unified_logger.search(args, limit=10)
-                return self._format_log_search_results(results, args)
-
-            elif subcommand == "stats":
-                # Weekly stats
-                stats = self._unified_logger.get_weekly_stats()
-                return self._format_log_weekly_stats(stats)
-
-            elif subcommand == "recent":
-                # Most recent entries
-                limit = 10
-                if args:
-                    try:
-                        limit = int(args)
-                    except ValueError:
-                        return self.formatter.error(f"Invalid limit: {args}")
-                results = self._unified_logger.query(limit=limit)
-                return self._format_log_recent(results, limit)
-
-            elif subcommand == "cleanup":
-                # Clean up old logs
-                keep_days = 90
-                if args:
-                    try:
-                        keep_days = int(args)
-                    except ValueError:
-                        return self.formatter.error(f"Invalid days: {args}")
-                deleted = self._unified_logger.cleanup_old_logs(keep_days)
-                return self.formatter.success(
-                    f"Cleaned up logs: deleted {deleted} files (kept logs from last {keep_days} days)"
-                )
-
-            else:
-                return self.formatter.error(
-                    f"Unknown /logs subcommand: {subcommand}\n"
-                    "Usage: /logs [search <kw>|stats|recent [N]|cleanup [days]]"
-                )
-
-        except Exception as e:
-            return self.formatter.error(f"Logs command failed: {e}")
-
-    def _format_log_stats(self, stats: dict, period: str = "today") -> str:
-        """Format daily log statistics."""
-        lines = [
-            f"📊 Log Statistics - {period.upper()}",
-            f"  Date: {stats.get('date', 'N/A')}",
-            f"  Total Events: {stats.get('total_events', 0)}",
-            f"  LLM Calls: {stats.get('by_type', {}).get('llm_call', 0)}",
-            f"  Commands: {stats.get('total_commands', 0)}",
-            f"  Errors: {stats.get('errors', 0)}",
-            f"  Total Tokens: {stats.get('total_tokens', 0):,}",
-            "",
-        ]
-
-        # Show breakdown by mode
-        by_mode = stats.get('by_mode', {})
-        if by_mode:
-            lines.append("  By Mode:")
-            for mode, count in sorted(by_mode.items(), key=lambda x: -x[1]):
-                lines.append(f"    {mode}: {count}")
-
-        # Show breakdown by type
-        by_type = stats.get('by_type', {})
-        if by_type:
-            lines.append("")
-            lines.append("  By Type:")
-            for log_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
-                lines.append(f"    {log_type}: {count}")
-
-        if stats.get('log_file'):
-            lines.append("")
-            lines.append(f"  Log File: {stats['log_file']}")
-            size_kb = stats.get('log_size_bytes', 0) / 1024
-            lines.append(f"  Log Size: {size_kb:.1f} KB")
-
-        return "\n".join(lines)
-
-    def _format_log_weekly_stats(self, stats: dict) -> str:
-        """Format weekly log statistics."""
-        lines = [
-            f"📊 Weekly Log Statistics",
-            f"  Period: {stats.get('period', 'N/A')}",
-            f"  Total Events: {stats.get('total_events', 0):,}",
-            f"  LLM Calls: {stats.get('by_type', {}).get('llm_call', 0)}",
-            f"  Commands: {stats.get('total_commands', 0)}",
-            f"  Errors: {stats.get('total_errors', 0)}",
-            f"  Total Tokens: {stats.get('total_tokens', 0):,}",
-            f"  Days with Activity: {stats.get('days_with_activity', 0)}/7",
-            "",
-        ]
-
-        # Show breakdown by mode
-        by_mode = stats.get('by_mode', {})
-        if by_mode:
-            lines.append("  By Mode:")
-            for mode, count in sorted(by_mode.items(), key=lambda x: -x[1]):
-                lines.append(f"    {mode}: {count}")
-
-        # Show breakdown by type
-        by_type = stats.get('by_type', {})
-        if by_type:
-            lines.append("")
-            lines.append("  By Type:")
-            for log_type, count in sorted(by_type.items(), key=lambda x: -x[1]):
-                lines.append(f"    {log_type}: {count}")
-
-        return "\n".join(lines)
-
-    def _format_log_search_results(self, results: list, keyword: str) -> str:
-        """Format log search results."""
-        if not results:
-            return f"🔍 No logs found matching '{keyword}'"
-
-        lines = [
-            f"🔍 Search Results for '{keyword}' ({len(results)} matches)",
-            "",
-        ]
-
-        for i, entry in enumerate(results[:10], 1):
-            log_type = entry.get('type', 'unknown')
-            ts = entry.get('ts', 'N/A')
-            mode = entry.get('mode', 'unknown')
-
-            # Build a summary line
-            summary = f"[{log_type}] {ts} ({mode})"
-
-            # Add relevant details based on type
-            if log_type == 'llm_call':
-                tokens = entry.get('total_tokens', 0)
-                latency = entry.get('latency_ms', 0)
-                summary += f" | {tokens} tokens | {latency:.0f}ms"
-            elif log_type == 'command':
-                cmd = entry.get('cmd', '')[:50]
-                exit_code = entry.get('exit_code', -1)
-                summary += f" | {cmd} (exit: {exit_code})"
-            elif log_type == 'error':
-                error_msg = entry.get('message', '')[:60]
-                summary += f" | {error_msg}"
-
-            lines.append(f"  {i}. {summary}")
-
-        return "\n".join(lines)
-
-    def _format_log_recent(self, results: list, limit: int) -> str:
-        """Format recent log entries."""
-        if not results:
-            return "📭 No log entries found"
-
-        lines = [
-            f"📜 Most Recent {min(len(results), limit)} Log Entries",
-            "",
-        ]
-
-        for i, entry in enumerate(results[:limit], 1):
-            log_type = entry.get('type', 'unknown')
-            ts = entry.get('ts', 'N/A')
-            mode = entry.get('mode', 'unknown')
-
-            # Build entry line
-            summary = f"[{log_type}] {ts} ({mode})"
-
-            # Add relevant details
-            if log_type == 'llm_call':
-                model = entry.get('model', 'unknown')
-                tokens = entry.get('total_tokens', 0)
-                summary += f" | {model} | {tokens} tokens"
-            elif log_type == 'command':
-                cmd = entry.get('cmd', '')[:45]
-                exit_code = entry.get('exit_code', -1)
-                summary += f" | {cmd} (exit: {exit_code})"
-            elif log_type == 'error':
-                error_type = entry.get('error_type', 'unknown')
-                message = entry.get('message', '')[:40]
-                summary += f" | {error_type}: {message}"
-            elif log_type == 'search':
-                query = entry.get('query', '')[:40]
-                results_count = entry.get('results_count', 0)
-                summary += f" | '{query}' ({results_count} results)"
-
-            lines.append(f"  {i}. {summary}")
-
-        return "\n".join(lines)
+    def _format_log_recent(self, results, limit):
+        from agent.services.log_commands import format_log_recent
+        return format_log_recent(results, limit)
 
     def _is_likely_file_path(self, path: str) -> bool:
         """
@@ -5133,2170 +2569,182 @@ Please remember this content. I may ask questions about it.""")
         return result
 
     # NEW: Code analysis methods
-    def handle_code_command(self, command: str) -> str:
-        """
-        Handle /code command for code analysis and refactoring
-
-        Available commands:
-          /code scan [path]              - Scan codebase (default: current directory)
-          /code summary                  - Show codebase summary
-          /code find <pattern>          - Find files matching pattern
-          /code read <file_path>        - Read and analyze a specific file
-          /code analyze <file_path>     - Analyze file structure
-          /code search <text>           - Search for text in code
-          /code changes                 - Show pending changes
-          /code apply                   - Apply pending changes (with confirmation)
-          /code clear                   - Clear pending changes
-          /code help                    - Show help
-        """
-        if not command or command.strip() == "":
-            return self._code_help()
-
-        parts = command.split()
-        subcommand = parts[0].lower() if parts else ""
-
-        # Auto-switch to coding mode for code commands (except help)
-        if subcommand != 'help' and self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        if subcommand == 'help':
-            return self._code_help()
-        elif subcommand == 'scan':
-            path = ' '.join(parts[1:]) if len(parts) > 1 else os.getcwd()
-            return self._code_scan(path)
-        elif subcommand == 'summary':
-            return self._code_summary()
-        elif subcommand == 'find':
-            pattern = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_find(pattern)
-        elif subcommand == 'read':
-            file_path = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_read(file_path)
-        elif subcommand == 'analyze':
-            file_path = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_analyze(file_path)
-        elif subcommand == 'search':
-            text = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_search(text)
-        elif subcommand == 'changes':
-            return self._code_show_changes()
-        elif subcommand == 'apply':
-            return self._code_apply_changes()
-        elif subcommand == 'clear':
-            return self._code_clear_changes()
-        elif subcommand == 'self-scan':
-            return self._code_self_scan()
-        elif subcommand == 'self-improve':
-            feature = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_self_improve(feature)
-        elif subcommand == 'self-apply':
-            return self._code_self_apply()
-        elif subcommand == 'reason':
-            file_path = ' '.join(parts[1:]) if len(parts) > 1 else ""
-            return self._code_reason(file_path)
-        else:
-            return self.formatter.error(f"Unknown subcommand: {subcommand}\n{self._code_help()}")
-
-    def _code_help(self) -> str:
-        return """
-📁 CODE ANALYSIS COMMANDS:
-  /code scan [path]          - Scan codebase (default: current directory)
-  /code summary              - Show codebase summary (size, file types)
-  /code find <pattern>       - Find files (supports wildcards: *.py, *test*)
-  /code read <file_path>     - Read and display a file
-  /code analyze <file_path>  - Analyze file structure (imports, functions, classes)
-  /code search <text>        - Search for text in code files
-  /code changes              - Show pending code changes
-  /code apply                - Apply pending changes (requires confirmation)
-  /code clear                - Clear pending changes
-  /code self-scan            - Scan agent's own codebase
-  /code self-improve [target]- Suggest improvements to agent's own code
-  /code self-apply           - Apply vetted self-improvements with safety checks
-  /code reason <file_path>   - Deep analysis using reasoning model (chain-of-thought)
-  /code help                 - Show this help
-
-💡 TIPS:
-  • Use relative paths from current directory
-  • Changes are grouped and require confirmation
-  • Large codebases (>500 files) require specific file targeting
-  • Use /code reason for complex analysis with deepseek-reasoner
-        """.strip()
-
-    def _code_scan(self, path: str) -> str:
-        """Initialize code analyzer with given path"""
-        try:
-            abs_path = os.path.abspath(path)
-            if not os.path.exists(abs_path):
-                return self.formatter.error(f"Path does not exist: {abs_path}")
-
-            self.code_analyzer = CodeAnalyzer(abs_path, safety_manager=self.safety_manager)
-
-            # Count files to warn if too many
-            total_files, total_dirs = self.code_analyzer.count_files()
-
-            result = f"{self.formatter.success(f'Codebase scanned: {abs_path}')}\n"
-            result += f"📊 Statistics:\n"
-            result += f"  • Total files: {total_files}\n"
-            result += f"  • Total directories: {total_dirs}\n"
-
-            if total_files > self.code_analyzer.max_files_before_warning:
-                result += f"\n{self.formatter.warning(f'LARGE CODEBASE: {total_files} files detected')}\n"
-                result += f"💡 Use '/code find <pattern>' to search for specific files\n"
-                result += f"   or '/code read <specific_file>' to analyze individual files\n"
-
-            # Check threshold and ask for confirmation to show detailed summary
-            should_continue, _ = self._check_file_threshold(total_files, "scan codebase for detailed summary")
-            if should_continue and total_files <= 1000:
-                summary = self.code_analyzer.get_code_summary()
-                if 'file_types' in summary:
-                    result += f"\n📁 File Types:\n"
-                    for ext, count in summary['file_types'].items():
-                        result += f"  • {ext or 'no ext'}: {count} files\n"
-
-            return result
-
-        except Exception as e:
-            return self.formatter.error(f"Error scanning path: {str(e)}")
-    
-    def _code_summary(self) -> str:
-        """Show codebase summary"""
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-        
-        summary = self.code_analyzer.get_code_summary()
-        
-        result = f"📊 CODEBASE SUMMARY\n"
-        result += f"────────────────────────\n"
-        result += f"Root: {summary['root_path']}\n"
-        result += f"Total files: {summary['total_files']}\n"
-
-        if 'warning' in summary:
-            result += f"\n{self.formatter.warning(summary['warning'])}\n"
-            result += f"💡 {summary['suggestion']}\n"
-
-        if 'file_types' in summary:
-            result += f"\n📁 File Types:\n"
-            for ext, count in summary['file_types'].items():
-                percentage = (count / summary['total_files']) * 100
-                result += f"  • {ext or 'no ext'}: {count} ({percentage:.1f}%)\n"
-
-        if 'total_lines' in summary:
-            result += f"\n📝 Total lines (est.): {summary['total_lines']:,}\n"
-        
-        if 'total_size' in summary:
-            result += f"💾 Total size: {summary['total_size']}\n"
-
-        result += f"\n💡 Use '/code find <pattern>' to explore specific files"
-        
-        return result
-
-    def _code_find(self, pattern: str) -> str:
-        """Find files matching pattern"""
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-
-        if not pattern:
-            return self.formatter.error("Please specify a pattern. Examples:\n" \
-                   "  /code find *.py\n" \
-                   "  /code find *test*\n" \
-                   "  /code find agent.py")
-        
-        # Check total files and ask for confirmation if large
-        total_files, _ = self.code_analyzer.count_files()
-        should_continue, limit = self._check_file_threshold(total_files, f"find files matching '{pattern}'")
-        # Even if user declined full operation, we continue with reduced limit
-        # Smart search with appropriate limit
-        results = self.code_analyzer.smart_find_files(pattern, max_results=20, search_limit=limit)
-        
-        if not results:
-            return f"🔍 No files found matching: {pattern}"
-
-        result = f"🔍 Found {len(results)} files matching: {pattern}\n"
-        result += "────────────────────────\n"
-
-        for i, file_info in enumerate(results[:10], 1):
-            size_kb = file_info['size'] / 1024
-            result += f"{i}. {file_info['relative']}\n"
-            result += f"   Size: {size_kb:.1f} KB\n"
-
-        if len(results) > 10:
-            result += f"\n... and {len(results) - 10} more files\n"
-
-        result += f"\n💡 Use '/code read <file_path>' to read a specific file"
-        
-        return result
-
-    def _code_read(self, file_path: str) -> str:
-        """Read and display a file"""
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-        
-        if not file_path:
-            return self.formatter.error("Please specify a file path")
-        
-        try:
-            # ... existing file reading code ...
-            
-            # Add to AI memory with context that this is code
-            self.add_to_history("user", f"""I've read the following code file:
-
-    File: {abs_path}
-    Lines: {line_count}
-
-    ```python
-    {truncated}
-    ```
-
-    Please remember this code. I may ask you to analyze or fix it.
-
-    Note: If I ask you to propose changes to this code, use the PROPOSED CHANGE format with exact Old Code and New Code.""")
-
-            return result
-
-        except Exception as e:
-            return self.formatter.error(f"Error reading file: {str(e)}")
-    
-    def add_code_context_instructions(self):
-        """
-        Add code-specific instructions to the current conversation
-        This is called when user is asking about code but not using /fix or /analyze
-        """
-        code_instructions = """
-        IMPORTANT: For code changes, use this format:
-
-        PROPOSED CHANGE:
-        File: [file_path]
-        Description: [brief description]
-        Old Code: [EXACT code from the file to replace]
-        New Code: [improved replacement code]
-        Line: [line number if known]
-
-        Old Code must be exact code from the file, not comments or truncated text.
-        """
-        
-        self.add_to_history("system", code_instructions)
-        
-    def is_code_related_query(self, prompt: str) -> bool:
-        """
-        Detect if user is asking about code
-        """
-        code_keywords = [
-            'fix', 'bug', 'error', 'code', 'function', 'class', 'method',
-            'def ', 'import ', 'try:', 'except', 'file', 'line', 
-            'syntax', 'compile', 'run', 'execute', 'debug',
-            'improve', 'optimize', 'refactor', 'review'
-        ]
-        
-        prompt_lower = prompt.lower()
-
-        # Check for code file extensions
-        if any(ext in prompt_lower for ext in ['.py', '.js', '.java', '.cpp', '.c', '.go', '.rs', '.rb']):
-            return True
-
-        # Check for code keywords
-        if any(keyword in prompt_lower for keyword in code_keywords):
-            return True
-
-        # Check if it's about a specific file path
-        import re
-        file_patterns = [
-            r'[\w/\\.-]+\.py',
-            r'[\w/\\.-]+\.js',
-            r'[\w/\\.-]+\.java',
-            r'file:\s*[\w/\\.-]+',
-            r'line\s+\d+',
-        ]
-
-        for pattern in file_patterns:
-            if re.search(pattern, prompt_lower):
-                return True
-
-        return False
-
-    def _code_analyze(self, file_path: str) -> str:
-        """Analyze a file's structure"""
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-
-        if not file_path:
-            return self.formatter.error("Please specify a file path")
-        
-        try:
-            abs_path = os.path.abspath(file_path)
-            analysis = self.code_analyzer.analyze_file(abs_path)
-
-            if not analysis['success']:
-                return self.formatter.error(f"{analysis['error']}")
-
-            result = f"🔬 FILE ANALYSIS: {os.path.basename(abs_path)}\n"
-            result += f"📁 Path: {abs_path}\n"
-            result += f"📊 Stats: {analysis['lines']} lines, {analysis['size']:,} bytes\n"
-            result += "────────────────────────\n"
-
-            # Show imports
-            if analysis['imports']:
-                result += f"\n📦 IMPORTS ({len(analysis['imports'])}):\n"
-                for imp in analysis['imports'][:10]:  # Show first 10
-                    result += f"  • Line {imp['line']}: {imp['content']}\n"
-                if len(analysis['imports']) > 10:
-                    result += f"  ... and {len(analysis['imports']) - 10} more imports\n"
-
-            # Show classes
-            if analysis['classes']:
-                result += f"\n🏛 ️  CLASSES ({len(analysis['classes'])}):\n"
-                for cls in analysis['classes']:
-                    result += f"  • Line {cls['line']}: {cls['name']}\n"
-
-            # Show functions
-            if analysis['functions']:
-                result += f"\n⚙️  FUNCTIONS ({len(analysis['functions'])}):\n"
-                for func in analysis['functions'][:15]:  # Show first 15
-                    result += f"  • Line {func['line']}: {func['name']}()\n"
-                if len(analysis['functions']) > 15:
-                    result += f"  ... and {len(analysis['functions']) - 15} more functions\n"
-
-            # Show preview
-            result += f"\n📄 CONTENT PREVIEW (first 50 lines):\n"
-            result += "```\n"
-            result += analysis['content_preview']
-            result += "\n```\n"
-
-            if analysis['has_more_lines']:
-                result += f"\n💡 File has {analysis['lines']} total lines. Use '/code read {file_path}' to see full content."
-
-            # Add to AI memory for analysis
-            self.add_to_history("user", f"""I've analyzed the following code file:
-
-File: {abs_path}
-Lines: {analysis['lines']}
-Imports: {len(analysis['imports'])}
-Classes: {len(analysis['classes'])}
-Functions: {len(analysis['functions'])}
-
-```{os.path.splitext(abs_path)[1][1:] or 'text'}
-{analysis['content_preview']}
-```
-
-Please analyze this code structure.""")
-
-            return result
-
-        except Exception as e:
-            return self.formatter.error(f"Error analyzing file: {str(e)}")
-
-    def _code_search(self, search_text: str) -> str:
-        """Search for text in code files"""
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-        
-        if not search_text:
-            return self.formatter.error("Please specify search text")
-
-        # Check total files and ask for confirmation if large
-        total_files, _ = self.code_analyzer.count_files()
-
-        should_continue, limit = self._check_file_threshold(
-            total_files, f"search for '{search_text}'"
-        )
-        # Even if user declined full operation, we continue with reduced limit
-
-        # Find code files with appropriate limit
-        code_files = self.code_analyzer.find_code_files(limit=limit)
-
-        if not code_files:
-            return self.formatter.error("No code files found in the scanned codebase.")
-
-        results = []
-        self._safe_print(f"🔍 Searching in {len(code_files)} files...")
-        
-        for file_path in code_files:
-            try:
-                success, message, content = self.code_analyzer.read_file_safe(file_path)
-                if success and search_text.lower() in content.lower():
-                    # Count occurrences
-                    occurrences = content.lower().count(search_text.lower())
-
-                    # Get context lines
-                    lines = content.split('\n')
-                    matching_lines = []
-                    for i, line in enumerate(lines):
-                        if search_text.lower() in line.lower():
-                            context_start = max(0, i - 1)
-                            context_end = min(len(lines), i + 2)
-                            context = "\n".join(f"{j+1:4d}: {lines[j]}" for j in range(context_start, context_end))
-                            matching_lines.append(context)
-
-                    results.append({
-                        'path': file_path,
-                        'occurrences': occurrences,
-                        'relative': os.path.relpath(file_path, self.code_analyzer.root_path),
-                        'sample': matching_lines[0] if matching_lines else ""
-                    })
-
-                    if len(results) >= 20:  # Limit results
-                        break
-            except:
-                continue
-
-        if not results:
-            result_msg = f"🔍 No matches found for '{search_text}' in {len(code_files)} files."
-            self.add_search_results_to_history('code', search_text, result_msg)
-            return result_msg
-        
-        result = f"🔍 SEARCH RESULTS for '{search_text}'\n"
-        result += f"📁 Found in {len(results)} files (searched {len(code_files)} files)\n"
-        result += "────────────────────────\n"
-
-        for i, res in enumerate(results, 1):
-            result += f"\n{i}. {res['relative']}\n"
-            result += f"   Matches: {res['occurrences']}\n"
-            if res['sample']:
-                result += f"   Sample:\n{res['sample']}\n"
-
-        self.add_search_results_to_history('code', search_text, result)
-        return result
-
-    def _code_show_changes(self) -> str:
-        """Show pending code changes"""
-        if not self.code_changes_pending:
-            return "📭 No pending changes. Use the AI to suggest code fixes."
-        
-        result = f"📋 PENDING CODE CHANGES ({len(self.code_changes_pending)})\n"
-        result += "────────────────────────\n"
-
-        # Order changes by dependencies
-        ordered_changes = self._order_changes_by_dependencies(self.code_changes_pending)
-
-        # Group changes by file, preserving file order
-        changes_by_file = {}
-        file_order = []
-        for change in ordered_changes:
-            file_path = change['file_path']
-            if file_path not in changes_by_file:
-                changes_by_file[file_path] = []
-                file_order.append(file_path)
-            changes_by_file[file_path].append(change)
-
-        for file_path, changes in changes_by_file.items():
-            result += f"\n📄 File: {file_path}\n"
-            for change in changes:
-                result += f"  • {change['description']}\n"
-                if 'old_code' in change and 'new_code' in change:
-                    result += f"    Change:\n"
-                    result += f"    - {change['old_code'][:100]}{'...' if len(change['old_code']) > 100 else ''}\n"
-                    result += f"    + {change['new_code'][:100]}{'...' if len(change['new_code']) > 100 else ''}\n"
-        
-        result += f"\n💡 Apply changes with: /code apply"
-        result += f"\n💡 Clear changes with: /code clear"
-
-        return result
-
-    def _code_apply_changes(self) -> str:
-        """Apply pending code changes with confirmation"""
-        if not self.code_changes_pending:
-            return "📭 No pending changes to apply."
-
-        # Show what will be changed
-        result = self._code_show_changes()
-        result += "\n\n" + "="*60 + "\n"
-        result += f"{self.formatter.warning('WARNING: This will modify files on disk!')}\n"
-        result += "="*60 + "\n\n"
-
-        # Ask for confirmation
-        result += "Are you sure you want to apply these changes? (yes/no): "
-
-        # In the CLI, we would handle this interactively
-        # For now, return instructions
-        result += "\n\n💡 To apply, type 'yes' and then run '/code apply confirm'"
-        result += "\n💡 Or use '/code apply force' to apply without interactive confirmation"
-        
-        return result
-    def _order_changes_by_dependencies(self, changes):
-        """Order changes based on file dependencies."""
-        if not changes:
-            return changes
-        # Determine root path: use agent_root for self-modifications, else code_analyzer.root_path
-        import os
-        root_path = self.agent_root if hasattr(self, 'agent_root') else (self.code_analyzer.root_path if self.code_analyzer else os.getcwd())
-        planner = Planner(root_path)
-        ordered = planner.plan_changes(changes)
-        return ordered
-
-    def _code_apply_changes_confirm(self, force: bool = False) -> str:
-        """Actually apply the changes (called after confirmation)"""
-        if not self.code_changes_pending:
-            return " No pending changes to apply."
-
-        applied = []
-        failed = []
-
-        # Order changes by dependencies
-        ordered_changes = self._order_changes_by_dependencies(self.code_changes_pending)
-
-        # Group changes by file, preserving file order
-        changes_by_file = {}
-        file_order = []
-        for change in ordered_changes:
-            file_path = change['file_path']
-            if file_path not in changes_by_file:
-                changes_by_file[file_path] = []
-                file_order.append(file_path)
-            changes_by_file[file_path].append(change)
-
-        # Apply changes to each file
-        for file_path in file_order:
-            changes = changes_by_file[file_path]
-            try:
-                # Check if this is a self-modification
-                if self._is_self_modification(file_path):
-                    # Use self-iteration framework for safety
-                    si = self._get_self_iteration()
-                    file_applied = False
-                    for change in changes:
-                        if 'old_code' in change and 'new_code' in change:
-                            success, msg, backup = si.apply_change(
-                                file_path,
-                                change['old_code'],
-                                change['new_code'],
-                                change.get('description', 'Unknown change')
-                            )
-                            if success:
-                                file_applied = True
-                            else:
-                                failed.append(f"{file_path}: {msg}")
-                    if file_applied:
-                        applied.append(file_path)
-                    continue  # Skip original logic
-
-                # Original logic for non-self modifications
-                # Read current file
-                success, message, content = self.code_analyzer.read_file_safe(file_path)
-                if not success:
-                    failed.append(f"{file_path}: {message}")
-                    continue
-
-                original_content = content
-
-                # Apply changes in reverse order (to preserve line numbers)
-                # FIX: Handle None values in sorting
-                changes_sorted = sorted(
-                    changes, 
-                    key=lambda x: x.get('line') if x.get('line') is not None else 0, 
-                    reverse=True
-                )
-
-                for change in changes_sorted:
-                    if 'old_code' in change and 'new_code' in change:
-                        # Simple string replacement (could be more sophisticated)
-                        if change['old_code'] in content:
-                            content = content.replace(change['old_code'], change['new_code'])
-                        else:
-                            # Try line-based replacement
-                            lines = content.split('\n')
-                            line_num = change.get('line')
-                            if line_num and 0 < line_num <= len(lines):
-                                lines[line_num - 1] = change['new_code']
-                                content = '\n'.join(lines)
-                            else:
-                                # Try fuzzy matching - find similar code
-                                old_code_stripped = change['old_code'].strip()
-                                lines = content.split('\n')
-                                for i, line in enumerate(lines):
-                                    if old_code_stripped in line.strip():
-                                        lines[i] = change['new_code']
-                                        content = '\n'.join(lines)
-                                        break
-                                else:
-                                    failed.append(f"{file_path}: Could not find '{change['old_code'][:50]}...' in file")
-
-                # Write back only if changes were made
-                if content != original_content:
-                    success, message, _ = self.safety_manager.safe_write_file(file_path, content, create_backup=True)
-                    if not success:
-                        failed.append(f"{file_path}: {message}")
-                        continue
-                    applied.append(file_path)
-                else:
-                    failed.append(f"{file_path}: No changes were made (old_code not found)")
-
-            except Exception as e:
-                failed.append(f"{file_path}: {str(e)}")
-        
-        # Clear pending changes
-        self.code_changes_pending = []
-
-        # Build result
-        result = " APPLYING CODE CHANGES\n"
-        result += "\n"
-        
-        if applied:
-            result += f"\n{self.formatter.success(f'Successfully applied changes to {len(applied)} files:')}\n"
-            for file_path in applied:
-                result += f"   📄 {file_path}\n"
-
-        if failed:
-            result += f"\n{self.formatter.error(f'Failed to apply changes to {len(failed)} files:')}\n"
-            for error in failed:
-                result += f"   {self.formatter.warning(error)}\n"
-
-        if not applied and not failed:
-            result += "\n📭 No changes were applied."
-        
-        return result
-
-    def _code_clear_changes(self) -> str:
-        """Clear all pending changes"""
-        count = len(self.code_changes_pending)
-        self.code_changes_pending = []
-        return f"🧹 Cleared {count} pending changes."
-
-    def _code_self_scan(self) -> str:
-        """Scan the agent's own codebase."""
-        if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer(self.agent_root, safety_manager=self.safety_manager)
-        summary = self.code_analyzer.get_code_summary()
-        result = "🔍 SELF-SCAN: Agent's own codebase\n"
-        result += f"Root: {self.agent_root}\n"
-        result += f"Total files: {summary['total_files']}\n"
-        if 'file_types' in summary:
-            result += "\nFile types:\n"
-            for ext, count in summary['file_types'].items():
-                result += f"  {ext or 'no ext'}: {count}\n"
-        return result
-
-    def _code_self_improve(self, feature: str) -> str:
-        """Suggest improvements to the agent's own code."""
-        try:
-            si = self._get_self_iteration()
-            # Determine target files
-            target_files = []
-            if feature and os.path.isfile(feature):
-                target_files.append(feature)
-            elif feature and os.path.isdir(feature):
-                # Directory: find Python files
-                for root, dirs, files in os.walk(feature):
-                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', '.git')]
-                    for f in files:
-                        if f.endswith('.py'):
-                            target_files.append(os.path.join(root, f))
-            else:
-                # Default: agent's own Python files
-                for root, dirs, files in os.walk(self.agent_root):
-                    dirs[:] = [d for d in dirs if not d.startswith('.') and d not in ('__pycache__', '.git')]
-                    for f in files:
-                        if f.endswith('.py'):
-                            target_files.append(os.path.join(root, f))
-
-            if not target_files:
-                return self.formatter.error("No Python files found to improve.")
-
-            total_suggestions = 0
-            result = f"🔍 Self-improvement scan: {len(target_files)} Python files\n"
-
-            for file_path in target_files:
-                suggestions = si.suggest_improvements(file_path)
-                if suggestions:
-                    result += f"\n📄 {os.path.relpath(file_path, self.agent_root)}:\n"
-                    for sugg in suggestions:
-                        # Propose change
-                        self.propose_code_change(
-                            file_path=file_path,
-                            old_code=sugg['old_code'],
-                            new_code=sugg['new_code'],
-                            description=sugg['description']
-                        )
-                        result += f"  • {sugg['description']}\n"
-                        total_suggestions += 1
-
-            if total_suggestions == 0:
-                result += f"\n{self.formatter.success('No improvements suggested (code looks good!).')}"
-            else:
-                result += f"\n💡 {total_suggestions} improvement(s) proposed. Use '/code changes' to review, '/code apply' to apply."
-
-            return result
-        except Exception as e:
-            return self.formatter.error(f"Error during self-improvement: {str(e)}")
-
-    def _code_self_apply(self) -> str:
-        """Apply vetted self-improvements with safety checks."""
-        # Check if there are pending changes
-        if not self.code_changes_pending:
-            return "📭 No pending changes to apply."
-
-        # Ensure all changes are self-modifications (optional)
-        non_self = []
-        for change in self.code_changes_pending:
-            if not self._is_self_modification(change['file_path']):
-                non_self.append(change['file_path'])
-        if non_self:
-            return self.formatter.error(f"Self-apply only works on agent's own code. Non-self files: {', '.join(set(non_self))}")
-
-        # Run pre-tests using self-iteration framework
-        si = self._get_self_iteration()
-        test_success, test_msg = si.run_basic_tests()
-        if not test_success:
-            return self.formatter.error(f"Pre-test suite failed: {test_msg}. Aborting self-apply.")
-
-        # Apply changes using existing logic (which will use self-iteration with tests)
-        result = self._code_apply_changes_confirm(force=True)
-
-        # Run post-tests (optional) - already done per file in apply_change
-        # Add note about tests
-        return "🔧 Self-apply completed with safety checks.\n" + result
-    def _code_reason(self, file_path: str) -> str:
-        """Deep analysis of a file using reasoning model (chain-of-thought)."""
-        if not file_path:
-            return self.formatter.error("Please specify a file path")
-
-        # Read file
-        if not self.code_analyzer:
-            return self.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
-
-        success, message, content = self.code_analyzer.read_file_safe(file_path)
-        if not success:
-            return self.formatter.error(f"Cannot read file: {message}")
-
-        # Use deepseek-reasoner for deep analysis (temporary switch)
-        reasoner_model = "deepseek-reasoner"
-        model_used = self.model  # default
-
-        # Construct prompt for analysis
-        prompt = f"""Please analyze the following code file using chain-of-thought reasoning.
-Provide a detailed analysis covering:
-1. Code structure and organization
-2. Potential bugs or issues
-3. Performance considerations
-4. Readability and maintainability
-5. Suggested improvements with reasoning
-
-File: {file_path}
-Code:
-```python
-{content}
-```
-
-Please think step by step and provide your analysis:"""
-
-        messages = [
-            {"role": "user", "content": prompt}
-        ]
-
-        # Define analysis function to run with temporary model
-        def perform_analysis():
-            print(f"[Reasoner] Using model '{self.model}' for deep analysis...")
-            return self.generate_completion(messages, temperature=0.3, max_tokens=4000)
-
-        try:
-            analysis = self.with_model(reasoner_model, perform_analysis)
-            model_used = reasoner_model
-        except ValueError as e:
-            # Fallback to current model if reasoner not available
-            print(f"Warning: {e}. Falling back to current model '{self.model}'.")
-            analysis = perform_analysis()
-            model_used = self.model
-
-        if analysis.startswith("Error generating completion"):
-            return self.formatter.error(analysis)
-
-        result = f"[Analysis] DEEP ANALYSIS (using {model_used}): {os.path.basename(file_path)}\n"
-        result += f"Path: {file_path}\n"
-        line_count = content.count('\n')
-        result += f"Stats: Content length: {len(content)} characters, {line_count} lines\n"
-        result += "────────────────────────\n"
-        result += analysis
-        result += "\n\nTip: Use '/code analyze' for structural analysis or '/code self-improve' to propose changes."
-
-        return result
-
-    def propose_code_change(self, file_path: str, old_code: str, new_code: str,
-                           description: str, line: int = None) -> str:
-        """
-        Propose a code change (called by AI analysis)
-        Returns: Confirmation message and adds to pending changes
-        """
-        change = {
-            'file_path': file_path,
-            'old_code': old_code,
-            'new_code': new_code,
-            'description': description,
-            'line': line,
-            'proposed_at': time.time()
-        }
-        
-        self.code_changes_pending.append(change)
-        
-        result = f"💡 CODE CHANGE PROPOSED\n"
-        result += f"File: {file_path}\n"
-        result += f"Description: {description}\n"
-        result += f"\nChange Preview:\n"
-        result += f"- {old_code[:100]}{'...' if len(old_code) > 100 else ''}\n"
-        result += f"+ {new_code[:100]}{'...' if len(new_code) > 100 else ''}\n"
-        result += f"\n💡 View all pending changes with: /code changes"
-        result += f"\n💡 Apply changes with: /code apply"
-        
-        return result
-    
-    def search_sync(self, query: str) -> str:
-        """Run async search from sync code"""
-        if not self.search_loop:
-            self.search_loop = asyncio.new_event_loop()
-
-        return self.search_loop.run_until_complete(
-            self.searcher.search(query)
-        )
-
-    def add_to_history(self, role: str, content: str):
-        """Add message to conversation history"""
-        self.conversation_history.append({"role": role, "content": content})
-
-    def add_search_results_to_history(self, search_type: str, query: str, results: str):
-        """
-        Add search results to conversation history as system message.
-
-        Args:
-            search_type: 'web' or 'code'
-            query: The search query
-            results: The search results text
-        """
-        if search_type == 'web':
-            prefix = "🔍 Web search results for"
-        elif search_type == 'code':
-            prefix = "📁 Code search results for"
-        else:
-            prefix = "Search results for"
-
-        message = f"{prefix} '{query}':\n\n{results}"
-        self.add_to_history("system", message)
-
-    def clear_history(self):
-        """Clear conversation history"""
-        self.conversation_history = []
-
-    def get_conversation_summary(self) -> str:
-        """Return a summary of the conversation history."""
-        total_messages = len(self.conversation_history)
-        token_count = self.context_manager.count_conversation_tokens()
-        return f"Conversation summary: {total_messages} messages, {token_count} tokens."
-
-    def get_token_count(self) -> int:
-        """Return total token count of conversation history."""
-        return self.context_manager.count_conversation_tokens()
-
-    def _ensure_system_prompt(self):
-        """Ensure system prompt is present in conversation history."""
-        if not agent_config.system_prompt:
-            return
-        # Check if any system prompt already exists
-        system_prompt_text = agent_config.system_prompt
-        for msg in self.conversation_history:
-            if msg["role"] == "system" and msg["content"] == system_prompt_text:
-                return
-        # Add system prompt at the beginning
-        self.conversation_history.insert(0, {"role": "system", "content": system_prompt_text})
-
-    def toggle_thinking_mode(self):
-        """Toggle thinking mode on/off and save to config"""
-        self.thinking_enabled = not self.thinking_enabled
-        try:
-            success = agent_config.update_value("agent.thinking_enabled", self.thinking_enabled)
-            if success:
-                print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (saved to config)")
-            else:
-                print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (but failed to save config)")
-        except Exception as e:
-            print(f"✓ Thinking mode {'enabled' if self.thinking_enabled else 'disabled'} (config update error: {e})")
-        return self.thinking_enabled
-
-    def debug_agent_status(self):
-        """Show current agent status for debugging"""
-        print(f"\n🔍 AGENT DEBUG INFO:")
-        print(f"  • Model: {self.model}")
-        print(f"  • API Key: {'Set' if self.api_key else 'Not set'}")
-        print(f"  • Conversation history length: {len(self.conversation_history)}")
-        print(f"  • Code analyzer: {'Initialized' if self.code_analyzer else 'Not initialized'}")
-        print(f"  • Auto-fix mode: {'ACTIVE' if hasattr(self, 'auto_fix_mode') and self.auto_fix_mode else 'Inactive'}")
-        
-        if hasattr(self, 'current_fix_file'):
-            print(f"  • Current fix file: {self.current_fix_file}")
-        
-        print(f"  • Pending changes: {len(self.code_changes_pending)}")
-
-    def stream_response(self, prompt: str, temperature: float = 0.7, max_tokens: int = 2048 * 4):
-        """Stream response with auto-file detection, analysis, and auto-fix capabilities"""
-        import re
-        import sys
-        import os
-
-        # Color support for thinking content (light gray)
-        COLORS_ENABLED = sys.stdout.isatty() and os.getenv('TERM') not in ('dumb', '')
-        COLOR_THINKING = '\033[90m'  # Light gray
-        COLOR_RESET = '\033[0m'
-
-        # Auto-detect if this is a code-related query
-        if not prompt.startswith(('/fix', '/analyze', '/code', '/read', '/search', '/models')):
-            if self.is_code_related_query(prompt):
-                self._status_print(f"🔍 Detected code-related query. Adding code context...", "debug")
-                self.add_code_context_instructions()
-
-        self._status_print(f"🔄 Processing command: {prompt[:50]}{'...' if len(prompt) > 50 else ''}", "info")
-
-        # Quick input classification (URLs, file paths, etc.)
-        modified_prompt = prompt
-        classified_cmd = self.classify_and_enhance_input(prompt)
-        if classified_cmd:
-            self._status_print(f"🎯 Classified as: {classified_cmd}", "debug")
-            modified_prompt = classified_cmd
-            # Skip natural language interpretation since we already classified
-            skip_natural_language = True
-        else:
-            skip_natural_language = False
-
-        # Natural language interpretation (skip if already classified)
-        if not skip_natural_language and self.natural_language_enabled and self.interpreter:
-            suggested_cmd, confidence = self.interpreter.interpret(prompt, self.mode)
-            if suggested_cmd and confidence >= self.interpreter.confidence_threshold:
-                self._status_print(f"🤖 Interpreting as: {suggested_cmd} (confidence: {confidence:.2f})", "debug")
-                log_operation("natural_language_interpretation", prompt, True,
-                             f"interpreted_as={suggested_cmd}, confidence={confidence:.2f}")
-                modified_prompt = suggested_cmd
-
-        # Auto-search detection (skip if already a command)
-        if (self.auto_search_enabled and
-            not modified_prompt.startswith('/') and
-            self.searcher.should_search(modified_prompt)):
-            self._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
-            log_operation("auto_search_triggered", modified_prompt, True,
-                         f"query_length={len(modified_prompt)}")
-            success, results = self.search_sync(modified_prompt)
-            if success:
-                log_operation("auto_search_results", modified_prompt, True,
-                             f"results_length={len(results)}")
-                self.add_search_results_to_history('web', modified_prompt, results)
-                modified_prompt = f"Web search results:\n{results}\n\nUser question: {modified_prompt}"
-            else:
-                log_operation("auto_search_failed", modified_prompt, False,
-                             "search returned no results or error")
-                self.add_to_history("system", f"Web search failed for '{modified_prompt}': {results}")
-
-        # Update prompt with modifications
-        prompt = modified_prompt
-
-        # Auto-detect file paths before handling commands (skip if already a read command)
-        file_content = None
-        if not prompt.startswith(('/read', '/code read', '/fix', '/analyze')):
-            file_content = self.auto_detect_and_read_file(prompt)
-        if file_content:
-            # Extract just the filename from path
-            file_match = re.search(r'([^\\/]+\.\w+)$', prompt)
-            filename = file_match.group(1) if file_match else "file"
-            # Inject the file content into the prompt so the model can analyze it directly
-            prompt = (
-                f"{prompt}\n\n"
-                f"<file path=\"{filename}\">\n"
-                f"{file_content}\n"
-                f"</file>"
-            )
-
-        # Handle commands using registry
-        skip_user_add = False
-        command_handled = False
-        # Sort prefixes by length descending to match longest first
-        for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
-            if prompt.startswith(prefix):
-                handler, strip_prefix = self.command_handlers[prefix]
-                arg = prompt[len(prefix):].strip() if strip_prefix else prompt
-                cmd_start_time = time.time()
-                response = handler(arg)
-                cmd_duration = (time.time() - cmd_start_time) * 1000  # Convert to ms
-                command_handled = True
-
-                # Log command execution to unified logger
-                if self._unified_logger:
-                    try:
-                        self._unified_logger.log_command(
-                            cmd=f"{prefix} {arg}" if arg else prefix,
-                            exit_code=0 if response is not None else 1,
-                            duration_ms=cmd_duration,
-                            mode=self.mode,
-                        )
-                    except Exception as e:
-                        self._status_print(f"Unified logger command log failed (non-fatal): {e}", "debug")
-
-                # Special handling for /fix and /analyze
-                if prefix in ["/fix", "/analyze"]:
-                    skip_user_add = True
-                    if response is not None:
-                        self._safe_print(f"\n{response}\n")
-                    # Continue to API call
-                    break
-
-                # Special handling for /code apply confirm
-                if prefix == "/code":
-                    subcommand = arg
-                    if subcommand.startswith("apply confirm") or subcommand == "apply force":
-                        force = "force" in subcommand
-                        response = self._code_apply_changes_confirm(force)
-
-                # For other commands, print response and return
-                if response is not None:
-                    self._safe_print(f"\n{response}\n")
-
-                    # Feed tool output to LLM so it can reason about results
-                    if prefix in self.COMMANDS_FEED_TO_LLM and response:
-                        truncated = self._truncate_middle(str(response))
-                        self.add_to_history("user", f"[Tool: {prefix}] {truncated}")
-
-                    return None
-
-                # response is None → handler wants us to continue to LLM
-                # (e.g. /search with comprehension intent adds context to history)
-                if response is None and prefix == "/search":
-                    skip_user_add = True  # context already added by handle_search
-                    command_handled = False  # fall through to LLM
-                    break
-
-                return None
-
-        # If no command matched
-        if not command_handled:
-            skip_user_add = False
-
-        # Check if caller already added the user message (agentic loop re-prompt)
-        if getattr(self, '_skip_next_user_add', False):
-            skip_user_add = True
-            self._skip_next_user_add = False
-
-        # Regular chat processing (skip if we already added in handle_auto_fix_command)
-        if not skip_user_add:
-            self.add_to_history("user", prompt)
-
-        # Context management check (use model-specific default)
-        spec = self._get_model_spec(self.model)
-        actual_max_tokens = max_tokens or spec["default_max"]
-        should_continue = self.context_manager.interactive_context_management(additional_tokens=actual_max_tokens)
-        # Ensure system prompt is present regardless of choice (unless cancelled)
-        self._ensure_system_prompt()
-        # Re-add user prompt if it was removed during compression/clear
-        user_prompt_exists = any(
-            msg["role"] == "user" and msg["content"] == prompt
-            for msg in self.conversation_history
-        )
-        if not user_prompt_exists and not skip_user_add:
-            self.add_to_history("user", prompt)
-        if not should_continue:
-            return None
-
-        self._status_print(f"Sending request ({len(self.conversation_history)} messages)", "debug")
-
-        # Resolve provider for current model (may be DeepSeek or z.ai)
-        provider = self._resolve_provider()
-        request_api_key = provider["api_key"] or self.api_key
-        request_base_url = provider["base_url"]
-
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {request_api_key}"
-        }
-
-        # Model-specific limits
-        spec = self._get_model_spec(self.model)
-        total_tokens = self.context_manager.count_conversation_tokens()
-        max_context = spec["max_context"]
-        actual_max_tokens = max_tokens or spec["default_max"]
-        # Clamp to model's hard output limit
-        actual_max_tokens = min(actual_max_tokens, spec["max_output"])
-        if total_tokens + actual_max_tokens > max_context:
-            new_max = max(1, max_context - total_tokens)
-            self._status_print(f"⚠️  Context limit: reducing max_tokens from {actual_max_tokens} to {new_max}", "info")
-            actual_max_tokens = new_max
-        elif total_tokens > agent_config.context_warning_threshold * max_context:
-            self._status_print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used", "info")
-
-        # ── Inject sprint context if active ────────────────────────────────────
-        messages_for_api = self.conversation_history.copy()
-        if self.current_sprint_id and self.sprint_mgr and HAS_SPRINT:
-            try:
-                sprint_prompt = self.sprint_mgr.get_sprint_prompt(self.current_sprint_id)
-                if sprint_prompt:
-                    # Inject sprint context as system message (after base system prompt)
-                    system_msg_idx = 0
-                    for i, msg in enumerate(messages_for_api):
-                        if msg["role"] == "system":
-                            system_msg_idx = i + 1
-                            break
-                    messages_for_api.insert(system_msg_idx, {
-                        "role": "system",
-                        "content": sprint_prompt
-                    })
-                    self._status_print(f"📋 Sprint context injected", "debug")
-            except Exception as e:
-                self._status_print(f"⚠️  Sprint context inject failed: {e}", "debug")
-
-        payload = {
-            "model": self.model,
-            "messages": messages_for_api,
-            "stream": True,
-            "temperature": temperature or agent_config.temperature,
-            "max_tokens": actual_max_tokens,
-        }
-
-        # Only add thinking param for providers that support it (DeepSeek)
-        if self.thinking_enabled and provider.get("name") == "deepseek":
-            payload["thinking"] = {"type": "enabled"}
-            self._status_print(f"Thinking mode: on", "debug")
-
-        try:
-            self._status_print(f"Connecting to API...", "debug")
-            
-            # Start timing
-            start_time = time.time()
-
-            # Spinner is now handled by the UI layer (NeoMindInterface._stream_and_render)
-            # We just notify when first token arrives via _ui_on_first_token callback
-
-            response = requests.post(
-                request_base_url,
-                headers=headers,
-                json=payload,
-                stream=True,
-                timeout=60
-            )
-
-            elapsed_time = time.time() - start_time
-            self._status_print(f"Connected to {provider['name']} ({elapsed_time:.1f}s, status {response.status_code})", "debug")
-
-            if response.status_code != 200:
-                self._status_print(f"❌ Error {response.status_code}: {response.text}", "critical")
-                self.conversation_history.pop()
-                return None
-
-            self._status_print(f"Streaming response...", "debug")
-
-            full_response = ""
-            reasoning_content = ""
-            is_reasoning_active = False
-            is_final_response_active = False
-            has_seen_reasoning = False
-            first_token_notified = False
-            thinking_start_time = None
-            last_thinking_summary_time = 0
-            content_was_displayed = False  # Track if any visible content was printed
-
-            # Callback to notify UI layer (spinner) on first token
-            def _notify_first_token():
-                nonlocal first_token_notified
-                if not first_token_notified:
-                    first_token_notified = True
-                    cb = getattr(self, '_ui_on_first_token', None)
-                    if cb:
-                        try:
-                            cb()
-                        except Exception:
-                            pass
-
-            def _summarize_thinking(text, max_len=60):
-                """Extract a brief summary from thinking content for spinner display."""
-                # Take the last meaningful sentence/phrase
-                lines = text.strip().split('\n')
-                for line in reversed(lines):
-                    line = line.strip()
-                    if len(line) > 10:
-                        if len(line) > max_len:
-                            return line[:max_len - 1] + "…"
-                        return line
-                return ""
-
-            def _update_thinking_spinner(reasoning_so_far):
-                """Update the spinner label with a thinking summary (via stderr)."""
-                nonlocal last_thinking_summary_time
-                now = time.time()
-                # Update at most every 2 seconds to avoid flickering
-                if now - last_thinking_summary_time < 2:
-                    return
-                last_thinking_summary_time = now
-                summary = _summarize_thinking(reasoning_so_far)
-                if summary:
-                    elapsed = now - (thinking_start_time or now)
-                    sys.stderr.write(f"\r\033[K\033[36m⠸\033[0m Thinking… \033[2m{summary}\033[0m")
-                    sys.stderr.flush()
-
-            try:
-                for line in response.iter_lines():
-                    if line:
-                        line = line.decode('utf-8')
-                        if line.startswith("data: "):
-                            data = line[6:]
-                            if data == "[DONE]":
-                                self._status_print(f"Stream complete", "debug")
-                                break
-                            try:
-                                json_data = json.loads(data)
-                                if "choices" in json_data and json_data["choices"]:
-                                    delta = json_data["choices"][0].get("delta", {})
-                                    reasoning_chunk = delta.get("reasoning_content")
-
-                                    if reasoning_chunk is not None:
-                                        if reasoning_chunk and not is_reasoning_active:
-                                            # Don't stop spinner yet — keep it running
-                                            # during thinking, just update its label
-                                            is_reasoning_active = True
-                                            is_final_response_active = False
-                                            has_seen_reasoning = True
-                                            thinking_start_time = time.time()
-
-                                        if reasoning_chunk:
-                                            reasoning_content += reasoning_chunk
-                                            # Update spinner with thinking summary
-                                            _update_thinking_spinner(reasoning_content)
-
-                                    content = delta.get("content", "")
-                                    if content:
-                                        if not is_final_response_active:
-                                            # Transition: thinking → response
-                                            _notify_first_token()  # Stop spinner
-
-                                            if has_seen_reasoning and thinking_start_time:
-                                                # Show condensed thinking summary
-                                                elapsed = time.time() - thinking_start_time
-                                                summary = _summarize_thinking(reasoning_content)
-                                                if COLORS_ENABLED:
-                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
-                                                else:
-                                                    print(f"Thought for {elapsed:.1f}s")
-                                            else:
-                                                _notify_first_token()
-                                            is_final_response_active = True
-                                            is_reasoning_active = False
-
-                                        # Accumulate full response regardless of filter
-                                        full_response += content
-                                        # Content filter: suppress code fences if active
-                                        _cf = getattr(self, '_content_filter', None)
-                                        if _cf:
-                                            display = _cf.write(content)
-                                            if display:
-                                                print(display, end="", flush=True)
-                                                content_was_displayed = True
-                                        else:
-                                            print(content, end="", flush=True)
-                                            content_was_displayed = True
-
-                            except json.JSONDecodeError:
-                                continue
-            except KeyboardInterrupt:
-                _notify_first_token()
-                print("\n[interrupted]")
-                response.close()
-                if full_response:
-                    self.add_to_history("assistant", full_response + "\n[interrupted]")
-                    return full_response
-                else:
-                    self.conversation_history.pop()
-                    return None
-
-            # Flush content filter if active
-            _cf = getattr(self, '_content_filter', None)
-            if _cf:
-                remaining = _cf.flush()
-                if remaining:
-                    print(remaining, end="", flush=True)
-                    content_was_displayed = True
-
-            # Track whether content was visible (used by agentic loop)
-            self._last_content_was_displayed = content_was_displayed
-
-            # Add the complete response to history
-            if full_response:
-                # ── Finance correctness validation (fin mode only) ──────────
-                if self.mode == "fin" and self._finance_validator:
-                    try:
-                        # Collect tool results from this turn's conversation
-                        # (messages added since the last user message)
-                        tool_results_this_turn = []
-                        for msg in reversed(self.conversation_history):
-                            if msg.get("role") == "user":
-                                break
-                            if msg.get("role") == "system" and "[Tool:" in msg.get("content", ""):
-                                tool_results_this_turn.append({"content": msg["content"]})
-                        vr = self._finance_validator.validate(full_response, tool_results_this_turn)
-                        if not vr.passed:
-                            disclaimer = self._finance_validator.build_disclaimer(vr)
-                            if disclaimer:
-                                full_response += disclaimer
-                                if content_was_displayed:
-                                    print(disclaimer, end="", flush=True)
-                            self._log_evidence(
-                                "finance_validation_warning",
-                                vr.summary()[:200],
-                                full_response[:200],
-                                severity="warning",
-                            )
-                    except Exception as e:
-                        self._status_print(f"Finance validation error (non-fatal): {e}", "debug")
-
-                self.add_to_history("assistant", full_response)
-                if content_was_displayed:
-                    print()  # Clean newline after visible streaming output
-
-                # ── Periodic vault watcher check (every 50 turns) ──────────
-                if self._vault_watcher:
-                    self._response_turn_count += 1
-                    if self._response_turn_count >= 50:
-                        self._response_turn_count = 0
-                        try:
-                            changed_context = self._vault_watcher.get_changed_context(
-                                mode=getattr(self, 'mode', 'chat')
-                            )
-                            if changed_context:
-                                self.add_to_history("system", changed_context)
-                                self._vault_watcher.mark_seen()
-                                self._status_print(
-                                    "Detected vault changes from Obsidian — updated context",
-                                    "debug"
-                                )
-                        except Exception as e:
-                            self._status_print(f"Vault watcher check failed (non-fatal): {e}", "debug")
-
-                # ── Log to evidence trail ────────────────────────────────────
-                # Get the user's prompt (last user message before this response)
-                user_prompt = ""
-                for msg in reversed(self.conversation_history[:-1]):  # Exclude the assistant response we just added
-                    if msg["role"] == "user":
-                        user_prompt = msg["content"]
-                        break
-                self._log_evidence("llm_call", user_prompt[:200], full_response[:200], severity="info")
-
-                # ── Log to unified logger ────────────────────────────────────
-                # Track LLM API calls with token usage and latency
-                if self._unified_logger:
-                    try:
-                        prompt_tokens = self.context_manager.count_conversation_tokens()
-                        completion_tokens = self.context_manager.count_tokens(full_response)
-                        latency_ms = (time.time() - start_time) * 1000 if start_time else 0
-                        self._unified_logger.log_llm_call(
-                            model=self.model,
-                            prompt_tokens=prompt_tokens,
-                            completion_tokens=completion_tokens,
-                            latency_ms=latency_ms,
-                            mode=self.mode,
-                            thinking_enabled=self.thinking_enabled,
-                        )
-                    except Exception as e:
-                        self._status_print(f"Unified logger LLM call failed (non-fatal): {e}", "debug")
-
-                # ── SharedMemory: learn from conversation ───────────────
-                # Record patterns from user prompts (lightweight extraction)
-                if self._shared_memory and user_prompt:
-                    try:
-                        self._learn_patterns_from_turn(user_prompt, full_response)
-                    except Exception:
-                        pass  # Non-fatal — never block response delivery
-
-                # ── Evolution: check for scheduled tasks every N turns ─────────
-                if self.evolution_scheduler:
-                    self._turn_counter += 1
-                    try:
-                        actions = self.evolution_scheduler.on_turn_complete(self._turn_counter)
-                        if actions:
-                            for action in actions:
-                                self._status_print(f"✨ {action}", "debug")
-                    except Exception:
-                        pass  # Non-fatal — never block response delivery
-
-            # Store thinking content for expansion later
-            if reasoning_content:
-                if not hasattr(self, '_thinking_history'):
-                    self._thinking_history = []
-                self._thinking_history.append({
-                    "timestamp": time.time(),
-                    "thinking": reasoning_content,
-                    "response_preview": full_response[:200] if full_response else "",
-                    "duration": (time.time() - thinking_start_time) if thinking_start_time else 0,
-                })
-
-            # ============================================
-            # AUTO-FIX LOGIC
-            # ============================================
-
-            # Check if we're in auto-fix mode and have a file to fix
-            if (hasattr(self, 'auto_fix_mode') and self.auto_fix_mode and 
-                hasattr(self, 'current_fix_file') and self.current_fix_file and 
-                full_response):
-
-                print(f"\n{'='*80}")
-                self._safe_print(f"🔧 AUTO-FIX MODE: Processing AI response...")
-                print(f"{'='*80}")
-
-                # Parse the AI response for PROPOSED CHANGE blocks
-                changes_found = self._parse_ai_changes_for_file(full_response, self.current_fix_file)
-
-                if changes_found > 0:
-                    print(f"✅ Found {changes_found} proposed change(s)")
-                    self._handle_auto_fix_confirmation()
-                else:
-                    print(f"📭 No PROPOSED CHANGE blocks found")
-                    print(f"💡 Tip: Ask the AI to use the PROPOSED CHANGE format")
-
-                # Reset auto-fix mode
-                self.auto_fix_mode = False
-                self.current_fix_file = None
-
-            return full_response
-
-        except requests.exceptions.Timeout:
-            print(f"\n❌ Request timed out after 60 seconds")
-            print(f"💡 Try reducing the file size or using a simpler query")
-            self.conversation_history.pop()
-            return None
-        except requests.exceptions.RequestException as e:
-            print(f"\n❌ Network error: {e}")
-            self.conversation_history.pop()
-            return None
-        except Exception as e:
-            print(f"\n⚠️  Unexpected error: {e}")
-            import traceback
-            traceback.print_exc()
-            return None
-
-        # Note: Timeout and RequestException are already handled above
-
-    async def stream_response_async(self, prompt: str, **kwargs):
-        """Async version - handles search and model commands asynchronously"""
-        # Special case for /search (native async)
-        if prompt.startswith("/search"):
-            query = prompt[7:].strip()
-            self._safe_print(f"\n🔍 Searching for: {query}")
-            success, result = await self.searcher.search(query)
-            if success:
-                self.add_search_results_to_history('web', query, result)
-            else:
-                # Add error to history as system message
-                self.add_to_history("system", f"Web search failed for '{query}': {result}")
-            self._safe_print(f"\n{result}\n")
-            return None
-
-        # Use command registry for other commands (excluding /search, /fix, /analyze)
-        for prefix in sorted(self.command_handlers.keys(), key=len, reverse=True):
-            if prefix in ["/search", "/fix", "/analyze"]:
-                continue
-            if prompt.startswith(prefix):
-                handler, strip_prefix = self.command_handlers[prefix]
-                arg = prompt[len(prefix):].strip() if strip_prefix else prompt
-                # Run sync handler in thread pool
-                loop = asyncio.get_event_loop()
-                response = await loop.run_in_executor(None, handler, arg)
-
-                # Special handling for /code apply confirm
-                if prefix == "/code":
-                    subcommand = arg
-                    if subcommand.startswith("apply confirm") or subcommand == "apply force":
-                        force = "force" in subcommand
-                        response = self._code_apply_changes_confirm(force)
-
-                if response is not None:
-                    self._safe_print(f"\n{response}\n")
-
-                    # Feed tool output to LLM so it can reason about results
-                    if prefix in self.COMMANDS_FEED_TO_LLM and response:
-                        truncated = self._truncate_middle(str(response))
-                        self.add_to_history("user", f"[Tool: {prefix}] {truncated}")
-
-                return None
-
-        # No command matched, fall back to sync stream_response
-        return self.stream_response(prompt, **kwargs)
-
-    def run_async(self, prompt: str, **kwargs):
-        """Helper to run async from sync code"""
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        try:
-            result = loop.run_until_complete(
-                self.stream_response_async(prompt, **kwargs)
-            )
-            return result
-        finally:
-            loop.close()
-
-    def _handle_auto_fix_confirmation(self):
-        """Handle the auto-fix confirmation flow"""
-        if not self.code_changes_pending:
-            print(f"📭 No changes to apply")
-            return
-
-        print(f"\n📋 CHANGES TO APPLY:")
-        print(f"{'-'*80}")
-
-        # Group changes by file
-        changes_by_file = {}
-        for change in self.code_changes_pending:
-            file_path = change['file_path']
-            if file_path not in changes_by_file:
-                changes_by_file[file_path] = []
-            changes_by_file[file_path].append(change)
-
-        for file_path, changes in changes_by_file.items():
-            print(f"\n📄 {file_path}:")
-            for i, change in enumerate(changes, 1):
-                print(f"  {i}. {change['description']}")
-                if 'old_code' in change and 'new_code' in change:
-                    # Show first line of change
-                    old_first = change['old_code'].split('\n')[0][:50]
-                    new_first = change['new_code'].split('\n')[0][:50]
-                    print(f"     - {old_first}{'...' if len(old_first) >= 50 else ''}")
-                    print(f"     + {new_first}{'...' if len(new_first) >= 50 else ''}")
-        
-        print(f"\n{'='*80}")
-
-        # Get user confirmation
-        print(f"\n❓ Apply these changes?")
-        print(f"   Options:")
-        print(f"   1. Type 'yes' to apply all changes")
-        print(f"   2. Type 'diff' to see the changes before applying")
-        print(f"   3. Type 'no' to save as pending changes")
-        print(f"   4. Type 'cancel' to discard changes")
-        print(f"\n   Your choice: ", end="", flush=True)
-        
-        try:
-            import sys
-            if sys.stdin.isatty():
-                choice = input().strip().lower()
-
-                if choice in ['yes', 'y', 'ok', 'apply', '1']:
-                    print(f"\n🔄 Applying changes...")
-
-                    # Show diff before applying
-                    if hasattr(self, 'original_file_content'):
-                        success, message, current_content = self.code_analyzer.read_file_safe(self.current_fix_file)
-                        if success:
-                            print(f"\n📊 Showing changes:")
-                            self.show_diff(self.original_file_content, current_content, self.current_fix_file)
-
-                    # Apply the changes
-                    result = self._code_apply_changes_confirm(force=True)
-                    print(f"\n{result}")
-
-                elif choice in ['diff', 'show', 'preview', '2']:
-                    if hasattr(self, 'original_file_content'):
-                        success, message, current_content = self.code_analyzer.read_file_safe(self.current_fix_file)
-                        if success:
-                            print(f"\n📊 DIFF VIEW:")
-                            self.show_diff(self.original_file_content, current_content, self.current_fix_file)
-
-                            # Ask again after showing diff
-                            if self.get_user_confirmation("\nApply these changes now?", "no"):
-                                print(f"\n🔄 Applying changes...")
-                                result = self._code_apply_changes_confirm(force=True)
-                                print(f"\n{result}")
-                            else:
-                                print(f"\n⏸️  Changes saved as pending.")
-                                print(f"💡 Use '/code changes' to review or '/code apply' to apply later.")
-                        else:
-                            print(f"\n⚠️  Could not show diff: {message}")
-                    else:
-                        print(f"\n⚠️  Original content not available for diff")
-
-                elif choice in ['no', 'n', 'save', '3']:
-                    print(f"\n⏸️  Changes saved as pending.")
-                    print(f"💡 Use '/code changes' to review or '/code apply' to apply later.")
-
-                elif choice in ['cancel', 'discard', '4']:
-                    count = len(self.code_changes_pending)
-                    self.code_changes_pending = []
-                    print(f"\n🗑 ️  Discarded {count} pending changes")
-
-                else:
-                    print(f"\n❓ Unknown option. Changes saved as pending.")
-                    print(f"💡 Use '/code changes' to review or '/code apply' to apply.")
-            
-            else:
-                print(f"\n⚠️  Non-interactive mode. Changes saved as pending.")
-                print(f"💡 Use '/code changes' to review or '/code apply' to apply.")
-        
-        except (EOFError, KeyboardInterrupt):
-            print(f"\n\n⏸️  Input interrupted. Changes saved as pending.")
-            print(f"💡 Use '/code changes' to review or '/code apply' to apply.")
-
-        except Exception as e:
-            print(f"\n⚠️  Error: {e}")
-            print(f"💡 Changes saved as pending. Use '/code changes' to review.")
-    
-    def auto_detect_and_read_file(self, text: str) -> Optional[str]:
-        """
-        Automatically detect file paths in text and read them
-        Returns: File content if found and readable
-        """
-        import re  # ADD THIS LINE at the beginning of the method!
-
-        # Patterns for file paths
-        patterns = [
-            r'[A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+\.\w+',  # Windows absolute
-            r'/(?:[^/]+\/)*[^/]+\.[a-zA-Z0-9]+',  # Unix absolute
-            r'(?:\.{1,2}/)?(?:[^/\s]+/)*[^/\s]+\.[a-zA-Z0-9]+',  # Relative
-        ]
-        
-        for pattern in patterns:
-            matches = re.findall(pattern, text)
-            for match in matches:
-                # Check if it looks like a real file path (not just random text)
-                if any(ext in match for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
-                    # Safety confirmation for auto-file operations
-                    if self.safety_confirm_file_operations:
-                        print(f"🔍 Detected file reference: {match}")
-                        response = input("Read file? (y/n): ").strip().lower()
-                        if response not in ('y', 'yes'):
-                            log_operation("auto_file_read", match, False, "user_denied_confirmation")
-                            continue
-                        else:
-                            log_operation("auto_file_read", match, True, "user_confirmed")
-                    try:
-                        # Try to read the file
-                        if not self.code_analyzer:
-                            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
-
-                        success, message, content = self.code_analyzer.read_file_safe(match)
-                        if success:
-                            self._safe_print(f"📄 Auto-reading detected file: {match}")
-                            log_operation("auto_file_read", match, True, f"size={len(content)}")
-                            return content
-                        else:
-                            log_operation("auto_file_read", match, False, f"reason={message}")
-                    except Exception as e:
-                        log_operation("auto_file_read", match, False, f"exception={str(e)}")
-                        continue
-
-        return None
-
-    def classify_and_enhance_input(self, text: str) -> Optional[str]:
-        """
-        Classify input type and convert to appropriate command if it's a direct object.
-        Returns command string or None if no classification.
-        """
-        import re
-        text = text.strip()
-
-        # If it's already a command, don't reclassify
-        if text.startswith('/'):
-            return None
-
-        # 1. URL detection — bare URL or URL with surrounding context
-        url_pattern = r'^(https?://[^\s]+)$'
-        if re.match(url_pattern, text, re.IGNORECASE):
-            self._safe_print(f"🔗 Detected URL: {text}")
-            log_operation("url_detection", text, True, "auto_classified_as_url")
-            return f"/read {text}"
-
-        # 1b. URL embedded in short text — "帮我看看 https://..." / "read https://..."
-        embedded_url = re.search(r'(https?://[^\s]+)', text)
-        if embedded_url and len(text) < 200:
-            url = embedded_url.group(1)
-            context = text[:embedded_url.start()].strip().lower()
-            # Crawl intent keywords
-            crawl_kw = {'crawl', 'spider', '爬取', '抓取', '爬', '全部', 'all pages', 'entire site', '整个', '全面'}
-            # Links intent keywords
-            links_kw = {'links', 'link', '链接', '所有链接', 'list links', 'extract links', '提取链接', '列出链接'}
-
-            if any(kw in context for kw in crawl_kw):
-                self._safe_print(f"🕷️ Detected crawl intent: {url}")
-                log_operation("url_detection", text, True, "auto_classified_as_crawl")
-                return f"/crawl {url}"
-            elif any(kw in context for kw in links_kw):
-                self._safe_print(f"🔗 Detected links intent: {url}")
-                log_operation("url_detection", text, True, "auto_classified_as_links")
-                return f"/links {url}"
-            else:
-                # Default: read the URL
-                self._safe_print(f"🔗 Detected URL in context: {url}")
-                log_operation("url_detection", text, True, "auto_classified_as_url_in_context")
-                return f"/read {url}"
-
-        # 2. File path with optional line numbers (e.g., file.py:15, file.py:10-20)
-        # Match whole string as a file path
-        file_line_pattern = r'^([A-Za-z]:\\(?:[^\\/:*?"<>|\r\n]+\\)*[^\\/:*?"<>|\r\n]+\.\w+)(?::(\d+)(?:-(\d+))?)?$'
-        file_line_pattern_unix = r'^(/(?:[^/]+/)*[^/]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?$'
-        file_line_pattern_rel = r'^((?:\.{1,2}/)?(?:[^/\s]+/)*[^/\s]+\.[a-zA-Z0-9]+)(?::(\d+)(?:-(\d+))?)?$'
-
-        for pattern in [file_line_pattern, file_line_pattern_unix, file_line_pattern_rel]:
-            match = re.match(pattern, text)
-            if match:
-                file_path = match.group(1)
-                line_start = match.group(2) if match.group(2) else None
-                line_end = match.group(3) if match.group(3) else None
-
-                # Check if it's a known file extension
-                if any(ext in file_path for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
-                    self._safe_print(f"📄 Detected file path with line numbers: {text}")
-                    log_operation("file_path_detection", text, True, f"path={file_path}, lines={line_start}-{line_end}")
-
-                    # Build appropriate command
-                    if line_start:
-                        if line_end:
-                            return f"/read {file_path}:{line_start}-{line_end}"
-                        else:
-                            return f"/read {file_path}:{line_start}"
-                    else:
-                        return f"/read {file_path}"
-
-        # 3. Simple filename (just a filename without path)
-        simple_file_pattern = r'^([^/\s]+\.\w+)$'
-        match = re.match(simple_file_pattern, text)
-        if match:
-            filename = match.group(1)
-            if any(ext in filename for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
-                self._safe_print(f"📄 Detected simple filename: {filename}")
-                log_operation("filename_detection", text, True, f"filename={filename}")
-                return f"/read {filename}"
-
-        # 4. Code reference pattern (e.g., "function_name()", "ClassName.method", "module.Class")
-        # This is more speculative - might trigger false positives
-        code_ref_pattern = r'^([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*\(\)?)$'
-        match = re.match(code_ref_pattern, text)
-        if match and len(text.split()) == 1:  # Single token only
-            self._safe_print(f"🔍 Detected possible code reference: {text}")
-            log_operation("code_reference_detection", text, True, "possible_code_reference")
-            # Could trigger code search, but might be too aggressive
-            # Let's not auto-convert this, as it could be many things
-
-        return None
-
-    def handle_auto_file_analysis(self, file_path: str) -> str:
-        """
-        Automatically handle file analysis when mentioned
-        """
-        if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
-        
-        # Try to read the file
-        success, message, content = self.code_analyzer.read_file_safe(file_path)
-        
-        if not success:
-            return self.formatter.error(f"Could not read file {file_path}: {message}")
-        
-        # Add to conversation history
-        self.add_to_history("user", f"""I want to analyze this file:
-
-File: {file_path}
-
-```python
-{content[:5000]}  # Limit to avoid token overflow
-```
-
-Please analyze this code and suggest any improvements, fixes, or optimizations.""")
-
-        return self.formatter.success(f"Successfully loaded {file_path} for analysis. Please continue with your request.")
-    
-    def handle_auto_fix_command(self, command: str) -> Optional[str]:
-        """
-        Handle automatic fixing commands:
-        /fix <file_path> - Analyze and fix file
-        /analyze <file_path> - Analyze file without auto-fix
-        """
-        parts = command.split()
-        if len(parts) < 2:
-            print("Usage: /fix <file_path> [description]\nExample: /fix agent/core.py 'fix the error handling'")
-            return None
-
-        cmd_type = parts[0]  # /fix or /analyze
-        file_path = parts[1]
-        description = " ".join(parts[2:]) if len(parts) > 2 else "Please analyze and fix any issues"
-
-        # Auto-switch to coding mode for fix/analyze commands
-        if self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        self._safe_print(f"🔧 {'Fixing' if cmd_type == '/fix' else 'Analyzing'}: {file_path}")
-        self._safe_print(f"📝 Description: {description}")
-
-        # Initialize code analyzer if needed
-        if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer(safety_manager=self.safety_manager)
-
-        # Read the file
-        success, message, content = self.code_analyzer.read_file_safe(file_path)
-        if not success:
-            self._safe_print(f"❌ Cannot read file: {message}")
-            return None
-
-        # Store original content for diff
-        self.original_file_content = content
-
-        # CODE-SPECIFIC INSTRUCTIONS - Only added for code actions
-        code_instructions = """
-        CRITICAL INSTRUCTIONS FOR PROPOSING CHANGES:
-
-        1. **Only propose changes to ACTUAL CODE** that exists in the file
-        2. **NEVER include "Truncated for large files"** or similar comments in Old Code
-        3. **Old Code must be EXACT code** from the file, with proper indentation
-        4. **New Code should be the replacement** with improvements
-        5. **Line numbers should be accurate** if provided
-
-        When analyzing code, look for:
-        - Missing error handling (try/except blocks)
-        - Resource leaks (files, sessions not closed)
-        - Security issues (hardcoded secrets, input validation)
-        - Performance issues (inefficient loops, duplicate code)
-        - Code quality (long functions, missing comments)
-
-        ALWAYS use this exact format for proposing changes:
-
-        PROPOSED CHANGE:
-        File: [file_path]
-        Description: [brief description]
-        Old Code: [EXACT code from the file to replace]
-        New Code: [improved replacement code]
-        Line: [line number if known]
-
-        Example of CORRECT format:
-        PROPOSED CHANGE:
-        File: agent/core.py
-        Description: Add error handling for file reading
-        Old Code: with open(file_path, 'r') as f:
-                    content = f.read()
-        New Code: try:
-                    with open(file_path, 'r', encoding='utf-8') as f:
-                        content = f.read()
-                except FileNotFoundError:
-                    return "File not found"
-                except PermissionError:
-                    return "Permission denied"
-        Line: 123
-
-        Do NOT include comments about truncation or sample code!
-        """
-
-        # Create analysis prompt with code-specific instructions
-        analysis_prompt = f"""I want to {cmd_type[1:]} this file:
-
-    File: {file_path}
-
-    {description}
-
-    Here's the current code (first 4000 characters):
-    ```python
-    {content[:4000]}
-    ```
-
-    {code_instructions}
-
-    Please analyze the code and provide specific fixes. If you find issues, propose changes in the PROPOSED CHANGE format."""
-
-        # Add to history and trigger analysis
-        self.add_to_history("user", analysis_prompt)
-
-        # Set auto-fix mode
-        self.auto_fix_mode = (cmd_type == '/fix')
-        self.current_fix_file = file_path
-
-        self._safe_print(f"🤖 AI is analyzing the file. It will propose changes automatically...")
-
-        # Return None to let the normal streaming handle the response
-        return None
-    
-    def _parse_ai_changes_for_file(self, ai_response: str, file_path: str) -> int:
-        """Parse AI response for proposed changes and add to pending changes"""
-        import re
-
-        # Pattern to find PROPOSED CHANGE blocks
-        pattern = r'PROPOSED CHANGE:\s*File:\s*(.+?)\s*Description:\s*(.+?)\s*Old Code:\s*(?:```(?:\w+)?)?\s*(.+?)\s*(?:```)?\s*New Code:\s*(?:```(?:\w+)?)?\s*(.+?)\s*(?:```)?\s*(?:Line:\s*(\d+))?'
-        
-        changes = re.findall(pattern, ai_response, re.DOTALL | re.IGNORECASE)
-
-        change_count = 0
-        for match in changes:
-            match_file = match[0].strip()
-            description = match[1].strip()
-            old_code = match[2].strip()
-            new_code = match[3].strip()
-            line = int(match[4].strip()) if match[4] and match[4].strip().isdigit() else None
-
-            # Clean code blocks
-            old_code = re.sub(r'^```\w*\s*|\s*```$', '', old_code).strip()
-            new_code = re.sub(r'^```\w*\s*|\s*```$', '', new_code).strip()
-
-            self._safe_print(f"\n🔍 Validating change: {description}")
-            
-            # Skip if old_code is clearly invalid
-            if "# truncated for large files" in old_code.lower() or "# sample code" in old_code.lower():
-                self._safe_print(f"❌ Skipping invalid change (contains truncation comment)")
-                continue
-
-            # Try to validate, but be more lenient
-            is_valid, error_msg = self.validate_proposed_change(old_code, new_code, file_path)
-
-            if not is_valid:
-                self._safe_print(f"⚠️  Change validation warning: {error_msg}")
-                self._safe_print(f"💡 Still adding to pending changes for manual review")
-                # Still add it, but mark as needs review
-                description = f"[Needs Review] {description}"
-            
-            # Add to pending changes
-            self.propose_code_change(file_path, old_code, new_code, description, line)
-            change_count += 1
-            self._safe_print(f"✅ Added change to pending changes")
-
-        return change_count
-
-    def _auto_apply_changes_with_confirmation(self):
-        """
-        Automatically apply changes after user confirmation
-        """
-        if not self.code_changes_pending:
-            self._safe_print("📭 No changes to apply.")
-            return
-
-        # Show what will be changed
-        print("\n" + "="*60)
-        self._safe_print("📋 PROPOSED CHANGES:")
-        print("="*60)
-        
-        for change in self.code_changes_pending:
-            self._safe_print(f"\n📄 File: {change['file_path']}")
-            self._safe_print(f"📝 {change['description']}")
-            if 'old_code' in change and 'new_code' in change:
-                print(f"   - {change['old_code'][:80]}{'...' if len(change['old_code']) > 80 else ''}")
-                print(f"   + {change['new_code'][:80]}{'...' if len(change['new_code']) > 80 else ''}")
-
-        print("\n" + "="*60)
-        print("❓ Apply these changes? (yes/no/cancel): ", end="", flush=True)
-        
-        # Get user response
-        try:
-            import sys
-            if sys.stdin.isatty():
-                response = input()
-            else:
-                # If running in non-interactive mode
-                print("\n⚠️  Running in non-interactive mode. Changes will not be applied.")
-                return
-        except:
-            print("\n⚠️  Could not get user input. Changes will not be applied.")
-            return
-
-        if response.lower() in ['yes', 'y', 'ok', 'apply']:
-            print("\n🔄 Applying changes...")
-            result = self._code_apply_changes_confirm(force=True)
-            print(f"\n{result}")
-        elif response.lower() in ['no', 'n']:
-            print("\n❌ Changes not applied. You can view them with /code changes")
-        else:
-            print("\n⏸️  Changes kept pending. Use /code changes to review or /code apply to apply.")
-
-    def get_user_confirmation(self, question: str, default: str = "no") -> bool:
-        """
-        Get yes/no confirmation from user
-        """
-        import sys
-
-        if not sys.stdin.isatty():
-            print(f"⚠️  Non-interactive mode. Assuming '{default}'")
-            return default.lower() in ['yes', 'y']
-
-        valid_responses = {'yes': True, 'y': True, 'no': False, 'n': False}
-
-        while True:
-            print(f"\n{question} (yes/no): ", end="", flush=True)
-            try:
-                response = input().strip().lower()
-                if response in valid_responses:
-                    return valid_responses[response]
-                elif response == '':
-                    return default.lower() in ['yes', 'y']
-                else:
-                    print("Please answer 'yes' or 'no'")
-            except (EOFError, KeyboardInterrupt):
-                print("\n\nInterrupted. Assuming 'no'")
-                return False
-
-    def _check_file_threshold(self, total_files: int, operation_description: str = "process files") -> Tuple[bool, Optional[int]]:
-        """
-        Check if total files exceeds thresholds and ask user for confirmation.
-
-        Args:
-            total_files: Total number of files detected
-            operation_description: Description of the operation for the prompt
-
-        Returns:
-            Tuple[bool, Optional[int]]: (should_continue, limit)
-                - should_continue: True if user wants to continue, False otherwise
-                - limit: Suggested limit for file operations (None for no limit)
-        """
-        # Thresholds for confirmation
-        thresholds = [100, 200, 300]
-        exceeded_threshold = None
-
-        for threshold in sorted(thresholds, reverse=True):
-            if total_files >= threshold:
-                exceeded_threshold = threshold
-                break
-
-        limit = 200  # Default limit for performance
-
-        if exceeded_threshold is not None:
-            self._safe_print(f"📊 Found {total_files} total files in codebase (exceeds threshold: {exceeded_threshold})")
-            if self.get_user_confirmation(f"Continue to {operation_description} for all {total_files} files?", "no"):
-                limit = None  # No limit, process all files
-                self._safe_print(f"✅ Processing all {total_files} files...")
-                return True, limit
-            else:
-                limit = 100  # Reduced limit for safety
-                self._safe_print(f"⚠️  Using reduced limit of {limit} files for safety.")
-                return False, limit  # User declined full operation
-
-        # If no threshold exceeded, continue with default limit
-        return True, limit
-
-    def show_diff(self, old_content: str, new_content: str, filename: str = "file"):
-        """
-        Show colored diff between old and new content
-        """
-        try:
-            import difflib
-
-            print(f"\n📊 DIFF: {filename}")
-            print("="*60)
-            
-            old_lines = old_content.splitlines(keepends=True)
-            new_lines = new_content.splitlines(keepends=True)
-
-            # Generate unified diff
-            diff = difflib.unified_diff(
-                old_lines, new_lines,
-                fromfile=f'Original: {filename}',
-                tofile=f'Modified: {filename}',
-                lineterm='',
-                n=3  # Context lines
-            )
-            
-            # Print with colors
-            for line in diff:
-                if line.startswith('---') or line.startswith('+++'):
-                    print(f"\033[90m{line}\033[0m")  # Gray for headers
-                elif line.startswith('-'):
-                    print(f"\033[91m{line}\033[0m")  # Red for deletions
-                elif line.startswith('+'):
-                    print(f"\033[92m{line}\033[0m")  # Green for additions
-                else:
-                    print(f"\033[90m{line}\033[0m")  # Gray for context
-
-            # Also show summary
-            print(f"\n📈 Summary:")
-            print(f"  Original: {len(old_lines)} lines")
-            print(f"  Modified: {len(new_lines)} lines")
-            print(f"  Changes: {abs(len(new_lines) - len(old_lines))} lines added/removed")
-            print("="*60)
-            
-        except Exception as e:
-            print(f"⚠️ Could not generate diff: {e}")
-            print(f"📄 Showing simple comparison instead:")
-            print("="*60)
-            print(f"Original (first 200 chars):\n{old_content[:200]}")
-            print(f"\nModified (first 200 chars):\n{new_content[:200]}")
-            print("="*60)
-
-    def validate_proposed_change(self, old_code: str, new_code: str, file_path: str) -> Tuple[bool, str]:
-        """
-        Validate that a proposed change is valid
-
-        Returns: (is_valid, error_message)
-        """
-        # Check if old_code is empty or just a comment
-        if not old_code or old_code.strip() == "":
-            return False, "Old Code cannot be empty"
-
-        # Check if old_code contains truncation comments
-        truncation_phrases = [
-            "truncated for large files",
-            "truncated for context",
-            "first 4000 characters",
-            "first 3000 characters",
-            "sample code",
-            "example code",
-            "..."
-        ]
-
-        old_code_lower = old_code.lower()
-        for phrase in truncation_phrases:
-            if phrase in old_code_lower:
-                return False, f"Old Code contains truncation comment: '{phrase}'"
-
-        # Check if old_code looks like actual code (not just a comment)
-        lines = old_code.split('\n')
-        code_lines = [line for line in lines if line.strip() and not line.strip().startswith('#')]
-        
-        if len(code_lines) == 0:
-            # Only comments, not actual code
-            return False, "Old Code contains no actual code (only comments)"
-        
-        # Read the actual file to check if old_code exists
-        success, message, actual_content = self.code_analyzer.read_file_safe(file_path)
-        if not success:
-            return False, f"Cannot read file to validate: {message}"
-        
-        # Check if old_code exists in the file (allow for minor whitespace differences)
-        normalized_old = re.sub(r'\s+', ' ', old_code.strip())
-        normalized_file = re.sub(r'\s+', ' ', actual_content)
-
-        if normalized_old not in normalized_file:
-            # Try to find similar code
-            similar = self.find_similar_code(old_code, actual_content)
-            if similar:
-                return False, f"Old Code not found. Did you mean:\n{similar[:200]}"
-            else:
-                return False, "Old Code not found in the file"
-        
-        return True, "Valid"
-    
-    def find_similar_code(self, old_code: str, file_content: str, context_lines: int = 3) -> str:
-        """
-        Find code similar to old_code in file_content
-        Returns: Similar code snippet with context
-        """
-        import difflib
-
-        # Clean the old_code
-        old_code_clean = old_code.strip()
-
-        # Split into lines
-        file_lines = file_content.splitlines()
-
-        # If old_code is very short, just return empty
-        if len(old_code_clean) < 10:
-            return ""
-        
-        # Try to find exact or similar matches
-        best_match = None
-        best_ratio = 0
-
-        # Check if any line contains the old_code
-        for i, line in enumerate(file_lines):
-            if old_code_clean in line:
-                # Found exact substring
-                start = max(0, i - context_lines)
-                end = min(len(file_lines), i + context_lines + 1)
-                return "\n".join(file_lines[start:end])
-
-        # Try to find similar code using difflib
-        # Break the file into chunks and compare
-        chunk_size = min(10, len(file_lines))
-        
-        for i in range(0, len(file_lines) - chunk_size + 1, chunk_size // 2):
-            chunk = "\n".join(file_lines[i:i+chunk_size])
-            
-            # Calculate similarity ratio
-            ratio = difflib.SequenceMatcher(None, old_code_clean, chunk).ratio()
-            
-            if ratio > best_ratio:
-                best_ratio = ratio
-                start = max(0, i - context_lines)
-                end = min(len(file_lines), i + chunk_size + context_lines)
-                best_match = "\n".join(file_lines[start:end])
-        
-        # If we found something reasonably similar (ratio > 0.3)
-        if best_match and best_ratio > 0.3:
-            return best_match
-        else:
-            # Return a snippet around the middle of the file
-            middle = len(file_lines) // 2
-            start = max(0, middle - context_lines * 2)
-            end = min(len(file_lines), middle + context_lines * 2)
-            return "\n".join(file_lines[start:end])
+    def handle_code_command(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import handle_code_command
+        return handle_code_command(self, *args, **kwargs)
+
+    def _code_scan(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_scan
+        return _code_scan(self, *args, **kwargs)
+
+    def add_code_context_instructions(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import add_code_context_instructions
+        return add_code_context_instructions(self, *args, **kwargs)
+
+    def is_code_related_query(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import is_code_related_query
+        return is_code_related_query(self, *args, **kwargs)
+
+    def _code_show_changes(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_show_changes
+        return _code_show_changes(self, *args, **kwargs)
+
+    def _code_apply_changes(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_apply_changes
+        return _code_apply_changes(self, *args, **kwargs)
+
+    def _order_changes_by_dependencies(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _order_changes_by_dependencies
+        return _order_changes_by_dependencies(self, *args, **kwargs)
+
+    def _code_apply_changes_confirm(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_apply_changes_confirm
+        return _code_apply_changes_confirm(self, *args, **kwargs)
+
+    def _code_self_scan(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_self_scan
+        return _code_self_scan(self, *args, **kwargs)
+
+    def _code_self_improve(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_self_improve
+        return _code_self_improve(self, *args, **kwargs)
+
+    def _code_self_apply(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_self_apply
+        return _code_self_apply(self, *args, **kwargs)
+
+    def _code_reason(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _code_reason
+        return _code_reason(self, *args, **kwargs)
+
+    def propose_code_change(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import propose_code_change
+        return propose_code_change(self, *args, **kwargs)
+
+    def search_sync(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import search_sync
+        return search_sync(self, *args, **kwargs)
+
+    def add_to_history(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import add_to_history
+        return add_to_history(self, *args, **kwargs)
+
+    def add_search_results_to_history(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import add_search_results_to_history
+        return add_search_results_to_history(self, *args, **kwargs)
+
+    def clear_history(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import clear_history
+        return clear_history(self, *args, **kwargs)
+
+    def get_conversation_summary(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import get_conversation_summary
+        return get_conversation_summary(self, *args, **kwargs)
+
+    def get_token_count(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import get_token_count
+        return get_token_count(self, *args, **kwargs)
+
+    def _ensure_system_prompt(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _ensure_system_prompt
+        return _ensure_system_prompt(self, *args, **kwargs)
+
+    def toggle_thinking_mode(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import toggle_thinking_mode
+        return toggle_thinking_mode(self, *args, **kwargs)
+
+    def stream_response(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import stream_response
+        return stream_response(self, *args, **kwargs)
+
+    def stream_response_async(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import stream_response_async
+        return stream_response_async(self, *args, **kwargs)
+
+    def run_async(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import run_async
+        return run_async(self, *args, **kwargs)
+
+    def _handle_auto_fix_confirmation(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _handle_auto_fix_confirmation
+        return _handle_auto_fix_confirmation(self, *args, **kwargs)
+
+    def auto_detect_and_read_file(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import auto_detect_and_read_file
+        return auto_detect_and_read_file(self, *args, **kwargs)
+
+    def classify_and_enhance_input(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import classify_and_enhance_input
+        return classify_and_enhance_input(self, *args, **kwargs)
+
+    def handle_auto_file_analysis(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import handle_auto_file_analysis
+        return handle_auto_file_analysis(self, *args, **kwargs)
+
+    def handle_auto_fix_command(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import handle_auto_fix_command
+        return handle_auto_fix_command(self, *args, **kwargs)
+
+    def _parse_ai_changes_for_file(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _parse_ai_changes_for_file
+        return _parse_ai_changes_for_file(self, *args, **kwargs)
+
+    def _auto_apply_changes_with_confirmation(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _auto_apply_changes_with_confirmation
+        return _auto_apply_changes_with_confirmation(self, *args, **kwargs)
+
+    def get_user_confirmation(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import get_user_confirmation
+        return get_user_confirmation(self, *args, **kwargs)
+
+    def _check_file_threshold(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import _check_file_threshold
+        return _check_file_threshold(self, *args, **kwargs)
+
+    def show_diff(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import show_diff
+        return show_diff(self, *args, **kwargs)
+
+    def validate_proposed_change(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import validate_proposed_change
+        return validate_proposed_change(self, *args, **kwargs)
+
+    def find_similar_code(self, *args, **kwargs):
+        """Delegate to code_commands module."""
+        from agent.services.code_commands import find_similar_code
+        return find_similar_code(self, *args, **kwargs)

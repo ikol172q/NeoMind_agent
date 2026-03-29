@@ -33,26 +33,38 @@ def collect_metrics() -> Dict[str, Any]:
     # Try to load evolution state
     try:
         from agent.evolution.auto_evolve import AutoEvolve
+
+        # Guard: only proceed if AutoEvolve is a real class (not a MagicMock)
+        if not isinstance(AutoEvolve, type):
+            raise TypeError("AutoEvolve is not a real class (possibly mocked)")
+
         evolve = AutoEvolve()
 
+        # Guard: validate that key attributes are real Path objects
+        if not isinstance(getattr(evolve, "feedback_db", None), Path):
+            raise TypeError("feedback_db is not a Path (possibly mocked)")
+
         # Health status
-        if evolve.state.get("health"):
-            metrics["health"] = evolve.state["health"]
+        state = getattr(evolve, "state", {})
+        if isinstance(state, dict) and state.get("health"):
+            metrics["health"] = state["health"]
 
         # Timeline of evolution events
         timeline = []
-        if evolve.state.get("last_startup_check"):
-            timeline.append(("Startup Check", evolve.state["last_startup_check"]))
-        if evolve.state.get("last_daily_audit"):
-            timeline.append(("Daily Audit", evolve.state["last_daily_audit"]))
-        if evolve.state.get("last_weekly_retro"):
-            timeline.append(("Weekly Retro", evolve.state["last_weekly_retro"]))
+        if isinstance(state, dict):
+            if state.get("last_startup_check"):
+                timeline.append(("Startup Check", state["last_startup_check"]))
+            if state.get("last_daily_audit"):
+                timeline.append(("Daily Audit", state["last_daily_audit"]))
+            if state.get("last_weekly_retro"):
+                timeline.append(("Weekly Retro", state["last_weekly_retro"]))
         metrics["evolution_timeline"] = timeline
 
         # Recent learnings
-        if evolve.learning_log.exists():
+        learning_log = getattr(evolve, "learning_log", None)
+        if isinstance(learning_log, Path) and learning_log.exists():
             try:
-                with open(evolve.learning_log, "r") as f:
+                with open(learning_log, "r") as f:
                     recent_learnings = [
                         json.loads(line) for line in f.readlines()[-20:]
                     ]
@@ -61,29 +73,29 @@ def collect_metrics() -> Dict[str, Any]:
                 pass
 
         # Patterns from feedback DB
-        try:
-            import sqlite3
-            conn = sqlite3.connect(str(evolve.feedback_db), timeout=2.0)
-            cursor = conn.cursor()
+        if isinstance(evolve.feedback_db, Path) and evolve.feedback_db.exists():
+            try:
+                import sqlite3
+                conn = sqlite3.connect(str(evolve.feedback_db), timeout=2.0)
+                cursor = conn.cursor()
 
-            # Get top patterns
-            cursor.execute("""
-                SELECT pattern_type, pattern_value, count
-                FROM patterns
-                ORDER BY count DESC
-                LIMIT 20
-            """)
+                cursor.execute("""
+                    SELECT pattern_type, pattern_value, count
+                    FROM patterns
+                    ORDER BY count DESC
+                    LIMIT 20
+                """)
 
-            for pattern_type, pattern_value, count in cursor.fetchall():
-                metrics["patterns"].append({
-                    "type": pattern_type,
-                    "value": pattern_value,
-                    "count": count,
-                })
+                for pattern_type, pattern_value, count in cursor.fetchall():
+                    metrics["patterns"].append({
+                        "type": pattern_type,
+                        "value": pattern_value,
+                        "count": count,
+                    })
 
-            conn.close()
-        except Exception:
-            pass
+                conn.close()
+            except Exception:
+                pass
 
     except Exception:
         pass
