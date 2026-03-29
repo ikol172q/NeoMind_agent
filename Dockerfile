@@ -26,15 +26,16 @@ RUN pip install --no-cache-dir \
     finnhub-python yfinance akshare feedparser \
     cryptography keyring sympy websockets \
     trafilatura duckduckgo-search lxml \
-    html2text chardet tiktoken \
+    html2text readability-lxml chardet tiktoken \
     python-telegram-bot \
     playwright \
-    # Universal Search Engine deps (P0+P1+P2)
+    # Universal Search Engine deps
     flashrank \
     && \
-    # Optional: RAG dependencies (skippable in lightweight builds)
+    # Optional: search + RAG dependencies (|| true = don't fail build if any fails)
     pip install --no-cache-dir \
-    faiss-cpu sentence-transformers PyPDF2 || true
+    faiss-cpu sentence-transformers PyPDF2 \
+    crawl4ai exa_py || true
 
 # Install Chromium for browser daemon
 RUN playwright install chromium && playwright install-deps chromium
