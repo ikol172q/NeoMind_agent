@@ -82,3 +82,19 @@ tokensight/
 # Architecture visualization (local reference only)
 plans/architecture_interactive.html
 plans/ARCHITECTURE_VISUALIZATION.md
+
+# Dev reports & temp docs (keep local, never commit)
+COMPREHENSIVE_TESTS_SUMMARY.md
+COMPREHENSIVE_TEST_REPORT.txt
+DASHBOARD_README.md
+TESTS_CREATED.md
+TESTS_INDEX.md
+TESTS_QUICK_REFERENCE.md
+TEST_FILES_SUMMARY.txt
+TEST_SUITE_SUMMARY.md
+tests/COMPLETION_REPORT.txt
+tests/TEST_COVERAGE_SUMMARY.md
+
+# Backup & temp scripts
+agent/core.py.bak
+test_search_status.py
