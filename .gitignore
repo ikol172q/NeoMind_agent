@@ -133,3 +133,4 @@ tests/TEST_COVERAGE_SUMMARY.md
 # Backup & temp scripts
 agent/core.py.bak
 test_search_status.py
+neomind/test.txt
