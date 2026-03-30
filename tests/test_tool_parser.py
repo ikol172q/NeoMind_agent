@@ -365,5 +365,107 @@ class TestContentFilterToolCallSuppression(unittest.TestCase):
         self.assertIn("After", output)
 
 
+# ── XML-Wrapped Format Tests (DeepSeek-style) ───────────────────────────────
+
+class TestToolCallParserXMLWrapped(unittest.TestCase):
+    """Test parsing of XML-wrapped tool call format.
+
+    Some LLMs (notably DeepSeek) output tool calls as:
+        <tool_call>
+        <ToolName>
+        {"param": "value"}
+        </ToolName>
+        </tool_call>
+
+    Instead of the expected JSON format.
+    """
+
+    def setUp(self):
+        self.parser = ToolCallParser()
+
+    def test_basic_read_xml_wrapped(self):
+        response = '我来查看这个文件。\n\n<tool_call>\n<Read>\n{"path": "/app/agent/agentic/agentic_loop.py"}\n</Read>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Read")
+        self.assertEqual(tc.params["path"], "/app/agent/agentic/agentic_loop.py")
+        self.assertFalse(tc.is_legacy)
+
+    def test_write_xml_wrapped(self):
+        response = '<tool_call>\n<Write>\n{"path": "/data/neomind/test.txt", "content": "hello from neomind\\n"}\n</Write>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Write")
+        self.assertEqual(tc.params["path"], "/data/neomind/test.txt")
+
+    def test_bash_xml_wrapped(self):
+        response = '<tool_call>\n<Bash>\n{"command": "wc -l /app/agent/agentic/agentic_loop.py"}\n</Bash>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")
+        self.assertEqual(tc.params["command"], "wc -l /app/agent/agentic/agentic_loop.py")
+
+    def test_self_editor_xml_wrapped(self):
+        response = '<tool_call>\n<SelfEditor>\n{"file_path": "agent/core.py", "new_content": "# updated", "reason": "fix bug"}\n</SelfEditor>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "SelfEditor")
+        self.assertEqual(tc.params["reason"], "fix bug")
+
+    def test_xml_wrapped_whitespace_tolerance(self):
+        response = '<tool_call>  \n  <Read>  \n  {"path": "x.py"}  \n  </Read>  \n  </tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Read")
+
+    def test_xml_wrapped_malformed_json(self):
+        response = '<tool_call>\n<Read>\n{bad json}\n</Read>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNone(tc)
+
+    def test_xml_wrapped_mismatched_tags(self):
+        """Mismatched XML tags should not parse."""
+        response = '<tool_call>\n<Read>\n{"path": "x"}\n</Write>\n</tool_call>'
+        tc = self.parser.parse(response)
+        # Should fall through to None since regex requires matching tags
+        self.assertIsNone(tc)
+
+    def test_structured_takes_priority_over_xml_wrapped(self):
+        """Standard JSON format should be preferred when both present."""
+        response = (
+            '<tool_call>\n{"tool": "Bash", "params": {"command": "ls"}}\n</tool_call>\n'
+            'also\n'
+            '<tool_call>\n<Read>\n{"path": "x"}\n</Read>\n</tool_call>'
+        )
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Bash")  # JSON format wins
+
+    def test_xml_wrapped_with_surrounding_text(self):
+        response = (
+            "我来查看这个文件。\n\n"
+            "<tool_call>\n<Read>\n"
+            '{"path": "/app/agent/agentic/agentic_loop.py"}\n'
+            "</Read>\n</tool_call>\n\n"
+            "🔍 Sources: RSS"
+        )
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Read")
+
+    def test_xml_wrapped_params_not_dict(self):
+        response = '<tool_call>\n<Read>\n"just a string"\n</Read>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNone(tc)
+
+    def test_xml_wrapped_multi_param(self):
+        response = '<tool_call>\n<Edit>\n{"path": "x.py", "old_string": "foo", "new_string": "bar", "replace_all": true}\n</Edit>\n</tool_call>'
+        tc = self.parser.parse(response)
+        self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "Edit")
+        self.assertEqual(tc.params["old_string"], "foo")
+        self.assertTrue(tc.params["replace_all"])
+
+
 if __name__ == "__main__":
     unittest.main()

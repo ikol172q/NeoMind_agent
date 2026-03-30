@@ -123,11 +123,13 @@ class ToolDefinition:
         Returns:
             (True, "") on success, (False, error_message) on failure
         """
-        # Check for unknown parameters
+        # Silently strip unknown parameters instead of erroring.
+        # LLMs sometimes hallucinate extra params (e.g. "reason") —
+        # rejecting them wastes a round-trip. Just ignore them.
         known_names = {p.name for p in self.parameters}
-        for key in params:
-            if key not in known_names:
-                return False, f"Unknown parameter: '{key}'. Valid parameters: {sorted(known_names)}"
+        unknown_keys = [k for k in params if k not in known_names]
+        for k in unknown_keys:
+            del params[k]
 
         # Check required parameters and validate types
         for p in self.parameters:
@@ -266,4 +268,6 @@ RULES:
 - Break complex tasks into steps — one tool call per step
 - For shell commands, use the Bash tool (persistent session: cd/export carry across calls)
 - Prefer Read/Edit/Write tools over bash cat/sed for file operations (structured output)
-- Prefer Grep/Glob over bash grep/find (faster, structured output)"""
+- Prefer Grep/Glob over bash grep/find (faster, structured output)
+- When the user asks you to do something, DO IT immediately with a tool call. Do NOT ask for confirmation or list options — just execute.
+- 用户让你做事就直接做，不要问"你想要 1. 覆盖 2. 创建新的 3. ..."——直接执行最合理的操作"""
