@@ -104,7 +104,7 @@ class TestToolRegistryInit:
     def test_register_tools_contains_all_tools(self):
         """Test that all expected tools are registered."""
         registry = ToolRegistry()
-        expected_tools = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"]
+        expected_tools = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"]
         for tool_name in expected_tools:
             assert tool_name in registry._tool_definitions
 
@@ -113,7 +113,7 @@ class TestToolRegistryInit:
         registry = ToolRegistry()
         tools = registry.get_all_tools()
         tool_names = [t.name for t in tools]
-        expected_order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"]
+        expected_order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"]
         assert tool_names == expected_order
 
 

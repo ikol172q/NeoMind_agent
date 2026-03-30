@@ -127,12 +127,19 @@ class TestToolDefinitionValidation(unittest.TestCase):
         self.assertIn("path", err)
         self.assertIn("Missing required", err)
 
-    def test_unknown_parameter(self):
+    def test_unknown_parameter_silently_stripped(self):
+        """Unknown params should be silently stripped, not rejected.
+
+        LLMs sometimes hallucinate extra params (e.g. 'reason') —
+        rejecting them wastes a round-trip. We just ignore them.
+        """
         tool = _make_read_tool()
-        ok, err = tool.validate_params({"path": "x", "nonexistent": 42})
-        self.assertFalse(ok)
-        self.assertIn("Unknown parameter", err)
-        self.assertIn("nonexistent", err)
+        params = {"path": "x", "nonexistent": 42}
+        ok, err = tool.validate_params(params)
+        self.assertTrue(ok)
+        self.assertEqual(err, "")
+        # The unknown key should have been removed
+        self.assertNotIn("nonexistent", params)
 
     def test_wrong_type_string(self):
         tool = _make_read_tool()
@@ -338,9 +345,9 @@ class TestToolRegistrySchemas(unittest.TestCase):
         from agent.tools import ToolRegistry
         return ToolRegistry(working_dir=self.tmpdir)
 
-    def test_all_seven_tools_registered(self):
+    def test_all_tools_registered(self):
         reg = self._make_registry()
-        expected = {"Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"}
+        expected = {"Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"}
         self.assertEqual(set(reg._tool_definitions.keys()), expected)
 
     def test_get_tool_exact(self):
@@ -363,7 +370,7 @@ class TestToolRegistrySchemas(unittest.TestCase):
         reg = self._make_registry()
         tools = reg.get_all_tools()
         names = [t.name for t in tools]
-        self.assertEqual(names, ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"])
+        self.assertEqual(names, ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"])
 
     def test_bash_tool_is_execute(self):
         reg = self._make_registry()
