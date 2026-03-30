@@ -1,0 +1,64 @@
+# NeoMind — gitleaks configuration
+# Usage: gitleaks detect --config .gitleaks.toml
+# CI: gitleaks detect --config .gitleaks.toml --source . --report-path gitleaks-report.json
+
+title = "NeoMind Secrets Scanner"
+
+[extend]
+# Use the default gitleaks rules as a base
+useDefault = true
+
+# Allow known safe patterns (false positives)
+[allowlist]
+description = "NeoMind allowlist"
+paths = [
+    '''.env\.example''',
+    '''\.gitleaks\.toml''',
+    '''plans/.*\.md''',          # Plan docs may discuss API patterns
+    '''tests/.*\.py''',          # Tests may use mock tokens
+    '''CHANGELOG\.md''',
+]
+regexTarget = "line"
+regexes = [
+    '''your_.*_here''',          # Placeholder values
+    '''<placeholder>''',
+    '''123456:ABC-DEF''',        # Known example bot token
+    '''AKIA[A-Z]{16}.*example''',
+    '''sk-[a-z]+_example''',
+]
+
+# Custom rules specific to NeoMind
+[[rules]]
+id = "telegram-bot-token"
+description = "Telegram Bot Token"
+regex = '''[0-9]{8,12}:[a-zA-Z0-9_-]{35}'''
+keywords = ["telegram", "bot_token", "TELEGRAM"]
+
+[[rules]]
+id = "deepseek-api-key"
+description = "DeepSeek API Key"
+regex = '''sk-[a-f0-9]{32,}'''
+keywords = ["deepseek", "api_key", "DEEPSEEK"]
+
+[[rules]]
+id = "finnhub-api-key"
+description = "Finnhub API Key"
+regex = '''c[a-z0-9]{19}'''
+keywords = ["finnhub", "FINNHUB"]
+
+[[rules]]
+id = "personal-email"
+description = "Personal Email Address (non-example)"
+regex = '''[a-zA-Z0-9._%+-]+@(gmail|outlook|hotmail|yahoo|icloud|qq|163)\.[a-z]{2,}'''
+keywords = ["email", "mail", "@"]
+
+[[rules]]
+id = "sqlite-database"
+description = "SQLite Database File"
+regex = '''[\w/]+\.(db|sqlite3?)$'''
+path = '''(?i)\.(db|sqlite3?)$'''
+
+[[rules]]
+id = "private-key-content"
+description = "Private Key Content"
+regex = '''-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'''
