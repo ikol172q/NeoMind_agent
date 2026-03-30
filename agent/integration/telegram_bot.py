@@ -317,6 +317,34 @@ class NeoMindTelegramBot:
             logger.warning(f"Failed to initialize EvidenceTrail: {e}")
             self._evidence_trail = None
 
+    def _is_command_for_me(self, update) -> bool:
+        """Check if a /command in a group chat is directed at this bot.
+
+        In group chats, bare /commands (without @bot_username suffix) are
+        ambiguous when multiple bots are present. This method returns False
+        for commands not directed at us, so we can silently ignore them.
+
+        In private chats, all commands are always for us.
+        """
+        msg = update.message
+        if not msg or not msg.text:
+            return True
+        # Private chat — always ours
+        if msg.chat.type == "private":
+            return True
+        # Group chat: check if command has @username suffix
+        text = msg.text.split()[0]  # e.g. "/model@neomindagent_bot"
+        if "@" in text:
+            # Explicit target — check if it's us
+            target = text.split("@", 1)[1].lower()
+            return target == (self.config.bot_username or "").lower()
+        # No @suffix: only respond if we're the only bot, or if the message
+        # is a reply to one of our messages
+        if msg.reply_to_message and msg.reply_to_message.from_user:
+            return msg.reply_to_message.from_user.id == self._bot_id
+        # Bare command in group with no reply context — ignore to avoid conflicts
+        return False
+
     async def start(self):
         """Start the Telegram bot (long polling mode)."""
         print("[bot] Building Telegram application...", flush=True)
@@ -496,6 +524,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /start — introduce the bot."""
+        if not self._is_command_for_me(update):
+            return
         await update.message.reply_text(
             "👋 我是 <b>NeoMind Finance</b> — 个人金融与投资智能 Agent\n\n"
             "我能做什么：\n"
@@ -511,6 +541,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /help — grouped command reference."""
+        if not self._is_command_for_me(update):
+            return
         current_mode = self._store.get_mode(update.message.chat_id)
         thinking = "ON 🧠" if getattr(self, '_thinking_enabled', False) else "OFF"
 
@@ -569,6 +601,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status — one-stop status: model, provider, search, memory."""
+        if not self._is_command_for_me(update):
+            return
         cid = update.message.chat_id
         current_mode = self._store.get_mode(cid)
         thinking = "ON 🧠" if getattr(self, '_thinking_enabled', False) else "OFF"
@@ -636,6 +670,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_mode(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /mode — switch personality for THIS chat (per-chat, not global)."""
+        if not self._is_command_for_me(update):
+            return
         args = " ".join(context.args) if context.args else ""
         cid = update.message.chat_id
         current = self._store.get_mode(cid)
@@ -697,6 +733,8 @@ class NeoMindTelegramBot:
         /model <id>         — switch to model
         /model reset        — restore personality default
         """
+        if not self._is_command_for_me(update):
+            return
         args = " ".join(context.args).strip() if context.args else ""
         cid = update.message.chat_id
         mode = self._store.get_mode(cid)
@@ -828,6 +866,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_think(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /think — toggle thinking (reasoning) mode."""
+        if not self._is_command_for_me(update):
+            return
         cid = update.message.chat_id
         self._thinking_enabled = not self._thinking_enabled
         status = "ON" if self._thinking_enabled else "OFF"
@@ -841,6 +881,8 @@ class NeoMindTelegramBot:
 
     async def _cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /history — alias for /admin history."""
+        if not self._is_command_for_me(update):
+            return
         # Rewrite args and forward to admin handler
         context.args = ["history"] + (list(context.args) if context.args else [])
         await self._cmd_admin(update, context)
@@ -851,6 +893,8 @@ class NeoMindTelegramBot:
         Messages are archived (hidden from LLM), not deleted.
         LLM starts fresh, but admin can still view archived messages.
         """
+        if not self._is_command_for_me(update):
+            return
         cid = update.message.chat_id
         count = self._store.clear_active(cid)
         await update.message.reply_text(
@@ -2390,6 +2434,8 @@ class NeoMindTelegramBot:
 
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle unrecognized commands: route shared commands or suggest fixes."""
+        if not self._is_command_for_me(update):
+            return
         text = update.message.text or ""
         cmd = text.split()[0].lower() if text else ""
 
@@ -2619,6 +2665,8 @@ class NeoMindTelegramBot:
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle finance slash commands (/stock, /crypto, etc.)."""
+        if not self._is_command_for_me(update):
+            return
         text = update.message.text
         await self._process_and_reply(update, text, "fin_command")
 
