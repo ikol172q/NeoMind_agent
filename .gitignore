@@ -71,10 +71,45 @@ run.sh
 *.pem
 *.key
 *.secret
+*.p12
+*.pfx
+*.keystore
+*.jks
 credentials.json
 token.json
+service_account*.json
 # TokenSight (local only)
 tokensight/
+
+# Environment files — catch all variants
+.env.*
+!.env.example
+
+# SQLite databases (contain user data / financial data)
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Data directories (financial data, predictions, personal analysis)
+/data/
+backups/
+
+# Personal notes / private analysis
+private/
+personal/
+*.private.*
+
+# SSH / GPG keys
+id_rsa*
+id_ed25519*
+*.gpg
+
+# OS credential stores
+.netrc
+.npmrc
+.pypirc
 
 # Test mock artifacts (leaked by MagicMock in tests)
 <MagicMock*

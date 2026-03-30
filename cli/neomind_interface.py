@@ -983,7 +983,11 @@ class NeoMindInterface:
         """Lazily create the ToolRegistry."""
         from agent.tools import ToolRegistry
         if not hasattr(self, '_tool_registry') or self._tool_registry is None:
-            self._tool_registry = ToolRegistry(working_dir=os.getcwd())
+            try:
+                self._tool_registry = ToolRegistry(working_dir=os.getcwd())
+            except Exception as e:
+                self._print(f"[red]Failed to initialize ToolRegistry: {e}[/red]")
+                self._tool_registry = None
         return self._tool_registry
 
     def _execute_tool_call(self, tool_call) -> 'ToolResult':
@@ -1073,17 +1077,14 @@ class NeoMindInterface:
     def _run_agentic_loop(self, max_iterations: int = None):
         """After an LLM response, parse tool calls, execute, feed back, repeat.
 
-        This implements the structured agentic loop:
-        1. Parse the FIRST tool call from the LLM response (structured or legacy)
-        2. Check per-tool permissions (READ_ONLY auto-approves)
-        3. Validate parameters against the tool's schema
-        4. Execute under spinner (no verbose output)
-        5. Feed structured result back to conversation
-        6. Re-prompt the LLM
-        7. Repeat until no more tool calls or max iterations
+        Uses the canonical AgenticLoop from agent.agentic, delegating all loop logic
+        and tool execution to it. The CLI remains responsible for:
+        - Permission checking via _check_permission
+        - Spinner/UX rendering for tool execution
+        - Streaming LLM responses back to the user
 
-        After _AGENTIC_SOFT_LIMIT iterations, the re-prompt instructs the model
-        to stop making tool calls and provide a final summary.
+        Tool result feedback and continuation prompts are automatically handled
+        by the canonical loop.
         """
         if self.chat.mode != "coding":
             return  # Only in coding mode
@@ -1091,73 +1092,133 @@ class NeoMindInterface:
         if max_iterations is None:
             max_iterations = self._AGENTIC_HARD_LIMIT
 
-        parser = self._get_tool_parser()
-        auto_approved = False  # Track if user said "all" this turn
+        from agent.agentic import AgenticLoop, AgenticConfig
 
-        for iteration in range(max_iterations):
-            # Get the last assistant message
-            history = self.chat.conversation_history
-            if not history:
-                return
-            last_msg = history[-1]
-            if last_msg["role"] != "assistant":
-                return
+        # Create the LLM caller wrapper that feeds responses back to the chat
+        def llm_caller(messages):
+            """Wrapper around self.chat.stream_response for the agentic loop.
 
-            response_text = last_msg["content"]
+            The agentic loop has already updated self.chat.conversation_history
+            with the assistant response and user feedback message. We call
+            stream_response with a dummy prompt, telling it to skip adding
+            another user message.
+            """
+            # Tell stream_response not to add a user message (we already did via the loop)
+            self.chat._skip_next_user_add = True
+            response_text = self.chat.stream_response("[Continue based on the tool results above.]")
+            return response_text
 
-            # Parse the first tool call
-            tool_call = parser.parse(response_text)
-            if not tool_call:
-                return  # No tool calls found — done
+        # Configure the agentic loop
+        config = AgenticConfig(
+            max_iterations=max_iterations,
+            soft_limit=self._AGENTIC_SOFT_LIMIT,
+            auto_approve_reads=True,
+            tool_output_limit=3000,
+            continuation_prompt="Continue based on the tool results above.",
+            wrapup_prompt=(
+                "You have used many tool calls. Now STOP making tool calls "
+                "and provide your final analysis/summary based on everything "
+                "you've gathered so far."
+            ),
+            hooks_enabled=True,
+            skill_forge=None,
+        )
 
-            # Check permission
-            approved, auto_approved = self._check_permission(tool_call, auto_approved)
-            if not approved:
-                return
+        # Get the tool registry and create the loop
+        registry = self._get_tool_registry()
+        if registry is None:
+            return
 
-            # Start spinner — tool execution + re-prompt happen under it
-            preview = tool_call.preview()
-            stop = self._start_spinner("Thinking…")
-            self._update_spinner(stop, f"Thinking… {preview}")
+        loop = AgenticLoop(registry, config)
 
-            # Execute the tool call (structured dispatch or bash)
-            result = self._execute_tool_call(tool_call)
+        # Get the current LLM response from the last assistant message
+        history = self.chat.conversation_history
+        if not history or history[-1]["role"] != "assistant":
+            return
 
-            # Update spinner with brief tool result status
-            if result.success:
-                brief = (result.output or "").split('\n')[0][:50]
-                if brief:
-                    self._update_spinner(stop, f"Thinking… {brief}")
-                else:
-                    self._update_spinner(stop, "Thinking…")
-            else:
-                brief = (result.error or "").split('\n')[0][:50]
-                if brief:
-                    self._update_spinner(stop, f"Thinking… {brief}")
-                else:
-                    self._update_spinner(stop, "Thinking… (error)")
+        last_response = history[-1]["content"]
 
-            # Feed structured result + continuation prompt as ONE user message
-            from agent.tool_parser import format_tool_result
-            feedback = format_tool_result(tool_call, result)
+        # Track auto-approval across the session (user said "all")
+        auto_approved = False
+        stop_event = None
 
-            # After soft limit, tell the model to wrap up instead of making more calls
-            if iteration >= self._AGENTIC_SOFT_LIMIT - 1:
-                continuation = (
-                    "You have used many tool calls. Now STOP making tool calls "
-                    "and provide your final analysis/summary based on everything "
-                    "you've gathered so far. Do NOT include any more code blocks."
-                )
-            else:
-                continuation = "Continue based on the tool results above."
+        # Run the canonical agentic loop and handle events
+        try:
+            for event in loop.run(last_response, history, llm_caller):
+                if event.type == "tool_start":
+                    # Check permission before execution
+                    # Reconstruct a tool_call-like object for _check_permission
+                    class _ToolCallProxy:
+                        def __init__(self, tool_name, preview):
+                            self.tool_name = tool_name
+                            self._preview = preview
+                        def preview(self):
+                            return self._preview
 
-            combined = feedback + "\n\n" + continuation
-            self.chat.add_to_history("user", combined)
+                    tool_call = _ToolCallProxy(event.tool_name, event.tool_preview or "")
 
-            # Re-prompt the LLM — spinner stays running until first content token
-            self._stream_and_render_inner(stop_event=stop, skip_user_add=True)
+                    # Use existing permission logic
+                    approved, auto_approved = self._check_permission(tool_call, auto_approved)
+                    event.approved = approved
 
-        self._print("[dim](Agent loop: max iterations reached)[/dim]")
+                    if approved:
+                        # Show spinner with tool name
+                        preview = event.tool_preview or event.tool_name
+                        stop_event = self._start_spinner("Thinking…")
+                        self._update_spinner(stop_event, f"Thinking… {preview}")
+                    # else: loop will stop after this iteration
+
+                elif event.type == "tool_result":
+                    # Update spinner with result status
+                    if stop_event:
+                        if event.result_success:
+                            brief = (event.result_output or "").split('\n')[0][:50]
+                            if brief:
+                                self._update_spinner(stop_event, f"Thinking… {brief}")
+                        else:
+                            brief = (event.result_error or "").split('\n')[0][:50]
+                            if brief:
+                                self._update_spinner(stop_event, f"Thinking… {brief}")
+                            else:
+                                self._update_spinner(stop_event, "Thinking… (error)")
+
+                elif event.type == "llm_response":
+                    # LLM response already streamed by llm_caller's stream_response
+                    if stop_event:
+                        stop_event.set()
+                        stop_event = None
+
+                elif event.type == "skill_match":
+                    # Briefly show matched skills (optional)
+                    if event.matched_skills:
+                        skill_names = ", ".join(s.get("name", "?") for s in event.matched_skills[:2])
+                        self._print(f"[dim](Matched skills: {skill_names})[/dim]")
+
+                elif event.type == "skill_record":
+                    # Skill usage was recorded (non-critical, skip display)
+                    pass
+
+                elif event.type == "done":
+                    # Loop finished naturally
+                    if stop_event:
+                        stop_event.set()
+                    break
+
+                elif event.type == "error":
+                    # An error occurred in the loop
+                    if stop_event:
+                        stop_event.set()
+                    self._print(f"[red]Agent error: {event.error_message}[/red]")
+                    break
+
+        except KeyboardInterrupt:
+            if stop_event:
+                stop_event.set()
+            self._print("\n[dim][Agent loop interrupted][/dim]")
+        except Exception as e:
+            if stop_event:
+                stop_event.set()
+            self._print(f"[dim]Agent loop error: {e}[/dim]")
 
     def _stream_and_render_inner(self, stop_event=None, skip_user_add=False):
         """Inner streaming call (no agentic loop — prevents recursion).
@@ -1181,7 +1242,10 @@ class NeoMindInterface:
             if skip_user_add:
                 # Caller already added user message — tell stream_response to skip
                 self.chat._skip_next_user_add = True
-            self.chat.stream_response("[Continue based on the tool results above.]")
+                # Use empty prompt since message is already in history
+                self.chat.stream_response("")
+            else:
+                self.chat.stream_response("[Continue based on the tool results above.]")
         except KeyboardInterrupt:
             self._print("\n[dim][Interrupted][/dim]")
         except Exception as e:
@@ -1286,7 +1350,7 @@ class NeoMindInterface:
         def _newline(event):
             event.current_buffer.insert_text("\n")
 
-        completer = SlashCommandCompleter(mode=self.chat.mode, help_system=self.help_system)
+        self._completer = SlashCommandCompleter(mode=self.chat.mode, help_system=self.help_system)
 
         style = PTStyle.from_dict({
             "bottom-toolbar":                "bg:#1a1a2e #e0e0e0",
@@ -1303,7 +1367,7 @@ class NeoMindInterface:
             session = PromptSession(
                 history=FileHistory(str(history_path)),
                 key_bindings=bindings,
-                completer=completer,
+                completer=self._completer,
                 complete_while_typing=True,
                 complete_in_thread=True,
                 bottom_toolbar=self._bottom_toolbar,

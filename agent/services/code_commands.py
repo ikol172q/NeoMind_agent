@@ -1118,6 +1118,30 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         except Exception as e:
             core._status_print(f"⚠️  Sprint context inject failed: {e}", "debug")
 
+    # ── Integration hooks: pre-LLM check (degradation, distillation, output limits) ──
+    _pre_call_result = None
+    try:
+        from agent.evolution.integration_hooks import pre_llm_call
+        _pre_call_result = pre_llm_call(
+            prompt=prompt, mode=core.mode, model=core.model,
+            max_tokens=actual_max_tokens,
+        )
+        if _pre_call_result.get("skip_api"):
+            # STATIC tier fallback — don't call API
+            fallback = _pre_call_result.get("fallback_response", "")
+            if fallback:
+                core.add_to_history("assistant", fallback)
+                core._status_print(f"⚡ Degraded mode: using static fallback", "info")
+                return fallback
+        if _pre_call_result.get("adjusted_max_tokens"):
+            actual_max_tokens = _pre_call_result["adjusted_max_tokens"]
+        if _pre_call_result.get("distillation_used"):
+            core._status_print(f"🧪 Distillation: exemplar injected", "debug")
+    except ImportError:
+        pass  # hooks not available
+    except Exception as e:
+        core._status_print(f"Pre-call hooks error (non-fatal): {e}", "debug")
+
     payload = {
         "model": core.model,
         "messages": messages_for_api,
@@ -1133,7 +1157,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
 
     try:
         core._status_print(f"Connecting to API...", "debug")
-            
+
         # Start timing
         start_time = time.time()
 
@@ -1363,6 +1387,25 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     )
                 except Exception as e:
                     core._status_print(f"Unified logger LLM call failed (non-fatal): {e}", "debug")
+
+            # ── Integration hooks: post-response (drift, distillation, degradation) ──
+            try:
+                from agent.evolution.integration_hooks import post_response as _post_hook
+                _elapsed = (time.time() - start_time) * 1000 if 'start_time' in dir() else 0
+                _post_hook(
+                    prompt=user_prompt or prompt,
+                    response=full_response,
+                    mode=core.mode,
+                    model=core.model,
+                    latency_ms=_elapsed,
+                    tokens_used=getattr(core.context_manager, '_last_token_count', 0),
+                    success=bool(full_response),
+                    pre_call_result=_pre_call_result if '_pre_call_result' in dir() else None,
+                )
+            except ImportError:
+                pass
+            except Exception:
+                pass  # Non-fatal
 
             # ── SharedMemory: learn from conversation ───────────────
             # Record patterns from user prompts (lightweight extraction)

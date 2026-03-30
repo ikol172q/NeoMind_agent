@@ -1,4 +1,196 @@
 # base.yaml — Shared settings for all modes
+# ─────────────────────────────────────────────────────────
+# NeoMind: 数据驱动的个人能力延伸系统
+# Data-Driven Personal Capability Extension System
+# ─────────────────────────────────────────────────────────
+
+# === Core Identity ===
+identity:
+  name: NeoMind
+  name_zh: 新思
+  tagline: "数据驱动的个人能力延伸系统"
+  tagline_en: "Data-Driven Personal Capability Extension System"
+  version: "0.3.0"
+  # NeoMind is NOT a chatbot, copilot, or trading bot.
+  # It is the user's cognitive extension — collecting data,
+  # analyzing patterns, remembering lessons, and evolving
+  # continuously to amplify the user's personal capabilities.
+  philosophy: |
+    NeoMind exists to extend Irene's cognitive capabilities.
+    Financial independence is the first milestone.
+    Every feature, every evolution, every data point serves
+    the goal of making the user more capable, more informed,
+    and more independent.
+
+# === Self-Evolution Mandate ===
+# NeoMind MUST continuously improve itself. This is not optional.
+evolution:
+  enabled: true
+  # NeoMind can modify its own: code, configs, databases, prompts, skills
+  self_modify:
+    code: true          # via self_edit.py (Git-Gated)
+    configs: true       # via prompt_tuner.py + scheduler
+    databases: true     # schema migrations via self_edit
+    prompts: true       # via prompt_tuner.py
+    skills: true        # via skill_forge.py
+  # Safety constraints for self-modification
+  safety:
+    require_tests: true           # Must pass tests before applying code changes
+    require_git_commit: true      # Every change tracked in git
+    max_edits_per_day: 10
+    forbidden_self_edit_files:
+      - ".env"
+      - "Dockerfile"
+      - "agent/evolution/self_edit.py"
+      - "agent/evolution/health_monitor.py"
+      - "agent/evolution/watchdog.py"
+  # Evolution plan location (NeoMind reads this to understand its roadmap)
+  plan_path: "/app/plans/2026-03-28_enhanced-evolution-plan.md"
+  # Self-check interval: NeoMind re-reads its plan monthly
+  plan_review_interval_days: 30
+
+# === Language & Internationalization ===
+# NeoMind communicates with Irene in Chinese (preferred),
+# but ALL internal processing (search, analysis, evolution, data)
+# is language-agnostic.
+language:
+  # User-facing communication preference
+  user_communication: "zh"         # 中文 preferred for talking to user
+  # Internal processing languages (search, analysis, data collection)
+  processing_languages:
+    - "en"                          # English — primary for financial data, code, papers
+    - "zh"                          # Chinese — for A-share, Chinese news, user context
+  # Future expansion (add as needed, NeoMind can self-modify this list)
+  # - "ja"  # Japanese market data
+  # - "ko"  # Korean market data
+  # - "de"  # European market data
+  # Search: query in all processing languages for broader coverage
+  multilingual_search: true
+  # When data conflicts between languages, note both versions
+  cross_language_conflict_resolution: "present_both"
+
+# === Cost & Token Tracking ===
+# NeoMind currently uses cloud LLM APIs (not local models).
+# Every API call costs money. Every token matters.
+cost:
+  # Track all API spending
+  tracking_enabled: true
+  # Daily budget for evolution tasks (not counting user conversations)
+  daily_evolution_budget_usd: 0.06
+  # Alert when daily spend exceeds this
+  daily_alert_threshold_usd: 0.10
+  # Monthly budget cap (soft limit — warns, doesn't block)
+  monthly_budget_cap_usd: 5.00
+  # Token optimization strategies (always active)
+  optimization:
+    # Summarize tool outputs before re-injecting into context
+    summarize_tool_outputs: true
+    # Only inject relevant learnings (not all)
+    selective_learning_injection: true
+    max_learnings_per_prompt: 5
+    # Only send relevant tool schemas (not all 20+)
+    selective_tool_schemas: true
+    max_tools_per_request: 8
+    # Cache identical/similar requests
+    response_cache_enabled: true
+    cache_similarity_threshold: 0.85
+    # Route to cheapest capable model
+    smart_routing_enabled: true
+  # Model pricing reference (updated manually or via cost_optimizer)
+  # Prices are per 1M tokens (input/output)
+  model_pricing:
+    deepseek-chat: { input: 0.14, output: 0.28 }
+    deepseek-reasoner: { input: 0.55, output: 2.19 }
+    kimi-k2.5: { input: 0.50, output: 2.00 }
+    # Add more as needed — NeoMind can self-update this section
+
+# === LLM-Agnostic Design ===
+# NeoMind works with ANY LLM. The abstraction layer ensures:
+# 1. Prompts are model-agnostic (no model-specific formatting)
+# 2. Tools/functions use a unified schema (OpenAI-compatible)
+# 3. Context management adapts to each model's token limit
+# 4. Cost optimization routes to the best model per task
+llm:
+  # Unified tool/function calling format (OpenAI-compatible)
+  tool_format: "openai"  # all providers must translate to this
+  # Context budget: never send more than this % of max_context
+  context_budget_ratio: 0.75
+  # Redundancy reduction: summarize tool outputs before re-injection
+  summarize_tool_outputs: true
+  # Skill/MCP integration: prefer structured tool calls over raw text
+  prefer_structured_calls: true
+
+# === Host Hardware Awareness ===
+# NeoMind must not overload the host machine.
+# These values should be updated when hardware changes.
+host:
+  # Current: Mac Studio (update when switching machines)
+  machine: "Mac Studio"
+  # Docker resource limits (from docker-compose.yml)
+  docker_memory_limit_gb: 2
+  # Reserved for host OS and other apps
+  host_reserved_memory_gb: 8
+  # NeoMind's internal memory budget (across all processes)
+  internal_memory_budget_mb: 1800
+  # Process memory allocation:
+  #   agent: ~600MB (with libraries)
+  #   health-monitor: ~50MB
+  #   watchdog: ~30MB
+  #   data-collector: ~150MB (new)
+  #   headroom: ~970MB (for spikes, pandas, etc.)
+
+# === Legal Compliance ===
+compliance:
+  # ALL data collection must be legal and ethical
+  data_collection:
+    # Only use official APIs with valid API keys
+    official_apis_only: true
+    # Respect rate limits (never exceed)
+    respect_rate_limits: true
+    # Follow robots.txt (best practice, not legally required but reduces risk)
+    follow_robots_txt: true
+    # Personal use only — do not redistribute raw data
+    personal_use_only: true
+    # Required attribution for data sources
+    attribution_required:
+      - "CoinGecko"  # Must show "Powered by CoinGecko API"
+    # Forbidden actions
+    forbidden:
+      - "Circumvent authentication or access controls"
+      - "Create fake accounts to bypass rate limits"
+      - "Scrape data from websites without API access"
+      - "Redistribute raw data commercially"
+      - "Claim to be a registered financial advisor"
+      - "Provide investment advice to third parties for compensation"
+  # Data protection (public repo safety)
+  data_protection:
+    # Git pre-commit hook blocks: .env, .db, .key, .pem, real API keys
+    pre_commit_hook: true
+    # gitleaks config at repo root for CI/manual scanning
+    gitleaks_config: ".gitleaks.toml"
+    # Never write these to files that could be committed
+    never_persist_to_git:
+      - "api_keys"
+      - "personal_emails"
+      - "financial_predictions_with_real_amounts"
+      - "user_credentials"
+      - "session_tokens"
+    # SQLite databases live in Docker volume only, never in repo
+    db_location: "/data/neomind/db/"
+    # Retention policy for data cleanup
+    retention:
+      market_data_days: 90
+      news_data_days: 30
+      backup_keep_days: 7
+      vacuum_schedule: "weekly"
+  # Investment analysis disclaimer (injected in fin mode responses)
+  disclaimer: |
+    NeoMind is a personal analysis tool, not a licensed financial advisor.
+    All outputs are for informational purposes only.
+    Past performance does not guarantee future results.
+    Always do your own due diligence before making investment decisions.
+
+# === Agent Settings ===
 agent:
   model: deepseek-chat
   temperature: 0.7
