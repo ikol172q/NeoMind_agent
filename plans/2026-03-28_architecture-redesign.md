@@ -1,10 +1,10 @@
 # NeoMind Architecture Redesign — Three-Personality Agent
 
 **Date**: 2026-03-28
-**Last Updated**: 2026-03-28 (session 5 — P3-A/B/C/F COMPLETE, core.py 7372→2811L)
-**Status**: Architecture **DONE** — all commands extracted, ServiceRegistry self-contained, personalities drive mode switching, 2600 tests pass
+**Last Updated**: 2026-03-29 (session 6 — tool system hardening, Telegram UX overhaul, 259+ new tests)
+**Status**: Architecture **DONE** — all commands extracted, ServiceRegistry self-contained, personalities drive mode switching, 2600 tests pass. Tool system hardened with mismatched-tag tolerance, silent param stripping, foldable tool results, live execution status.
 **Goal**: Make the three-tier architecture **actually function**, not just exist as code structure
-**Branch**: `refactor/three-personality-architecture`
+**Branch**: `refactor/three-personality-architecture` (merged to `main`)
 **Test Baseline**: ~3,061 passed, ~49 skipped (8+ test files excluded for pre-existing hangs)
 
 ---
@@ -181,6 +181,13 @@ agent/services/ (22 modules)   7,703 lines   Real implementations (moved from ro
 agent/coding/ (8 modules)      2,955 lines   Real implementations (moved from root)
 agent/integration/ (6 modules) 5,426 lines   Real implementations (moved from finance)
 Stubs (35 files)                 ~250 lines   sys.modules transparent aliases
+
+# Session 6 additions:
+agent/agentic/agentic_loop.py    ~260 lines  Canonical agentic loop (generator, frontend-agnostic)
+agent/coding/tool_parser.py      +53 lines   Mismatched tag tolerance regexes
+agent/coding/tool_schema.py      +14 lines   Silent unknown param stripping
+agent/integration/telegram_bot.py +640 lines  Foldable results, live status, tag cleanup, streaming
+tests/test_tool_*_extended.py    ~450 lines   259 new tool system tests
 ```
 
 ### Excluded Test Files (pre-existing hangs, not related to refactor)
@@ -206,6 +213,64 @@ tests/test_persistent_bash_full.py — hangs (subprocess)
 ```
 
 **Post-Tier-2D test results**: 2,806 passed, ~61 skipped, 11 test files excluded (pre-existing)
+
+---
+
+## SESSION 6: Tool System Hardening & Telegram UX (2026-03-29)
+
+### Problem Summary
+
+The agentic tool loop (coding personality via Telegram) had multiple reliability and UX issues:
+1. DeepSeek LLM outputs `</tool_result>` instead of `</tool_call>`, causing tool calls to silently fail
+2. LLM hallucinates unknown parameters (e.g. `reason` for Edit tool), wasting round-trips on validation errors
+3. Raw `<tool_call>` XML tags leaked into Telegram chat display
+4. Tool execution had no live status indicator — users saw nothing while tools ran
+5. Long tool outputs displayed as giant text walls instead of collapsed
+
+### Fixes Implemented
+
+| Fix | File(s) | Description |
+|-----|---------|-------------|
+| Mismatched tag tolerance | `tool_parser.py` | All regexes accept `</tool_call>` AND `</tool_result>` via `</tool_(?:call\|result)>` |
+| Silent unknown param stripping | `tool_schema.py` | `validate_params()` deletes unknown params in-place instead of returning error |
+| Tag leak cleanup | `telegram_bot.py` (4 locations) | Strip `<tool_call>` blocks from streaming display, final edit, and llm_response events |
+| Live execution status | `telegram_bot.py` | `tool_start` sends `⏳ Running...` message; `tool_result` edits same message in-place |
+| Foldable tool results | `telegram_bot.py` | Output >80 chars uses `<blockquote expandable>` (Telegram Bot API 7.3+); ≤80 inline |
+| Result output cap increase | `agentic_loop.py` | `result_output` truncation raised from 500→4000 chars for frontend display |
+
+### New Test Coverage (259+ tests)
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test_tool_parser_extended.py` | 93 | Structured/XML/bash/python parsing, mismatched tags, priority, edge cases |
+| `test_tool_schema_extended.py` | 63 | validate_params mutation, unknown param stripping, apply_defaults, prompt schema |
+| `test_tool_pipeline_e2e.py` | 42 | Full parse→validate→execute→format pipeline, display stripping |
+| `test_error_prone_areas.py` | 61 | AgenticLoop errors, PersistentBash, binary detection, heredoc, grep exit codes |
+
+### Telegram Tool Display UX (before → after)
+
+**Before**: Two separate messages per tool; no running status; long output as raw text
+```
+⚙️ Running python3 << 'PYEOF'...     ← static, separate message
+✅ Bash: [3000 chars of raw output]   ← separate message, no folding
+```
+
+**After**: Single message with live status → in-place edit to result with foldable output
+```
+⏳ python3 << 'PYEOF'...  运行中…    ← live status
+    ↓ (edits in-place when done)
+✅ Bash                               ← collapsed blockquote
+▸ [click to expand full output]       ← user can expand if needed
+```
+
+### Architecture Impact
+
+- `agent/agentic/agentic_loop.py` — new canonical agentic loop module (generator-based, frontend-agnostic)
+- `AgenticEvent` dataclass yields typed events: `tool_start`, `tool_result`, `llm_response`, `done`, `error`
+- Telegram bot is one consumer; CLI can be another — same loop, different rendering
+- Tool system now tolerant of LLM quirks (mismatched tags, hallucinated params) without wasting API calls
+
+---
 
 ### Key Patterns & Lessons Learned
 
