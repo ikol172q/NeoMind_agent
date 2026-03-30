@@ -366,6 +366,10 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("persona", self._cmd_persona))
         self._app.add_handler(CommandHandler("rag", self._cmd_rag))
         self._app.add_handler(CommandHandler("tune", self._cmd_tune))
+        self._app.add_handler(CommandHandler("model", self._cmd_model))
+        # System commands
+        self._app.add_handler(CommandHandler("hooks", self._cmd_hooks))
+        self._app.add_handler(CommandHandler("restart", self._cmd_restart))
         # Web commands: /read, /links, /crawl
         self._app.add_handler(CommandHandler("read", self._cmd_web_read))
         self._app.add_handler(CommandHandler("links", self._cmd_web_links))
@@ -390,12 +394,33 @@ class NeoMindTelegramBot:
         ))
 
         # Start polling
-        print(f"[bot] Registering {14 + 3} command handlers...", flush=True)
         await self._app.initialize()
         await self._app.start()
+
+        # Register command menu in Telegram (visible in autocomplete)
+        from telegram import BotCommand
+        await self._app.bot.set_my_commands([
+            BotCommand("mode", "切换人格 (chat/coding/fin)"),
+            BotCommand("model", "查看/切换模型"),
+            BotCommand("think", "开关深度思考"),
+            BotCommand("provider", "切换 provider (litellm/direct)"),
+            BotCommand("status", "查看当前状态"),
+            BotCommand("clear", "清空对话历史"),
+            BotCommand("help", "查看所有命令"),
+            BotCommand("stock", "股票查询 (fin 模式)"),
+            BotCommand("crypto", "加密货币 (fin 模式)"),
+            BotCommand("news", "多源新闻搜索"),
+            BotCommand("hn", "Hacker News"),
+            BotCommand("hooks", "系统诊断 (漂移/蒸馏/图谱)"),
+            BotCommand("restart", "重启 agent 进程"),
+        ])
+
         await self._app.updater.start_polling(drop_pending_updates=True)
 
         print(f"[bot] ✅ @{bot_info.username} is LIVE — listening for messages", flush=True)
+
+        # Check if this is a post-self-restart boot → notify user
+        asyncio.create_task(self._check_restart_intent())
 
         # Start background scheduler for auto-push (HN, etc.)
         asyncio.create_task(self._scheduler_loop())
@@ -407,6 +432,57 @@ class NeoMindTelegramBot:
             pass
         finally:
             await self.stop()
+
+    async def _check_restart_intent(self):
+        """Check if we're resuming after a self-restart and notify user."""
+        try:
+            from agent.evolution.self_restart import check_restart_intent
+            intent = check_restart_intent()
+            if not intent:
+                return
+
+            chat_id = intent.get("notify_chat_id")
+            if not chat_id:
+                # Fall back: find most recent chat from store
+                try:
+                    import sqlite3
+                    conn = sqlite3.connect(str(self._store.db_path))
+                    row = conn.execute(
+                        "SELECT DISTINCT chat_id FROM messages ORDER BY rowid DESC LIMIT 1"
+                    ).fetchone()
+                    conn.close()
+                    if row:
+                        chat_id = row[0]
+                except Exception:
+                    pass
+            if not chat_id:
+                logger.info("Post-restart: no chat_id to notify")
+                return
+
+            reason = intent.get("reason", "unknown")
+            files = intent.get("changed_files", [])
+            ts = intent.get("timestamp", "")[:19]
+
+            msg = (
+                "✅ <b>Agent 重启完成</b>\n\n"
+                f"原因: {reason}\n"
+            )
+            if files:
+                files_str = "\n".join(f"  • <code>{f}</code>" for f in files[:10])
+                msg += f"\n修改的文件:\n{files_str}\n"
+            msg += f"\n时间: {ts}"
+
+            await self._app.bot.send_message(
+                chat_id=chat_id,
+                text=msg,
+                parse_mode=ParseMode.HTML,
+            )
+            logger.info(f"Post-restart notification sent to {chat_id}")
+
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.warning(f"Post-restart notification failed: {e}")
 
     async def stop(self):
         """Graceful shutdown."""
@@ -445,6 +521,7 @@ class NeoMindTelegramBot:
             "直接打字即可对话，无需命令\n"
             "<code>/think</code> — 开关深度思考模式\n"
             "<code>/mode</code> <code>chat</code>|<code>fin</code>|<code>coding</code> — 切换人格\n"
+            "<code>/model</code> — 查看/切换模型\n"
             "\n"
             "── 📈 <b>金融 (fin 模式)</b> ──\n"
             "<code>/stock</code> AAPL — 股票\n"
@@ -479,6 +556,12 @@ class NeoMindTelegramBot:
             "<code>/context</code> — token 使用量\n"
             "<code>/status</code> — Bot 状态\n"
             "<code>/admin</code> — 管理面板 (历史/归档/清除/统计)\n"
+            "\n"
+            "── 🧬 <b>自我进化</b> ──\n"
+            "<code>/hooks</code> — 系统诊断 (漂移/蒸馏/图谱)\n"
+            "<code>/restart</code> — 重启 agent 进程\n"
+            "<code>/evolve</code> — 自我进化状态\n"
+            "<code>/dashboard</code> — 生成进化指标面板\n"
             "\n"
             "<i>群聊: @我 或 /neo_stock 前缀 | 含 $AAPL 自动触发</i>",
             parse_mode=ParseMode.HTML,
@@ -602,6 +685,142 @@ class NeoMindTelegramBot:
 
         await update.message.reply_text(
             f"✅ 已切换到 <b>{target}</b> 模式\n{descriptions[target]}",
+            parse_mode=ParseMode.HTML,
+        )
+
+    # ── Model Switching ───────────────────────────────────────────────
+
+    async def _cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /model — view or switch the LLM model for THIS chat.
+
+        /model              — show current model + available list
+        /model <id>         — switch to model
+        /model reset        — restore personality default
+        """
+        args = " ".join(context.args).strip() if context.args else ""
+        cid = update.message.chat_id
+        mode = self._store.get_mode(cid)
+        override = self._store.get_model_override(cid)
+        _, _, active_model = self._resolve_api(thinking=False, chat_id=cid)
+
+        # ── No args: show current + list ──
+        if not args:
+            from agent.services.llm_provider import PROVIDERS
+
+            if override:
+                header = f"当前模型: <code>{override}</code>（手动选择）"
+            else:
+                header = f"当前模型: <code>{active_model}</code>（{mode} 默认）"
+
+            # Get actually active providers (have API keys)
+            chain = self._get_provider_chain(thinking=False, chat_id=cid)
+            active_providers = {p["name"] for p in chain}
+            # The first provider in chain is the one actually being used
+            active_provider_name = chain[0]["name"] if chain else ""
+
+            lines = [f"🤖 {header}\n"]
+
+            for pname, pconf in PROVIDERS.items():
+                if pname not in active_providers:
+                    continue  # skip providers without API key
+                models_list = pconf.get("fallback_models", [])
+                if not models_list:
+                    continue
+                # 🟢 active provider, 🟡 available but idle
+                emoji = "🟢" if pname == active_provider_name else "🟡"
+                lines.append(f"\n{emoji} <b>{pname}</b>:")
+                for m in models_list:
+                    mid = m["id"]
+                    # Only mark "当前" on the exact model in the active provider
+                    if mid == active_model and pname == active_provider_name:
+                        marker = " ← 当前"
+                    else:
+                        marker = ""
+                    lines.append(f"  <code>{mid}</code>{marker}")
+
+            lines.append(f"\n切换: <code>/model &lt;id&gt;</code>")
+            lines.append(f"恢复: <code>/model reset</code>")
+
+            await update.message.reply_text(
+                "\n".join(lines), parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── Reset to default ──
+        if args.lower() in ("reset", "default", "auto"):
+            self._store.set_model_override(cid, "")
+            _, _, default_model = self._resolve_api(thinking=False, chat_id=cid)
+            await update.message.reply_text(
+                f"✅ 已恢复默认模型: <code>{default_model}</code>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── Switch to specific model ──
+        model_id = args.lower()
+        found = False
+        found_provider = ""
+        from agent.services.llm_provider import PROVIDERS
+
+        # First: check if input is a provider name → use its first model
+        for pname, pconf in PROVIDERS.items():
+            if model_id in (pname, pname.lower()):
+                models_list = pconf.get("fallback_models", [])
+                if models_list:
+                    model_id = models_list[0]["id"]
+                    found_provider = pname
+                    found = True
+                break
+
+        # Also accept common aliases
+        _ALIASES = {
+            "kimi": ("moonshot", "kimi-k2.5"),
+            "glm": ("zai", "glm-5"),
+            "ds": ("deepseek", "deepseek-chat"),
+            "local": ("litellm", "local"),
+        }
+        if not found and model_id in _ALIASES:
+            alias_provider, alias_model = _ALIASES[model_id]
+            if alias_provider in PROVIDERS:
+                model_id = alias_model
+                found_provider = alias_provider
+                found = True
+
+        # Then: exact model ID match
+        if not found:
+            for pname, pconf in PROVIDERS.items():
+                for m in pconf.get("fallback_models", []):
+                    if m["id"] == model_id:
+                        found_provider = pname
+                        found = True
+                        break
+                if found:
+                    break
+
+        # Validate API key
+        if found:
+            pconf = PROVIDERS.get(found_provider, {})
+            env_key = pconf.get("env_key", "")
+            if env_key and not os.getenv(env_key):
+                await update.message.reply_text(
+                    f"❌ <code>{model_id}</code> ({found_provider}) 需要 {env_key}，但未配置",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+        if not found:
+            await update.message.reply_text(
+                f"❌ 未知模型: <code>{args}</code>\n"
+                f"发 <code>/model</code> 查看可用列表",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        self._store.set_model_override(cid, model_id)
+        await update.message.reply_text(
+            f"✅ 模型已切换为 <code>{model_id}</code>\n"
+            f"人格: <b>{mode}</b>（不变）\n\n"
+            f"<i>仅影响此对话，/model reset 恢复默认</i>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -2091,6 +2310,29 @@ class NeoMindTelegramBot:
             await msg.reply_text(f"⚠️ 爬取失败: {e}")
             await self._react(msg, "❌")
 
+    async def _cmd_hooks(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /hooks — show integration hooks diagnostic dashboard."""
+        msg = update.message
+        args = context.args if context.args else []
+        arg = " ".join(args) if args else ""
+
+        result = self._exec_hooks_command(arg)
+        await self._send_long_message(msg, result)
+
+    async def _cmd_restart(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /restart — request graceful agent process restart.
+
+        Usage:
+            /restart              — restart the agent process
+            /restart history      — show recent restart history
+        """
+        msg = update.message
+        args = context.args if context.args else []
+        arg = " ".join(args) if args else ""
+
+        result = self._exec_restart_command(arg)
+        await self._send_long_message(msg, result)
+
     # ── URL Auto-detection for LLM context ─────────────────────────
 
     _URL_RE = re.compile(r'https?://[^\s<>"\']+')
@@ -2134,7 +2376,7 @@ class NeoMindTelegramBot:
         # Shared commands (available in all modes)
         "/summarize", "/reason", "/debug", "/explain", "/refactor",
         "/translate", "/generate", "/search", "/plan", "/task",
-        "/execute", "/models", "/switch", "/auto", "/skill",
+        "/execute", "/auto", "/skill",
         "/freeze", "/unfreeze", "/guard", "/verbose",
         "/read", "/links", "/crawl", "/webmap", "/logs",
         # Chat personality — exploration
@@ -2164,8 +2406,9 @@ class NeoMindTelegramBot:
 
         # 3. Common typos / close matches
         suggestions = {
-            "/model": "/mode",
+            "/models": "/model",
             "/modes": "/mode",
+            "/switch": "/model",
             "/stocks": "/stock",
             "/price": "/stock",
             "/btc": "/crypto BTC",
@@ -2208,6 +2451,10 @@ class NeoMindTelegramBot:
             return self._exec_evolve_command(arg)
         elif cmd == "/upgrade":
             return self._exec_upgrade_command(arg)
+        elif cmd == "/hooks":
+            return self._exec_hooks_command(arg)
+        elif cmd == "/restart":
+            return self._exec_restart_command(arg)
 
         return None
 
@@ -2256,6 +2503,76 @@ class NeoMindTelegramBot:
             return "⚠️ Dashboard module not available."
         except Exception as e:
             return f"❌ Dashboard error: {e}"
+
+    def _exec_hooks_command(self, arg: str) -> str:
+        """Show integration hooks diagnostic dashboard."""
+        try:
+            from agent.services.shared_commands import _handle_hooks_diagnostic
+            return _handle_hooks_diagnostic(None, arg)
+        except ImportError:
+            return "⚠️ Hooks diagnostic module not available."
+        except Exception as e:
+            return f"❌ Hooks error: {e}"
+
+    def _exec_restart_command(self, arg: str) -> str:
+        """Request a graceful agent process restart via supervisord.
+
+        Usage:
+            /restart              — restart the agent process
+            /restart history      — show recent restart history
+        """
+        sub = (arg or "").strip().lower()
+
+        if sub == "history":
+            try:
+                from agent.evolution.self_restart import get_restart_history
+                history = get_restart_history(10)
+                if not history:
+                    return "📋 No restart history yet."
+                lines = ["📋 Recent Restarts:\n"]
+                for entry in history:
+                    ts = entry.get("timestamp", "?")[:19]
+                    reason = entry.get("reason", "?")[:80]
+                    files = entry.get("changed_files", [])
+                    files_str = f" ({len(files)} files)" if files else ""
+                    lines.append(f"  {ts} — {reason}{files_str}")
+                return "\n".join(lines)
+            except Exception as e:
+                return f"❌ Error reading history: {e}"
+
+        # Actual restart request
+        try:
+            from agent.evolution.self_restart import request_restart, is_supervisor_managed
+            if not is_supervisor_managed():
+                return (
+                    "⚠️ 自重启仅在 Telegram daemon 模式下可用。\n"
+                    "当前未在 supervisord 下运行。"
+                )
+
+            reason = arg if arg else "Manual /restart command from Telegram"
+            # Get current chat_id for post-restart notification
+            chat_id = None
+            if hasattr(self, '_authorized_chat_id'):
+                chat_id = self._authorized_chat_id
+
+            ok, msg = request_restart(
+                reason=reason,
+                notify_chat_id=chat_id,
+                delay_seconds=2.0,  # give time for this response to be sent
+            )
+            if ok:
+                return (
+                    "🔄 正在重启 agent 进程...\n"
+                    f"原因: {reason}\n\n"
+                    "supervisord 会自动拉起新进程，约 5-10 秒后恢复。\n"
+                    "其他服务（health-monitor, watchdog, data-collector）不受影响。"
+                )
+            else:
+                return f"❌ 重启失败: {msg}"
+        except ImportError:
+            return "⚠️ self_restart module not available."
+        except Exception as e:
+            return f"❌ Restart error: {e}"
 
     def _exec_evolve_command(self, arg: str) -> str:
         """View self-evolution status."""
@@ -2713,7 +3030,16 @@ class NeoMindTelegramBot:
             if extra:
                 extra_prompt = f"\n\nUSER CUSTOMIZATIONS:\n{extra}"
 
-        return base_prompt + telegram_context + sprint_context + extra_prompt
+        # Append tool definitions from canonical agentic layer
+        tool_prompt = ""
+        try:
+            agentic = self._get_agentic_loop()
+            if agentic:
+                tool_prompt = "\n\n" + agentic.get_tool_prompt()
+        except Exception as e:
+            logger.debug(f"Failed to generate tool prompt: {e}")
+
+        return base_prompt + telegram_context + sprint_context + extra_prompt + tool_prompt
 
     # Context window limits per model
     _MODEL_CONTEXT = {
@@ -2744,14 +3070,47 @@ class NeoMindTelegramBot:
     def _resolve_api(self, thinking: bool = False, chat_id: int = 0) -> tuple:
         """Returns (api_key, base_url, model) — picks first available provider.
 
-        When chat_id is given, re-orders the chain so the mode's preferred
-        provider comes first (e.g., fin mode → moonshot first).
+        When chat_id is given:
+        1. Checks for per-chat model override (from /switch)
+        2. Otherwise re-orders chain by mode's preferred provider
         """
+        # Check per-chat model override first
+        if chat_id:
+            override = self._store.get_model_override(chat_id)
+            if override:
+                from agent.services.llm_provider import PROVIDERS
+                for pname, pconf in PROVIDERS.items():
+                    for m in pconf.get("fallback_models", []):
+                        if m["id"] == override:
+                            env_key = pconf.get("env_key", "")
+                            api_key = os.getenv(env_key, "") if env_key else ""
+                            if api_key:
+                                return api_key, pconf["base_url"], override
+                            break
+
+        # Fallback to normal provider chain
         chain = self._get_provider_chain(thinking, chat_id=chat_id)
         if chain:
             p = chain[0]
             return p["api_key"], p["base_url"], p["model"]
         return "", "", ""
+
+    def _get_agentic_loop(self):
+        """Lazily initialize the canonical agentic loop with tool registry."""
+        if not hasattr(self, '_agentic_loop') or self._agentic_loop is None:
+            try:
+                from agent.agentic import AgenticLoop, AgenticConfig
+                from agent.coding.tools import ToolRegistry
+                registry = ToolRegistry(working_dir="/app")
+                config = AgenticConfig(
+                    max_iterations=5,    # Conservative for Telegram
+                    soft_limit=3,
+                )
+                self._agentic_loop = AgenticLoop(registry, config)
+            except Exception as e:
+                logger.warning(f"Failed to init agentic loop: {e}")
+                self._agentic_loop = None
+        return self._agentic_loop
 
     def _get_provider_chain(self, thinking: bool = False, chat_id: int = 0) -> list:
         """Build ordered list of providers to try (primary → fallback).
@@ -3145,7 +3504,17 @@ class NeoMindTelegramBot:
                     now = asyncio.get_event_loop().time()
                     if ct and (now - last_edit_time) >= EDIT_INTERVAL and len(response_text) <= 3900:
                         last_edit_time = now
-                        display = self._md_to_html(response_text)
+                        # Strip any partial/complete <tool_call> blocks before display
+                        _display_text = re.sub(
+                            r'</?tool_(?:call|result)>',  '', response_text
+                        )
+                        _display_text = re.sub(
+                            r'<tool_call>.*?</tool_(?:call|result)>', '', _display_text, flags=re.DOTALL
+                        )
+                        _display_text = _display_text.strip()
+                        if not _display_text:
+                            _display_text = "⚙️ 正在思考..."
+                        display = self._md_to_html(_display_text)
                         await self._safe_edit(
                             live_msg,
                             display + " ▍",
@@ -3176,7 +3545,12 @@ class NeoMindTelegramBot:
                 await asyncio.sleep(0.3)
 
                 # Final update: edit the live message with complete text
-                final_html = self._md_to_html(response_text.strip())
+                # Strip any <tool_call> blocks so raw XML never shows to user
+                _final_text = re.sub(
+                    r'<tool_call>.*?</tool_(?:call|result)>', '', response_text.strip(), flags=re.DOTALL
+                )
+                _final_text = re.sub(r'</?tool_(?:call|result)>', '', _final_text).strip()
+                final_html = self._md_to_html(_final_text or "⚙️ 正在执行工具...")
                 if search_footer:
                     final_html += search_footer
 
@@ -3276,6 +3650,256 @@ class NeoMindTelegramBot:
                 await live_msg.edit_text(f"⚠️ Error: {e}")
             except Exception:
                 await msg.reply_text(f"⚠️ Error: {e}")
+
+        # ── Agentic loop: if response contains tool calls, execute them ──
+        if response_text and '<tool_call>' in response_text and used_provider:
+            print(f"[agentic] Detected <tool_call> in response ({len(response_text)} chars), starting agentic loop", flush=True)
+            # Clean the displayed message: strip the raw <tool_call> block
+            # so the user sees only the natural language part
+            import re as _re
+            clean_text = _re.sub(
+                r'<tool_call>.*?</tool_(?:call|result)>', '', response_text, flags=_re.DOTALL
+            ).strip()
+            if clean_text:
+                try:
+                    await live_msg.edit_text(
+                        self._md_to_html(clean_text),
+                        parse_mode=ParseMode.HTML,
+                        disable_web_page_preview=True,
+                    )
+                except Exception:
+                    try:
+                        await live_msg.edit_text(clean_text[:4000], disable_web_page_preview=True)
+                    except Exception:
+                        pass
+            else:
+                try:
+                    await live_msg.edit_text("⚙️ 正在执行工具...")
+                except Exception:
+                    pass
+
+            await self._run_agentic_tool_loop(
+                msg, response_text.strip(), chat_id, chat_type, used_provider,
+            )
+        elif response_text and used_provider:
+            # Check for "dangling intent": LLM said it would do something but didn't
+            # output a tool call. Auto-nudge it to actually execute.
+            stripped = response_text.strip()
+            dangling = stripped.endswith(('：', ':', '…', '...')) and any(
+                kw in stripped for kw in ('让我', '我来', '检查', '查看', '创建', '执行', '读取')
+            )
+            if dangling:
+                print(f"[agentic] Detected dangling intent (no tool_call), nudging LLM", flush=True)
+                import requests as _req
+                provider = used_provider
+                history = self._store.get_recent_history(chat_id, limit=20)
+                nudge_messages = (
+                    [{"role": "system", "content": self._get_system_prompt(chat_id)}]
+                    + history
+                    + [{"role": "user", "content": "继续。请直接用 <tool_call> 执行你刚才说要做的操作。"}]
+                )
+                try:
+                    nudge_resp = await asyncio.get_event_loop().run_in_executor(
+                        None, lambda: _req.post(
+                            provider["base_url"],
+                            headers={"Authorization": f"Bearer {provider['api_key']}",
+                                     "Content-Type": "application/json"},
+                            json={"model": provider["model"], "messages": nudge_messages,
+                                  "max_tokens": 4096, "temperature": 0.7},
+                            timeout=90,
+                        ))
+                    if nudge_resp.status_code == 200:
+                        nudge_text = nudge_resp.json()["choices"][0]["message"]["content"]
+                        if '<tool_call>' in nudge_text:
+                            print(f"[agentic] Nudge produced tool_call, executing", flush=True)
+                            self._store.add_message(chat_id, "assistant", nudge_text.strip(), chat_type)
+                            await self._run_agentic_tool_loop(
+                                msg, nudge_text.strip(), chat_id, chat_type, provider,
+                            )
+                        else:
+                            # LLM still refused to use tools — send its text response
+                            nudge_clean = nudge_text.strip()
+                            if nudge_clean:
+                                self._store.add_message(chat_id, "assistant", nudge_clean, chat_type)
+                                await self._send_long_message(msg, nudge_clean)
+                except Exception as e:
+                    logger.debug(f"Nudge failed: {e}")
+
+    async def _run_agentic_tool_loop(
+        self, msg, initial_response: str,
+        chat_id: int, chat_type: str, provider: dict,
+    ):
+        """Run the canonical agentic loop when LLM response contains tool calls.
+
+        Executes tools, feeds results back to LLM, sends new responses as
+        Telegram messages. This makes NeoMind's tool calling work across
+        all frontends, not just CLI.
+        """
+        import requests as req
+
+        agentic = self._get_agentic_loop()
+        if not agentic:
+            await msg.reply_text("⚠️ Agentic loop not available")
+            return
+
+        # Build messages from history
+        history = self._store.get_recent_history(chat_id, limit=20)
+        messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
+
+        # LLM caller: synchronous, uses streaming API to collect tokens faster
+        # but does NOT do real-time Telegram edits (avoids thread/event-loop deadlock).
+        def llm_caller(msgs):
+            full_text = ""
+            resp = req.post(
+                provider["base_url"],
+                headers={
+                    "Authorization": f"Bearer {provider['api_key']}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": provider["model"],
+                    "messages": msgs,
+                    "max_tokens": 4096,
+                    "temperature": 0.7,
+                    "stream": True,
+                },
+                timeout=90,
+                stream=True,
+            )
+            if resp.status_code != 200:
+                raise Exception(f"LLM API error: {resp.status_code}")
+
+            for line in resp.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data: "):
+                    continue
+                data_str = line[6:]
+                if data_str.strip() == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    delta = chunk.get("choices", [{}])[0].get("delta", {})
+                    ct = delta.get("content", "")
+                    if ct:
+                        full_text += ct
+                except (json.JSONDecodeError, IndexError, KeyError):
+                    continue
+
+            if not full_text.strip():
+                # Fallback to non-streaming if stream returned empty
+                resp2 = req.post(
+                    provider["base_url"],
+                    headers={
+                        "Authorization": f"Bearer {provider['api_key']}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": provider["model"],
+                        "messages": msgs,
+                        "max_tokens": 4096,
+                        "temperature": 0.7,
+                    },
+                    timeout=90,
+                )
+                if resp2.status_code == 200:
+                    full_text = resp2.json()["choices"][0]["message"]["content"]
+
+            return full_text
+
+        # Run agentic loop
+        import html as _html
+        import re as _re
+        try:
+            _tool_status_msg = None  # Reusable status message per tool cycle
+
+            for event in agentic.run(initial_response, messages, llm_caller):
+                if event.type == "tool_start":
+                    # Send a live status message — will be edited when result arrives
+                    tool_label = _html.escape(event.tool_preview or event.tool_name or "tool")
+                    status_html = f"⏳ <b>{tool_label}</b>  运行中…"
+                    try:
+                        _tool_status_msg = await msg.reply_text(
+                            status_html, parse_mode=ParseMode.HTML,
+                        )
+                    except Exception:
+                        _tool_status_msg = await msg.reply_text(
+                            f"⏳ {event.tool_preview or event.tool_name}  运行中…"
+                        )
+
+                elif event.type == "tool_result":
+                    full_output = event.result_output or ""
+
+                    if event.result_success:
+                        icon = "✅"
+                        name = _html.escape(event.tool_name or "tool")
+
+                        if not full_output.strip():
+                            # Empty output — just show success
+                            result_html = f"{icon} <b>{name}</b>: done"
+                        elif len(full_output) <= 80:
+                            # Very short — show inline
+                            result_html = f"{icon} <b>{name}</b>: {_html.escape(full_output)}"
+                        else:
+                            # Longer output — foldable blockquote
+                            escaped = _html.escape(full_output[:3500])
+                            result_html = (
+                                f"{icon} <b>{name}</b>\n"
+                                f"<blockquote expandable>{escaped}</blockquote>"
+                            )
+                    else:
+                        icon = "❌"
+                        name = _html.escape(event.tool_name or "tool")
+                        err = _html.escape((event.result_error or "failed")[:500])
+                        result_html = f"{icon} <b>{name}</b>: {err}"
+
+                    # Try to edit the status message in-place; fall back to new message
+                    sent = False
+                    if _tool_status_msg:
+                        try:
+                            await _tool_status_msg.edit_text(
+                                result_html, parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True,
+                            )
+                            sent = True
+                        except Exception:
+                            pass  # edit failed, send new message below
+
+                    if not sent:
+                        try:
+                            await msg.reply_text(
+                                result_html, parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            # Last resort: plain text
+                            preview = (full_output or event.result_error or "done")[:300]
+                            await msg.reply_text(f"{'✅' if event.result_success else '❌'} {event.tool_name}: {preview}"[:4000])
+
+                    _tool_status_msg = None  # Reset for next tool cycle
+
+                    # Persist tool feedback to store
+                    if event.feedback_message:
+                        self._store.add_message(chat_id, "user", event.feedback_message, chat_type)
+
+                elif event.type == "llm_response":
+                    if event.llm_text:
+                        self._store.add_message(chat_id, "assistant", event.llm_text.strip(), chat_type)
+                        # Strip <tool_call> blocks before sending to user
+                        _clean_llm = _re.sub(
+                            r'<tool_call>.*?</tool_(?:call|result)>', '', event.llm_text.strip(), flags=_re.DOTALL
+                        )
+                        _clean_llm = _re.sub(r'</?tool_(?:call|result)>', '', _clean_llm).strip()
+                        if _clean_llm:
+                            await self._send_long_message(msg, _clean_llm)
+
+                elif event.type == "error":
+                    await msg.reply_text(f"⚠️ Agentic error: {event.error_message}")
+
+                elif event.type == "done":
+                    break
+
+        except Exception as e:
+            logger.error(f"Agentic loop error: {e}", exc_info=True)
+            await msg.reply_text(f"⚠️ Tool execution error: {e}")
 
     # ── Thinking mode: streaming with live Telegram message updates ──
 
