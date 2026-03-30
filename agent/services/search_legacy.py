@@ -1,13 +1,35 @@
 # agent/search.py
 import time
 import asyncio
-import aiohttp
 import re
 from typing import List, Tuple, Dict
 from functools import lru_cache
-from lxml import html as lxml_html
-import requests
-from bs4 import BeautifulSoup
+import logging
+
+logger = logging.getLogger(__name__)
+
+# Optional heavy dependencies — graceful degradation
+try:
+    import aiohttp
+except ImportError:
+    aiohttp = None  # type: ignore
+    logger.debug("aiohttp not installed – async search unavailable")
+
+try:
+    from lxml import html as lxml_html
+except ImportError:
+    lxml_html = None  # type: ignore
+    logger.debug("lxml not installed – falling back to BeautifulSoup")
+
+try:
+    import requests
+except ImportError:
+    requests = None  # type: ignore
+
+try:
+    from bs4 import BeautifulSoup
+except ImportError:
+    BeautifulSoup = None  # type: ignore
 
 
 class OptimizedDuckDuckGoSearch:
@@ -84,23 +106,44 @@ class OptimizedDuckDuckGoSearch:
             'kp': '1',
         }
 
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://html.duckduckgo.com/html/",
-                data=params,
-                headers={'User-Agent': 'Mozilla/5.0'},
-                timeout=10
-            ) as response:
-                return await response.text()
+        if aiohttp is not None:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    "https://html.duckduckgo.com/html/",
+                    data=params,
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    timeout=10
+                ) as response:
+                    return await response.text()
+
+        # Fallback: synchronous requests in executor
+        if requests is not None:
+            loop = asyncio.get_event_loop()
+            def _sync_fetch():
+                resp = requests.post(
+                    "https://html.duckduckgo.com/html/",
+                    data=params,
+                    headers={'User-Agent': 'Mozilla/5.0'},
+                    timeout=10,
+                )
+                return resp.text
+            return await loop.run_in_executor(None, _sync_fetch)
+
+        raise RuntimeError("No HTTP library available (install aiohttp or requests)")
 
     def _parse_fast(self, html: str) -> List[str]:
-        """Lxml parsing - 10x faster than BeautifulSoup"""
+        """Lxml parsing - 10x faster than BeautifulSoup, with BS4 fallback"""
         try:
-            tree = lxml_html.fromstring(html.encode('utf-8'))
-            snippets = tree.xpath('//a[contains(@class, "snippet")]//text()')
-
-            if not snippets:
-                snippets = tree.xpath('//div[contains(@class, "result")]//text()')
+            if lxml_html is not None:
+                tree = lxml_html.fromstring(html.encode('utf-8'))
+                snippets = tree.xpath('//a[contains(@class, "snippet")]//text()')
+                if not snippets:
+                    snippets = tree.xpath('//div[contains(@class, "result")]//text()')
+            elif BeautifulSoup is not None:
+                soup = BeautifulSoup(html, 'html.parser')
+                snippets = [el.get_text() for el in soup.select('a.snippet, div.result')]
+            else:
+                return []
 
             results = []
             seen = set()

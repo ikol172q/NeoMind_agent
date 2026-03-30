@@ -204,6 +204,35 @@ class ToolRegistry:
             ],
         )
 
+        # ── SelfEditor (self-modification with safety gates) ──
+        self._tool_definitions["SelfEditor"] = ToolDefinition(
+            name="SelfEditor",
+            description=(
+                "Modify NeoMind's own Python source code. Every edit goes through "
+                "8 safety gates (syntax, AST, constitutional review, etc.) and is "
+                "git-committed. After editing, the system auto-chooses hot-reload "
+                "or process restart. Use this to fix bugs, improve prompts, or "
+                "add features to yourself."
+            ),
+            parameters=[
+                ToolParam("file_path", ParamType.STRING,
+                          "Path relative to /app (e.g. 'agent/config/chat.yaml')"),
+                ToolParam("new_content", ParamType.STRING,
+                          "Complete new file content (replaces entire file)"),
+                ToolParam("reason", ParamType.STRING,
+                          "Why this change improves NeoMind (for audit trail)"),
+            ],
+            permission_level=PermissionLevel.DESTRUCTIVE,
+            execute=self._exec_self_editor,
+            examples=[
+                {
+                    "file_path": "agent/evolution/example.py",
+                    "new_content": "# improved version\\ndef better():\\n    pass\\n",
+                    "reason": "Refactored for clarity",
+                },
+            ],
+        )
+
     # ── Tool execution wrappers (bridge schema → existing methods) ─────────
 
     def _exec_bash(self, command: str, timeout: int = 120) -> ToolResult:
@@ -269,6 +298,20 @@ class ToolRegistry:
         )
         result.metadata["pattern"] = pattern
         return result
+
+    def _exec_self_editor(self, file_path: str, new_content: str,
+                          reason: str) -> ToolResult:
+        """Execute a self-edit through the safety pipeline."""
+        try:
+            from agent.evolution.self_edit import SelfEditor
+            editor = SelfEditor()
+            success, message = editor.propose_edit(file_path, reason, new_content)
+            if success:
+                return ToolResult(True, output=message)
+            else:
+                return ToolResult(False, error=message)
+        except Exception as e:
+            return ToolResult(False, error=f"SelfEditor error: {e}")
 
     def _exec_ls(self, path: Optional[str] = None) -> ToolResult:
         """Execute directory listing with metadata."""

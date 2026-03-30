@@ -16,8 +16,11 @@ FROM python:3.11-slim
 WORKDIR /app
 
 # System deps for lxml, cryptography, etc.
+# tini: proper PID 1 (signal forwarding, zombie reaping)
+# supervisor: process manager for agent + health monitor + watchdog
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc g++ libffi-dev libxml2-dev libxslt1-dev libxml2 libxslt1.1 git \
+    tini supervisor \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Python dependencies directly (no pyproject.toml build needed)
@@ -44,8 +47,13 @@ RUN playwright install chromium && playwright install-deps chromium
 COPY . .
 
 # Create persistent data directories
-RUN mkdir -p /data/neomind /data/openclaw-bridge && \
+RUN mkdir -p /data/neomind /data/openclaw-bridge \
+    /data/neomind/evolution /data/neomind/crash_log \
+    /data/neomind/db && \
     chmod 700 /data/neomind
+
+# Supervisord config for multi-process management
+COPY supervisord.conf /etc/supervisor/conf.d/neomind.conf
 
 # Default environment
 ENV PYTHONUNBUFFERED=1 \
@@ -56,12 +64,13 @@ ENV PYTHONUNBUFFERED=1 \
 # NeoMind data directory (mounted as volume for persistence)
 VOLUME ["/data/neomind"]
 
-# Expose standalone sync port (if not using OpenClaw)
-EXPOSE 18790
+# Expose standalone sync port + health check port
+EXPOSE 18790 18791
 
 # Entrypoint
 COPY docker-entrypoint.sh /docker-entrypoint.sh
 RUN chmod +x /docker-entrypoint.sh
 
-ENTRYPOINT ["/docker-entrypoint.sh"]
+# tini as PID 1 — proper signal forwarding + zombie reaping
+ENTRYPOINT ["tini", "--", "/docker-entrypoint.sh"]
 CMD ["--mode", "fin"]

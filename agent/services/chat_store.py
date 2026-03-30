@@ -123,6 +123,13 @@ class ChatStore:
             self._conn.execute("ALTER TABLE chats ADD COLUMN archived INTEGER DEFAULT 0")
             self._conn.commit()
 
+        # Migration: add model_override column to chats if missing
+        try:
+            self._conn.execute("SELECT model_override FROM chats LIMIT 1")
+        except sqlite3.OperationalError:
+            self._conn.execute("ALTER TABLE chats ADD COLUMN model_override TEXT DEFAULT ''")
+            self._conn.commit()
+
         # Create index after all migrations
         self._conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_messages_chat
@@ -149,6 +156,26 @@ class ChatStore:
             VALUES (?, ?, ?, ?)
             ON CONFLICT(chat_id) DO UPDATE SET mode=?, updated_at=?
         """, (chat_id, mode, now, now, mode, now))
+        self._conn.commit()
+        return True
+
+    # ── Per-Chat Model Override ──────────────────────────────────
+
+    def get_model_override(self, chat_id: int) -> str:
+        """Get the per-chat model override. Empty string means use default."""
+        row = self._conn.execute(
+            "SELECT model_override FROM chats WHERE chat_id = ?", (chat_id,)
+        ).fetchone()
+        return (row["model_override"] or "") if row else ""
+
+    def set_model_override(self, chat_id: int, model: str) -> bool:
+        """Set a per-chat model override. Pass empty string to clear."""
+        now = datetime.now(timezone.utc).isoformat()
+        self._conn.execute("""
+            INSERT INTO chats (chat_id, model_override, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(chat_id) DO UPDATE SET model_override=?, updated_at=?
+        """, (chat_id, model, now, now, model, now))
         self._conn.commit()
         return True
 
