@@ -62,9 +62,22 @@ class ToolCallParser:
     The LLM is instructed to output one tool call per response.
     """
 
-    # Structured format: <tool_call>{JSON}</tool_call>
+    # Structured format: <tool_call>{"tool": "X", "params": {...}}</tool_call>
+    # Tolerates mismatched closing tags like </tool_result> (LLM hallucination)
     _STRUCTURED_RE = re.compile(
-        r'<tool_call>\s*(\{.*?\})\s*</tool_call>',
+        r'<tool_call>\s*(\{.*?\})\s*</tool_(?:call|result)>',
+        re.DOTALL,
+    )
+
+    # XML-wrapped format (LLMs like DeepSeek often output this instead):
+    #   <tool_call>
+    #   <ToolName>
+    #   {"param1": "value1"}
+    #   </ToolName>
+    #   </tool_call>
+    # Tolerates mismatched closing tags like </tool_result>
+    _XML_WRAPPED_RE = re.compile(
+        r'<tool_call>\s*<(\w+)>\s*(\{.*?\})\s*</\1>\s*</tool_(?:call|result)>',
         re.DOTALL,
     )
 
@@ -96,6 +109,14 @@ class ToolCallParser:
         m = self._STRUCTURED_RE.search(response)
         if m:
             result = self._parse_structured(m)
+            if result:
+                return result
+
+        # Try XML-wrapped format: <tool_call><ToolName>{params}</ToolName></tool_call>
+        # Common with DeepSeek and other models that prefer XML nesting
+        m = self._XML_WRAPPED_RE.search(response)
+        if m:
+            result = self._parse_xml_wrapped(m)
             if result:
                 return result
 
@@ -137,6 +158,34 @@ class ToolCallParser:
             return None
 
         params = data.get("params", {})
+        if not isinstance(params, dict):
+            return None
+
+        return ToolCall(
+            tool_name=tool_name,
+            params=params,
+            raw=match.group(0),
+            is_legacy=False,
+        )
+
+    def _parse_xml_wrapped(self, match: re.Match) -> Optional[ToolCall]:
+        """Parse XML-wrapped format: <tool_call><ToolName>{params}</ToolName></tool_call>.
+
+        Some LLMs (notably DeepSeek) output tool calls as:
+            <tool_call>
+            <Read>
+            {"path": "/some/file.py"}
+            </Read>
+            </tool_call>
+
+        Instead of the expected JSON format. This method handles that.
+        """
+        tool_name = match.group(1)  # captured by (\w+)
+        try:
+            params = json.loads(match.group(2))
+        except json.JSONDecodeError:
+            return None
+
         if not isinstance(params, dict):
             return None
 
