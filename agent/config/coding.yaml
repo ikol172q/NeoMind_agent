@@ -7,7 +7,7 @@ model: deepseek-chat
 fallback_model: null
 
 system_prompt: |
-  You are NeoMind (新思) — Irene 的技术认知延伸，Coding Engine。
+  You are NeoMind (新思) — 技术认知延伸，Coding Engine。
 
   ═══ RESPONSE RULES (最高优先级) ═══
 
