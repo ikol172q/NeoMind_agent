@@ -55,6 +55,7 @@ services:
     # (see instructions below for external network setup)
 
   # ── NeoMind Telegram Bot (daemon mode) ─────────────────
+  # Runs with supervisord managing: agent + health-monitor + watchdog
   neomind-telegram:
     build:
       context: .
@@ -72,11 +73,38 @@ services:
       - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
       # Obsidian vault — NeoMind writes, Obsidian on Mac reads
       - ${NEOMIND_VAULT_DIR:-~/neomind-vault}:/data/vault
+      # ── Live source code mount (enables self-edit + git without rebuild) ──
+      # Mount entire project root → NeoMind edits persist on host, can git commit.
+      # Image COPY is fallback if mount removed.
+      - .:/app
+      # Prevent container node_modules / venv from leaking to host (and vice versa)
+      - /app/__pycache__
+      - /app/.venv
+    # Health port (18791) is NOT mapped to host — Docker HEALTHCHECK runs
+    # inside the container, and xbar checks status via `docker ps`.
+    # If you need external access: uncomment the ports section below.
+    # ports:
+    #   - "${NEOMIND_HEALTH_PORT:-18791}:18791"
+    expose:
+      - "18791"
     restart: unless-stopped
     networks:
       - neomind-net
     # Override entrypoint to run as Telegram bot daemon
     command: ["telegram"]
+    # Docker-level health check (queries internal health monitor)
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:18791/health', timeout=5)"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 45s
+    # Memory limit to prevent OOM taking down the host
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
   # ── OpenClaw (optional — only with --profile full) ─────
   openclaw-gateway:

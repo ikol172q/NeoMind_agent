@@ -82,6 +82,7 @@ class SharedCommandsMixin:
             "/evolve": (self._shared_handle_evolve_command, True),
             "/dashboard": (self._shared_handle_dashboard_command, True),
             "/upgrade": (self._shared_handle_upgrade_command, True),
+            "/hooks": (self._shared_handle_hooks_command, True),
 
             # ── Architecture ──────────────────────────────────────
             "/arch": (self._shared_handle_arch_command, True),
@@ -374,6 +375,18 @@ class SharedCommandsMixin:
         from agent.services.workflow_commands import handle_upgrade_command
         return handle_upgrade_command(self.core, arg)
 
+    def _shared_handle_hooks_command(self, arg):
+        """Show integration hooks diagnostic dashboard.
+
+        Usage:
+            /hooks          — full status of all research-enhanced modules
+            /hooks drift    — drift detection report only
+            /hooks dist     — distillation savings report only
+            /hooks kg       — knowledge graph stats only
+            /hooks degrade  — degradation tier status only
+        """
+        return _handle_hooks_diagnostic(self.core, arg)
+
     # ── Architecture ──────────────────────────────────────────────
 
     def _shared_handle_arch_command(self, arg):
@@ -447,3 +460,137 @@ class SharedCommandsMixin:
         """Browse application logs."""
         from agent.web.web_commands import handle_logs_command
         return handle_logs_command(self.core, arg)
+
+
+# ═══════════════════════════════════════════════════════════════════
+# /hooks diagnostic command — standalone function
+# ═══════════════════════════════════════════════════════════════════
+
+def _handle_hooks_diagnostic(core, arg):
+    """Render integration hooks status dashboard."""
+    sub = (arg or "").strip().lower()
+    lines = []
+
+    def _section(title):
+        lines.append(f"\n{'─' * 50}")
+        lines.append(f"  {title}")
+        lines.append(f"{'─' * 50}")
+
+    def _kv(key, val):
+        lines.append(f"  {key:.<30s} {val}")
+
+    # ── Degradation ─────────────────────────────────────────────
+    if not sub or sub == "degrade":
+        _section("⚡ Degradation (优雅降级)")
+        try:
+            from agent.utils.degradation import get_degradation_manager
+            dm = get_degradation_manager()
+            status = dm.get_status()
+            _kv("Current tier", status.get("tier", "?"))
+            _kv("Is degraded", str(status.get("is_degraded", "?")))
+            _kv("Reason", str(status.get("reason", "none")))
+            history = status.get("history", [])
+            if history:
+                _kv("Last event", str(history[-1]))
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── Drift Detection ─────────────────────────────────────────
+    if not sub or sub == "drift":
+        _section("📊 Drift Detection (行为漂移)")
+        try:
+            from agent.evolution.drift_detector import DriftDetector
+            detector = DriftDetector()
+            report = detector.check_drift()
+            overall = report.get("overall_status", "unknown")
+            _kv("Overall", overall)
+            for metric, data in report.get("metrics", {}).items():
+                psi = data.get("psi")
+                status = data.get("status", "?")
+                psi_str = f"{psi:.4f}" if psi is not None else "no data"
+                icon = {"no_drift": "🟢", "moderate": "🟠", "significant": "🔴"}.get(status, "⚪")
+                _kv(f"  {icon} {metric}", f"PSI={psi_str} → {status}")
+            stats = detector.get_stats()
+            _kv("Total samples", str(stats.get("total_samples", 0)))
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── Distillation ────────────────────────────────────────────
+    if not sub or sub == "dist":
+        _section("🧪 Distillation (模型蒸馏)")
+        try:
+            from agent.evolution.distillation import get_distillation_engine
+            engine = get_distillation_engine()
+            report = engine.get_savings_report()
+            total_saved = report.get("total_saved_usd", 0)
+            total_exemplars = report.get("total_exemplars", 0)
+            _kv("Total exemplars", str(total_exemplars))
+            _kv("Total saved", f"${total_saved:.4f}")
+            by_task = report.get("by_task", {})
+            for task_type, stats in by_task.items():
+                dist = stats.get("distilled", {})
+                direct = stats.get("direct", {})
+                _kv(f"  {task_type}",
+                    f"distilled={dist.get('count', 0)} direct={direct.get('count', 0)}")
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── Knowledge Graph ─────────────────────────────────────────
+    if not sub or sub == "kg":
+        _section("🕸️  Knowledge Graph (知识图谱)")
+        try:
+            from agent.evolution.knowledge_graph import get_knowledge_graph
+            kg = get_knowledge_graph()
+            stats = kg.get_stats()
+            _kv("Total edges", str(stats.get("total_edges", 0)))
+            _kv("Connected learnings", str(stats.get("connected_learnings", 0)))
+            _kv("Total learnings", str(stats.get("total_learnings", 0)))
+            _kv("Avg edge weight", f"{stats.get('avg_edge_weight', 0):.3f}")
+            _kv("Graph coverage", f"{stats.get('graph_coverage', 0):.1%}")
+            for entry in stats.get("edges_by_type", {}).items():
+                _kv(f"  {entry[0]}", str(entry[1]))
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── AgentSpec ───────────────────────────────────────────────
+    if not sub or sub == "spec":
+        _section("🛡️  AgentSpec (安全规则)")
+        try:
+            from agent.evolution.agentspec import get_agent_spec
+            spec = get_agent_spec()
+            stats = spec.get_stats()
+            _kv("Total rules", str(stats.get("total_rules", 0)))
+            _kv("Enabled", str(stats.get("enabled_rules", 0)))
+            _kv("Total violations", str(stats.get("total_violations", 0)))
+            _kv("Blocked count", str(stats.get("blocked_count", 0)))
+            for rule in spec.get_rules()[:5]:
+                v = rule.get("violation_count", 0)
+                mark = f" ⚠ ({v} violations)" if v > 0 else ""
+                _kv(f"  {rule['name']}", f"{rule['enforcement']}{mark}")
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── Debate Consensus ────────────────────────────────────────
+    if not sub or sub == "debate":
+        _section("🗳️  Debate Consensus (共识投票)")
+        try:
+            from agent.evolution.debate_consensus import DebateConsensus
+            debate = DebateConsensus()
+            history = debate.get_history(limit=5)
+            _kv("Recent debates", str(len(history)))
+            for h in history[-3:]:
+                _kv(f"  {h.get('decision', '?')}", f"score={h.get('score', 0):.2f}")
+        except Exception as e:
+            _kv("Status", f"unavailable ({e})")
+
+    # ── Summary ─────────────────────────────────────────────────
+    if not sub:
+        _section("📋 Quick Guide")
+        lines.append("  /hooks drift   — 漂移检测详情")
+        lines.append("  /hooks dist    — 蒸馏节约报告")
+        lines.append("  /hooks kg      — 知识图谱统计")
+        lines.append("  /hooks degrade — 降级状态")
+        lines.append("  /hooks spec    — 安全规则状态")
+        lines.append("  /hooks debate  — 共识投票历史")
+
+    return "\n".join(lines)

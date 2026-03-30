@@ -126,19 +126,47 @@ echo ""
 
 echo ""
 
+# ── Safe mode check ────────────────────────────────────
+if [ -f "/data/neomind/health_state.json" ]; then
+    SAFE_MODE=$(python -c "
+import json
+try:
+    d = json.load(open('/data/neomind/health_state.json'))
+    print('1' if d.get('safe_mode') else '0')
+except: print('0')
+" 2>/dev/null)
+    if [ "$SAFE_MODE" = "1" ]; then
+        warn "⚠️  SAFE MODE ACTIVE — evolution features disabled"
+        export NEOMIND_SAFE_MODE=1
+    fi
+fi
+
+# ── Git init for self-edit support ─────────────────────
+if [ ! -d /app/.git ]; then
+    info "Initializing git repo for self-edit tracking..."
+    cd /app && git init -q && git add -A && git commit -q -m "initial: container build snapshot" 2>/dev/null || true
+    cd /app
+fi
+
+# ── Create evolution directories ────────────────────────
+mkdir -p /data/neomind/evolution /data/neomind/crash_log /data/neomind/db
+
 # ── Handle signals for graceful shutdown ─────────────────
 trap 'info "Shutting down..."; kill -TERM $PID; wait $PID' SIGTERM SIGINT
 
 # ── Launch Mode ──────────────────────────────────────────
+
 # Check if first arg is "telegram" — run as Telegram bot daemon
 if [ "$1" = "telegram" ]; then
-    info "Starting as Telegram bot daemon..."
+    info "Starting as Telegram bot daemon (with supervisord)..."
     if [ -z "$TELEGRAM_BOT_TOKEN" ]; then
         err "TELEGRAM_BOT_TOKEN not set!"
         echo "  Create a bot via @BotFather and add to .env"
         exit 1
     fi
-    exec python -u -c "
+
+    # Set the command for supervisord to manage
+    export NEOMIND_CMD="python -u -c \"
 import traceback
 try:
     import asyncio
@@ -165,8 +193,12 @@ except Exception as e:
     print(f'FATAL ERROR: {e}', flush=True)
     traceback.print_exc()
     import sys; sys.exit(1)
-"
+\""
+
+    # Launch via supervisord (manages agent + health-monitor + watchdog)
+    exec supervisord -c /etc/supervisor/conf.d/neomind.conf
 fi
 
-# Default: interactive CLI mode
+# Default: interactive CLI mode (direct exec, no supervisord)
+# Interactive mode doesn't need supervisord — user is watching
 exec python main.py "$@"
