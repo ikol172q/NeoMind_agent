@@ -73,6 +73,27 @@ DEFAULT_TRUST: Dict[str, float] = {
     "akshare": 0.85,
     "yfinance": 0.80,         # lower due to scraping fragility
     "binance": 0.88,
+
+    # ── Search engine sources (used by HybridSearchEngine) ──
+    # These rank how much to trust results from each search API.
+    # Higher = results appear higher in final ranking.
+    "brave": 0.88,            # High quality web search API
+    "brave_news": 0.85,       # Brave news results
+    "searxng": 0.85,          # Self-hosted meta-search, diverse sources
+    "serper": 0.85,           # Google search wrapper
+    "tavily": 0.82,           # AI-optimized search
+    "ddg_en": 0.75,           # DuckDuckGo (good but sometimes thin)
+    "ddg_zh": 0.73,           # DuckDuckGo Chinese (less reliable)
+    "gnews_en": 0.70,         # Google News RSS (news-biased, not general web)
+    "gnews_zh": 0.68,         # Google News RSS Chinese
+    "newsapi": 0.72,          # NewsAPI (news only)
+    # RSS feed sources — low trust for general queries because they're all finance/crypto
+    "rss": 0.50,              # Finance-only RSS feeds
+    "rss_coindesk": 0.45,     # Crypto RSS
+    "rss_cointelegraph": 0.40, # Crypto RSS — lowest because often irrelevant
+    "rss_reuters_business": 0.65,
+    "rss_reuters_markets": 0.60,
+    "rss_cnbc_finance": 0.60,
 }
 
 # Source categories

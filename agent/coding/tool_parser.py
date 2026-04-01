@@ -69,6 +69,13 @@ class ToolCallParser:
         re.DOTALL,
     )
 
+    # Fallback: <tool_call>JSON without closing tag (LLM forgot to close)
+    # Allows one level of nested braces for {"params": {"key": "val"}}
+    _UNCLOSED_RE = re.compile(
+        r'<tool_call>\s*(\{(?:[^{}]|\{[^{}]*\})*\})',
+        re.DOTALL,
+    )
+
     # XML-wrapped format (LLMs like DeepSeek often output this instead):
     #   <tool_call>
     #   <ToolName>
@@ -111,6 +118,14 @@ class ToolCallParser:
             result = self._parse_structured(m)
             if result:
                 return result
+
+        # Try unclosed <tool_call> — LLM sometimes forgets closing tag
+        if '<tool_call>' in response:
+            m = self._UNCLOSED_RE.search(response)
+            if m:
+                result = self._parse_structured(m)
+                if result:
+                    return result
 
         # Try XML-wrapped format: <tool_call><ToolName>{params}</ToolName></tool_call>
         # Common with DeepSeek and other models that prefer XML nesting

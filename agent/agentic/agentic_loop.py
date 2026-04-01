@@ -5,27 +5,36 @@ WhatsApp, API) MUST use this instead of implementing their own.
 
 Design principles:
 1. Frontend-agnostic: yields AgenticEvent objects, no UI code
-2. LLM-agnostic: takes a callable `llm_caller` — works with any API
+2. LLM-agnostic: takes an async callable `llm_caller` — works with any API
 3. Streaming-friendly: events are yielded incrementally
 4. Fail-safe: tool errors don't crash the loop, they're fed back to LLM
+5. Fully async: never blocks the event loop — all I/O via await
 
-Usage (from any frontend):
+Usage (from any async frontend, e.g. Telegram):
     loop = AgenticLoop(tool_registry, config)
-    for event in loop.run(llm_response, messages, llm_caller):
+    async for event in loop.run(llm_response, messages, llm_caller):
         if event.type == "tool_start":
-            # show "Running Read(path)..."
+            await show("Running Read(path)...")
         elif event.type == "tool_result":
-            # show result preview
+            await show(result_preview)
         elif event.type == "llm_response":
-            # display/stream new LLM text
+            await display(new_llm_text)
+
+Usage (from sync frontend, e.g. CLI):
+    import asyncio
+    async def _loop():
+        async for event in loop.run(resp, msgs, async_llm_caller):
+            handle(event)
+    asyncio.run(_loop())
 
 No external dependencies — stdlib + project internals only.
 """
 
+import asyncio
 import logging
 import json
 from dataclasses import dataclass, field
-from typing import Optional, Callable, List, Dict, Any, Iterator
+from typing import Optional, Callable, List, Dict, Any, AsyncIterator, Awaitable
 
 logger = logging.getLogger(__name__)
 
@@ -103,7 +112,7 @@ class AgenticLoop:
         tool_registry — ToolRegistry instance with registered tools
         config — AgenticConfig
 
-    The `run()` method is a generator that yields AgenticEvent objects.
+    The `run()` method is an async generator that yields AgenticEvent objects.
     The frontend decides how to render them (spinner, live edit, log, etc.).
     """
 
@@ -119,19 +128,20 @@ class AgenticLoop:
             self._parser = ToolCallParser()
         return self._parser
 
-    def run(
+    async def run(
         self,
         llm_response: str,
         messages: List[Dict[str, str]],
-        llm_caller: Callable[[List[Dict[str, str]]], str],
-    ) -> Iterator[AgenticEvent]:
-        """Run the agentic loop.
+        llm_caller: Callable[[List[Dict[str, str]]], Awaitable[str]],
+    ) -> AsyncIterator[AgenticEvent]:
+        """Run the agentic loop (async generator).
 
         Args:
             llm_response: The initial LLM response (may contain tool calls)
             messages: The full conversation history (will be mutated — appended to)
-            llm_caller: A callable that takes messages list and returns LLM response text.
-                        This abstracts away the LLM API — any provider works.
+            llm_caller: An async callable that takes messages list and returns
+                        LLM response text. This abstracts away the LLM API —
+                        any provider works.
 
         Yields:
             AgenticEvent objects for the frontend to handle.
@@ -141,10 +151,10 @@ class AgenticLoop:
             1. Parse first <tool_call> from llm_response
             2. If none → yield done, return
             3. Yield tool_start event
-            4. Execute tool
+            4. Execute tool (via asyncio.to_thread for sync tools)
             5. Yield tool_result event
             6. Format result, append to messages as user message
-            7. Call llm_caller to get new response
+            7. await llm_caller to get new response
             8. Yield llm_response event
             9. Repeat from 1
         """
@@ -167,7 +177,9 @@ class AgenticLoop:
                         context["user_query"] = last_user_msg
 
                     # Try to find matching skills (assume "chat" mode for now)
-                    matched_skills = self.config.skill_forge.find_matching_skills("chat", context)
+                    matched_skills = await asyncio.to_thread(
+                        self.config.skill_forge.find_matching_skills, "chat", context
+                    )
 
                     if matched_skills:
                         yield AgenticEvent(
@@ -177,7 +189,6 @@ class AgenticLoop:
                         )
 
                         # Optionally prepend skill recipes as system hint
-                        # (comment out if you prefer not to inject into LLM context)
                         if len(matched_skills) > 0:
                             skill_hint = "Relevant skills available:\n"
                             for skill in matched_skills[:3]:  # Top 3 skills
@@ -186,9 +197,16 @@ class AgenticLoop:
 
                 except Exception as e:
                     logger.debug(f"Skill matching failed (non-fatal): {e}")
-            # 1. Parse tool call
+
+            # 1. Parse tool call (pure CPU, no I/O — safe to call directly)
             tool_call = parser.parse(current_response)
             if not tool_call:
+                if '<tool_call>' in current_response:
+                    logger.error(
+                        f"[agentic] Response contains <tool_call> but parser returned None! "
+                        f"Response snippet: {current_response[:300]}"
+                    )
+                    print(f"[agentic] ⚠️ tool_call tag present but PARSE FAILED. Snippet: {current_response[:200]}", flush=True)
                 yield AgenticEvent(type="done", iteration=iteration)
                 return
 
@@ -207,9 +225,9 @@ class AgenticLoop:
                 yield AgenticEvent(type="done", iteration=iteration)
                 return
 
-            # 3. Execute tool
+            # 3. Execute tool (async — sync tools wrapped via to_thread)
             try:
-                result = self._execute(tool_call)
+                result = await self._execute(tool_call)
             except Exception as e:
                 logger.error(f"Tool execution error: {e}", exc_info=True)
                 from agent.coding.tools import ToolResult
@@ -238,11 +256,12 @@ class AgenticLoop:
                         "tool_name": tool_call.tool_name,
                         "tool_success": result.success,
                     }
-                    self.config.skill_forge.record_usage(
+                    await asyncio.to_thread(
+                        self.config.skill_forge.record_usage,
                         matched_skill["id"],
                         result.success,
-                        latency_ms=0,  # Could measure if needed
-                        context=context,
+                        0,  # latency_ms
+                        context,
                     )
 
                     yield AgenticEvent(
@@ -270,10 +289,11 @@ class AgenticLoop:
                 try:
                     hooks = _get_hooks_module()
                     if hooks:
-                        pre_call_result = hooks.pre_llm_call(
+                        pre_call_result = await asyncio.to_thread(
+                            hooks.pre_llm_call,
                             prompt=combined,
-                            mode="chat",  # Could be enhanced to track actual mode
-                            model="deepseek-chat",  # Could be parameterized
+                            mode="chat",
+                            model="deepseek-chat",
                         )
                         if pre_call_result.get("skip_api"):
                             # Degraded to STATIC tier — use fallback
@@ -294,7 +314,7 @@ class AgenticLoop:
             # 6. Call LLM (only if not already handled by fallback)
             if not (pre_call_result and pre_call_result.get("skip_api")):
                 try:
-                    current_response = llm_caller(messages)
+                    current_response = await llm_caller(messages)
                 except Exception as e:
                     logger.error(f"LLM call error in agentic loop: {e}")
                     yield AgenticEvent(
@@ -309,14 +329,15 @@ class AgenticLoop:
                 try:
                     hooks = _get_hooks_module()
                     if hooks:
-                        hooks.post_response(
+                        await asyncio.to_thread(
+                            hooks.post_response,
                             prompt=combined,
                             response=current_response,
                             mode="chat",
                             model="deepseek-chat",
-                            latency_ms=0,  # Could be measured from llm_caller
-                            tokens_used=0,  # Could be extracted from LLM response metadata
-                            cost_usd=0.0,  # Could be calculated
+                            latency_ms=0,
+                            tokens_used=0,
+                            cost_usd=0.0,
                             success=True,
                             pre_call_result=pre_call_result,
                         )
@@ -337,8 +358,13 @@ class AgenticLoop:
         # Max iterations reached
         yield AgenticEvent(type="done", iteration=self.config.max_iterations)
 
-    def _execute(self, tool_call):
-        """Execute a tool call through the registry."""
+    async def _execute(self, tool_call):
+        """Execute a tool call through the registry.
+
+        Supports both sync and async tool execute functions.
+        Sync functions are automatically wrapped with asyncio.to_thread()
+        so they never block the event loop.
+        """
         tool_def = self.registry.get_tool(tool_call.tool_name)
 
         if tool_def is None:
@@ -353,7 +379,13 @@ class AgenticLoop:
 
         # Apply defaults and execute
         params = tool_def.apply_defaults(tool_call.params)
-        return tool_def.execute(**params)
+
+        # Async-aware execution: if the tool is async, await it directly;
+        # otherwise run it in a thread to avoid blocking the event loop.
+        if asyncio.iscoroutinefunction(tool_def.execute):
+            return await tool_def.execute(**params)
+        else:
+            return await asyncio.to_thread(tool_def.execute, **params)
 
     def get_tool_prompt(self) -> str:
         """Generate the tool system prompt section from registered tools.

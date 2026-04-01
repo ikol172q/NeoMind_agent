@@ -356,7 +356,7 @@ class QueryExpander:
         "股市": ["A股", "stock market", "证券市场"],
     }
 
-    # Auto-translate common financial queries EN↔ZH
+    # Auto-translate common queries EN↔ZH
     EN_ZH_PAIRS = {
         "stock market": "股市行情",
         "interest rate": "利率",
@@ -390,10 +390,12 @@ class QueryExpander:
         # 2. Cross-language expansion
         for en, zh in self.EN_ZH_PAIRS.items():
             if en in query_lower:
-                variants.append(zh)
+                if zh not in [v for v in variants]:
+                    variants.append(zh)
                 break
             if zh in query:
-                variants.append(en)
+                if en not in [v.lower() for v in variants]:
+                    variants.append(en)
                 break
 
         # 3. Time-scope variant (add "today" / "this week" for market queries)
@@ -426,7 +428,8 @@ class DuckDuckGoSource:
             loop = asyncio.get_event_loop()
             results = await loop.run_in_executor(None, self._sync_search, query, max_results)
             return results
-        except Exception:
+        except Exception as e:
+            print(f"[ddg_{self.language}] Search error: {e}", flush=True)
             return []
 
     def _sync_search(self, query: str, max_results: int) -> List[SearchItem]:
@@ -442,8 +445,12 @@ class DuckDuckGoSource:
                         source=f"ddg_{self.language}",
                         language=self.language,
                     ))
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[ddg_{self.language}] _sync_search error: {e}", flush=True)
+        if items:
+            print(f"[ddg_{self.language}] ✅ {len(items)} results for: {query[:50]}", flush=True)
+        else:
+            print(f"[ddg_{self.language}] ⚠️ 0 results for: {query[:50]}", flush=True)
         return items
 
 
@@ -647,6 +654,80 @@ class SerperSource:
         return items
 
 
+class BraveSource:
+    """Brave Search API (optional, 2000 queries/month free)."""
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.getenv("BRAVE_API_KEY")
+        self.available = bool(self.api_key)
+        self.base_url = "https://api.search.brave.com/res/v1/web/search"
+
+    async def search(self, query: str, max_results: int = 10) -> List[SearchItem]:
+        if not self.available:
+            return []
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, self._sync_search, query, max_results)
+        except Exception as e:
+            print(f"[brave] Search error: {e}", flush=True)
+            return []
+
+    def _sync_search(self, query: str, max_results: int) -> List[SearchItem]:
+        items = []
+        try:
+            resp = requests.get(self.base_url, params={
+                "q": query,
+                "count": min(max_results, 20),
+                "text_decorations": False,
+                "search_lang": "en",
+            }, headers={
+                "Accept": "application/json",
+                "Accept-Encoding": "gzip",
+                "X-Subscription-Token": self.api_key,
+            }, timeout=10)
+            if resp.status_code == 200:
+                data = resp.json()
+                for r in data.get("web", {}).get("results", []):
+                    published = None
+                    age = r.get("age")  # e.g. "2 hours ago"
+                    # Brave also provides page_age in ISO format sometimes
+                    if r.get("page_age"):
+                        try:
+                            published = datetime.fromisoformat(
+                                r["page_age"].replace("Z", "+00:00")
+                            )
+                        except (ValueError, TypeError):
+                            pass
+
+                    items.append(SearchItem(
+                        title=r.get("title", ""),
+                        url=r.get("url", ""),
+                        snippet=r.get("description", "")[:400],
+                        source="brave",
+                        published=published,
+                    ))
+
+                # Also grab news results if available
+                for r in data.get("news", {}).get("results", [])[:3]:
+                    published = None
+                    if r.get("age"):
+                        pass  # relative age, skip parsing
+                    items.append(SearchItem(
+                        title=r.get("title", ""),
+                        url=r.get("url", ""),
+                        snippet=r.get("description", "")[:400],
+                        source="brave_news",
+                        published=published,
+                    ))
+            elif resp.status_code == 429:
+                print("[brave] Rate limited (429)", flush=True)
+            else:
+                print(f"[brave] API error: {resp.status_code}", flush=True)
+        except Exception as e:
+            print(f"[brave] Request error: {e}", flush=True)
+        return items
+
+
 class SearXNGSource:
     """Self-hosted SearXNG meta-search (optional, unlimited)."""
 
@@ -716,8 +797,10 @@ class RSSSearchSource:
             reverse=True,
         )
 
-        # Only keep items with meaningful relevance (>0.05 cosine similarity)
-        relevant = [(item, score) for item, score in scored if score > 0.05]
+        # Only keep items with meaningful relevance
+        # 0.15 threshold: high enough to filter crypto noise from non-finance queries,
+        # low enough to keep genuinely related articles
+        relevant = [(item, score) for item, score in scored if score > 0.15]
 
         return [
             SearchItem(
@@ -838,6 +921,9 @@ class HybridSearchEngine:
         newsapi = NewsAPISource()
         if newsapi.available:
             self.tier2_sources["newsapi"] = newsapi
+        brave = BraveSource()
+        if brave.available:
+            self.tier2_sources["brave"] = brave
 
         # Tier 3: Self-hosted, optional
         self.tier3_sources = {}
@@ -893,16 +979,33 @@ class HybridSearchEngine:
         all_sources.update(self.tier2_sources)
         all_sources.update(self.tier3_sources)
 
+        print(f"[search] Firing {len(all_sources)} sources × {len(queries)} queries: {list(all_sources.keys())}", flush=True)
+
         if not all_sources:
             return SearchResult(
                 query=query,
                 error="No search sources available. Install duckduckgo-search or configure API keys.",
             )
 
+        # Detect if this is a finance-related query (for RSS source gating)
+        _finance_keywords = {
+            'stock', 'share', 'market', 'price', 'earnings', 'revenue', 'profit',
+            'dividend', 'ipo', 'merger', 'acquisition', 'rate', 'inflation',
+            'bond', 'yield', 'crypto', 'bitcoin', 'btc', 'eth', 'forex', 'gdp',
+            'fed', 'fomc', 'pboc', 'trade', 'tariff', 'recession',
+            '股', '基金', '行情', '涨', '跌', '利率', '降息', '加息', '财报',
+            '央行', '通胀', '汇率', '期货', '债券', '加密', '比特币', '牛市', '熊市',
+        }
+        q_lower = query.lower()
+        is_finance = any(kw in q_lower for kw in _finance_keywords)
+
         # Launch searches for all (source, query) combinations
+        # Skip RSS feeds for non-finance queries (they're all finance/crypto)
         tasks = {}
         for q in queries:
             for name, source in all_sources.items():
+                if name == "rss" and not is_finance:
+                    continue  # RSS feeds are finance-only, skip for general queries
                 task_key = f"{name}___{q}"
                 tasks[task_key] = source.search(q, max_results=max_results)
 
@@ -912,7 +1015,11 @@ class HybridSearchEngine:
 
         for task_key, result in zip(tasks.keys(), task_results):
             source_name = task_key.split("___")[0]
-            if isinstance(result, Exception) or not result:
+            if isinstance(result, Exception):
+                if source_name not in sources_failed:
+                    sources_failed.append(source_name)
+                print(f"[search] {source_name} EXCEPTION: {result}", flush=True)
+            elif not result:
                 if source_name not in sources_failed:
                     sources_failed.append(source_name)
             else:
@@ -920,12 +1027,18 @@ class HybridSearchEngine:
                     all_results_by_source[source_name] = []
                 all_results_by_source[source_name].extend(result)
 
+        # Log per-source summary
+        for src, items in all_results_by_source.items():
+            print(f"[search] {src}: {len(items)} results", flush=True)
+        if sources_failed:
+            print(f"[search] Failed/empty: {sources_failed}", flush=True)
+
         # Step 3: Merge with RRF
         merged = self._reciprocal_rank_fusion(all_results_by_source)
 
         # Step 4: Temporal ranking boost
         for item in merged:
-            boost = compute_recency_boost(item.published, domain="finance")
+            boost = compute_recency_boost(item.published, domain="general")
             item.recency_boost = boost
             item.rrf_score *= boost
 
@@ -938,6 +1051,10 @@ class HybridSearchEngine:
                 item for item in merged
                 if not item.language or item.language in languages
             ]
+
+        # Step 5b: Keyword relevance filter — remove results clearly unrelated to the query
+        # min_keep=0: if nothing is relevant, return empty (better than garbage)
+        merged = self._keyword_relevance_filter(query, merged, min_keep=0)
 
         # Step 6: Trim to max_results
         merged = merged[:max_results]
@@ -1014,6 +1131,67 @@ class HybridSearchEngine:
             if isinstance(result, list):
                 snowball_items.extend(result)
         return snowball_items
+
+    @staticmethod
+    def _keyword_relevance_filter(
+        query: str, items: List[SearchItem], min_keep: int = 3
+    ) -> List[SearchItem]:
+        """Drop results whose title has zero overlap with query keywords.
+
+        This prevents crypto news from polluting Apple chip searches, etc.
+        Always keeps at least `min_keep` results even if overlap is zero
+        (so the LLM still has something to work with).
+        """
+        import re as _re
+
+        # Extract meaningful tokens from query (alphanumeric words + CJK characters)
+        q_lower = query.lower()
+        q_tokens = set(_re.findall(r'[a-z0-9]+', q_lower))
+        # Add CJK bigrams
+        cjk = _re.findall(r'[\u4e00-\u9fff]', query)
+        q_tokens.update(cjk)
+
+        # Remove very common stop words that don't help with relevance
+        q_tokens -= {
+            'the', 'a', 'an', 'is', 'are', 'was', 'in', 'on', 'at', 'to',
+            'for', 'of', 'and', 'or', 'how', 'what', 'when', 'where', 'why',
+            'do', 'does', 'did', 'will', 'can', 'has', 'have', 'had',
+            '的', '了', '是', '在', '有', '和', '与', '就', '都', '也',
+            'latest', 'news', 'today', 'current', '最新', '现在', '目前',
+        }
+
+        if not q_tokens or len(q_tokens) < 1:
+            return items  # Can't filter, return all
+
+        relevant = []
+        irrelevant = []
+        for item in items:
+            title_lower = (item.title or "").lower()
+            snippet_lower = (item.snippet or "")[:200].lower()
+            combined = title_lower + " " + snippet_lower
+
+            # Check token overlap with title+snippet
+            combined_tokens = set(_re.findall(r'[a-z0-9]+', combined))
+            combined_tokens.update(_re.findall(r'[\u4e00-\u9fff]', combined))
+
+            overlap = q_tokens & combined_tokens
+            if overlap:
+                relevant.append(item)
+            else:
+                irrelevant.append(item)
+
+        if irrelevant:
+            print(f"[search] Relevance filter: {len(relevant)} relevant, {len(irrelevant)} dropped "
+                  f"(min_keep={min_keep})", flush=True)
+            if irrelevant[:3]:
+                for item in irrelevant[:3]:
+                    print(f"[search]   dropped: [{item.source}] {item.title[:60]}", flush=True)
+
+        # Always keep at least min_keep results
+        if len(relevant) >= min_keep:
+            return relevant
+        else:
+            return relevant + irrelevant[:min_keep - len(relevant)]
 
     def _reciprocal_rank_fusion(self, results_by_source: Dict[str, List[SearchItem]]) -> List[SearchItem]:
         """

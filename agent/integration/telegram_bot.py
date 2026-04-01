@@ -2840,17 +2840,27 @@ class NeoMindTelegramBot:
     #       here, because Python 3.11+ rejects (?i) when it's not at position 0
     #       of the entire combined pattern.
     _DEFAULT_SEARCH_PATTERNS = [
-        # Chinese triggers
-        r"最近|最新|今[天日]|昨[天日]|本[周月]|上[周月]|现在|目前|当前",
-        r"新闻|消息|行情|走势|涨跌|收盘|开盘|盘[前后]",
-        r"分析|研究|调研|比较|对比|评[测估价]|推荐|建议",
-        r"搜[索一下]|查[一下找]|帮我[找查看搜]|有没有",
-        r"IPO|上市|发[行布]|公[告布]",
-        # English triggers (case handled by re.IGNORECASE flag)
-        r"latest|recent|today|yesterday|this week|current|now",
-        r"news|market|price|stock|crypto|earnings|report",
-        r"search|find|look up|what happened|any updates",
-        r"compare|analyze|research|recommend",
+        # ── Universal: any factual/informational question ──
+        # Time-related (anything that needs fresh info)
+        r"最近|最新|今[天日]|昨[天日]|本[周月]|上[周月]|现在|目前|当前|2024|2025|2026",
+        # Explicit search intent
+        r"搜[索一下]|查[一下找查]|帮我[找查看搜]|有没有|有吗",
+        r"search|find|look up|what happened|any updates|how to|how do",
+        # Questions about things (products, events, people, places)
+        r"是什么|是多少|怎么[样用办]|多少钱|哪个好|哪[里个家]|什么时候|发布|上市|出了|教程|怎样",
+        r"what is|when did|where is|how much|which|who is|release|launch|price|cost|tutorial|guide",
+        # News & events
+        r"新闻|消息|事件|发[生布]|公[告布]|更新|变化|动态",
+        r"news|update|announce|event|happening",
+        # Analysis & comparison
+        r"分析|研究|比较|对比|评[测估价]|推荐|建议|区别|优缺点|值不值",
+        r"compare|analyze|review|benchmark|vs|versus|difference|worth",
+        # Finance-specific (kept)
+        r"行情|走势|涨跌|收盘|开盘|盘[前后]|IPO|股|基金|利率",
+        r"market|stock|crypto|earnings|report|dividend|yield",
+        # Tech products
+        r"配置|参数|规格|内存|处理器|芯片|屏幕|电池|续航",
+        r"specs|memory|ram|cpu|gpu|battery|display|chip|benchmark",
     ]
 
     def _build_search_trigger_re(self) -> re.Pattern:
@@ -2890,22 +2900,26 @@ class NeoMindTelegramBot:
         # Use re.IGNORECASE globally — never use (?i) inline in sub-patterns
         return re.compile("|".join(patterns), re.IGNORECASE)
 
+    # Messages that should NEVER trigger search (greetings, meta, emotions)
+    _SEARCH_SKIP_RE = re.compile(
+        r'^(hi|hello|hey|你好|嗨|哈喽|ok|好的|谢谢|thanks|thank you|'
+        r'明白|知道了|收到|嗯|对|是的|哦|哈哈|lol|666|👍|😄|'
+        r'/\w+)',  # commands
+        re.IGNORECASE,
+    )
+
     def _should_search(self, text: str) -> bool:
         """Decide if a user message would benefit from web search augmentation.
 
-        Returns True for queries that ask about recent events, market data,
-        news, or anything that needs up-to-date information beyond LLM training.
-        Returns False for greetings, simple commands, meta questions, etc.
-
-        Trigger patterns come from:
-        1. Hardcoded defaults (_DEFAULT_SEARCH_PATTERNS)
-        2. YAML config auto_search.triggers (editable without code changes)
+        Returns True for ANY informational query — not just finance.
+        Returns False only for greetings, single-word responses, commands.
         """
-        # Skip very short messages (greetings, etc.)
-        if len(text.strip()) < 6:
+        stripped = text.strip()
+        # Skip very short messages
+        if len(stripped) < 6:
             return False
-        # Skip if it's a command
-        if text.strip().startswith("/"):
+        # Skip greetings, commands, acknowledgements
+        if self._SEARCH_SKIP_RE.match(stripped):
             return False
 
         # Lazy-init the compiled regex (built once, reused)
@@ -2913,6 +2927,72 @@ class NeoMindTelegramBot:
             self._search_trigger_re = self._build_search_trigger_re()
 
         return bool(self._search_trigger_re.search(text))
+
+    async def _llm_extract_search_queries(self, user_message: str, chat_id: int = 0) -> List[str]:
+        """Use a fast LLM call to generate 2-3 good search engine queries.
+
+        Returns a list of search queries optimized for web search engines.
+        Falls back to simple keyword extraction if LLM call fails.
+        """
+        import aiohttp as _aiohttp
+        import json as _json
+
+        providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
+        if not providers:
+            return [user_message]  # fallback
+
+        provider = providers[0]
+        extract_prompt = (
+            "You are a search query optimizer. Given a user message, generate 2-3 concise, "
+            "specific web search queries that would find the most relevant results.\n\n"
+            "Rules:\n"
+            "- Each query should be 3-8 words, optimized for search engines\n"
+            "- Include brand names, product categories, and year when relevant\n"
+            "- Generate both English and Chinese queries for better coverage\n"
+            "- Do NOT include filler words like '我想知道', '帮我查', '有吗'\n"
+            "- Output ONLY the queries, one per line, nothing else\n\n"
+            f"User message: {user_message}\n\n"
+            "Search queries:"
+        )
+
+        try:
+            timeout = _aiohttp.ClientTimeout(total=8)  # Fast: 8s max
+            async with _aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
+                    provider["base_url"],
+                    headers={
+                        "Authorization": f"Bearer {provider['api_key']}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": provider["model"],
+                        "messages": [{"role": "user", "content": extract_prompt}],
+                        "max_tokens": 150,
+                        "temperature": 0.3,
+                    },
+                ) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        text = data["choices"][0]["message"]["content"].strip()
+                        queries = [
+                            line.strip().lstrip("0123456789.-) ")
+                            for line in text.split("\n")
+                            if line.strip() and len(line.strip()) > 2
+                        ]
+                        if queries:
+                            print(f"[auto-search] LLM queries: {queries}", flush=True)
+                            return queries[:3]
+        except Exception as e:
+            print(f"[auto-search] LLM extraction failed ({e}), using fallback", flush=True)
+
+        # Fallback: simple keyword extraction
+        import re as _re
+        q = user_message.strip()
+        for pattern in [r'^(我想|我要|帮我|请)', r'(知道|查一下|查查|搜索|搜搜|看看)',
+                        r'(是什么|是多少|有[吗没]|吗|呢|啊)', r'[？?！!。，,：:]+']:
+            q = _re.sub(pattern, ' ', q)
+        q = _re.sub(r'\s+', ' ', q).strip()
+        return [q] if len(q) >= 3 else [user_message]
 
     async def _augment_with_search(self, query: str, chat_id: int = 0) -> tuple:
         """Run web search and return (context_str, source_footer).
@@ -2925,18 +3005,47 @@ class NeoMindTelegramBot:
         """
         search_engine = self.components.get("search") if self.components else None
         if not search_engine:
+            print(f"[auto-search] ⚠️ SKIPPED — search_engine is None "
+                  f"(components={'None' if not self.components else list(self.components.keys())})",
+                  flush=True)
             return "", ""
 
         try:
-            print(f"[auto-search] Searching: {query[:80]}", flush=True)
+            # Use LLM to generate optimized search queries from user message
+            search_queries = await self._llm_extract_search_queries(query, chat_id)
+            primary_query = search_queries[0]
+            print(f"[auto-search] Raw: {query[:60]} → Search: {primary_query[:60]}", flush=True)
+
             # Hard timeout: if search takes >15s, skip it and let LLM answer without it
             try:
+                # Search with the primary LLM-generated query (expand_queries=False since
+                # we already have multiple targeted queries from the LLM)
                 result = await asyncio.wait_for(
                     search_engine.search(
-                        query, max_results=8, extract_content=True, expand_queries=True,
+                        primary_query, max_results=8, extract_content=True,
+                        expand_queries=len(search_queries) == 1,  # only expand if LLM gave us just 1
                     ),
                     timeout=15.0,
                 )
+
+                # If we have additional LLM-generated queries, search those too
+                if len(search_queries) > 1 and (not result or len(result.items) < 3):
+                    for extra_q in search_queries[1:]:
+                        try:
+                            extra_result = await asyncio.wait_for(
+                                search_engine.search(extra_q, max_results=5, extract_content=False, expand_queries=False),
+                                timeout=10.0,
+                            )
+                            if extra_result and extra_result.items:
+                                # Merge (dedup by URL)
+                                existing_urls = {item.url for item in result.items} if result else set()
+                                for item in extra_result.items:
+                                    if item.url not in existing_urls:
+                                        result.items.append(item)
+                                        existing_urls.add(item.url)
+                                result.sources_used = list(set(result.sources_used + extra_result.sources_used))
+                        except Exception:
+                            pass
             except asyncio.TimeoutError:
                 print("[auto-search] ⏱️ Timed out (15s), skipping", flush=True)
                 return "", ""
@@ -2974,7 +3083,7 @@ class NeoMindTelegramBot:
             name_map = {
                 "ddg_en": "DDG", "ddg_zh": "DDG", "duckduckgo": "DDG",
                 "gnews_en": "GNews", "gnews_zh": "GNews", "google_news_rss": "GNews",
-                "brave": "Brave", "serper": "Serper", "tavily": "Tavily",
+                "brave": "Brave", "brave_news": "Brave", "serper": "Serper", "tavily": "Tavily",
                 "newsapi": "NewsAPI", "jina": "Jina", "searxng": "SearXNG",
                 "rss": "RSS", "exa": "Exa", "youcom": "You.com",
                 "perplexity": "Perplexity",
@@ -3030,14 +3139,24 @@ class NeoMindTelegramBot:
             sources_str = ", ".join(src_names) if src_names else "web"
             telegram_context += (
                 "\n\nSEARCH CAPABILITY:\n"
-                f"你拥有自动网络搜索能力（{sources_str}）。"
-                "当用户提问涉及实时信息、最新数据、新闻、行情、或任何你训练数据可能过时的内容时，"
-                "系统会自动搜索并将结果以 [Web Search Results] 的格式注入上下文。\n"
-                "规则：\n"
+                f"你拥有网络搜索能力（{sources_str}）。有两种搜索方式：\n"
+                "1. 自动搜索：系统可能在你回复前自动搜索，结果以 [Web Search Results] 注入上下文\n"
+                "2. 主动搜索：你可以在回复中直接输出 <tool_call> 来调用 WebSearch 工具\n\n"
+                "主动搜索格式（必须严格遵守）：\n"
+                '<tool_call>{"tool": "WebSearch", "params": {"query": "你的搜索关键词"}}</tool_call>\n\n'
+                "示例：\n"
+                '- 查新闻: <tool_call>{"tool": "WebSearch", "params": {"query": "Apple M4 Ultra latest news 2026"}}</tool_call>\n'
+                '- 查价格: <tool_call>{"tool": "WebSearch", "params": {"query": "Bitcoin price today"}}</tool_call>\n'
+                '- 查事件: <tool_call>{"tool": "WebSearch", "params": {"query": "OpenAI GPT-5 release date"}}</tool_call>\n\n'
+                "重要规则：\n"
+                "- 当用户要求查找实时信息、最新新闻、当前价格等，如果上下文中没有 [Web Search Results]，"
+                "你必须立刻在回复中输出 <tool_call> 标签来搜索。绝对不要只说\"让我搜索一下\"而不输出 <tool_call> 标签\n"
+                "- 搜索关键词必须具体明确！包含品牌名、产品类别、年份等上下文。"
+                "错误示范: 'M4 Ultra'（太模糊）。正确示范: 'Apple M4 Ultra 芯片 发布日期 2026'\n"
+                "- 搜索最多 1-2 次。如果第一次搜索结果不相关，直接用你的知识回答，不要反复搜索\n"
                 "- 如果上下文中有 [Web Search Results]，优先使用搜索结果中的数据，而非训练数据\n"
                 "- 引用具体事实时标注来源（如 \"据 Reuters 报道\"）\n"
                 "- 如果搜索结果与你的知识冲突，以搜索结果为准并说明差异\n"
-                "- 如果搜索结果不够充分，明确告知用户并给出你的推理（标注为推理而非事实）\n"
                 "- 绝不编造数据、价格、日期、百分比等数值信息\n"
             )
 
@@ -3148,11 +3267,135 @@ class NeoMindTelegramBot:
         if not hasattr(self, '_agentic_loop') or self._agentic_loop is None:
             try:
                 from agent.agentic import AgenticLoop, AgenticConfig
-                from agent.coding.tools import ToolRegistry
+                from agent.coding.tools import ToolRegistry, ToolResult
                 registry = ToolRegistry(working_dir="/app")
+
+                # ── Register WebSearch tool (bridges to bot's search engine) ──
+                search_engine = self.components.get("search") if self.components else None
+                if search_engine:
+                    from agent.coding.tool_schema import (
+                        ToolDefinition, ToolParam, ParamType, PermissionLevel,
+                    )
+
+                    # Track previous search results to avoid duplicate searches per turn
+                    # Stored on bot instance — cleared in _run_agentic_tool_loop before each run
+                    if not hasattr(self, '_ws_seen_urls'):
+                        self._ws_seen_urls = set()
+
+                    async def _exec_web_search(query: str, max_results: int = 5) -> ToolResult:
+                        """Async tool: search the web via NeoMind's multi-source engine."""
+                        try:
+                            logger.info(f"[WebSearch] query={query!r}")
+                            print(f"[WebSearch] Executing: {query!r}", flush=True)
+
+                            result = await asyncio.wait_for(
+                                search_engine.search(
+                                    query, max_results=max_results,
+                                    extract_content=True, expand_queries=True,
+                                ),
+                                timeout=15.0,
+                            )
+                            if not result or not result.items:
+                                print(f"[WebSearch] No results for: {query!r}", flush=True)
+                                return ToolResult(True, output="No results found for this query. Try rephrasing with more specific keywords.")
+
+                            # Filter out results we've already seen (dedup across retries)
+                            new_items = []
+                            for item in result.items[:max_results]:
+                                if item.url not in self._ws_seen_urls:
+                                    new_items.append(item)
+                                    self._ws_seen_urls.add(item.url)
+
+                            if not new_items and result.items:
+                                # All results are duplicates — tell LLM to stop retrying
+                                return ToolResult(
+                                    True,
+                                    output=(
+                                        "All search results are identical to previous searches. "
+                                        "No new information found. Please answer based on what you already have."
+                                    ),
+                                )
+
+                            items_to_show = new_items if new_items else result.items[:max_results]
+                            lines = []
+                            for i, item in enumerate(items_to_show, 1):
+                                tag = f"[{item.source}]" if item.source else ""
+                                lines.append(f"{i}. {tag} {item.title}")
+                                lines.append(f"   URL: {item.url}")
+                                if item.published:
+                                    lines.append(f"   Date: {item.published.strftime('%Y-%m-%d')}")
+                                content = item.full_text[:600] if item.full_text else item.snippet[:300]
+                                if content:
+                                    lines.append(f"   {content}")
+                                lines.append("")
+
+                            print(f"[WebSearch] ✅ {len(items_to_show)} results ({len(new_items)} new) from {list(result.sources_used)}", flush=True)
+                            return ToolResult(
+                                True,
+                                output="\n".join(lines),
+                                metadata={"results_count": len(items_to_show),
+                                          "new_count": len(new_items),
+                                          "sources": list(result.sources_used)},
+                            )
+                        except asyncio.TimeoutError:
+                            print(f"[WebSearch] ⏱️ Timed out for: {query!r}", flush=True)
+                            return ToolResult(False, error="Search timed out (15s). Try a simpler query.")
+                        except Exception as e:
+                            print(f"[WebSearch] ❌ Error: {e}", flush=True)
+                            return ToolResult(False, error=f"Search failed: {e}")
+
+                    registry._tool_definitions["WebSearch"] = ToolDefinition(
+                        name="WebSearch",
+                        description=(
+                            "Search the web for real-time information, news, prices, "
+                            "and any facts that may be newer than your training data. "
+                            "Always use this when the user asks about current events, "
+                            "latest news, live data, or anything time-sensitive.\n"
+                            "IMPORTANT: Use SPECIFIC and DESCRIPTIVE queries. "
+                            "Include brand names, product categories, and context. "
+                            "BAD: 'M4 Ultra' (ambiguous — could be anything). "
+                            "GOOD: 'Apple M4 Ultra chip release date 2026'. "
+                            "BAD: 'price today'. GOOD: 'Tesla TSLA stock price March 2026'. "
+                            "If first search gives irrelevant results, DO NOT retry with similar query. "
+                            "Instead, summarize what you found and answer from your knowledge."
+                        ),
+                        parameters=[
+                            ToolParam("query", ParamType.STRING,
+                                      "Search query — MUST be specific: include brand/company names, "
+                                      "product category, year. E.g. 'Apple M4 Ultra chip news 2026'"),
+                            ToolParam("max_results", ParamType.INTEGER,
+                                      "Max results to return",
+                                      required=False, default=5),
+                        ],
+                        permission_level=PermissionLevel.READ_ONLY,
+                        execute=_exec_web_search,
+                        examples=[
+                            {"query": "Apple M3 Ultra Mac Studio release date"},
+                            {"query": "latest AI news March 2026"},
+                            {"query": "Bitcoin price today"},
+                        ],
+                    )
+                    print("[agentic] WebSearch tool registered ✅", flush=True)
+                else:
+                    print("[agentic] ⚠️ WebSearch NOT registered — search_engine component is None", flush=True)
+                    if not self.components:
+                        print("[agentic]   → self.components is None/empty", flush=True)
+                    elif "search" not in self.components:
+                        print(f"[agentic]   → available components: {list(self.components.keys())}", flush=True)
+
                 config = AgenticConfig(
-                    max_iterations=5,    # Conservative for Telegram
-                    soft_limit=3,
+                    max_iterations=3,    # Telegram: 搜一次最多补搜一次，不要无限循环
+                    soft_limit=2,        # 第 2 次就提示收尾
+                    continuation_prompt=(
+                        "Based on the search results above, provide your answer now. "
+                        "If the results are not relevant, say so and answer from your knowledge. "
+                        "Do NOT search again with a similar query."
+                    ),
+                    wrapup_prompt=(
+                        "STOP searching. You have already searched multiple times. "
+                        "Provide your FINAL answer NOW based on whatever information you have. "
+                        "Do NOT output any more <tool_call> tags."
+                    ),
                 )
                 self._agentic_loop = AgenticLoop(registry, config)
             except Exception as e:
@@ -3484,13 +3727,25 @@ class NeoMindTelegramBot:
         # Auto-search augmentation: inject web results if the query warrants it
         search_footer = ""
         if self._should_search(user_message):
+            # Show visible search indicator BEFORE searching
+            live_msg = await msg.reply_text("🔍 正在搜索相关信息...")
             search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
             if search_ctx:
                 # Insert search context as a system message right before the user's last message
                 messages.insert(-1, {"role": "system", "content": search_ctx})
-
-        # Send placeholder
-        live_msg = await msg.reply_text("💭 ...")
+                try:
+                    await live_msg.edit_text("💭 正在整合搜索结果...")
+                except Exception:
+                    pass
+            else:
+                # Search didn't return results — update placeholder
+                try:
+                    await live_msg.edit_text("💭 ...")
+                except Exception:
+                    pass
+        else:
+            # Send placeholder
+            live_msg = await msg.reply_text("💭 ...")
 
         response_text = ""
         last_edit_time = 0
@@ -3726,52 +3981,86 @@ class NeoMindTelegramBot:
                 except Exception:
                     pass
 
-            await self._run_agentic_tool_loop(
-                msg, response_text.strip(), chat_id, chat_type, used_provider,
-            )
+            try:
+                await asyncio.wait_for(
+                    self._run_agentic_tool_loop(
+                        msg, response_text.strip(), chat_id, chat_type, used_provider,
+                    ),
+                    timeout=300,  # 5 min hard cap
+                )
+            except asyncio.TimeoutError:
+                await msg.reply_text("⚠️ 工具执行超时（5分钟），已终止")
         elif response_text and used_provider:
             # Check for "dangling intent": LLM said it would do something but didn't
             # output a tool call. Auto-nudge it to actually execute.
             stripped = response_text.strip()
-            dangling = stripped.endswith(('：', ':', '…', '...')) and any(
-                kw in stripped for kw in ('让我', '我来', '检查', '查看', '创建', '执行', '读取')
+            _intent_keywords = (
+                '让我', '我来', '我去', '我会', '我将', '我应该',
+                '检查', '查看', '查找', '查询', '搜索', '上网',
+                '创建', '执行', '读取', '打开', '分析', '获取',
+                '帮你', '为你',
             )
+            # Detect dangling intent: LLM says it will act but emits no tool_call.
+            # Two patterns:
+            #   1. Ends with colon/ellipsis (explicit "I'll do X:")
+            #   2. Contains intent keyword + action verb but ends with period
+            #      (e.g. "你说得对，我应该直接用搜索工具查最新信息。")
+            _action_verbs = ('搜索', '查', '检查', '执行', '读取', '创建', '打开', '获取', '分析', '用')
+            has_intent_kw = any(kw in stripped for kw in _intent_keywords)
+            ends_with_intent = stripped.endswith(('：', ':', '…', '...'))
+            has_action_verb = any(v in stripped for v in _action_verbs)
+            dangling = has_intent_kw and (ends_with_intent or (has_action_verb and not '<tool_call>' in response_text))
             if dangling:
                 print(f"[agentic] Detected dangling intent (no tool_call), nudging LLM", flush=True)
-                import requests as _req
+                import aiohttp as _aiohttp
                 provider = used_provider
                 history = self._store.get_recent_history(chat_id, limit=20)
                 nudge_messages = (
                     [{"role": "system", "content": self._get_system_prompt(chat_id)}]
                     + history
-                    + [{"role": "user", "content": "继续。请直接用 <tool_call> 执行你刚才说要做的操作。"}]
+                    + [{"role": "user", "content":
+                        "继续。请立刻用 <tool_call> 执行你刚才说要做的操作。"
+                        "如果你要搜索，用 WebSearch 工具。格式示例：\n"
+                        '<tool_call>{"tool": "WebSearch", "params": {"query": "你的搜索词"}}</tool_call>'}]
                 )
                 try:
-                    nudge_resp = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda: _req.post(
+                    _timeout = _aiohttp.ClientTimeout(total=90)
+                    async with _aiohttp.ClientSession(timeout=_timeout) as _session:
+                        async with _session.post(
                             provider["base_url"],
                             headers={"Authorization": f"Bearer {provider['api_key']}",
                                      "Content-Type": "application/json"},
                             json={"model": provider["model"], "messages": nudge_messages,
                                   "max_tokens": 4096, "temperature": 0.7},
-                            timeout=90,
-                        ))
-                    if nudge_resp.status_code == 200:
-                        nudge_text = nudge_resp.json()["choices"][0]["message"]["content"]
-                        if '<tool_call>' in nudge_text:
-                            print(f"[agentic] Nudge produced tool_call, executing", flush=True)
-                            self._store.add_message(chat_id, "assistant", nudge_text.strip(), chat_type)
-                            await self._run_agentic_tool_loop(
-                                msg, nudge_text.strip(), chat_id, chat_type, provider,
+                        ) as nudge_resp:
+                            if nudge_resp.status == 200:
+                                nudge_data = await nudge_resp.json()
+                                nudge_text = nudge_data["choices"][0]["message"]["content"]
+                            else:
+                                body = await nudge_resp.text()
+                                raise Exception(f"Nudge API error {nudge_resp.status}: {body[:200]}")
+
+                    if '<tool_call>' in nudge_text:
+                        print(f"[agentic] Nudge produced tool_call, executing", flush=True)
+                        self._store.add_message(chat_id, "assistant", nudge_text.strip(), chat_type)
+                        try:
+                            await asyncio.wait_for(
+                                self._run_agentic_tool_loop(
+                                    msg, nudge_text.strip(), chat_id, chat_type, provider,
+                                ),
+                                timeout=300,
                             )
-                        else:
-                            # LLM still refused to use tools — send its text response
-                            nudge_clean = nudge_text.strip()
-                            if nudge_clean:
-                                self._store.add_message(chat_id, "assistant", nudge_clean, chat_type)
-                                await self._send_long_message(msg, nudge_clean)
+                        except asyncio.TimeoutError:
+                            await msg.reply_text("⚠️ 工具执行超时（5分钟），已终止")
+                    else:
+                        # LLM still refused to use tools — send its text response
+                        nudge_clean = nudge_text.strip()
+                        if nudge_clean:
+                            self._store.add_message(chat_id, "assistant", nudge_clean, chat_type)
+                            await self._send_long_message(msg, nudge_clean)
                 except Exception as e:
-                    logger.debug(f"Nudge failed: {e}")
+                    logger.error(f"Nudge failed: {e}", exc_info=True)
+                    print(f"[agentic] Nudge FAILED: {e}", flush=True)
 
     async def _run_agentic_tool_loop(
         self, msg, initial_response: str,
@@ -3780,61 +4069,29 @@ class NeoMindTelegramBot:
         """Run the canonical agentic loop when LLM response contains tool calls.
 
         Executes tools, feeds results back to LLM, sends new responses as
-        Telegram messages. This makes NeoMind's tool calling work across
-        all frontends, not just CLI.
+        Telegram messages. Fully async — never blocks the event loop.
         """
-        import requests as req
+        import aiohttp
 
         agentic = self._get_agentic_loop()
         if not agentic:
             await msg.reply_text("⚠️ Agentic loop not available")
             return
 
+        # Reset per-turn dedup state for WebSearch tool
+        if hasattr(self, '_ws_seen_urls'):
+            self._ws_seen_urls.clear()
+
         # Build messages from history
         history = self._store.get_recent_history(chat_id, limit=20)
         messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
-        # LLM caller: synchronous, uses streaming API to collect tokens faster
-        # but does NOT do real-time Telegram edits (avoids thread/event-loop deadlock).
-        def llm_caller(msgs):
+        # LLM caller: fully async, uses aiohttp streaming to collect tokens
+        async def llm_caller(msgs):
             full_text = ""
-            resp = req.post(
-                provider["base_url"],
-                headers={
-                    "Authorization": f"Bearer {provider['api_key']}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": provider["model"],
-                    "messages": msgs,
-                    "max_tokens": 4096,
-                    "temperature": 0.7,
-                    "stream": True,
-                },
-                timeout=90,
-                stream=True,
-            )
-            if resp.status_code != 200:
-                raise Exception(f"LLM API error: {resp.status_code}")
-
-            for line in resp.iter_lines(decode_unicode=True):
-                if not line or not line.startswith("data: "):
-                    continue
-                data_str = line[6:]
-                if data_str.strip() == "[DONE]":
-                    break
-                try:
-                    chunk = json.loads(data_str)
-                    delta = chunk.get("choices", [{}])[0].get("delta", {})
-                    ct = delta.get("content", "")
-                    if ct:
-                        full_text += ct
-                except (json.JSONDecodeError, IndexError, KeyError):
-                    continue
-
-            if not full_text.strip():
-                # Fallback to non-streaming if stream returned empty
-                resp2 = req.post(
+            timeout = aiohttp.ClientTimeout(total=90)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.post(
                     provider["base_url"],
                     headers={
                         "Authorization": f"Bearer {provider['api_key']}",
@@ -3845,11 +4102,48 @@ class NeoMindTelegramBot:
                         "messages": msgs,
                         "max_tokens": 4096,
                         "temperature": 0.7,
+                        "stream": True,
                     },
-                    timeout=90,
-                )
-                if resp2.status_code == 200:
-                    full_text = resp2.json()["choices"][0]["message"]["content"]
+                ) as resp:
+                    if resp.status != 200:
+                        body = await resp.text()
+                        raise Exception(f"LLM API error: {resp.status} — {body[:200]}")
+
+                    async for raw_line in resp.content:
+                        line = raw_line.decode("utf-8", errors="replace").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            ct = delta.get("content", "")
+                            if ct:
+                                full_text += ct
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+
+            if not full_text.strip():
+                # Fallback to non-streaming if stream returned empty
+                async with aiohttp.ClientSession(timeout=timeout) as session:
+                    async with session.post(
+                        provider["base_url"],
+                        headers={
+                            "Authorization": f"Bearer {provider['api_key']}",
+                            "Content-Type": "application/json",
+                        },
+                        json={
+                            "model": provider["model"],
+                            "messages": msgs,
+                            "max_tokens": 4096,
+                            "temperature": 0.7,
+                        },
+                    ) as resp2:
+                        if resp2.status == 200:
+                            data = await resp2.json()
+                            full_text = data["choices"][0]["message"]["content"]
 
             return full_text
 
@@ -3858,8 +4152,10 @@ class NeoMindTelegramBot:
         import re as _re
         try:
             _tool_status_msg = None  # Reusable status message per tool cycle
+            _got_llm_response = False  # Track whether we ever showed a final answer
+            _got_tool_error = False    # Track tool errors for diagnostics
 
-            for event in agentic.run(initial_response, messages, llm_caller):
+            async for event in agentic.run(initial_response, messages, llm_caller):
                 if event.type == "tool_start":
                     # Send a live status message — will be edited when result arrives
                     tool_label = _html.escape(event.tool_preview or event.tool_name or "tool")
@@ -3923,6 +4219,9 @@ class NeoMindTelegramBot:
                             await msg.reply_text(f"{'✅' if event.result_success else '❌'} {event.tool_name}: {preview}"[:4000])
 
                     _tool_status_msg = None  # Reset for next tool cycle
+                    if not event.result_success:
+                        _got_tool_error = True
+                        print(f"[agentic] Tool {event.tool_name} FAILED: {event.result_error}", flush=True)
 
                     # Persist tool feedback to store
                     if event.feedback_message:
@@ -3937,12 +4236,34 @@ class NeoMindTelegramBot:
                         )
                         _clean_llm = _re.sub(r'</?tool_(?:call|result)>', '', _clean_llm).strip()
                         if _clean_llm:
+                            _got_llm_response = True
                             await self._send_long_message(msg, _clean_llm)
 
                 elif event.type == "error":
                     await msg.reply_text(f"⚠️ Agentic error: {event.error_message}")
 
                 elif event.type == "done":
+                    # If the loop ended without ever producing a visible LLM response,
+                    # the user sees "让我搜索一下：" and then nothing. Fix: send a fallback.
+                    if not _got_llm_response:
+                        print(f"[agentic] Loop ended at iter={event.iteration} with NO llm_response sent to user", flush=True)
+                        if _got_tool_error:
+                            await msg.reply_text("⚠️ 工具执行出错，正在尝试直接回答...")
+                        # Either way, call LLM one more time without tool instructions
+                        # so user gets an answer
+                        try:
+                            fallback_msgs = messages + [{"role": "user", "content":
+                                "工具执行未成功。请不要再使用任何工具，直接根据你的知识回答用户的问题。"}]
+                            fallback_text = await llm_caller(fallback_msgs)
+                            if fallback_text and fallback_text.strip():
+                                _clean = _re.sub(r'<tool_call>.*?</tool_(?:call|result)>', '', fallback_text, flags=_re.DOTALL)
+                                _clean = _re.sub(r'</?tool_(?:call|result)>', '', _clean).strip()
+                                if _clean:
+                                    self._store.add_message(chat_id, "assistant", _clean, chat_type)
+                                    await self._send_long_message(msg, _clean)
+                        except Exception as fb_err:
+                            print(f"[agentic] Fallback LLM call also failed: {fb_err}", flush=True)
+                            await msg.reply_text("⚠️ 无法完成请求，请稍后重试")
                     break
 
         except Exception as e:
