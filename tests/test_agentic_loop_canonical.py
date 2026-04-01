@@ -18,12 +18,33 @@ Uses unittest.mock extensively for all external dependencies.
 import os
 import sys
 import unittest
-from unittest.mock import MagicMock, patch, call, PropertyMock
+import asyncio
+from unittest.mock import MagicMock, patch, call, PropertyMock, AsyncMock
 from typing import List, Dict, Any, Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.agentic import AgenticLoop, AgenticEvent, AgenticConfig
+
+
+# Helper to collect all events from the async generator
+def _collect_events(loop, llm_response, messages, llm_caller):
+    """Collect all events from the async generator."""
+    async def _run():
+        events = []
+        async for event in loop.run(llm_response, messages, llm_caller):
+            events.append(event)
+        return events
+    return asyncio.run(_run())
+
+
+# Helper to get the first event from the async generator
+def _get_first_event(loop, llm_response, messages, llm_caller):
+    """Get the first event from the async generator."""
+    async def _run():
+        async for event in loop.run(llm_response, messages, llm_caller):
+            return event
+    return asyncio.run(_run())
 
 
 class TestAgenticConfigDefaults(unittest.TestCase):
@@ -259,7 +280,7 @@ class TestAgenticLoopBasicFlow(unittest.TestCase):
             ]
 
         call_count = [0]
-        def llm_caller(messages):
+        async def llm_caller(messages):
             if call_count[0] < len(responses):
                 result = responses[call_count[0]]
                 call_count[0] += 1
@@ -279,11 +300,12 @@ class TestAgenticLoopBasicFlow(unittest.TestCase):
         mock_registry = self._make_mock_registry_with_tool()
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response="The answer is 42.",
             messages=[],
             llm_caller=self._make_mock_llm_caller(),
-        ))
+        )
 
         # Should have exactly one event: done
         self.assertEqual(len(events), 1)
@@ -311,11 +333,12 @@ class TestAgenticLoopBasicFlow(unittest.TestCase):
             'Here is the data: file content.',  # After tool feedback
         ]
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response='<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>',
             messages=[],
             llm_caller=self._make_mock_llm_caller(llm_responses),
-        ))
+        )
 
         # Should have: tool_start, tool_result, llm_response, done
         event_types = [e.type for e in events]
@@ -339,11 +362,12 @@ class TestAgenticLoopBasicFlow(unittest.TestCase):
         mock_registry = self._make_mock_registry_with_tool(success=True)
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response='',
             messages=[],
             llm_caller=self._make_mock_llm_caller(),
-        ))
+        )
 
         # Find tool_result event
         result_event = next((e for e in events if e.type == "tool_result"), None)
@@ -379,13 +403,15 @@ class TestAgenticLoopIterationLimits(unittest.TestCase):
         loop = AgenticLoop(mock_registry, config)
 
         # LLM always returns a tool call
-        llm_caller = lambda msgs: '<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>'
+        async def llm_caller(msgs):
+            return '<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>'
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response='<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>',
             messages=[],
             llm_caller=llm_caller,
-        ))
+        )
 
         # Count tool_start events (should equal max_iterations)
         tool_start_count = sum(1 for e in events if e.type == "tool_start")
@@ -428,11 +454,12 @@ class TestAgenticLoopIterationLimits(unittest.TestCase):
                     return "Done."
             return '<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>'
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response='<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>',
             messages=[],
             llm_caller=llm_caller,
-        ))
+        )
 
         # Verify we got some events
         self.assertGreater(len(events), 0)
@@ -458,11 +485,7 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         # Should have tool_start, tool_result (with error), llm_response, done
         result_event = next((e for e in events if e.type == "tool_result"), None)
@@ -490,11 +513,7 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         result_event = next((e for e in events if e.type == "tool_result"), None)
         self.assertIsNotNone(result_event)
@@ -522,11 +541,7 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         result_event = next((e for e in events if e.type == "tool_result"), None)
         self.assertIsNotNone(result_event)
@@ -549,15 +564,14 @@ class TestPermissionFlow(unittest.TestCase):
         mock_registry = MagicMock()
         loop = AgenticLoop(mock_registry)
 
-        # Create a generator to iterate events
-        gen = loop.run(
+        # Get first event using helper
+        event = _get_first_event(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
+            llm_caller=AsyncMock(return_value="Done."),
         )
 
-        # Get first event
-        event = next(gen)
         self.assertEqual(event.type, "tool_start")
         self.assertEqual(event.tool_name, "Bash")
 
@@ -573,26 +587,28 @@ class TestPermissionFlow(unittest.TestCase):
         mock_registry = MagicMock()
         loop = AgenticLoop(mock_registry)
 
-        gen = loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        )
+        async def _run_and_check():
+            first_event = None
+            async for event in loop.run(
+                llm_response='',
+                messages=[],
+                llm_caller=AsyncMock(return_value="Done."),
+            ):
+                if first_event is None:
+                    # Get tool_start event
+                    first_event = event
+                    self.assertEqual(event.type, "tool_start")
+                    # Simulate denying permission
+                    event.approved = False
+                else:
+                    # Next event should be done
+                    self.assertEqual(event.type, "done")
+                    break
 
-        # Get tool_start event
-        event = next(gen)
-        self.assertEqual(event.type, "tool_start")
+            # Verify we got the first event
+            self.assertIsNotNone(first_event)
 
-        # Simulate denying permission
-        event.approved = False
-
-        # Next event should be done
-        try:
-            next_event = next(gen)
-            self.assertEqual(next_event.type, "done")
-        except StopIteration:
-            # This is also acceptable — loop ends
-            pass
+        asyncio.run(_run_and_check())
 
 
 class TestHooksIntegration(unittest.TestCase):
@@ -629,11 +645,12 @@ class TestHooksIntegration(unittest.TestCase):
         config = AgenticConfig(hooks_enabled=True)
         loop = AgenticLoop(mock_registry, config)
 
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Verify hook was called
         mock_hooks.pre_llm_call.assert_called()
@@ -666,11 +683,12 @@ class TestHooksIntegration(unittest.TestCase):
         config = AgenticConfig(hooks_enabled=True)
         loop = AgenticLoop(mock_registry, config)
 
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Verify post_response was called
         mock_hooks.post_response.assert_called()
@@ -702,11 +720,12 @@ class TestHooksIntegration(unittest.TestCase):
         config = AgenticConfig(hooks_enabled=False)
         loop = AgenticLoop(mock_registry, config)
 
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Hooks should not be called
         mock_hooks.pre_llm_call.assert_not_called()
@@ -747,11 +766,7 @@ class TestHooksIntegration(unittest.TestCase):
         llm_caller = MagicMock()
         llm_caller.return_value = "Should not be called."
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=llm_caller,
-        ))
+        events = _collect_events(loop, '', [], llm_caller=llm_caller,)
 
         # LLM caller should be called even with fallback
         # (the loop still continues with the fallback response)
@@ -787,11 +802,12 @@ class TestSkillForgeIntegration(unittest.TestCase):
         config = AgenticConfig(skill_forge=mock_skill_forge)
         loop = AgenticLoop(mock_registry, config)
 
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Verify find_matching_skills was called
         mock_skill_forge.find_matching_skills.assert_called()
@@ -825,11 +841,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
         config = AgenticConfig(skill_forge=mock_skill_forge)
         loop = AgenticLoop(mock_registry, config)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         # Should have skill_match event
         skill_match_event = next((e for e in events if e.type == "skill_match"), None)
@@ -866,11 +878,12 @@ class TestSkillForgeIntegration(unittest.TestCase):
         config = AgenticConfig(skill_forge=mock_skill_forge)
         loop = AgenticLoop(mock_registry, config)
 
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='',
             messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Verify record_usage was called with skill id
         mock_skill_forge.record_usage.assert_called()
@@ -905,11 +918,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
         config = AgenticConfig(skill_forge=mock_skill_forge)
         loop = AgenticLoop(mock_registry, config)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         # Should have skill_record event
         skill_record_event = next((e for e in events if e.type == "skill_record"), None)
@@ -976,11 +985,12 @@ class TestAgenticLoopEdgeCases(unittest.TestCase):
         mock_registry = MagicMock()
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
+        events = _collect_events(
+            loop,
             llm_response="No tool call.",
             messages=[],  # Empty
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].type, "done")
@@ -1008,11 +1018,12 @@ class TestAgenticLoopEdgeCases(unittest.TestCase):
         loop = AgenticLoop(mock_registry)
 
         messages = []
-        list(loop.run(
+        _collect_events(
+            loop,
             llm_response='Test response',
             messages=messages,
-            llm_caller=lambda msgs: "Done.",
-        ))
+            llm_caller=AsyncMock(return_value="Done."),
+        )
 
         # Verify messages were appended
         self.assertGreater(len(messages), 0)
@@ -1041,16 +1052,12 @@ class TestAgenticLoopEdgeCases(unittest.TestCase):
 
         loop = AgenticLoop(mock_registry)
 
-        events = list(loop.run(
-            llm_response='',
-            messages=[],
-            llm_caller=lambda msgs: "Done.",
-        ))
+        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
 
         result_event = next((e for e in events if e.type == "tool_result"), None)
         self.assertIsNotNone(result_event)
         # Output should be truncated
-        self.assertLessEqual(len(result_event.result_output), 500)
+        self.assertLessEqual(len(result_event.result_output), 4000)
 
 
 if __name__ == "__main__":

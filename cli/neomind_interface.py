@@ -1085,6 +1085,9 @@ class NeoMindInterface:
 
         Tool result feedback and continuation prompts are automatically handled
         by the canonical loop.
+
+        The canonical AgenticLoop.run() is async, so we bridge from the sync
+        CLI world via asyncio.run().
         """
         if self.chat.mode != "coding":
             return  # Only in coding mode
@@ -1092,21 +1095,19 @@ class NeoMindInterface:
         if max_iterations is None:
             max_iterations = self._AGENTIC_HARD_LIMIT
 
+        import asyncio
         from agent.agentic import AgenticLoop, AgenticConfig
 
-        # Create the LLM caller wrapper that feeds responses back to the chat
-        def llm_caller(messages):
-            """Wrapper around self.chat.stream_response for the agentic loop.
-
-            The agentic loop has already updated self.chat.conversation_history
-            with the assistant response and user feedback message. We call
-            stream_response with a dummy prompt, telling it to skip adding
-            another user message.
-            """
-            # Tell stream_response not to add a user message (we already did via the loop)
+        # Sync LLM caller (runs in thread pool, called by the async loop)
+        def _sync_llm_caller(messages):
+            """Wrapper around self.chat.stream_response for the agentic loop."""
             self.chat._skip_next_user_add = True
             response_text = self.chat.stream_response("[Continue based on the tool results above.]")
             return response_text
+
+        # Async LLM caller — wraps the sync one via to_thread
+        async def llm_caller(messages):
+            return await asyncio.to_thread(_sync_llm_caller, messages)
 
         # Configure the agentic loop
         config = AgenticConfig(
@@ -1142,12 +1143,12 @@ class NeoMindInterface:
         auto_approved = False
         stop_event = None
 
-        # Run the canonical agentic loop and handle events
-        try:
-            for event in loop.run(last_response, history, llm_caller):
+        # Inner async function to consume the async generator
+        async def _async_event_loop():
+            nonlocal auto_approved, stop_event
+            async for event in loop.run(last_response, history, llm_caller):
                 if event.type == "tool_start":
                     # Check permission before execution
-                    # Reconstruct a tool_call-like object for _check_permission
                     class _ToolCallProxy:
                         def __init__(self, tool_name, preview):
                             self.tool_name = tool_name
@@ -1211,6 +1212,9 @@ class NeoMindInterface:
                     self._print(f"[red]Agent error: {event.error_message}[/red]")
                     break
 
+        # Run the async event loop from sync context
+        try:
+            asyncio.run(_async_event_loop())
         except KeyboardInterrupt:
             if stop_event:
                 stop_event.set()

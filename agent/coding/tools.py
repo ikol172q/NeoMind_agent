@@ -328,8 +328,30 @@ class ToolRegistry:
 
     # ── Tool registry access ───────────────────────────────────────────────
 
+    # Common aliases LLMs use for tool names
+    _TOOL_ALIASES = {
+        "search": "WebSearch",
+        "web_search": "WebSearch",
+        "websearch": "WebSearch",
+        "internet_search": "WebSearch",
+        "google": "WebSearch",
+        "browse": "WebSearch",
+        "shell": "Bash",
+        "terminal": "Bash",
+        "exec": "Bash",
+        "readfile": "Read",
+        "read_file": "Read",
+        "writefile": "Write",
+        "write_file": "Write",
+        "editfile": "Edit",
+        "edit_file": "Edit",
+        "find": "Glob",
+        "list": "LS",
+        "ls": "LS",
+    }
+
     def get_tool(self, name: str) -> Optional[Any]:
-        """Get a tool definition by name (case-insensitive lookup)."""
+        """Get a tool definition by name (case-insensitive + alias lookup)."""
         # Exact match first
         if name in self._tool_definitions:
             return self._tool_definitions[name]
@@ -338,6 +360,10 @@ class ToolRegistry:
         for key, tool_def in self._tool_definitions.items():
             if key.lower() == name_lower:
                 return tool_def
+        # Alias fallback — LLMs often use short/variant names
+        canonical = self._TOOL_ALIASES.get(name_lower)
+        if canonical and canonical in self._tool_definitions:
+            return self._tool_definitions[canonical]
         return None
 
     def get_all_tools(self) -> List[Any]:
