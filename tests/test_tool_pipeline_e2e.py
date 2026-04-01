@@ -22,6 +22,7 @@ import re
 import json
 import tempfile
 import unittest
+import asyncio
 from pathlib import Path
 from unittest import mock
 from typing import Optional
@@ -813,7 +814,7 @@ class TestUnknownToolHandling(unittest.TestCase):
         self.assertEqual(tool_call.tool_name, "UnknownTool")
 
         # Execute through AgenticLoop
-        result = self.loop._execute(tool_call)
+        result = asyncio.run(self.loop._execute(tool_call))
 
         self.assertFalse(result.success)
         self.assertIn("Unknown tool", result.error)
@@ -843,7 +844,7 @@ class TestUnknownToolHandling(unittest.TestCase):
         tool_def = self.registry.get_tool("InvalidToolXYZ")
         self.assertIsNone(tool_def)
 
-        result = self.loop._execute(tool_call)
+        result = asyncio.run(self.loop._execute(tool_call))
         self.assertFalse(result.success)
         self.assertIn("InvalidToolXYZ", result.error)
 
