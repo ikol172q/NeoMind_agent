@@ -10,8 +10,15 @@ Tests cover:
 """
 
 import unittest
-from unittest.mock import Mock, MagicMock, patch, call
+import asyncio
+from unittest.mock import Mock, MagicMock, patch, call, AsyncMock
 from threading import Event
+
+
+async def async_iter(items):
+    """Helper to create an async iterator from a list."""
+    for item in items:
+        yield item
 
 
 class TestRunAgenticLoopRefactor(unittest.TestCase):
@@ -53,7 +60,7 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             mock_config_class.return_value = mock_config
 
             mock_loop_instance = Mock()
-            mock_loop_instance.run = Mock(return_value=iter([done_event]))
+            mock_loop_instance.run = Mock(return_value=async_iter([done_event]))
             mock_loop_class.return_value = mock_loop_instance
 
             # Setup registry and history
@@ -80,7 +87,7 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             done_event.type = "done"
 
             mock_loop_instance = Mock()
-            mock_loop_instance.run = Mock(return_value=iter([tool_start_event, done_event]))
+            mock_loop_instance.run = Mock(return_value=async_iter([tool_start_event, done_event]))
             mock_loop_class.return_value = mock_loop_instance
 
             mock_registry = Mock()
@@ -105,7 +112,7 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             done_event.type = "done"
 
             mock_loop_instance = Mock()
-            mock_loop_instance.run = Mock(return_value=iter([tool_start_event, done_event]))
+            mock_loop_instance.run = Mock(return_value=async_iter([tool_start_event, done_event]))
             mock_loop_class.return_value = mock_loop_instance
 
             mock_registry = Mock()
@@ -161,7 +168,7 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             done_event.type = "done"
 
             mock_loop_instance = Mock()
-            mock_loop_instance.run = Mock(return_value=iter([done_event]))
+            mock_loop_instance.run = Mock(return_value=async_iter([done_event]))
             mock_loop_class.return_value = mock_loop_instance
 
             mock_registry = Mock()
@@ -171,7 +178,13 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             ]
 
             # Verify loop.run was set up to return done event
-            events = list(mock_loop_instance.run.return_value)
+            async def _check_events():
+                events = []
+                async for event in mock_loop_instance.run.return_value:
+                    events.append(event)
+                return events
+
+            events = asyncio.run(_check_events())
             self.assertEqual(events[0].type, "done")
 
     def test_tool_registry_none_guard(self):
@@ -208,7 +221,7 @@ class TestRunAgenticLoopRefactor(unittest.TestCase):
             mock_config_class.return_value = mock_config
 
             mock_loop_instance = Mock()
-            mock_loop_instance.run = Mock(return_value=iter([
+            mock_loop_instance.run = Mock(return_value=async_iter([
                 Mock(type="done")
             ]))
             mock_loop_class.return_value = mock_loop_instance
@@ -366,12 +379,15 @@ class TestAgenticLoopConfiguration(unittest.TestCase):
         ]
 
         # Mock llm_caller
-        def mock_llm_caller(messages):
+        async def mock_llm_caller(messages):
             self.assertIsNotNone(messages)
             return "test response"
 
-        result = mock_llm_caller(history)
-        self.assertEqual(result, "test response")
+        async def _test():
+            result = await mock_llm_caller(history)
+            self.assertEqual(result, "test response")
+
+        asyncio.run(_test())
 
 
 if __name__ == '__main__':

@@ -17,6 +17,7 @@ import os
 import sys
 import tempfile
 import unittest
+import asyncio
 from unittest.mock import MagicMock, patch, mock_open, call
 import json
 import subprocess
@@ -41,7 +42,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         """Tool execute when tool_def is None returns ToolResult error."""
         self.registry.get_tool.return_value = None
         tc = ToolCall("UnknownTool", {}, "raw")
-        result = self.loop._execute(tc)
+        result = asyncio.run(self.loop._execute(tc))
 
         self.assertIsInstance(result, ToolResult)
         self.assertFalse(result.success)
@@ -54,7 +55,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         self.registry.get_tool.return_value = tool_def
 
         tc = ToolCall("BadTool", {"bad_param": 123}, "raw")
-        result = self.loop._execute(tc)
+        result = asyncio.run(self.loop._execute(tc))
 
         self.assertFalse(result.success)
         self.assertIn("Invalid params", result.error)
@@ -70,7 +71,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         tc = ToolCall("Bash", {"command": "bad"}, "raw")
         # The exception should propagate out of _execute
         with self.assertRaises(RuntimeError):
-            self.loop._execute(tc)
+            asyncio.run(self.loop._execute(tc))
 
     def test_execute_tool_raises_type_error(self):
         """Tool execute raises TypeError - should propagate."""
@@ -82,7 +83,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
 
         tc = ToolCall("Bash", {"command": None}, "raw")
         with self.assertRaises(TypeError):
-            self.loop._execute(tc)
+            asyncio.run(self.loop._execute(tc))
 
     def test_execute_tool_returns_none(self):
         """Tool execute returns None instead of ToolResult - no validation."""
@@ -93,7 +94,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         self.registry.get_tool.return_value = tool_def
 
         tc = ToolCall("Read", {"path": "/test"}, "raw")
-        result = self.loop._execute(tc)
+        result = asyncio.run(self.loop._execute(tc))
         # _execute doesn't validate return type, so None is returned
         self.assertIsNone(result)
 
@@ -106,7 +107,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         tc = ToolCall("Test", {}, "raw")
         # This will fail with a ValueError when trying to unpack a string
         with self.assertRaises((TypeError, ValueError)):
-            self.loop._execute(tc)
+            asyncio.run(self.loop._execute(tc))
 
     def test_execute_apply_defaults_returns_none(self):
         """apply_defaults returns None instead of dict."""
@@ -118,13 +119,13 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         tc = ToolCall("Test", {}, "raw")
         # This will fail when trying to **None
         with self.assertRaises(TypeError):
-            self.loop._execute(tc)
+            asyncio.run(self.loop._execute(tc))
 
     def test_execute_tool_call_with_none_tool_name(self):
         """ToolCall with None tool_name."""
         self.registry.get_tool.return_value = None
         tc = ToolCall(None, {}, "raw")
-        result = self.loop._execute(tc)
+        result = asyncio.run(self.loop._execute(tc))
 
         self.assertFalse(result.success)
         self.assertIn("Unknown tool", result.error)
@@ -133,7 +134,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         """ToolCall with empty string tool_name."""
         self.registry.get_tool.return_value = None
         tc = ToolCall("", {}, "raw")
-        result = self.loop._execute(tc)
+        result = asyncio.run(self.loop._execute(tc))
 
         self.assertFalse(result.success)
 
@@ -142,7 +143,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
         loop = AgenticLoop(None, self.config)
         tc = ToolCall("Bash", {}, "raw")
         with self.assertRaises(AttributeError):
-            loop._execute(tc)
+            asyncio.run(loop._execute(tc))
 
     def test_execute_tool_call_params_none(self):
         """ToolCall with None params."""
@@ -152,7 +153,7 @@ class TestAgenticLoopExecuteErrors(unittest.TestCase):
 
         tc = ToolCall("Bash", None, "raw")
         with self.assertRaises(TypeError):
-            self.loop._execute(tc)
+            asyncio.run(self.loop._execute(tc))
 
 
 class TestToolRegistryExecErrors(unittest.TestCase):
