@@ -31,7 +31,7 @@ from typing import Any, Dict, Optional
 try:
     from mcp.server import Server
     from mcp.server.stdio import stdio_server
-    from mcp.types import Tool, TextContent
+    from mcp.types import Tool, TextContent, Resource, Prompt, PromptMessage
     HAS_MCP = True
 except ImportError:
     HAS_MCP = False
@@ -137,6 +137,164 @@ def create_mcp_server(domain: str = "general") -> Optional[Any]:
 
         else:
             return [TextContent(type="text", text=f"Unknown tool: {name}")]
+
+    # ── Resources: expose vault, memory, config as readable resources ──
+
+    @app.list_resources()
+    async def list_resources():
+        resources = []
+
+        # Vault memory file
+        vault_path = os.path.expanduser('~/neomind-vault/MEMORY.md')
+        if os.path.exists(vault_path):
+            resources.append(Resource(
+                uri=f"file://{vault_path}",
+                name="NeoMind Memory",
+                description="Long-term memory stored in Obsidian vault",
+                mimeType="text/markdown",
+            ))
+
+        # Feature flags
+        flags_path = os.path.expanduser('~/.neomind/feature_flags.json')
+        if os.path.exists(flags_path):
+            resources.append(Resource(
+                uri=f"file://{flags_path}",
+                name="Feature Flags",
+                description="NeoMind feature flag configuration",
+                mimeType="application/json",
+            ))
+
+        # Search status as a virtual resource
+        resources.append(Resource(
+            uri="neomind://search/status",
+            name="Search Engine Status",
+            description="Current status of NeoMind search sources",
+            mimeType="text/plain",
+        ))
+
+        # Session history
+        resources.append(Resource(
+            uri="neomind://session/info",
+            name="Session Info",
+            description="Current session information and statistics",
+            mimeType="text/plain",
+        ))
+
+        return resources
+
+    @app.read_resource()
+    async def read_resource(uri: str):
+        if uri.startswith("file://"):
+            file_path = uri[7:]
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    return f.read()
+            except Exception as e:
+                return f"Error reading resource: {e}"
+
+        elif uri == "neomind://search/status":
+            return engine.get_status()
+
+        elif uri == "neomind://session/info":
+            return json.dumps({
+                "search_domain": engine.domain,
+                "engine_sources": len(getattr(engine, '_sources', [])),
+            }, indent=2)
+
+        return f"Unknown resource: {uri}"
+
+    # ── Prompts: expose reusable prompt templates ────────────────────
+
+    @app.list_prompts()
+    async def list_prompts():
+        return [
+            Prompt(
+                name="research",
+                description="Deep research a topic using NeoMind's multi-source search",
+                arguments=[
+                    {"name": "topic", "description": "Research topic", "required": True},
+                    {"name": "depth", "description": "Research depth: quick, standard, deep", "required": False},
+                ],
+            ),
+            Prompt(
+                name="summarize_search",
+                description="Search and summarize findings on a topic",
+                arguments=[
+                    {"name": "query", "description": "Search query", "required": True},
+                ],
+            ),
+            Prompt(
+                name="compare",
+                description="Compare two topics or technologies",
+                arguments=[
+                    {"name": "item_a", "description": "First item to compare", "required": True},
+                    {"name": "item_b", "description": "Second item to compare", "required": True},
+                ],
+            ),
+        ]
+
+    @app.get_prompt()
+    async def get_prompt(name: str, arguments: Dict[str, str] = None):
+        args = arguments or {}
+
+        if name == "research":
+            topic = args.get("topic", "")
+            depth = args.get("depth", "standard")
+            return {
+                "messages": [
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=(
+                                f"Research the following topic thoroughly: {topic}\n\n"
+                                f"Depth: {depth}\n"
+                                "Use web_search to gather information from multiple sources. "
+                                "Synthesize findings into a comprehensive report with citations."
+                            ),
+                        ),
+                    )
+                ]
+            }
+
+        elif name == "summarize_search":
+            query = args.get("query", "")
+            return {
+                "messages": [
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=(
+                                f"Search for: {query}\n\n"
+                                "Summarize the top results concisely. "
+                                "Include key facts, dates, and source URLs."
+                            ),
+                        ),
+                    )
+                ]
+            }
+
+        elif name == "compare":
+            a = args.get("item_a", "")
+            b = args.get("item_b", "")
+            return {
+                "messages": [
+                    PromptMessage(
+                        role="user",
+                        content=TextContent(
+                            type="text",
+                            text=(
+                                f"Compare {a} vs {b}.\n\n"
+                                "Search for information about both, then create a comparison "
+                                "table covering features, pros/cons, and recommendations."
+                            ),
+                        ),
+                    )
+                ]
+            }
+
+        return {"messages": []}
 
     return app
 

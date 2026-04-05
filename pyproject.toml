@@ -90,5 +90,11 @@ packages = ["agent", "agent.search", "agent.finance", "agent.browser", "agent.wo
 py-modules = ["agent_config", "main"]
 include-package-data = true
 
+[tool.pytest.ini_options]
+testpaths = ["tests", "tests/llm"]
+markers = [
+    "llm: tests requiring real LLM API calls (always run if API key available)",
+]
+
 [tool.setuptools.package-data]
 "agent" = ["config/*.yaml"]

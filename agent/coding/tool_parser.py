@@ -345,3 +345,67 @@ def format_tool_result(tool_call: ToolCall, result) -> str:
     parts.append("</tool_result>")
 
     return "\n".join(parts)
+
+
+def format_tool_display(tool_name: str, result, elapsed_ms: int = 0) -> str:
+    """Format a tool result for CLI display (human-readable, per-tool formatting).
+
+    Unlike format_tool_result (which is for LLM context), this is for the user's
+    terminal. Each tool type gets distinct formatting.
+
+    Args:
+        tool_name: Name of the tool
+        result: ToolResult from execution
+        elapsed_ms: Execution time in milliseconds
+
+    Returns:
+        Formatted string for terminal display
+    """
+    status = "✓" if result.success else "✗"
+    time_str = f" ({elapsed_ms}ms)" if elapsed_ms > 0 else ""
+    meta = getattr(result, 'metadata', {}) or {}
+
+    if tool_name in ('Bash', 'PowerShell'):
+        cmd = meta.get('command', '')[:60]
+        exit_code = meta.get('exit_code', 0)
+        code_badge = f"exit={exit_code}" if not result.success else ""
+        return f"{status} {tool_name}{time_str} $ {cmd} {code_badge}".strip()
+
+    elif tool_name == 'Read':
+        path = meta.get('file_path', '?')
+        lines = meta.get('lines_in_output', '?')
+        dedup = " (cached)" if meta.get('deduplicated') else ""
+        return f"{status} Read{time_str} {path} ({lines} lines){dedup}"
+
+    elif tool_name == 'Write':
+        path = meta.get('file_path', '?')
+        bytes_w = meta.get('bytes_written', '?')
+        return f"{status} Write{time_str} {path} ({bytes_w} bytes)"
+
+    elif tool_name == 'Edit':
+        path = meta.get('file_path', '?')
+        return f"{status} Edit{time_str} {path}"
+
+    elif tool_name == 'Grep':
+        pattern = meta.get('pattern', '?')
+        return f"{status} Grep{time_str} '{pattern}'"
+
+    elif tool_name == 'Glob':
+        pattern = meta.get('pattern', '?')
+        count = meta.get('files_matched', '?')
+        return f"{status} Glob{time_str} {pattern} → {count} files"
+
+    elif tool_name in ('WebSearch', 'WebFetch'):
+        query = meta.get('query', meta.get('url', '?'))[:50]
+        return f"{status} {tool_name}{time_str} {query}"
+
+    elif tool_name == 'SyntheticOutput':
+        schema = meta.get('schema_name', '?')
+        return f"{status} SyntheticOutput{time_str} schema={schema}"
+
+    elif tool_name == 'Snip':
+        label = meta.get('label', '?')
+        return f"{status} Snip{time_str} '{label}'"
+
+    else:
+        return f"{status} {tool_name}{time_str}"
