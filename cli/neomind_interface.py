@@ -146,9 +146,10 @@ class SlashCommandCompleter(Completer):
         "calendar": "View upcoming financial events and earnings",
     }
 
-    def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None):
+    def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None, command_registry=None):
         self.help_system = help_system
         self.mode = mode
+        self._new_registry = command_registry  # Claude Code CommandRegistry
         # Load commands from config for the active mode
         self.commands = list(agent_config.get_mode_config(mode).get("commands", []))
         # Fallback if config has no commands list
@@ -173,6 +174,19 @@ class SlashCommandCompleter(Completer):
 
         partial = text[1:].lower()
 
+        # Try new CommandRegistry first (Claude Code fuzzy search)
+        if self._new_registry:
+            results = self._new_registry.fuzzy_search(partial, self.mode, limit=15)
+            for cmd in results:
+                yield Completion(
+                    f"/{cmd.name}",
+                    start_position=-(len(partial) + 1),
+                    display=f"/{cmd.name}",
+                    display_meta=cmd.description,
+                )
+            return
+
+        # Legacy fallback
         for cmd in sorted(self.commands):
             if cmd.lower().startswith(partial):
                 desc = self.ALL_DESCRIPTIONS.get(cmd, "")
@@ -239,6 +253,12 @@ class NeoMindInterface:
         self.running = True
         self._interrupt = False
 
+        # ── Phase 1: Claude Code CLI integration ────────────────────
+        # Use the new command system alongside legacy _handle_local_command.
+        # New system takes priority; if it returns None, falls through to legacy.
+        self._new_command_dispatcher = getattr(chat, '_command_dispatcher', None)
+        self._new_command_registry = getattr(chat, '_command_registry', None)
+
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
         model_name = self.chat.model
@@ -260,9 +280,30 @@ class NeoMindInterface:
                 self.console.print(
                     f"[dim]Workspace:[/dim] [blue]{cwd}[/blue]"
                 )
-                self.console.print(
-                    "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
-                )
+                # Show tool count from registry if available
+                try:
+                    registry = self._get_tool_registry()
+                    tool_names = sorted([t.name for t in registry.get_all_tools()]) if registry else []
+                    tool_count = len(tool_names)
+                    if tool_count > 0:
+                        # Show first few tools + count
+                        shown = ", ".join(tool_names[:7])
+                        if tool_count > 7:
+                            self.console.print(
+                                f"[dim]Tools ({tool_count}): {shown}, ... (+{tool_count - 7} more)[/dim]"
+                            )
+                        else:
+                            self.console.print(
+                                f"[dim]Tools ({tool_count}): {shown}[/dim]"
+                            )
+                    else:
+                        self.console.print(
+                            "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
+                        )
+                except Exception:
+                    self.console.print(
+                        "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
+                    )
                 self.console.print(
                     "[dim]  / commands  |  Ctrl+O think  |  Ctrl+E expand  |  /debug logs  |  Ctrl+D exit[/dim]"
                 )
@@ -367,7 +408,63 @@ class NeoMindInterface:
         - False  → quit
         - True   → command handled, continue loop
         - None   → not a local command, pass to agent core
+
+        Phase 1: Tries the new Claude Code-style CommandDispatcher first.
+        Falls through to legacy handler if the new system doesn't handle it.
         """
+        # ── Try new command system first (Claude Code pattern) ──────
+        if self._new_command_dispatcher:
+            try:
+                import asyncio
+                result = asyncio.get_event_loop().run_until_complete(
+                    self._new_command_dispatcher.dispatch(
+                        user_input,
+                        mode=self.chat.mode,
+                        agent=self.chat,
+                    )
+                )
+            except RuntimeError:
+                # No event loop running — create one
+                try:
+                    result = asyncio.run(
+                        self._new_command_dispatcher.dispatch(
+                            user_input,
+                            mode=self.chat.mode,
+                            agent=self.chat,
+                        )
+                    )
+                except Exception:
+                    result = None
+            except Exception:
+                result = None
+
+            if result is not None:
+                # Handle special result codes
+                if result.text == "__EXIT__":
+                    self._print("[dim]Goodbye![/dim]")
+                    return False
+                if result.text.startswith("__MODE_SWITCH__"):
+                    target = result.text.replace("__MODE_SWITCH__", "")
+                    ok = self.chat.switch_mode(target)
+                    if ok and hasattr(self, '_completer') and self._completer:
+                        self._completer.set_mode(target)
+                        self.display_welcome()
+                    return True
+                if result.compact:
+                    self.chat.clear_history()
+                    if agent_config.system_prompt:
+                        self.chat.add_to_history("system", agent_config.system_prompt)
+                    self._print("[green]✓[/green] Conversation compacted")
+                    return True
+                if result.should_query:
+                    # Prompt command: feed expanded text to LLM
+                    self._stream_and_render(result.text)
+                    return True
+                if result.display != "skip" and result.text:
+                    self._print(result.text)
+                return True
+
+        # ── Legacy command handling (fallback) ──────────────────────
         parts = user_input.split(maxsplit=1)
         cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
         args = parts[1].strip() if len(parts) > 1 else ""
@@ -1018,10 +1115,10 @@ class NeoMindInterface:
         return tool_def.execute(**params)
 
     def _check_permission(self, tool_call, auto_approved: bool) -> tuple:
-        """Check permission for a tool call.
+        """Interactive permission dialog for tool execution.
 
+        Shows tool preview and asks yes/no for WRITE/EXECUTE/DESTRUCTIVE tools.
         Returns (approved: bool, new_auto_approved: bool).
-        Uses per-tool permission levels when a structured tool is found.
         """
         from agent.tool_schema import PermissionLevel
 
@@ -1039,36 +1136,65 @@ class NeoMindInterface:
         if perm_mode == "plan":
             if level == PermissionLevel.READ_ONLY:
                 return True, auto_approved
-            preview = tool_call.preview()
-            self._print(f"[dim]  Would run: {preview}[/dim]")
-            self._print("[dim]  (permission mode is 'plan' — skipping)[/dim]")
+            self._print("[dim]  \u2298 Blocked (plan mode)[/dim]")
             return False, auto_approved
 
         # Auto-accept mode or already auto-approved this turn
         if perm_mode == "auto_accept" or auto_approved:
-            return True, auto_approved
+            return True, auto_approved if perm_mode != "auto_accept" else True
 
         # Normal mode: READ_ONLY tools auto-approve (no prompt)
         if level == PermissionLevel.READ_ONLY:
             return True, auto_approved
 
-        # Ask user for WRITE/EXECUTE/DESTRUCTIVE tools
-        preview = tool_call.preview()
-        if tool_call.tool_name == "Bash":
-            self._print(f"  [dim]│[/dim] [cyan]$[/cyan] [dim]{preview}[/dim]")
-        else:
-            self._print(f"  [dim]│[/dim] [cyan]{tool_call.tool_name}[/cyan] [dim]{preview}[/dim]")
-        try:
-            choice = input("  │ Run? [y/n/a]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            self._print("[dim]  │ Skipped[/dim]")
-            return False, auto_approved
+        # Show interactive permission dialog for WRITE/EXECUTE/DESTRUCTIVE tools
+        level_colors = {
+            PermissionLevel.WRITE: "yellow",
+            PermissionLevel.EXECUTE: "orange1",
+            PermissionLevel.DESTRUCTIVE: "red",
+        }
+        color = level_colors.get(level, "yellow")
 
-        if choice in ("n", "no"):
+        tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
+        params = tool_call.params if hasattr(tool_call, 'params') else {}
+
+        # Build permission panel with tool preview
+        preview_lines = [f"[bold]{tool_name}[/bold] ({level.value})"]
+        if params:
+            for k, v in params.items():
+                val_str = str(v)[:100]
+                preview_lines.append(f"  {k}: {val_str}")
+        else:
+            # Fallback to preview() if no structured params
+            preview = tool_call.preview() if hasattr(tool_call, 'preview') else ""
+            if preview:
+                preview_lines.append(f"  {preview}")
+
+        if self.console:
+            self.console.print(Panel(
+                "\n".join(preview_lines),
+                title=f"[{color}]\u26a0 Permission Required[/{color}]",
+                border_style=color,
+                width=min(80, self.console.width),
+            ))
+        else:
+            self._print(f"  [{color}]\u26a0 Permission Required[/{color}]")
+            for line in preview_lines:
+                self._print(f"  {line}")
+
+        # Ask for approval
+        try:
+            response = input("  Allow? [y]es / [n]o / [a]lways: ").strip().lower()
+            if response in ('y', 'yes', ''):
+                return True, auto_approved
+            elif response in ('a', 'always'):
+                return True, True  # auto_approved for rest of session
+            else:
+                self._print("[dim]  \u2298 Denied[/dim]")
+                return False, auto_approved
+        except (EOFError, KeyboardInterrupt):
+            self._print("[dim]  \u2298 Denied[/dim]")
             return False, auto_approved
-        if choice in ("a", "all"):
-            return True, True
-        return choice in ("y", "yes", ""), auto_approved
 
     # How many tool calls before we tell the model to wrap up
     _AGENTIC_SOFT_LIMIT = 8
@@ -1150,13 +1276,14 @@ class NeoMindInterface:
                 if event.type == "tool_start":
                     # Check permission before execution
                     class _ToolCallProxy:
-                        def __init__(self, tool_name, preview):
+                        def __init__(self, tool_name, params, preview_text):
                             self.tool_name = tool_name
-                            self._preview = preview
+                            self.params = params or {}
+                            self._preview = preview_text
                         def preview(self):
                             return self._preview
 
-                    tool_call = _ToolCallProxy(event.tool_name, event.tool_preview or "")
+                    tool_call = _ToolCallProxy(event.tool_name, event.tool_params, event.tool_preview or "")
 
                     # Use existing permission logic
                     approved, auto_approved = self._check_permission(tool_call, auto_approved)
@@ -1170,18 +1297,29 @@ class NeoMindInterface:
                     # else: loop will stop after this iteration
 
                 elif event.type == "tool_result":
+                    # Show tool result (collapsible)
+                    if event.result_success:
+                        output = event.result_output or ""
+                        preview = output[:200]
+                        if len(output) > 200:
+                            self._print(f"  [green]\u2713[/green] [dim]{preview}... ({len(output)} chars, /expand to see full)[/dim]")
+                        elif preview:
+                            self._print(f"  [green]\u2713[/green] [dim]{preview}[/dim]")
+                    else:
+                        self._print(f"  [red]\u2717[/red] {event.result_error or 'Unknown error'}")
+
                     # Update spinner with result status
                     if stop_event:
                         if event.result_success:
                             brief = (event.result_output or "").split('\n')[0][:50]
                             if brief:
-                                self._update_spinner(stop_event, f"Thinking… {brief}")
+                                self._update_spinner(stop_event, f"Thinking\u2026 {brief}")
                         else:
                             brief = (event.result_error or "").split('\n')[0][:50]
                             if brief:
-                                self._update_spinner(stop_event, f"Thinking… {brief}")
+                                self._update_spinner(stop_event, f"Thinking\u2026 {brief}")
                             else:
-                                self._update_spinner(stop_event, "Thinking… (error)")
+                                self._update_spinner(stop_event, "Thinking\u2026 (error)")
 
                 elif event.type == "llm_response":
                     # LLM response already streamed by llm_caller's stream_response
@@ -1290,6 +1428,20 @@ class NeoMindInterface:
         except Exception as e:
             self._print(f"[dim]Agent loop error: {e}[/dim]")
 
+        # Check context usage and warn
+        try:
+            if hasattr(self.chat, 'context_manager') and self.chat.context_manager:
+                tokens = self.chat.context_manager.count_conversation_tokens()
+                max_ctx = getattr(self.chat, 'max_context', 0) or 200000
+                usage = tokens / max_ctx if max_ctx > 0 else 0
+                if usage > 0.95:
+                    self._print(f"\n[red]\u26a0 Context {usage:.0%} full! Auto-compacting...[/red]")
+                    self.chat.handle_command("/compact", "")
+                elif usage > 0.85:
+                    self._print(f"\n[yellow]\u26a0 Context {usage:.0%} full. Run /compact to free space.[/yellow]")
+        except Exception:
+            pass
+
         # Fallback: if nothing was ever displayed to the user, show the raw response
         if not getattr(self.chat, '_last_content_was_displayed', True):
             history = self.chat.conversation_history
@@ -1354,7 +1506,11 @@ class NeoMindInterface:
         def _newline(event):
             event.current_buffer.insert_text("\n")
 
-        self._completer = SlashCommandCompleter(mode=self.chat.mode, help_system=self.help_system)
+        self._completer = SlashCommandCompleter(
+            mode=self.chat.mode,
+            help_system=self.help_system,
+            command_registry=self._new_command_registry,
+        )
 
         style = PTStyle.from_dict({
             "bottom-toolbar":                "bg:#1a1a2e #e0e0e0",
