@@ -80,6 +80,7 @@ MODEL_SPECS: Dict[str, Dict[str, int]] = {
         "max_context": 131072,   # 128K
         "max_output": 65536,     # 64K (thinking mode)
         "default_max": 16384,
+        "fixed_temperature": 1,  # Kimi K2.5 only accepts temperature=1
     },
     # Qwen models (local via LiteLLM/Ollama)
     "qwen3.5": {
@@ -256,6 +257,66 @@ class LLMProviderService:
             "models_url": proxy_models or prov["models_url"],
             "api_key": self.api_key,
         }
+
+    # ── Provider Fallback Chain ──────────────────────────────────
+
+    def resolve_with_fallback(self, model: str = None) -> Dict[str, str]:
+        """Resolve provider with automatic fallback on failure.
+
+        Tries the primary provider first. If it fails (no API key, connection error),
+        falls back to the next available provider.
+
+        Fallback order: primary → secondary env key → deepseek (default)
+        """
+        model = model or self.model
+
+        # Define fallback chain based on available API keys
+        candidates = []
+
+        # Primary: model-matched provider
+        primary = self.resolve_provider(model)
+        if primary.get('api_key'):
+            candidates.append(primary)
+
+        # Secondary options: any provider with a configured API key
+        for name, prov in PROVIDERS.items():
+            api_key = os.getenv(prov.get('env_key', ''), '')
+            if api_key and name != primary.get('name'):
+                proxy_base = proxy_url(name, "chat/completions")
+                candidates.append({
+                    'name': name,
+                    'base_url': proxy_base or prov['base_url'],
+                    'models_url': prov['models_url'],
+                    'api_key': api_key,
+                })
+
+        if not candidates:
+            return primary  # Return anyway, will fail at API call
+
+        return candidates[0]  # Return best candidate
+
+    _provider_health: Dict[str, Dict[str, Any]] = {}
+
+    def mark_provider_unhealthy(self, provider_name: str):
+        """Mark a provider as unhealthy after repeated failures."""
+        import time
+        self._provider_health[provider_name] = {
+            'healthy': False,
+            'unhealthy_since': time.time(),
+            'retry_after': time.time() + 300,  # 5 min cooldown
+        }
+
+    def is_provider_healthy(self, provider_name: str) -> bool:
+        """Check if a provider is healthy (or cooldown has expired)."""
+        import time
+        status = self._provider_health.get(provider_name)
+        if status is None:
+            return True
+        if not status['healthy'] and time.time() > status['retry_after']:
+            # Cooldown expired, try again
+            del self._provider_health[provider_name]
+            return True
+        return status.get('healthy', True)
 
     # ── Model Listing ──────────────────────────────────────────────
 

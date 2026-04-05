@@ -4,6 +4,45 @@
 import sys
 import os
 
+# ── Fast-path dispatch ──────────────────────────────────────────
+# Handle simple flags BEFORE loading any heavy modules.
+# This avoids importing agent/, prompt_toolkit, openai, etc.
+# for trivial operations like --version or --help.
+def _fast_path():
+    """Check for fast-path arguments that don't need full module loading."""
+    args = sys.argv[1:]
+    if '--version' in args or '-V' in args:
+        # Read version from pyproject.toml without importing anything
+        try:
+            _root = os.path.dirname(os.path.abspath(__file__))
+            with open(os.path.join(_root, 'pyproject.toml')) as f:
+                for line in f:
+                    if line.strip().startswith('version'):
+                        ver = line.split('=')[1].strip().strip('"').strip("'")
+                        print(f"neomind-agent version {ver}")
+                        sys.exit(0)
+        except Exception:
+            pass
+        print("neomind-agent version 0.3.0")
+        sys.exit(0)
+
+    if '--dump-system-prompt' in args:
+        # Dump system prompt without loading the full agent
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        try:
+            from agent_config import agent_config
+            mode = 'coding' if '--mode' in args and 'coding' in args else 'chat'
+            agent_config.switch_mode(mode)
+            print(agent_config.system_prompt or "(no system prompt)")
+        except Exception as e:
+            print(f"Error: {e}")
+        sys.exit(0)
+
+    if '--help' in args or '-h' in args:
+        return  # Let argparse handle it normally
+
+_fast_path()
+
 # Fix for Windows terminal detection in MINGW/Cygwin before any prompt_toolkit imports
 if sys.platform == "win32" and "xterm" in os.environ.get("TERM", ""):
     os.environ["PROMPT_TOOLKIT_NO_WIN32_CONSOLE"] = "1"
@@ -25,6 +64,13 @@ def interactive_main(mode: str = "chat"):
     Args:
         mode: 'chat' or 'coding' — determines config, commands, and behavior
     """
+    # Run startup migrations
+    try:
+        from agent.migrations import run_startup_migrations
+        run_startup_migrations()
+    except Exception:
+        pass  # Non-fatal
+
     # Set mode on config before anything else
     from agent_config import agent_config
     if mode != agent_config.mode:
@@ -92,11 +138,8 @@ def main():
     args = parser.parse_args()
 
     if args.version:
-        try:
-            from neomind import __version__
-            print(f"neomind-agent version {__version__}")
-        except ImportError:
-            print("neomind-agent version 0.1.0")
+        # Fast-path already handled this, but in case it gets here
+        print("neomind-agent version 0.3.0")
         return
 
     if args.run_mode == 'test':

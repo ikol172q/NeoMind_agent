@@ -12,11 +12,26 @@ import os
 import sys
 import re
 import time
+import json
 import asyncio
 import difflib
+import requests
 from typing import Optional, List, Dict, Tuple, Any
 
 from agent.code_analyzer import CodeAnalyzer
+from agent_config import agent_config
+
+try:
+    from agent.services.safety_service import log_operation
+except ImportError:
+    def log_operation(*args, **kwargs):
+        pass  # No-op if logger not available
+
+try:
+    from agent.workflow.sprint import SprintManager
+    HAS_SPRINT = True
+except ImportError:
+    HAS_SPRINT = False
 
 
 def handle_code_command(core, command: str) -> str:
@@ -503,7 +518,7 @@ def _order_changes_by_dependencies(core, changes):
         return changes
     # Determine root path: use agent_root for self-modifications, else code_analyzer.root_path
     import os
-    root_path = core.agent_root if hasattr(self, 'agent_root') else (core.code_analyzer.root_path if core.code_analyzer else os.getcwd())
+    root_path = core.agent_root if hasattr(core, 'agent_root') else (core.code_analyzer.root_path if core.code_analyzer else os.getcwd())
     planner = Planner(root_path)
     ordered = planner.plan_changes(changes)
     return ordered
@@ -900,9 +915,9 @@ def debug_agent_status(core):
     print(f"  • API Key: {'Set' if core.api_key else 'Not set'}")
     print(f"  • Conversation history length: {len(core.conversation_history)}")
     print(f"  • Code analyzer: {'Initialized' if core.code_analyzer else 'Not initialized'}")
-    print(f"  • Auto-fix mode: {'ACTIVE' if hasattr(self, 'auto_fix_mode') and core.auto_fix_mode else 'Inactive'}")
+    print(f"  • Auto-fix mode: {'ACTIVE' if hasattr(core, 'auto_fix_mode') and core.auto_fix_mode else 'Inactive'}")
         
-    if hasattr(self, 'current_fix_file'):
+    if hasattr(core, 'current_fix_file'):
         print(f"  • Current fix file: {core.current_fix_file}")
         
     print(f"  • Pending changes: {len(core.code_changes_pending)}")
@@ -1048,7 +1063,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         skip_user_add = False
 
     # Check if caller already added the user message (agentic loop re-prompt)
-    if getattr(self, '_skip_next_user_add', False):
+    if getattr(core, '_skip_next_user_add', False):
         skip_user_add = True
         core._skip_next_user_add = False
 
@@ -1142,11 +1157,14 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
     except Exception as e:
         core._status_print(f"Pre-call hooks error (non-fatal): {e}", "debug")
 
+    # Respect model-level fixed temperature (e.g. kimi-k2.5 only accepts temperature=1)
+    actual_temperature = spec.get("fixed_temperature", temperature or agent_config.temperature)
+
     payload = {
         "model": core.model,
         "messages": messages_for_api,
         "stream": True,
-        "temperature": temperature or agent_config.temperature,
+        "temperature": actual_temperature,
         "max_tokens": actual_max_tokens,
     }
 
@@ -1197,21 +1215,25 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             nonlocal first_token_notified
             if not first_token_notified:
                 first_token_notified = True
-                cb = getattr(self, '_ui_on_first_token', None)
+                cb = getattr(core, '_ui_on_first_token', None)
                 if cb:
                     try:
                         cb()
                     except Exception:
                         pass
 
-        def _summarize_thinking(text, max_len=60):
+        def _summarize_thinking(text, max_len=100):
             """Extract a brief summary from thinking content for spinner display."""
             # Take the last meaningful sentence/phrase
             lines = text.strip().split('\n')
             for line in reversed(lines):
                 line = line.strip()
-                if len(line) > 10:
+                if len(line) > 5:
                     if len(line) > max_len:
+                        # Try to cut at a word boundary
+                        cut = line[:max_len].rfind(' ')
+                        if cut > max_len // 2:
+                            return line[:cut] + "…"
                         return line[:max_len - 1] + "…"
                     return line
             return ""
@@ -1220,8 +1242,8 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             """Update the spinner label with a thinking summary (via stderr)."""
             nonlocal last_thinking_summary_time
             now = time.time()
-            # Update at most every 2 seconds to avoid flickering
-            if now - last_thinking_summary_time < 2:
+            # Update at most every 0.5 seconds to keep it responsive
+            if now - last_thinking_summary_time < 0.5:
                 return
             last_thinking_summary_time = now
             summary = _summarize_thinking(reasoning_so_far)
@@ -1270,9 +1292,15 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                             elapsed = time.time() - thinking_start_time
                                             summary = _summarize_thinking(reasoning_content)
                                             if COLORS_ENABLED:
-                                                print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
+                                                if summary:
+                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s — {summary}{COLOR_RESET}")
+                                                else:
+                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
                                             else:
-                                                print(f"Thought for {elapsed:.1f}s")
+                                                if summary:
+                                                    print(f"Thought for {elapsed:.1f}s — {summary}")
+                                                else:
+                                                    print(f"Thought for {elapsed:.1f}s")
                                         else:
                                             _notify_first_token()
                                         is_final_response_active = True
@@ -1281,7 +1309,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                     # Accumulate full response regardless of filter
                                     full_response += content
                                     # Content filter: suppress code fences if active
-                                    _cf = getattr(self, '_content_filter', None)
+                                    _cf = getattr(core, '_content_filter', None)
                                     if _cf:
                                         display = _cf.write(content)
                                         if display:
@@ -1305,7 +1333,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                 return None
 
         # Flush content filter if active
-        _cf = getattr(self, '_content_filter', None)
+        _cf = getattr(core, '_content_filter', None)
         if _cf:
             remaining = _cf.flush()
             if remaining:
@@ -1349,7 +1377,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     core._response_turn_count = 0
                     try:
                         changed_context = core._vault_watcher.get_changed_context(
-                            mode=getattr(self, 'mode', 'chat')
+                            mode=getattr(core, 'mode', 'chat')
                         )
                         if changed_context:
                             core.add_to_history("system", changed_context)
@@ -1426,9 +1454,65 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                 except Exception:
                     pass  # Non-fatal — never block response delivery
 
+            # ── AutoDream: attempt memory consolidation during idle ────────
+            if hasattr(core, 'services') and core.services is not None:
+                try:
+                    dream = core.services.auto_dream
+                    if dream is not None:
+                        dream.on_turn_complete()
+                        history = getattr(core, 'conversation_history', None)
+                        if history:
+                            dream.maybe_consolidate(history)
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── Session Notes: auto-update structured notes ──────────
+                try:
+                    notes = core.services.session_notes
+                    if notes is not None:
+                        history = getattr(core, 'conversation_history', None)
+                        tool_count = getattr(core, '_tool_call_count', 0)
+                        total_chars = sum(len(str(m.get('content', ''))) for m in (history or []))
+                        est_tokens = total_chars // 4
+                        notes.maybe_update(
+                            messages=history or [],
+                            tool_count=tool_count,
+                            est_tokens=est_tokens,
+                        )
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── Frustration detection on last user message ─────────
+                try:
+                    detector = core.services.frustration_detector
+                    if detector and core.conversation_history:
+                        last_user = None
+                        for m in reversed(core.conversation_history):
+                            if m.get('role') == 'user':
+                                last_user = str(m.get('content', ''))
+                                break
+                        if last_user:
+                            signals = detector(last_user)
+                            if signals:
+                                from agent.services.frustration_detector import get_frustration_guidance
+                                guidance = get_frustration_guidance(signals)
+                                if guidance:
+                                    core._status_print(f"📊 {guidance}", "debug")
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── JSONL session storage: append messages ─────────────
+                try:
+                    sw = core.services.session_storage_writer
+                    if sw and full_response:
+                        sw.append_message('assistant', full_response[:10000])
+                        sw.flush()
+                except Exception:
+                    pass  # Non-fatal
+
         # Store thinking content for expansion later
         if reasoning_content:
-            if not hasattr(self, '_thinking_history'):
+            if not hasattr(core, '_thinking_history'):
                 core._thinking_history = []
             core._thinking_history.append({
                 "timestamp": time.time(),
@@ -1442,8 +1526,8 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         # ============================================
 
         # Check if we're in auto-fix mode and have a file to fix
-        if (hasattr(self, 'auto_fix_mode') and core.auto_fix_mode and 
-            hasattr(self, 'current_fix_file') and core.current_fix_file and 
+        if (hasattr(core, 'auto_fix_mode') and core.auto_fix_mode and
+            hasattr(core, 'current_fix_file') and core.current_fix_file and
             full_response):
 
             print(f"\n{'='*80}")
@@ -1589,7 +1673,7 @@ def _handle_auto_fix_confirmation(core):
                 print(f"\n🔄 Applying changes...")
 
                 # Show diff before applying
-                if hasattr(self, 'original_file_content'):
+                if hasattr(core, 'original_file_content'):
                     success, message, current_content = core.code_analyzer.read_file_safe(core.current_fix_file)
                     if success:
                         print(f"\n📊 Showing changes:")
@@ -1600,7 +1684,7 @@ def _handle_auto_fix_confirmation(core):
                 print(f"\n{result}")
 
             elif choice in ['diff', 'show', 'preview', '2']:
-                if hasattr(self, 'original_file_content'):
+                if hasattr(core, 'original_file_content'):
                     success, message, current_content = core.code_analyzer.read_file_safe(core.current_fix_file)
                     if success:
                         print(f"\n📊 DIFF VIEW:")

@@ -102,10 +102,10 @@ finance:
   - zh
 mode: fin
 
-# Model override for this mode — Kimi K2.5 for deep financial reasoning
-model: kimi-k2.5
+# Model override — unified on DeepSeek for reliability
+model: deepseek-chat
 thinking_mode: true
-fallback_model: deepseek-chat
+fallback_model: null
 
 natural_language:
   confidence_threshold: 0.7

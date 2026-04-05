@@ -61,11 +61,48 @@ class ToolRegistry:
     - Auto-generated system prompt sections
     """
 
+    # Max result sizes per tool — results exceeding this are persisted to disk
+    TOOL_MAX_RESULT_CHARS = {
+        'Grep': 50000,
+        'Glob': 30000,
+        'Bash': 50000,
+        'WebFetch': 40000,
+        'WebSearch': 30000,
+    }
+
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = working_dir or os.getcwd()
         self._persistent_bash = None  # Lazy init
         self._tool_definitions: Dict[str, Any] = {}  # name → ToolDefinition
+        self._files_read: set = set()   # Track files read in this session (for read-before-edit)
+        self._files_mtime: Dict[str, float] = {}  # path → mtime at read time (staleness detection)
+        self._files_read_ranges: Dict[str, List[Tuple[int, int]]] = {}  # path → [(offset, limit), ...] (dedup)
+        self._tool_call_cache: Dict[str, 'ToolResult'] = {}  # dedup cache for read-only tools
+        self._plan_mode: bool = False   # When True, block write/execute tools
+        self._task_manager = None
         self._register_tools()
+
+    def _persist_large_result(self, tool_name: str, result: 'ToolResult') -> 'ToolResult':
+        """If result exceeds tool's max size, save to disk and return a reference."""
+        max_chars = self.TOOL_MAX_RESULT_CHARS.get(tool_name, 0)
+        if max_chars <= 0 or len(result.output) <= max_chars:
+            return result
+        # Persist to disk
+        import time as _t
+        output_dir = os.path.join(self.working_dir, '.neomind_tool_outputs')
+        os.makedirs(output_dir, exist_ok=True)
+        timestamp = _t.strftime("%Y%m%d_%H%M%S")
+        filename = f"{timestamp}_{tool_name}.txt"
+        filepath = os.path.join(output_dir, filename)
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(result.output)
+        truncated = result.output[:max_chars // 2] + f"\n\n... [{len(result.output):,} chars total — full output saved to: {filepath}]\nUse the Read tool to inspect relevant sections.\n"
+        return ToolResult(
+            success=result.success,
+            output=truncated,
+            error=result.error,
+            metadata={**result.metadata, 'persisted_to': filepath, 'original_chars': len(result.output)},
+        )
 
     def _register_tools(self):
         """Register all built-in tools with their schemas."""
@@ -124,6 +161,7 @@ class ToolRegistry:
             examples=[
                 {"path": "src/hello.py", "content": "print('Hello, world!')\\n"},
             ],
+            interrupt_behavior='block',  # Don't corrupt files mid-write
         )
 
         # ── Edit ──
@@ -233,10 +271,1356 @@ class ToolRegistry:
             ],
         )
 
+        # ── TaskManager ──
+        self._task_manager = None  # Lazy init
+        self._tool_definitions["TaskCreate"] = ToolDefinition(
+            name="TaskCreate",
+            description="Create a task to track progress on complex work",
+            parameters=[
+                ToolParam("subject", ParamType.STRING, "Brief task title"),
+                ToolParam("description", ParamType.STRING, "What needs to be done"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_create,
+            examples=[
+                {"subject": "Fix auth bug", "description": "Login returns 500 on empty password"},
+            ],
+        )
+
+        self._tool_definitions["TaskGet"] = ToolDefinition(
+            name="TaskGet",
+            description="Get a task by its ID",
+            parameters=[
+                ToolParam("task_id", ParamType.STRING, "Task ID (e.g. 'task-1')"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_get,
+        )
+
+        self._tool_definitions["TaskList"] = ToolDefinition(
+            name="TaskList",
+            description="List all tasks, optionally filtered by status",
+            parameters=[
+                ToolParam("status", ParamType.STRING, "Filter by status",
+                          required=False, default=None,
+                          enum=["pending", "in_progress", "completed", "cancelled"]),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_list,
+        )
+
+        self._tool_definitions["TaskUpdate"] = ToolDefinition(
+            name="TaskUpdate",
+            description="Update a task's status, subject, or description",
+            parameters=[
+                ToolParam("task_id", ParamType.STRING, "Task ID"),
+                ToolParam("status", ParamType.STRING, "New status",
+                          required=False, default=None,
+                          enum=["pending", "in_progress", "completed", "cancelled"]),
+                ToolParam("subject", ParamType.STRING, "New subject",
+                          required=False, default=None),
+                ToolParam("description", ParamType.STRING, "New description",
+                          required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_update,
+        )
+
+        self._tool_definitions["TaskStop"] = ToolDefinition(
+            name="TaskStop",
+            description="Cancel/stop a task",
+            parameters=[
+                ToolParam("task_id", ParamType.STRING, "Task ID to cancel"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_stop,
+        )
+
+        # ── Utility Tools ──
+        self._web_fetch_tool = None    # Lazy init
+        self._web_search_tool = None   # Lazy init
+        self._notebook_edit_tool = None  # Lazy init
+        self._todo_write_tool = None   # Lazy init
+        self._ask_user_tool = None     # Lazy init
+        self._sleep_tool = None        # Lazy init
+        self._brief_tool = None        # Lazy init
+
+        self._tool_definitions["WebFetch"] = ToolDefinition(
+            name="WebFetch",
+            description="Fetch a web page and extract its content",
+            parameters=[
+                ToolParam("url", ParamType.STRING, "URL to fetch"),
+                ToolParam("extract_text", ParamType.BOOLEAN,
+                          "Extract text content only (default: True)", required=False, default=True),
+                ToolParam("timeout", ParamType.FLOAT,
+                          "Request timeout in seconds", required=False, default=30),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_web_fetch,
+            is_open_world=True,
+        )
+
+        self._tool_definitions["WebSearch"] = ToolDefinition(
+            name="WebSearch",
+            description="Search the web and return results",
+            parameters=[
+                ToolParam("query", ParamType.STRING, "Search query"),
+                ToolParam("num_results", ParamType.INTEGER,
+                          "Number of results to return", required=False, default=5),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_web_search,
+            is_open_world=True,
+        )
+
+        self._tool_definitions["NotebookEdit"] = ToolDefinition(
+            name="NotebookEdit",
+            description="Read, edit, add, or delete Jupyter notebook cells",
+            parameters=[
+                ToolParam("path", ParamType.STRING, "Path to .ipynb notebook file"),
+                ToolParam("action", ParamType.STRING, "Action to perform",
+                          enum=["read", "edit", "add", "delete"]),
+                ToolParam("cell_index", ParamType.INTEGER,
+                          "Cell index (0-based)", required=False, default=None),
+                ToolParam("cell_type", ParamType.STRING,
+                          "Cell type for add/edit", required=False, default=None,
+                          enum=["code", "markdown"]),
+                ToolParam("source", ParamType.STRING,
+                          "Cell source content", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_notebook_edit,
+        )
+
+        self._tool_definitions["TodoWrite"] = ToolDefinition(
+            name="TodoWrite",
+            description="Manage a personal todo list (add, complete, remove, list)",
+            parameters=[
+                ToolParam("action", ParamType.STRING, "Action to perform",
+                          enum=["add", "complete", "remove", "list"]),
+                ToolParam("text", ParamType.STRING,
+                          "Todo item text (for add)", required=False, default=None),
+                ToolParam("todo_id", ParamType.STRING,
+                          "Todo item ID (for complete/remove)", required=False, default=None),
+                ToolParam("priority", ParamType.STRING,
+                          "Priority level", required=False, default=None,
+                          enum=["high", "medium", "low"]),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_todo_write,
+        )
+
+        self._tool_definitions["AskUser"] = ToolDefinition(
+            name="AskUser",
+            description="Ask the user a question and wait for their response",
+            parameters=[
+                ToolParam("question", ParamType.STRING, "Question to ask the user"),
+                ToolParam("options", ParamType.STRING,
+                          "Comma-separated options for the user to choose from",
+                          required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_ask_user,
+        )
+
+        self._tool_definitions["Sleep"] = ToolDefinition(
+            name="Sleep",
+            description="Pause execution for a specified duration",
+            parameters=[
+                ToolParam("seconds", ParamType.FLOAT, "Number of seconds to sleep"),
+                ToolParam("reason", ParamType.STRING,
+                          "Reason for sleeping (logged)", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_sleep,
+        )
+
+        self._tool_definitions["Brief"] = ToolDefinition(
+            name="Brief",
+            description="Toggle brief/verbose output mode",
+            parameters=[
+                ToolParam("enabled", ParamType.BOOLEAN,
+                          "Enable brief mode (default: True)", required=False, default=True),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_brief,
+        )
+
+        # ── Git Tools ──
+        self._git_tools = None  # Lazy init
+
+        self._tool_definitions["GitStatus"] = ToolDefinition(
+            name="GitStatus",
+            description="Show git working tree status",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_git_status,
+        )
+
+        self._tool_definitions["GitDiff"] = ToolDefinition(
+            name="GitDiff",
+            description="Show git diff (staged and unstaged changes)",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_git_diff,
+        )
+
+        self._tool_definitions["GitLog"] = ToolDefinition(
+            name="GitLog",
+            description="Show recent git commit log",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_git_log,
+        )
+
+        self._tool_definitions["GitCommit"] = ToolDefinition(
+            name="GitCommit",
+            description="Stage and commit changes with a message",
+            parameters=[],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_git_commit,
+        )
+
+        self._tool_definitions["GitBranch"] = ToolDefinition(
+            name="GitBranch",
+            description="List, create, or switch git branches",
+            parameters=[],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_git_branch,
+        )
+
+        self._tool_definitions["GitPR"] = ToolDefinition(
+            name="GitPR",
+            description="Create or manage pull requests",
+            parameters=[],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_git_pr,
+        )
+
+        # ── Plan Mode Tools ──
+        self._plan_mode_manager = None  # Lazy init
+
+        self._tool_definitions["EnterPlanMode"] = ToolDefinition(
+            name="EnterPlanMode",
+            description="Enter plan mode — disables write/execute tools for safe planning",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_enter_plan_mode,
+        )
+
+        self._tool_definitions["ExitPlanMode"] = ToolDefinition(
+            name="ExitPlanMode",
+            description="Exit plan mode — re-enables all tools",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_exit_plan_mode,
+        )
+
+        # ── Collaboration Tools ──
+        self._send_message_tool = None   # Lazy init
+        self._schedule_cron_tool = None  # Lazy init
+        self._team_manager = None        # Lazy init
+
+        self._tool_definitions["SendMessage"] = ToolDefinition(
+            name="SendMessage",
+            description="Send a message to another agent or user",
+            parameters=[
+                ToolParam("to", ParamType.STRING, "Recipient identifier"),
+                ToolParam("content", ParamType.STRING, "Message content"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_send_message,
+        )
+
+        self._tool_definitions["ScheduleCron"] = ToolDefinition(
+            name="ScheduleCron",
+            description="Create, delete, or list scheduled cron jobs",
+            parameters=[
+                ToolParam("action", ParamType.STRING, "Action to perform",
+                          enum=["create", "delete", "list"]),
+                ToolParam("name", ParamType.STRING,
+                          "Cron job name", required=False, default=None),
+                ToolParam("cron_expr", ParamType.STRING,
+                          "Cron expression (e.g. '*/5 * * * *')", required=False, default=None),
+                ToolParam("command", ParamType.STRING,
+                          "Command to execute on schedule", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_schedule_cron,
+        )
+
+        self._tool_definitions["TeamCreate"] = ToolDefinition(
+            name="TeamCreate",
+            description="Create a new team",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Team name"),
+                ToolParam("description", ParamType.STRING,
+                          "Team description", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_team_create,
+        )
+
+        self._tool_definitions["TeamDelete"] = ToolDefinition(
+            name="TeamDelete",
+            description="Delete an existing team",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Team name to delete"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_team_delete,
+        )
+
+        # ── Advanced Tools ──
+        self._worktree_tool = None       # Lazy init
+        self._repl_tool = None           # Lazy init
+        self._mcp_adapter = None         # Lazy init
+        self._list_mcp_resources_tool = None  # Lazy init
+        self._read_mcp_resource_tool = None   # Lazy init
+        self._skill_tool = None          # Lazy init
+        self._config_tool = None         # Lazy init
+        self._tool_search_tool = None    # Lazy init
+        self._task_output_tool = None    # Lazy init
+        self._powershell_tool = None     # Lazy init
+        self._cron_manager = None        # Lazy init
+
+        self._tool_definitions["EnterWorktree"] = ToolDefinition(
+            name="EnterWorktree",
+            description="Create a temporary git worktree for isolated changes",
+            parameters=[
+                ToolParam("branch", ParamType.STRING,
+                          "Branch to check out (auto-created if omitted)",
+                          required=False, default=None),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_enter_worktree,
+        )
+
+        self._tool_definitions["ExitWorktree"] = ToolDefinition(
+            name="ExitWorktree",
+            description="Remove a git worktree and optionally clean up its directory",
+            parameters=[
+                ToolParam("name", ParamType.STRING,
+                          "Worktree name to remove", required=False, default=None),
+                ToolParam("cleanup", ParamType.BOOLEAN,
+                          "Whether to force-remove the directory",
+                          required=False, default=True),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_exit_worktree,
+        )
+
+        self._tool_definitions["REPL"] = ToolDefinition(
+            name="REPL",
+            description="Execute code in a one-shot subprocess (Python, Node, Ruby, or Bash)",
+            parameters=[
+                ToolParam("code", ParamType.STRING, "Code to execute"),
+                ToolParam("language", ParamType.STRING,
+                          "Language runtime to use", required=False, default="python",
+                          enum=["python", "node", "ruby", "bash"]),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_repl,
+        )
+
+        self._tool_definitions["MCPCall"] = ToolDefinition(
+            name="MCPCall",
+            description="Call a tool on an MCP server",
+            parameters=[
+                ToolParam("server_name", ParamType.STRING, "MCP server name"),
+                ToolParam("tool_name", ParamType.STRING, "Tool name on that server"),
+                ToolParam("arguments", ParamType.STRING,
+                          "JSON string of arguments", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_mcp_call,
+        )
+
+        self._tool_definitions["ListMcpResources"] = ToolDefinition(
+            name="ListMcpResources",
+            description="List resources exposed by MCP servers",
+            parameters=[
+                ToolParam("server_name", ParamType.STRING,
+                          "Filter by server name", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_list_mcp_resources,
+        )
+
+        self._tool_definitions["ReadMcpResource"] = ToolDefinition(
+            name="ReadMcpResource",
+            description="Read an MCP resource by its URI",
+            parameters=[
+                ToolParam("uri", ParamType.STRING, "MCP resource URI"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_read_mcp_resource,
+        )
+
+        self._tool_definitions["Skill"] = ToolDefinition(
+            name="Skill",
+            description="Invoke a registered skill (slash command) by name",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Skill name to invoke"),
+                ToolParam("args", ParamType.STRING,
+                          "Arguments to pass to the skill",
+                          required=False, default=None),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_skill,
+        )
+
+        self._tool_definitions["Config"] = ToolDefinition(
+            name="Config",
+            description="Get, set, or reset agent configuration values",
+            parameters=[
+                ToolParam("action", ParamType.STRING, "Action to perform",
+                          enum=["get", "set", "reset"]),
+                ToolParam("key", ParamType.STRING, "Config key",
+                          required=False, default=None),
+                ToolParam("value", ParamType.STRING, "Config value (for set)",
+                          required=False, default=None),
+            ],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_config,
+        )
+
+        self._tool_definitions["ToolSearch"] = ToolDefinition(
+            name="ToolSearch",
+            description="Search available tools by name or description",
+            parameters=[
+                ToolParam("query", ParamType.STRING, "Search query"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_tool_search,
+        )
+
+        self._tool_definitions["TaskOutput"] = ToolDefinition(
+            name="TaskOutput",
+            description="Read the output log of a running or completed task",
+            parameters=[
+                ToolParam("task_id", ParamType.STRING, "Task ID to read output from"),
+                ToolParam("tail", ParamType.INTEGER,
+                          "Number of trailing lines to return",
+                          required=False, default=50),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_task_output,
+        )
+
+        self._tool_definitions["PowerShell"] = ToolDefinition(
+            name="PowerShell",
+            description="Execute a PowerShell command (pwsh or powershell)",
+            parameters=[
+                ToolParam("command", ParamType.STRING, "PowerShell command to execute"),
+                ToolParam("timeout", ParamType.INTEGER,
+                          "Timeout in seconds", required=False, default=120),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_powershell,
+        )
+
+        self._tool_definitions["CronCreate"] = ToolDefinition(
+            name="CronCreate",
+            description="Create a new cron job",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Unique job name"),
+                ToolParam("cron_expr", ParamType.STRING,
+                          "Cron expression (e.g. '*/5 * * * *')"),
+                ToolParam("command", ParamType.STRING, "Command to execute on schedule"),
+                ToolParam("description", ParamType.STRING,
+                          "Human-readable description", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_cron_create,
+        )
+
+        self._tool_definitions["CronDelete"] = ToolDefinition(
+            name="CronDelete",
+            description="Delete a cron job by name",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Cron job name to delete"),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_cron_delete,
+        )
+
+        self._tool_definitions["CronList"] = ToolDefinition(
+            name="CronList",
+            description="List all registered cron jobs",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_cron_list,
+        )
+
+        # ── RemoteTrigger ──
+        self._tool_definitions["RemoteTrigger"] = ToolDefinition(
+            name="RemoteTrigger",
+            description="Fire a webhook/API trigger by name",
+            parameters=[
+                ToolParam("name", ParamType.STRING, "Trigger name to fire"),
+                ToolParam("payload", ParamType.STRING,
+                          "JSON payload string", required=False, default=None),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_remote_trigger,
+        )
+
+        # ── SyntheticOutput ──
+        self._tool_definitions["SyntheticOutput"] = ToolDefinition(
+            name="SyntheticOutput",
+            description="Produce structured JSON output matching a given schema. "
+                        "Use when you need to return data in a specific format.",
+            parameters=[
+                ToolParam("schema_name", ParamType.STRING,
+                          "Name/identifier for the output schema"),
+                ToolParam("data", ParamType.STRING,
+                          "JSON string of the structured data to output"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_synthetic_output,
+        )
+
+        # ── Snip ──
+        self._tool_definitions["Snip"] = ToolDefinition(
+            name="Snip",
+            description="Extract and save a snippet from conversation history. "
+                        "Useful for saving important context for later reference.",
+            parameters=[
+                ToolParam("label", ParamType.STRING,
+                          "Short label for the snippet"),
+                ToolParam("content", ParamType.STRING,
+                          "The content to save as a snippet"),
+                ToolParam("category", ParamType.STRING,
+                          "Category: code, insight, reference, error",
+                          required=False, default="reference"),
+            ],
+            permission_level=PermissionLevel.WRITE,
+            execute=self._exec_snip,
+        )
+
+        # ── VerifyPlanExecution ──
+        self._tool_definitions["VerifyPlanExecution"] = ToolDefinition(
+            name="VerifyPlanExecution",
+            description="Verify that a plan's steps have been properly executed "
+                        "by checking expected outcomes.",
+            parameters=[
+                ToolParam("plan_summary", ParamType.STRING,
+                          "Summary of the plan that was executed"),
+                ToolParam("expected_outcomes", ParamType.STRING,
+                          "JSON array of expected outcomes to verify"),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_verify_plan,
+        )
+
+        # ── Workflow ──
+        self._tool_definitions["Workflow"] = ToolDefinition(
+            name="Workflow",
+            description="Execute a workflow script from the project's workflow directory. "
+                        "Workflows are shell scripts or Python scripts in .neomind/workflows/.",
+            parameters=[
+                ToolParam("name", ParamType.STRING,
+                          "Workflow script name (without path)"),
+                ToolParam("args", ParamType.STRING,
+                          "Arguments to pass to the workflow",
+                          required=False, default=""),
+            ],
+            permission_level=PermissionLevel.EXECUTE,
+            execute=self._exec_workflow,
+        )
+
+        # ── Brief ──
+        self._tool_definitions["Brief"] = ToolDefinition(
+            name="Brief",
+            description="Toggle brief output mode. In brief mode, responses are "
+                        "concise summaries instead of full explanations.",
+            parameters=[
+                ToolParam("enabled", ParamType.BOOLEAN,
+                          "True to enable brief mode, False to disable",
+                          required=False, default=True),
+            ],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_brief,
+        )
+
+        # ── CtxInspect ──
+        self._tool_definitions["CtxInspect"] = ToolDefinition(
+            name="CtxInspect",
+            description="Inspect the current context window usage. Shows token counts, "
+                        "message counts, and capacity info.",
+            parameters=[],
+            permission_level=PermissionLevel.READ_ONLY,
+            execute=self._exec_ctx_inspect,
+        )
+
     # ── Tool execution wrappers (bridge schema → existing methods) ─────────
+
+    def _get_task_manager(self):
+        """Get or create the session TaskManager."""
+        if self._task_manager is None:
+            from agent.tools.task_tools import TaskManager
+            self._task_manager = TaskManager()
+        return self._task_manager
+
+    def _exec_task_create(self, subject: str, description: str) -> ToolResult:
+        result = self._get_task_manager().create(subject, description)
+        if result.success:
+            return ToolResult(True, output=result.message,
+                              metadata={"task_id": result.task.id if result.task else None})
+        return ToolResult(False, error=result.error or result.message)
+
+    def _exec_task_get(self, task_id: str) -> ToolResult:
+        result = self._get_task_manager().get(task_id)
+        if result.success and result.task:
+            t = result.task
+            return ToolResult(True, output=f"[{t.id}] {t.status.value} — {t.subject}\n{t.description}")
+        return ToolResult(False, error=result.error or result.message)
+
+    def _exec_task_list(self, status: str = None) -> ToolResult:
+        result = self._get_task_manager().list(status_filter=status)
+        if result.success:
+            if not result.tasks:
+                return ToolResult(True, output="No tasks found.")
+            lines = [f"[{t.id}] {t.status.value} — {t.subject}" for t in result.tasks]
+            return ToolResult(True, output="\n".join(lines),
+                              metadata={"count": len(result.tasks)})
+        return ToolResult(False, error=result.error or result.message)
+
+    def _exec_task_update(self, task_id: str, status: str = None,
+                          subject: str = None, description: str = None) -> ToolResult:
+        result = self._get_task_manager().update(task_id, status=status,
+                                                  subject=subject, description=description)
+        if result.success:
+            return ToolResult(True, output=result.message)
+        return ToolResult(False, error=result.error or result.message)
+
+    def _exec_task_stop(self, task_id: str) -> ToolResult:
+        result = self._get_task_manager().stop(task_id)
+        if result.success:
+            return ToolResult(True, output=result.message)
+        return ToolResult(False, error=result.error or result.message)
+
+    # ── Utility tool lazy getters & wrappers ────────────────────────────
+
+    def _get_web_fetch_tool(self):
+        if self._web_fetch_tool is None:
+            from agent.tools.utility_tools import WebFetchTool
+            self._web_fetch_tool = WebFetchTool()
+        return self._web_fetch_tool
+
+    def _get_web_search_tool(self):
+        if self._web_search_tool is None:
+            from agent.tools.utility_tools import WebSearchTool
+            self._web_search_tool = WebSearchTool()
+        return self._web_search_tool
+
+    def _get_notebook_edit_tool(self):
+        if self._notebook_edit_tool is None:
+            from agent.tools.utility_tools import NotebookEditTool
+            self._notebook_edit_tool = NotebookEditTool()
+        return self._notebook_edit_tool
+
+    def _get_todo_write_tool(self):
+        if self._todo_write_tool is None:
+            from agent.tools.utility_tools import TodoWriteTool
+            self._todo_write_tool = TodoWriteTool()
+        return self._todo_write_tool
+
+    def _get_ask_user_tool(self):
+        if self._ask_user_tool is None:
+            from agent.tools.utility_tools import AskUserQuestionTool
+            self._ask_user_tool = AskUserQuestionTool()
+        return self._ask_user_tool
+
+    def _get_sleep_tool(self):
+        if self._sleep_tool is None:
+            from agent.tools.utility_tools import SleepTool
+            self._sleep_tool = SleepTool()
+        return self._sleep_tool
+
+    def _get_brief_tool(self):
+        if self._brief_tool is None:
+            from agent.tools.utility_tools import BriefTool
+            self._brief_tool = BriefTool()
+        return self._brief_tool
+
+    def _exec_web_fetch(self, url: str, extract_text: bool = True,
+                        timeout: float = 30) -> ToolResult:
+        try:
+            result = self._get_web_fetch_tool().execute(
+                url=url, extract_text=extract_text, timeout=timeout)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"WebFetch error: {e}")
+
+    def _exec_web_search(self, query: str, num_results: int = 5) -> ToolResult:
+        try:
+            result = self._get_web_search_tool().execute(
+                query=query, num_results=num_results)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"WebSearch error: {e}")
+
+    def _exec_notebook_edit(self, path: str, action: str,
+                            cell_index: int = None, cell_type: str = None,
+                            source: str = None) -> ToolResult:
+        if self._plan_mode and action != "read":
+            return ToolResult(False, error="Plan mode active — notebook edits are disabled.")
+        try:
+            result = self._get_notebook_edit_tool().execute(
+                path=path, action=action, cell_index=cell_index,
+                cell_type=cell_type, source=source)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"NotebookEdit error: {e}")
+
+    def _exec_todo_write(self, action: str, text: str = None,
+                         todo_id: str = None, priority: str = None) -> ToolResult:
+        try:
+            result = self._get_todo_write_tool().execute(
+                action=action, text=text, todo_id=todo_id, priority=priority)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"TodoWrite error: {e}")
+
+    def _exec_ask_user(self, question: str, options: str = None) -> ToolResult:
+        try:
+            result = self._get_ask_user_tool().execute(
+                question=question, options=options)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"AskUser error: {e}")
+
+    def _exec_sleep(self, seconds: float, reason: str = None) -> ToolResult:
+        try:
+            result = self._get_sleep_tool().execute(seconds=seconds, reason=reason)
+            return ToolResult(True, output=result,
+                              metadata={"seconds": seconds, "reason": reason})
+        except Exception as e:
+            return ToolResult(False, error=f"Sleep error: {e}")
+
+    def _exec_brief(self, enabled: bool = True) -> ToolResult:
+        try:
+            result = self._get_brief_tool().execute(enabled=enabled)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"Brief error: {e}")
+
+    # ── Git tool lazy getters & wrappers ──────────────────────────────
+
+    def _get_git_tools(self):
+        if self._git_tools is None:
+            from agent.tools.git_tools import GitTools
+            self._git_tools = GitTools(working_dir=self.working_dir)
+        return self._git_tools
+
+    def _exec_git_status(self) -> ToolResult:
+        try:
+            result = self._get_git_tools().status()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitStatus error: {e}")
+
+    def _exec_git_diff(self) -> ToolResult:
+        try:
+            result = self._get_git_tools().diff()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitDiff error: {e}")
+
+    def _exec_git_log(self) -> ToolResult:
+        try:
+            result = self._get_git_tools().log()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitLog error: {e}")
+
+    def _exec_git_commit(self) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — git commits are disabled.")
+        try:
+            result = self._get_git_tools().commit()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitCommit error: {e}")
+
+    def _exec_git_branch(self) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — branch operations are disabled.")
+        try:
+            result = self._get_git_tools().branch()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitBranch error: {e}")
+
+    def _exec_git_pr(self) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — PR operations are disabled.")
+        try:
+            result = self._get_git_tools().pr()
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"GitPR error: {e}")
+
+    # ── Plan mode tool wrappers ───────────────────────────────────────
+
+    def _get_plan_mode_manager(self):
+        if self._plan_mode_manager is None:
+            from agent.tools.plan_mode import PlanModeManager
+            self._plan_mode_manager = PlanModeManager(self)
+        return self._plan_mode_manager
+
+    def _exec_enter_plan_mode(self) -> ToolResult:
+        try:
+            self._get_plan_mode_manager().enter()
+            self.enter_plan_mode()
+            return ToolResult(True, output="Entered plan mode. Write/execute tools are now disabled.")
+        except Exception as e:
+            return ToolResult(False, error=f"EnterPlanMode error: {e}")
+
+    def _exec_exit_plan_mode(self) -> ToolResult:
+        try:
+            self._get_plan_mode_manager().exit()
+            self.exit_plan_mode()
+            return ToolResult(True, output="Exited plan mode. All tools are now enabled.")
+        except Exception as e:
+            return ToolResult(False, error=f"ExitPlanMode error: {e}")
+
+    # ── Collaboration tool lazy getters & wrappers ────────────────────
+
+    def _get_send_message_tool(self):
+        if self._send_message_tool is None:
+            from agent.tools.collaboration_tools import SendMessageTool
+            self._send_message_tool = SendMessageTool()
+        return self._send_message_tool
+
+    def _get_schedule_cron_tool(self):
+        if self._schedule_cron_tool is None:
+            from agent.tools.collaboration_tools import ScheduleCronTool
+            self._schedule_cron_tool = ScheduleCronTool()
+        return self._schedule_cron_tool
+
+    def _get_team_manager(self):
+        if self._team_manager is None:
+            from agent.tools.collaboration_tools import TeamManager
+            self._team_manager = TeamManager()
+        return self._team_manager
+
+    def _exec_send_message(self, to: str, content: str) -> ToolResult:
+        try:
+            result = self._get_send_message_tool().execute(to=to, content=content)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"SendMessage error: {e}")
+
+    def _exec_schedule_cron(self, action: str, name: str = None,
+                            cron_expr: str = None, command: str = None) -> ToolResult:
+        if self._plan_mode and action != "list":
+            return ToolResult(False, error="Plan mode active — cron modifications are disabled.")
+        try:
+            result = self._get_schedule_cron_tool().execute(
+                action=action, name=name, cron_expr=cron_expr, command=command)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"ScheduleCron error: {e}")
+
+    def _exec_team_create(self, name: str, description: str = None) -> ToolResult:
+        try:
+            result = self._get_team_manager().create(name=name, description=description)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"TeamCreate error: {e}")
+
+    def _exec_team_delete(self, name: str) -> ToolResult:
+        try:
+            result = self._get_team_manager().delete(name=name)
+            return ToolResult(True, output=result)
+        except Exception as e:
+            return ToolResult(False, error=f"TeamDelete error: {e}")
+
+    # ── Advanced tool lazy getters & wrappers ────────────────────────────
+
+    def _get_worktree_tool(self):
+        if self._worktree_tool is None:
+            from agent.tools.advanced_tools import WorktreeTool
+            self._worktree_tool = WorktreeTool(working_dir=self.working_dir)
+        return self._worktree_tool
+
+    def _get_repl_tool(self):
+        if self._repl_tool is None:
+            from agent.tools.advanced_tools import REPLTool
+            self._repl_tool = REPLTool()
+        return self._repl_tool
+
+    def _get_mcp_adapter(self):
+        if self._mcp_adapter is None:
+            from agent.tools.advanced_tools import MCPToolAdapter
+            self._mcp_adapter = MCPToolAdapter()
+        return self._mcp_adapter
+
+    def _get_list_mcp_resources_tool(self):
+        if self._list_mcp_resources_tool is None:
+            from agent.tools.advanced_tools import ListMcpResourcesTool
+            self._list_mcp_resources_tool = ListMcpResourcesTool()
+        return self._list_mcp_resources_tool
+
+    def _get_read_mcp_resource_tool(self):
+        if self._read_mcp_resource_tool is None:
+            from agent.tools.advanced_tools import ReadMcpResourceTool
+            self._read_mcp_resource_tool = ReadMcpResourceTool()
+        return self._read_mcp_resource_tool
+
+    def _get_skill_tool(self):
+        if self._skill_tool is None:
+            from agent.tools.advanced_tools import SkillTool
+            self._skill_tool = SkillTool()
+        return self._skill_tool
+
+    def _get_config_tool(self):
+        if self._config_tool is None:
+            from agent.tools.advanced_tools import ConfigTool
+            self._config_tool = ConfigTool()
+        return self._config_tool
+
+    def _get_tool_search_tool(self):
+        if self._tool_search_tool is None:
+            from agent.tools.advanced_tools import ToolSearchTool
+            self._tool_search_tool = ToolSearchTool()
+        return self._tool_search_tool
+
+    def _get_task_output_tool(self):
+        if self._task_output_tool is None:
+            from agent.tools.advanced_tools import TaskOutputTool
+            self._task_output_tool = TaskOutputTool()
+        return self._task_output_tool
+
+    def _get_powershell_tool(self):
+        if self._powershell_tool is None:
+            from agent.tools.advanced_tools import PowerShellTool
+            self._powershell_tool = PowerShellTool()
+        return self._powershell_tool
+
+    def _get_cron_manager(self):
+        if self._cron_manager is None:
+            from agent.tools.advanced_tools import CronManager
+            self._cron_manager = CronManager()
+        return self._cron_manager
+
+    def _exec_enter_worktree(self, branch: str = None) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — worktree operations are disabled.")
+        try:
+            result = self._get_worktree_tool().enter(branch=branch)
+            if result.success:
+                return ToolResult(True, output=result.message,
+                                  metadata={"path": result.path, "branch": result.branch})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"EnterWorktree error: {e}")
+
+    def _exec_exit_worktree(self, name: str = None, cleanup: bool = True) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — worktree operations are disabled.")
+        try:
+            result = self._get_worktree_tool().exit(name=name, cleanup=cleanup)
+            if result.success:
+                return ToolResult(True, output=result.message)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"ExitWorktree error: {e}")
+
+    def _exec_repl(self, code: str, language: str = "python") -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — REPL execution is disabled.")
+        try:
+            result = self._get_repl_tool().execute(code=code, language=language)
+            if result.success:
+                output = result.stdout or result.message
+                if result.stderr:
+                    output += f"\n[stderr]\n{result.stderr}"
+                return ToolResult(True, output=output,
+                                  metadata={"language": result.language,
+                                            "return_code": result.return_code})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"REPL error: {e}")
+
+    def _exec_mcp_call(self, server_name: str, tool_name: str,
+                       arguments: str = None) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — MCP tool calls are disabled.")
+        try:
+            import asyncio
+            import json as _json
+            parsed_args = _json.loads(arguments) if arguments else None
+            adapter = self._get_mcp_adapter()
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(
+                        asyncio.run, adapter.call(server_name, tool_name, parsed_args)
+                    ).result()
+            else:
+                result = asyncio.run(adapter.call(server_name, tool_name, parsed_args))
+            if result.success:
+                content = result.content
+                if not isinstance(content, str):
+                    content = _json.dumps(content, indent=2, default=str)
+                return ToolResult(True, output=content)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"MCPCall error: {e}")
+
+    def _exec_list_mcp_resources(self, server_name: str = None) -> ToolResult:
+        try:
+            import asyncio
+            import json as _json
+            tool = self._get_list_mcp_resources_tool()
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(
+                        asyncio.run, tool.list_resources(server_name=server_name)
+                    ).result()
+            else:
+                result = asyncio.run(tool.list_resources(server_name=server_name))
+            if result.success:
+                content = result.content
+                if not isinstance(content, str):
+                    content = _json.dumps(content, indent=2, default=str)
+                return ToolResult(True, output=content)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"ListMcpResources error: {e}")
+
+    def _exec_read_mcp_resource(self, uri: str) -> ToolResult:
+        try:
+            import asyncio
+            import json as _json
+            tool = self._get_read_mcp_resource_tool()
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor() as pool:
+                    result = pool.submit(
+                        asyncio.run, tool.read(uri=uri)
+                    ).result()
+            else:
+                result = asyncio.run(tool.read(uri=uri))
+            if result.success:
+                content = result.content
+                if not isinstance(content, str):
+                    content = _json.dumps(content, indent=2, default=str)
+                return ToolResult(True, output=content)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"ReadMcpResource error: {e}")
+
+    def _exec_skill(self, name: str, args: str = None) -> ToolResult:
+        try:
+            result = self._get_skill_tool().invoke(
+                skill_name=name, args=args or "")
+            if result.success:
+                return ToolResult(True, output=result.message,
+                                  metadata={"skill": result.skill_name})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"Skill error: {e}")
+
+    def _exec_config(self, action: str, key: str = None,
+                     value: str = None) -> ToolResult:
+        if self._plan_mode and action != "get":
+            return ToolResult(False, error="Plan mode active — config modifications are disabled.")
+        try:
+            tool = self._get_config_tool()
+            if action == "get":
+                result = tool.get(key=key)
+            elif action == "set":
+                if not key:
+                    return ToolResult(False, error="Config set requires a key.")
+                result = tool.set(key=key, value=value)
+            elif action == "reset":
+                result = tool.reset(key=key)
+            else:
+                return ToolResult(False, error=f"Unknown config action: {action}")
+            if result.success:
+                import json as _json
+                val = result.value
+                if isinstance(val, dict):
+                    val = _json.dumps(val, indent=2)
+                return ToolResult(True, output=result.message + (f"\n{val}" if val else ""))
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"Config error: {e}")
+
+    def _exec_tool_search(self, query: str) -> ToolResult:
+        try:
+            result = self._get_tool_search_tool().search(query=query)
+            if result.success:
+                return ToolResult(True, output=result.message,
+                                  metadata={"matches": result.matches})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"ToolSearch error: {e}")
+
+    def _exec_task_output(self, task_id: str, tail: int = 50) -> ToolResult:
+        try:
+            result = self._get_task_output_tool().read_output(
+                task_id=task_id, tail=tail)
+            if result.success:
+                return ToolResult(True, output=result.message,
+                                  metadata={"task_id": result.task_id,
+                                            "line_count": result.line_count})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"TaskOutput error: {e}")
+
+    def _exec_powershell(self, command: str, timeout: int = 120) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — PowerShell execution is disabled.")
+        try:
+            result = self._get_powershell_tool().execute(
+                command=command, timeout=timeout)
+            if result.success:
+                output = result.stdout or result.message
+                if result.stderr:
+                    output += f"\n[stderr]\n{result.stderr}"
+                return ToolResult(True, output=output,
+                                  metadata={"return_code": result.return_code})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"PowerShell error: {e}")
+
+    def _exec_cron_create(self, name: str, cron_expr: str,
+                          command: str, description: str = None) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — cron creation is disabled.")
+        try:
+            result = self._get_cron_manager().create(
+                name=name, cron_expr=cron_expr, command=command,
+                description=description or "")
+            if result.success:
+                return ToolResult(True, output=result.message)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"CronCreate error: {e}")
+
+    def _exec_cron_delete(self, name: str) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — cron deletion is disabled.")
+        try:
+            result = self._get_cron_manager().delete(name=name)
+            if result.success:
+                return ToolResult(True, output=result.message)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"CronDelete error: {e}")
+
+    def _exec_cron_list(self) -> ToolResult:
+        try:
+            result = self._get_cron_manager().list_jobs()
+            if result.success:
+                return ToolResult(True, output=result.message,
+                                  metadata={"jobs": result.jobs})
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=f"CronList error: {e}")
+
+    def _exec_remote_trigger(self, name: str, payload: str = None) -> ToolResult:
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — remote triggers disabled.")
+        try:
+            from agent.tools.collaboration_tools import RemoteTriggerTool
+            if not hasattr(self, '_remote_trigger_tool') or self._remote_trigger_tool is None:
+                self._remote_trigger_tool = RemoteTriggerTool()
+            import json
+            payload_dict = json.loads(payload) if payload else None
+            import asyncio
+            result = asyncio.run(self._remote_trigger_tool.fire(name, payload_dict))
+            if result.success:
+                return ToolResult(True, output=result.message)
+            return ToolResult(False, error=result.error or result.message)
+        except Exception as e:
+            return ToolResult(False, error=str(e))
+
+    def _exec_synthetic_output(self, schema_name: str, data: str) -> ToolResult:
+        """Produce structured JSON output matching a schema."""
+        try:
+            import json as _json
+            parsed = _json.loads(data)
+            formatted = _json.dumps(parsed, indent=2, ensure_ascii=False)
+            return ToolResult(
+                True,
+                output=formatted,
+                metadata={"schema_name": schema_name, "keys": list(parsed.keys()) if isinstance(parsed, dict) else "array"},
+            )
+        except _json.JSONDecodeError as e:
+            return ToolResult(False, error=f"Invalid JSON data: {e}")
+        except Exception as e:
+            return ToolResult(False, error=str(e))
+
+    def _exec_snip(self, label: str, content: str, category: str = "reference") -> ToolResult:
+        """Save a snippet from conversation history."""
+        import time as _time
+        import json as _json
+
+        snip_dir = os.path.join(self.working_dir, '.neomind_snips')
+        os.makedirs(snip_dir, exist_ok=True)
+
+        timestamp = _time.strftime("%Y%m%d_%H%M%S")
+        safe_label = re.sub(r'[^a-zA-Z0-9_-]', '_', label)[:50]
+        filename = f"{timestamp}_{safe_label}.md"
+        filepath = os.path.join(snip_dir, filename)
+
+        snip_content = f"---\nlabel: {label}\ncategory: {category}\ntimestamp: {timestamp}\n---\n\n{content}\n"
+
+        try:
+            with open(filepath, 'w', encoding='utf-8') as f:
+                f.write(snip_content)
+            return ToolResult(
+                True,
+                output=f"Snippet saved: {filename}",
+                metadata={"file_path": filepath, "label": label, "category": category},
+            )
+        except Exception as e:
+            return ToolResult(False, error=f"Failed to save snippet: {e}")
+
+    def _exec_verify_plan(self, plan_summary: str, expected_outcomes: str) -> ToolResult:
+        """Verify plan execution by checking expected outcomes."""
+        import json as _json
+
+        try:
+            outcomes = _json.loads(expected_outcomes)
+        except _json.JSONDecodeError:
+            outcomes = [expected_outcomes]
+
+        results = []
+        all_pass = True
+
+        for i, outcome in enumerate(outcomes):
+            if isinstance(outcome, dict):
+                check_type = outcome.get('type', 'file_exists')
+                target = outcome.get('target', '')
+
+                if check_type == 'file_exists':
+                    try:
+                        resolved = self._resolve_path(target)
+                        exists = os.path.exists(resolved)
+                        results.append(f"{'✓' if exists else '✗'} File exists: {target}")
+                        if not exists:
+                            all_pass = False
+                    except Exception:
+                        results.append(f"✗ Cannot resolve path: {target}")
+                        all_pass = False
+
+                elif check_type == 'file_contains':
+                    pattern = outcome.get('pattern', '')
+                    try:
+                        resolved = self._resolve_path(target)
+                        with open(resolved, 'r') as f:
+                            content = f.read()
+                        found = pattern in content
+                        results.append(f"{'✓' if found else '✗'} File contains '{pattern}': {target}")
+                        if not found:
+                            all_pass = False
+                    except Exception as e:
+                        results.append(f"✗ Check failed: {e}")
+                        all_pass = False
+
+                else:
+                    results.append(f"? Unknown check type: {check_type}")
+            else:
+                results.append(f"? Unstructured outcome: {outcome}")
+
+        summary = f"Plan: {plan_summary}\n\nVerification Results:\n" + "\n".join(results)
+        summary += f"\n\nOverall: {'ALL PASSED' if all_pass else 'SOME FAILED'}"
+
+        return ToolResult(all_pass, output=summary)
+
+    def _exec_workflow(self, name: str, args: str = "") -> ToolResult:
+        """Execute a workflow script from .neomind/workflows/."""
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — workflow execution disabled.")
+        workflow_dir = os.path.join(self.working_dir, '.neomind', 'workflows')
+        if not os.path.exists(workflow_dir):
+            return ToolResult(False, error=f"No workflows directory: {workflow_dir}")
+
+        safe_name = re.sub(r'[^a-zA-Z0-9_.-]', '', name)
+        candidates = [
+            os.path.join(workflow_dir, safe_name),
+            os.path.join(workflow_dir, safe_name + '.sh'),
+            os.path.join(workflow_dir, safe_name + '.py'),
+        ]
+        script = None
+        for c in candidates:
+            if os.path.isfile(c):
+                script = c
+                break
+        if not script:
+            available = [f for f in os.listdir(workflow_dir) if not f.startswith('.')]
+            return ToolResult(False, error=f"Workflow '{name}' not found. Available: {', '.join(available) or 'none'}")
+
+        import subprocess as _sp
+        try:
+            if script.endswith('.py'):
+                cmd = ['python3', script] + (args.split() if args else [])
+            else:
+                cmd = ['bash', script] + (args.split() if args else [])
+            result = _sp.run(cmd, capture_output=True, text=True, timeout=120, cwd=self.working_dir)
+            output = result.stdout + (('\n' + result.stderr) if result.stderr else '')
+            return ToolResult(result.returncode == 0, output=output.strip(),
+                              error=result.stderr.strip() if result.returncode != 0 else '',
+                              metadata={'script': script, 'exit_code': result.returncode})
+        except _sp.TimeoutExpired:
+            return ToolResult(False, error=f"Workflow '{name}' timed out after 120s")
+        except Exception as e:
+            return ToolResult(False, error=str(e))
+
+    def _exec_brief(self, enabled: bool = True) -> ToolResult:
+        """Toggle brief output mode."""
+        if not hasattr(self, '_brief_mode'):
+            self._brief_mode = False
+        self._brief_mode = enabled
+        return ToolResult(True, output=f"Brief mode {'enabled' if enabled else 'disabled'}.",
+                          metadata={'brief_mode': enabled})
+
+    def _exec_ctx_inspect(self) -> ToolResult:
+        """Inspect context window usage."""
+        import sys
+        history = getattr(self, '_conversation_history', None)
+        if history is None:
+            # Try to estimate from instance state
+            tools_count = len(self._tool_definitions)
+            files_read = len(getattr(self, '_files_read', set()))
+            return ToolResult(True, output=(
+                f"Context Inspection:\n"
+                f"  Registered tools: {tools_count}\n"
+                f"  Files read this session: {files_read}\n"
+                f"  Plan mode: {self._plan_mode}\n"
+                f"  Brief mode: {getattr(self, '_brief_mode', False)}\n"
+                f"  Working directory: {self.working_dir}\n"
+            ))
+        msg_count = len(history)
+        user_msgs = sum(1 for m in history if m.get('role') == 'user')
+        asst_msgs = sum(1 for m in history if m.get('role') == 'assistant')
+        total_chars = sum(len(str(m.get('content', ''))) for m in history)
+        est_tokens = total_chars // 4  # rough estimate
+        return ToolResult(True, output=(
+            f"Context Window Inspection:\n"
+            f"  Total messages: {msg_count}\n"
+            f"  User messages: {user_msgs}\n"
+            f"  Assistant messages: {asst_msgs}\n"
+            f"  Estimated tokens: ~{est_tokens:,}\n"
+            f"  Total characters: {total_chars:,}\n"
+        ))
 
     def _exec_bash(self, command: str, timeout: int = 120) -> ToolResult:
         """Execute via persistent bash session."""
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — command execution is disabled. Exit plan mode first.")
         import time
         start = time.time()
         result = self.bash(command, timeout=timeout)
@@ -246,11 +1630,30 @@ class ToolRegistry:
         return result
 
     def _exec_read(self, path: str, offset: int = 0, limit: int = 0) -> ToolResult:
-        """Execute file read with metadata."""
-        result = self.read_file(path, offset=offset, limit=limit)
+        """Execute file read with metadata, staleness tracking, and deduplication."""
         resolved = self._resolve_path(path)
+
+        # Deduplication: if exact same range was already read, return abbreviated
+        range_key = (offset, limit)
+        if resolved in self._files_read_ranges:
+            if range_key in self._files_read_ranges[resolved]:
+                return ToolResult(
+                    True,
+                    output=f"[File already read in this session: {path} (offset={offset}, limit={limit}). Content unchanged.]",
+                    metadata={"file_path": resolved, "deduplicated": True},
+                )
+
+        result = self.read_file(path, offset=offset, limit=limit)
         result.metadata["file_path"] = resolved
         if result.success:
+            self._files_read.add(resolved)
+            # Track mtime for staleness detection
+            try:
+                self._files_mtime[resolved] = os.path.getmtime(resolved)
+            except OSError:
+                pass
+            # Track read ranges for deduplication
+            self._files_read_ranges.setdefault(resolved, []).append(range_key)
             # Count lines in output
             lines = result.output.split("\n")
             result.metadata["lines_in_output"] = len(lines) - 1  # subtract header
@@ -258,6 +1661,8 @@ class ToolRegistry:
 
     def _exec_write(self, path: str, content: str) -> ToolResult:
         """Execute file write with metadata."""
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — file writes are disabled. Exit plan mode first.")
         result = self.write_file(path, content)
         result.metadata["file_path"] = self._resolve_path(path)
         if result.success:
@@ -269,9 +1674,38 @@ class ToolRegistry:
 
     def _exec_edit(self, path: str, old_string: str, new_string: str,
                    replace_all: bool = False) -> ToolResult:
-        """Execute file edit with metadata."""
+        """Execute file edit with metadata and staleness detection."""
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — file edits are disabled. Exit plan mode first.")
+        resolved = self._resolve_path(path, operation='write')
+        if resolved not in self._files_read:
+            return ToolResult(False, error=f"Must Read '{path}' before editing. Use the Read tool first to see current content.")
+
+        # Staleness detection: check if file was modified since we last read it
+        if resolved in self._files_mtime:
+            try:
+                current_mtime = os.path.getmtime(resolved)
+                if current_mtime > self._files_mtime[resolved]:
+                    return ToolResult(
+                        False,
+                        error=f"File '{path}' was modified since last read (stale). "
+                              f"Read it again to get the current content before editing."
+                    )
+            except OSError:
+                pass
+
         result = self.edit_file(path, old_string, new_string, replace_all=replace_all)
-        result.metadata["file_path"] = self._resolve_path(path)
+        result.metadata["file_path"] = resolved
+
+        # Update mtime after successful edit
+        if result.success:
+            try:
+                self._files_mtime[resolved] = os.path.getmtime(resolved)
+                # Invalidate read dedup cache for this file
+                self._files_read_ranges.pop(resolved, None)
+            except OSError:
+                pass
+
         return result
 
     def _exec_glob(self, pattern: str, path: Optional[str] = None) -> ToolResult:
@@ -291,17 +1725,19 @@ class ToolRegistry:
                    file_type: Optional[str] = None, context: int = 0,
                    case_insensitive: bool = False,
                    output_mode: str = "content") -> ToolResult:
-        """Execute grep search with metadata."""
+        """Execute grep search with metadata and large result persistence."""
         result = self.grep_files(
             pattern, path=path, file_type=file_type, context=context,
             case_insensitive=case_insensitive, output_mode=output_mode,
         )
         result.metadata["pattern"] = pattern
-        return result
+        return self._persist_large_result('Grep', result)
 
     def _exec_self_editor(self, file_path: str, new_content: str,
                           reason: str) -> ToolResult:
         """Execute a self-edit through the safety pipeline."""
+        if self._plan_mode:
+            return ToolResult(False, error="Plan mode active — self-editing is disabled. Exit plan mode first.")
         try:
             from agent.evolution.self_edit import SelfEditor
             editor = SelfEditor()
@@ -380,12 +1816,42 @@ class ToolRegistry:
                 result.append(tool_def)
         return result
 
-    def _resolve_path(self, path: str) -> str:
-        """Resolve a path relative to working directory."""
+    def enter_plan_mode(self):
+        """Enter plan mode — disable write/execute/destructive tools."""
+        self._plan_mode = True
+
+    def exit_plan_mode(self):
+        """Exit plan mode — re-enable all tools."""
+        self._plan_mode = False
+
+    @property
+    def is_plan_mode(self) -> bool:
+        return self._plan_mode
+
+    def _resolve_path(self, path: str, operation: str = 'read') -> str:
+        """Resolve a path relative to working directory.
+
+        Security: ensures resolved path stays within the workspace and
+        passes all path traversal prevention checks.
+        """
+        # Run path traversal checks via SafetyManager
+        try:
+            from agent.services.safety_service import SafetyManager
+            sm = SafetyManager(workspace_root=self.working_dir)
+            ok, reason = sm.validate_path_traversal(path, operation)
+            if not ok:
+                raise ValueError(f"Path security check failed: {reason}")
+        except ImportError:
+            pass
+
         p = pathlib.Path(path)
         if not p.is_absolute():
             p = pathlib.Path(self.working_dir) / p
-        return str(p.resolve())
+        resolved = str(p.resolve())
+        workspace_abs = str(pathlib.Path(self.working_dir).resolve())
+        if not resolved.startswith(workspace_abs):
+            raise ValueError(f"Path '{path}' resolves outside workspace")
+        return resolved
 
     # ── Bash ─────────────────────────────────────────────────────────────
 

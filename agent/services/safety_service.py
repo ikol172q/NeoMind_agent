@@ -9,6 +9,9 @@ import hashlib
 import tempfile
 import json
 import time
+import re
+import unicodedata
+import platform
 from typing import Tuple, Optional, List, Dict, Any
 from pathlib import Path
 import stat
@@ -30,8 +33,48 @@ class SafetyManager:
         'C:\\System32', 'C:\\Windows\\System32',
     ]
 
+    # Protected config/credential files (blocked for write/delete)
+    PROTECTED_FILES = {
+        # Shell configs
+        '.gitconfig', '.bashrc', '.zshrc', '.profile', '.bash_profile',
+        # SSH & GPG
+        '.ssh/id_rsa', '.ssh/id_ed25519', '.ssh/authorized_keys', '.ssh/config',
+        '.gnupg/secring.gpg', '.gnupg/trustdb.gpg',
+        # Environment files
+        '.env', '.env.local', '.env.production', '.env.staging',
+        '.env.development', '.env.test',
+        # Agent configs
+        '.mcp.json', '.claude.json', '.claude/settings.json',
+        '.neomind/config.json', '.neomind/secrets.json',
+        # Credentials
+        'credentials.json', 'service-account.json',
+        '.netrc', '.npmrc', '.pypirc',
+        # Cloud provider credentials
+        '.aws/credentials', '.aws/config',
+        '.config/gcloud/credentials.db', '.config/gcloud/application_default_credentials.json',
+        '.kube/config',
+        '.docker/config.json',
+        '.helm/repositories.yaml',
+        # Browser data
+        '.config/google-chrome/Default/Login Data',
+        '.config/google-chrome/Default/Cookies',
+    }
+
+    # Device paths (Unix) - never access
+    DEVICE_PATHS = {'/dev', '/proc', '/sys'}
+
     # Maximum file size for operations (10MB)
     MAX_FILE_SIZE = 10 * 1024 * 1024
+
+    # API & file processing limits
+    IMAGE_MAX_SIZE = 5 * 1024 * 1024       # 5MB
+    PDF_MAX_PAGES = 100
+    PDF_MAX_SIZE = 20 * 1024 * 1024        # 20MB
+    MAX_MEDIA_PER_REQUEST = 100
+    DEFAULT_MAX_TOKENS = 32000
+    COMPACT_THRESHOLD = 0.90
+    MAX_LINES_PER_READ = 5000
+    MAX_TOOL_OUTPUT_CHARS = 30000
 
     def __init__(self, workspace_root: str = None, audit_log: str = None, agent_root: str = None):
         """
@@ -74,6 +117,217 @@ class SafetyManager:
         except:
             pass  # Silently fail on audit logging errors
 
+    # ── Path Traversal Prevention ─────────────────────────────────────
+
+    def _check_device_paths(self, path: str) -> Tuple[bool, str]:
+        """Block access to device/proc/sys paths."""
+        normalized = os.path.normpath(path)
+        for dev in self.DEVICE_PATHS:
+            if normalized == dev or normalized.startswith(dev + os.sep):
+                return False, f"Access to device path blocked: {normalized}"
+        return True, ""
+
+    def _check_unc_paths(self, path: str) -> Tuple[bool, str]:
+        """Block UNC paths to prevent NTLM credential theft (Windows)."""
+        if path.startswith('\\\\') or path.startswith('//'):
+            return False, f"UNC path blocked (NTLM protection): {path}"
+        return True, ""
+
+    def _check_symlink(self, path: str) -> Tuple[bool, str]:
+        """Resolve symlinks and ensure target is within workspace."""
+        try:
+            if os.path.islink(path):
+                real = os.path.realpath(path)
+                allowed = False
+                for root in [self.workspace_root, self.agent_root]:
+                    if root:
+                        try:
+                            rel = os.path.relpath(real, root)
+                            if not rel.startswith('..'):
+                                allowed = True
+                                break
+                        except ValueError:
+                            continue
+                if not allowed:
+                    return False, f"Symlink target outside workspace: {path} -> {real}"
+        except Exception:
+            pass
+        return True, ""
+
+    def _check_url_encoded_traversal(self, path: str) -> Tuple[bool, str]:
+        """Detect URL-encoded path traversal sequences."""
+        suspicious = ['%2e%2e', '%2e%2e%2f', '%2e%2e/', '..%2f', '%2e%2e%5c',
+                       '..%5c', '%252e%252e', '%c0%ae', '%c1%9c']
+        path_lower = path.lower()
+        for pattern in suspicious:
+            if pattern in path_lower:
+                return False, f"URL-encoded path traversal detected: {pattern}"
+        return True, ""
+
+    def _check_unicode_normalization(self, path: str) -> Tuple[bool, str]:
+        """Detect Unicode normalization attacks (e.g. fullwidth dots)."""
+        nfkc = unicodedata.normalize('NFKC', path)
+        if nfkc != path:
+            # Check if normalization changes path semantics
+            if '..' in nfkc and '..' not in path:
+                return False, f"Unicode normalization attack detected in path"
+        # Block fullwidth characters in path components
+        for ch in path:
+            if unicodedata.category(ch).startswith('Cf'):  # format chars
+                return False, f"Invisible Unicode character in path"
+            # Fullwidth period (U+FF0E) etc.
+            if ch in ('\uff0e', '\uff0f', '\uff3c'):
+                return False, f"Fullwidth Unicode character in path: U+{ord(ch):04X}"
+        return True, ""
+
+    def _check_backslash_injection(self, path: str) -> Tuple[bool, str]:
+        """Block backslash injection on non-Windows."""
+        if platform.system() != 'Windows':
+            if '\\' in path:
+                return False, f"Backslash in path on non-Windows system: {path}"
+        return True, ""
+
+    def _check_case_insensitive_traversal(self, path: str) -> Tuple[bool, str]:
+        """Detect case manipulation attacks on case-insensitive filesystems."""
+        if platform.system() == 'Darwin' or platform.system() == 'Windows':
+            normalized = os.path.normpath(path)
+            if normalized.lower() != normalized and '..' in normalized.lower():
+                return False, f"Case-insensitive path manipulation detected"
+        return True, ""
+
+    def _check_glob_pattern(self, pattern: str) -> Tuple[bool, str]:
+        """Validate glob patterns for safety."""
+        dangerous = ['/**/../', '/../', '/..\\', '\\..\\']
+        for d in dangerous:
+            if d in pattern:
+                return False, f"Dangerous glob pattern detected: {d}"
+        # Block globbing into parent directories
+        if pattern.startswith('..') or '/..' in pattern:
+            return False, f"Glob pattern escapes workspace: {pattern}"
+        return True, ""
+
+    def _check_tilde_variants(self, path: str) -> Tuple[bool, str]:
+        """Block tilde variants that resolve to other users' directories."""
+        if re.match(r'~[a-zA-Z0-9_]', path):
+            return False, f"Tilde-user path blocked (resolves to another user's home): {path}"
+        if re.match(r'~[+\-0-9]', path):
+            return False, f"Tilde variant blocked (directory stack reference): {path}"
+        return True, ""
+
+    def _check_protected_file(self, path: str, operation: str) -> Tuple[bool, str]:
+        """Check if path targets a protected config/credential file."""
+        if operation not in ('write', 'delete'):
+            return True, ""
+        abs_path = os.path.abspath(path)
+        home = os.path.expanduser('~')
+        for pf in self.PROTECTED_FILES:
+            protected_abs = os.path.join(home, pf)
+            if abs_path == os.path.abspath(protected_abs):
+                return False, f"Protected file blocked for {operation}: {pf}"
+        basename = os.path.basename(abs_path)
+        if basename.startswith('.env') and operation in ('write', 'delete'):
+            return False, f"Environment file blocked for {operation}: {basename}"
+        return True, ""
+
+    # Magic bytes for common binary formats
+    MAGIC_SIGNATURES = {
+        b'\x89PNG': 'PNG image',
+        b'\xff\xd8\xff': 'JPEG image',
+        b'GIF87a': 'GIF image',
+        b'GIF89a': 'GIF image',
+        b'%PDF': 'PDF document',
+        b'PK\x03\x04': 'ZIP/DOCX/XLSX archive',
+        b'PK\x05\x06': 'ZIP archive (empty)',
+        b'\x7fELF': 'ELF executable',
+        b'\xfe\xed\xfa': 'Mach-O executable',
+        b'\xcf\xfa\xed\xfe': 'Mach-O executable (64-bit)',
+        b'\xca\xfe\xba\xbe': 'Mach-O universal binary',
+        b'MZ': 'Windows PE executable',
+        b'\x1f\x8b': 'GZIP compressed',
+        b'BZh': 'BZIP2 compressed',
+        b'\xfd7zXZ': 'XZ compressed',
+        b'Rar!\x1a\x07': 'RAR archive',
+        b'\x00\x00\x01\x00': 'ICO image',
+        b'RIFF': 'RIFF container (WAV/AVI)',
+        b'\x1a\x45\xdf\xa3': 'WebM/MKV video',
+        b'\x00\x00\x00\x1c\x66\x74\x79\x70': 'MP4 video',
+        b'\x00\x00\x00\x20\x66\x74\x79\x70': 'MP4 video',
+        b'OggS': 'OGG audio/video',
+        b'fLaC': 'FLAC audio',
+        b'ID3': 'MP3 audio (ID3 tag)',
+        b'\xff\xfb': 'MP3 audio',
+        b'\xff\xf3': 'MP3 audio',
+        b'SQLite format 3': 'SQLite database',
+        b'\xd0\xcf\x11\xe0': 'MS Office (OLE2)',
+    }
+
+    def _check_magic_bytes(self, chunk: bytes) -> Optional[str]:
+        """Check file header against known binary format signatures."""
+        for magic, desc in self.MAGIC_SIGNATURES.items():
+            if chunk[:len(magic)] == magic:
+                return desc
+        return None
+
+    def check_binary_content(self, file_path: str) -> Tuple[bool, str]:
+        """Detect binary files via magic bytes, null bytes, and non-printable ratio."""
+        try:
+            with open(file_path, 'rb') as f:
+                chunk = f.read(8192)
+            if not chunk:
+                return True, "Empty file"
+
+            # Magic byte / content sniffing
+            detected = self._check_magic_bytes(chunk)
+            if detected:
+                return False, f"Binary file detected: {detected}"
+
+            # Null byte detection
+            if b'\x00' in chunk:
+                return False, "Binary file detected (null bytes)"
+
+            # Non-printable ratio check (>10% = binary)
+            non_printable = sum(
+                1 for b in chunk
+                if b < 32 and b not in (9, 10, 13)  # tab, LF, CR are OK
+            )
+            ratio = non_printable / len(chunk)
+            if ratio > 0.10:
+                return False, f"Binary file detected ({ratio:.0%} non-printable)"
+
+            return True, "Text file"
+        except Exception as e:
+            return False, f"Binary detection error: {e}"
+
+    def validate_path_traversal(self, path: str, operation: str = 'read') -> Tuple[bool, str]:
+        """Run all path traversal prevention checks.
+
+        Returns:
+            Tuple[bool, str]: (is_safe, reason)
+        """
+        checks = [
+            self._check_device_paths(path),
+            self._check_unc_paths(path),
+            self._check_tilde_variants(path),
+            self._check_url_encoded_traversal(path),
+            self._check_unicode_normalization(path),
+            self._check_backslash_injection(path),
+            self._check_case_insensitive_traversal(path),
+            self._check_protected_file(path, operation),
+        ]
+        for ok, reason in checks:
+            if not ok:
+                self._log_audit('path_traversal_blocked', path, False, reason)
+                return False, reason
+
+        # Symlink check only for existing paths
+        if os.path.lexists(path):
+            ok, reason = self._check_symlink(path)
+            if not ok:
+                self._log_audit('path_traversal_blocked', path, False, reason)
+                return False, reason
+
+        return True, "Path traversal checks passed"
+
     def is_path_safe(self, path: str, operation: str = 'read') -> Tuple[bool, str]:
         """
         Check if a file path is safe for the given operation.
@@ -86,6 +340,11 @@ class SafetyManager:
             Tuple[bool, str]: (is_safe, reason)
         """
         try:
+            # Run path traversal prevention checks first
+            traversal_ok, traversal_reason = self.validate_path_traversal(path, operation)
+            if not traversal_ok:
+                return False, traversal_reason
+
             abs_path = os.path.abspath(path)
 
             # Check if path is within allowed roots (workspace or agent root)
