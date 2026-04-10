@@ -21,14 +21,17 @@ class SafetyManager:
 
     # Dangerous file extensions (blocked for read/write)
     DANGEROUS_EXTENSIONS = {
-        '.exe', '.dll', '.so', '.bin', '.sh', '.bat', '.cmd', '.ps1',
+        # FZ02: removed '.bin' — too generic (commonly used for data/firmware
+        # dumps); content-based binary detection handles these safely.
+        '.exe', '.dll', '.so', '.sh', '.bat', '.cmd', '.ps1',
         '.pyc', '.pyo', '.pyd', '.jar', '.class', '.war', '.ear',
         '.app', '.dmg', '.iso', '.img', '.vhd', '.vmdk',
     }
 
     # System directories to protect (Unix and Windows)
     SYSTEM_DIRECTORIES = [
-        '/', '/bin', '/sbin', '/usr', '/etc', '/var', '/lib',
+        '/', '/bin', '/sbin', '/usr', '/etc', '/var/run', '/var/log',
+        '/var/spool', '/var/mail', '/var/cache', '/lib',
         'C:\\', 'C:\\Windows', 'C:\\Program Files', 'C:\\Program Files (x86)',
         'C:\\System32', 'C:\\Windows\\System32',
     ]
@@ -59,6 +62,9 @@ class SafetyManager:
         '.config/google-chrome/Default/Login Data',
         '.config/google-chrome/Default/Cookies',
     }
+
+    # Safe temp directories (allowed for read even outside workspace)
+    SAFE_TEMP_DIRS = ['/var/folders', '/var/tmp', '/tmp']
 
     # Device paths (Unix) - never access
     DEVICE_PATHS = {'/dev', '/proc', '/sys'}
@@ -120,11 +126,27 @@ class SafetyManager:
     # ── Path Traversal Prevention ─────────────────────────────────────
 
     def _check_device_paths(self, path: str) -> Tuple[bool, str]:
-        """Block access to device/proc/sys paths."""
+        """Block access to device/proc/sys paths.
+
+        On macOS/Windows (case-insensitive FS), also checks lowercase.
+        Prevents bypass via /ETC/PASSWD, /Dev/Zero, etc.
+        """
         normalized = os.path.normpath(path)
+        # Case-insensitive check on macOS/Windows
+        check_lower = platform.system() in ('Darwin', 'Windows')
+        norm_lower = normalized.lower() if check_lower else normalized
         for dev in self.DEVICE_PATHS:
-            if normalized == dev or normalized.startswith(dev + os.sep):
+            dev_lower = dev.lower() if check_lower else dev
+            if norm_lower == dev_lower or norm_lower.startswith(dev_lower + os.sep):
                 return False, f"Access to device path blocked: {normalized}"
+
+        # Also block /etc, /var/run, and other sensitive system dirs on case-insensitive FS
+        if check_lower:
+            sensitive_dirs = ['/etc', '/var/run', '/private/etc']
+            for sd in sensitive_dirs:
+                if norm_lower == sd or norm_lower.startswith(sd + '/'):
+                    return False, f"Access to system directory blocked: {normalized}"
+
         return True, ""
 
     def _check_unc_paths(self, path: str) -> Tuple[bool, str]:
@@ -214,16 +236,44 @@ class SafetyManager:
             return False, f"Tilde variant blocked (directory stack reference): {path}"
         return True, ""
 
+    # Credential/secret files that should be blocked for ALL operations (including read)
+    READ_BLOCKED_FILES = {
+        '.ssh/id_rsa', '.ssh/id_ed25519', '.ssh/authorized_keys',
+        '.gnupg/secring.gpg', '.gnupg/trustdb.gpg',
+        '.env', '.env.local', '.env.production', '.env.staging',
+        '.env.development', '.env.test',
+        '.neomind/secrets.json',
+        'credentials.json', 'service-account.json',
+        '.netrc', '.npmrc', '.pypirc',
+        '.aws/credentials',
+        '.config/gcloud/credentials.db',
+        '.config/gcloud/application_default_credentials.json',
+        '.docker/config.json',
+        '.config/google-chrome/Default/Login Data',
+        '.config/google-chrome/Default/Cookies',
+    }
+
     def _check_protected_file(self, path: str, operation: str) -> Tuple[bool, str]:
-        """Check if path targets a protected config/credential file."""
-        if operation not in ('write', 'delete'):
-            return True, ""
-        abs_path = os.path.abspath(path)
+        """Check if path targets a protected config/credential file.
+
+        - Credential/secret files are blocked for ALL operations (read/write/delete).
+        - Other protected config files are blocked for write/delete only.
+        """
+        abs_path = os.path.abspath(os.path.expanduser(path))
         home = os.path.expanduser('~')
+
         for pf in self.PROTECTED_FILES:
-            protected_abs = os.path.join(home, pf)
-            if abs_path == os.path.abspath(protected_abs):
-                return False, f"Protected file blocked for {operation}: {pf}"
+            protected_abs = os.path.normpath(os.path.join(home, pf))
+            if os.path.normpath(abs_path) == protected_abs:
+                # Credential files: block ALL operations (including read)
+                if pf in self.READ_BLOCKED_FILES:
+                    return False, f"Protected credential file blocked for {operation}: {pf}"
+                # Non-credential config files: block write/delete only
+                if operation in ('write', 'delete'):
+                    return False, f"Protected file blocked for {operation}: {pf}"
+
+        # For .env files outside the home-directory PROTECTED_FILES set:
+        # block write/delete but allow read (workspace .env files are readable)
         basename = os.path.basename(abs_path)
         if basename.startswith('.env') and operation in ('write', 'delete'):
             return False, f"Environment file blocked for {operation}: {basename}"
@@ -359,6 +409,13 @@ class SafetyManager:
                     except ValueError:
                         # Different drive on Windows - skip this root
                         continue
+            # Allow access to safe temp directories (e.g. macOS /var/folders)
+            if not allowed:
+                for temp_dir in self.SAFE_TEMP_DIRS:
+                    temp_abs = os.path.abspath(temp_dir)
+                    if abs_path.startswith(temp_abs + os.sep):
+                        allowed = True
+                        break
             if not allowed:
                 return False, f"Path outside allowed roots: {abs_path}"
 

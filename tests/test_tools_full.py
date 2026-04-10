@@ -886,14 +886,30 @@ class TestToolRegistryExecWrappers:
             assert "lines_in_output" in result.metadata
 
     def test_exec_write_adds_metadata(self):
-        """Test that _exec_write adds write metadata."""
+        """Test that _exec_write adds write metadata.
+
+        Note: _exec_write now verifies that the file actually exists on disk
+        (Bug #4 — phantom Write fix), so the mocked write_file must also
+        create the file for the assertion to pass.
+        """
+        import os, tempfile
+
         registry = ToolRegistry()
+        with tempfile.TemporaryDirectory() as td:
+            target = os.path.join(td, "test.txt")
+            content = "line1\nline2"
 
-        with patch.object(registry, "write_file") as mock_write:
-            mock_write.return_value = ToolResult(success=True, output="Created test.txt (2 lines)")
+            def fake_write(path, body):
+                # Honor the contract: write_file is supposed to actually write.
+                with open(target, "w") as fh:
+                    fh.write(body)
+                return ToolResult(success=True, output="Created test.txt (2 lines)")
 
-            result = registry._exec_write("test.txt", "line1\nline2")
+            with patch.object(registry, "write_file", side_effect=fake_write), \
+                 patch.object(registry, "_resolve_path", return_value=target):
+                result = registry._exec_write(target, content)
 
+            assert result.success, f"unexpected failure: {result.error}"
             assert "file_path" in result.metadata
             assert "bytes_written" in result.metadata
             assert "lines_written" in result.metadata

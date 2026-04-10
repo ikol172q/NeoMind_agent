@@ -132,5 +132,30 @@ tests/TEST_COVERAGE_SUMMARY.md
 
 # Backup & temp scripts
 agent/core.py.bak
+*.backup_[0-9]*
 test_search_status.py
 neomind/test.txt
+.env
+
+# Junk artifacts (sometimes created by buggy tools / shell quoting bugs)
+echo "__IKOL_*"
+__IKOL_*
+*.tar.gz
+files.txt
+test.py
+test_session_*
+singleton_example.py
+
+# NeoMind runtime artifacts (user data, never commit)
+.neomind_snips/
+.neomind_tool_outputs/
+.neomind/
+test_dashboard.html
+
+# Top-level dev notes (keep local)
+BUG_REPORTS.md
+PROGRESS_summary.md
+IMPLEMENTATION_SUMMARY.md
+FEATURE_LIST.md
+TESTING_GUIDE.md
+FIX_LOG.md

@@ -53,6 +53,46 @@ from agent.core import NeoMindAgent
 from agent.help_system import HelpSystem
 from agent_config import agent_config
 
+# --- pygments imports (code block syntax highlighting) ---
+try:
+    from pygments import highlight as _pygments_highlight
+    from pygments.lexers import get_lexer_by_name, TextLexer
+    from pygments.formatters import TerminalFormatter
+    PYGMENTS_AVAILABLE = True
+except ImportError:
+    PYGMENTS_AVAILABLE = False
+
+_CODE_BLOCK_RE = re.compile(r'```(\w+)?\s*\n(.*?)```', re.DOTALL)
+
+
+def highlight_code_block(code: str, language: str = '') -> str:
+    """Highlight a code block using pygments. Graceful fallback if unavailable."""
+    if not PYGMENTS_AVAILABLE or not language:
+        return code
+    try:
+        lexer = get_lexer_by_name(language, stripall=True)
+    except Exception:
+        lexer = TextLexer()
+    try:
+        return _pygments_highlight(code, lexer, TerminalFormatter())
+    except Exception:
+        return code
+
+
+def highlight_code_blocks_in_text(text: str) -> str:
+    """Find ```lang ... ``` blocks in text and apply syntax highlighting."""
+    if not PYGMENTS_AVAILABLE:
+        return text
+
+    def _replace(m):
+        lang = m.group(1) or ''
+        code = m.group(2)
+        highlighted = highlight_code_block(code, lang)
+        # Return highlighted code without the fences (the highlight adds its own formatting)
+        return highlighted.rstrip('\n') + '\n'
+
+    return _CODE_BLOCK_RE.sub(_replace, text)
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Slash Command Completer
@@ -252,6 +292,7 @@ class NeoMindInterface:
         self.help_system = HelpSystem()
         self.running = True
         self._interrupt = False
+        self._auto_approved = False  # Persists "always allow" across turns
 
         # ── Phase 1: Claude Code CLI integration ────────────────────
         # Use the new command system alongside legacy _handle_local_command.
@@ -439,6 +480,13 @@ class NeoMindInterface:
                 result = None
 
             if result is not None:
+                # Fall through to legacy handler for "Unknown command" —
+                # these may be personality-specific commands (e.g. /code,
+                # /test, /run, /grep, /find) registered on core.command_handlers.
+                if result.display == "system" and "Unknown command" in result.text:
+                    result = None  # Let legacy handler try
+
+            if result is not None:
                 # Handle special result codes
                 if result.text == "__EXIT__":
                     self._print("[dim]Goodbye![/dim]")
@@ -451,10 +499,18 @@ class NeoMindInterface:
                         self.display_welcome()
                     return True
                 if result.compact:
+                    # Extract key user facts before clearing history
+                    facts_summary = self._extract_user_facts(self.chat.conversation_history)
                     self.chat.clear_history()
                     if agent_config.system_prompt:
                         self.chat.add_to_history("system", agent_config.system_prompt)
-                    self._print("[green]✓[/green] Conversation compacted")
+                    # Re-inject preserved facts so the agent remembers the user
+                    if facts_summary:
+                        self.chat.add_to_history("system",
+                            f"# Preserved context from previous conversation\n\n{facts_summary}")
+                    # Use the command's own message if provided
+                    msg = result.text if result.text else "Conversation compacted"
+                    self._print(f"[green]✓[/green] {msg}")
                     return True
                 if result.should_query:
                     # Prompt command: feed expanded text to LLM
@@ -471,7 +527,7 @@ class NeoMindInterface:
 
         # Check if command is allowed in current mode
         allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence"):
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "plugin", "plugins"):
             self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
             if self.chat.mode == "chat":
                 self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
@@ -542,8 +598,14 @@ class NeoMindInterface:
             return True
 
         if cmd == "think":
-            self.chat.thinking_enabled = not self.chat.thinking_enabled
-            status = "[green]on[/green]" if self.chat.thinking_enabled else "[red]off[/red]"
+            if args.lower() in ("on", "1", "true", "yes"):
+                self.chat.thinking_enabled = True
+            elif args.lower() in ("off", "0", "false", "no"):
+                self.chat.thinking_enabled = False
+            else:
+                # No argument or unrecognized → toggle
+                self.chat.thinking_enabled = not self.chat.thinking_enabled
+            status = "[green]ON[/green]" if self.chat.thinking_enabled else "[red]OFF[/red]"
             self._print(f"Thinking mode: {status}")
             return True
 
@@ -734,6 +796,64 @@ class NeoMindInterface:
 
         # Not a local command
         return None
+
+    # ── Fact extraction for /compact ──────────────────────────────────────
+    @staticmethod
+    def _extract_user_facts(history: list) -> str:
+        """Extract key user facts from conversation history before compaction.
+
+        Scans user and assistant messages for identity signals (name, location,
+        preferences, project context) so they survive /compact.
+
+        Returns a short bullet-point summary, or empty string if nothing found.
+        """
+        import re as _re
+
+        facts = []
+        # Patterns that typically carry user identity/facts
+        _NAME_PATTERNS = [
+            _re.compile(r"(?:my name is|i'm|i am|call me)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)?)", _re.I),
+        ]
+        _FACT_PATTERNS = [
+            _re.compile(r"(?:i (?:work|am working) (?:on|at|in|with))\s+(.{5,80})", _re.I),
+            _re.compile(r"(?:i (?:prefer|like|use|need))\s+(.{5,80})", _re.I),
+            _re.compile(r"(?:i live in|i'm from|i'm based in)\s+(.{3,60})", _re.I),
+            _re.compile(r"(?:my (?:project|repo|codebase|app|company) is)\s+(.{3,80})", _re.I),
+        ]
+
+        seen = set()
+        for msg in history:
+            role = msg.get("role", "")
+            content = str(msg.get("content", ""))
+            if role == "user":
+                for pat in _NAME_PATTERNS:
+                    m = pat.search(content)
+                    if m:
+                        name = m.group(1).strip()
+                        key = f"name:{name.lower()}"
+                        if key not in seen:
+                            facts.append(f"- User's name: {name}")
+                            seen.add(key)
+                for pat in _FACT_PATTERNS:
+                    m = pat.search(content)
+                    if m:
+                        fact = m.group(0).strip().rstrip(".,;")
+                        key = fact.lower()[:40]
+                        if key not in seen:
+                            facts.append(f"- User said: \"{fact}\"")
+                            seen.add(key)
+            elif role == "assistant":
+                # Capture when the assistant confirms user identity
+                for pat in [_re.compile(r"(?:your name is|you(?:'re| are)|Hi,?)\s+([A-Z][a-z]+)", _re.I)]:
+                    m = pat.search(content[:500])
+                    if m:
+                        name = m.group(1).strip()
+                        key = f"name:{name.lower()}"
+                        if key not in seen:
+                            facts.append(f"- User's name: {name}")
+                            seen.add(key)
+
+        return "\n".join(facts[:10])  # Cap at 10 facts
 
     # ── Transcript viewer ───────────────────────────────────────────────
     def _show_transcript(self, args: str = ""):
@@ -971,11 +1091,15 @@ class NeoMindInterface:
         _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
         _TOOL_CALL_OPEN_RE = re.compile(r'<tool_call>\s*')
         _TOOL_CALL_CLOSE = '</tool_call>'
+        _TOOL_CALL_CLOSE_ALT = '</tool_result>'  # LLM sometimes hallucinates this
+        # Orphan closing tags that may leak without a matching opener
+        _ORPHAN_CLOSE_RE = re.compile(r'\s*</tool_(?:call|result)>\s*')
 
         def __init__(self):
             self._buf = ""
             self._suppressing = False
             self._suppress_type = None  # "fence" or "tool_call"
+            self._after_tool_result = False
 
         def write(self, text: str) -> str:
             """Feed a streaming chunk. Returns text safe to print."""
@@ -1000,17 +1124,24 @@ class NeoMindInterface:
                         self._buf = rest
                         continue
                     elif self._suppress_type == "tool_call":
+                        # Check both </tool_call> and </tool_result> (LLM hallucination)
                         idx = self._buf.find(self._TOOL_CALL_CLOSE)
+                        idx_alt = self._buf.find(self._TOOL_CALL_CLOSE_ALT)
+                        # Pick the earliest match
+                        close_tag_len = len(self._TOOL_CALL_CLOSE)
+                        if idx_alt != -1 and (idx == -1 or idx_alt < idx):
+                            idx = idx_alt
+                            close_tag_len = len(self._TOOL_CALL_CLOSE_ALT)
                         if idx == -1:
                             # Keep tail for partial match
-                            close_len = len(self._TOOL_CALL_CLOSE)
-                            if len(self._buf) > close_len:
-                                self._buf = self._buf[-close_len:]
+                            max_close_len = max(len(self._TOOL_CALL_CLOSE), len(self._TOOL_CALL_CLOSE_ALT))
+                            if len(self._buf) > max_close_len:
+                                self._buf = self._buf[-max_close_len:]
                             break
                         # Found closing tag — skip past it
                         self._suppressing = False
                         self._suppress_type = None
-                        rest = self._buf[idx + len(self._TOOL_CALL_CLOSE):]
+                        rest = self._buf[idx + close_tag_len:]
                         if rest.startswith('\n'):
                             rest = rest[1:]
                         self._buf = rest
@@ -1018,7 +1149,9 @@ class NeoMindInterface:
                 else:
                     # Check for <tool_call> first (higher priority)
                     m_tc = self._TOOL_CALL_OPEN_RE.search(self._buf)
-                    m_fence = self._OPEN_RE.search(self._buf)
+                    # After a tool result, don't suppress code fences —
+                    # they likely contain actual tool output, not LLM commands.
+                    m_fence = None if self._after_tool_result else self._OPEN_RE.search(self._buf)
 
                     # Pick the earliest match
                     match = None
@@ -1041,6 +1174,13 @@ class NeoMindInterface:
                         self._buf = self._buf[match.end():]
                         continue
 
+                    # Check for orphan closing tags (</tool_call> without opener)
+                    m_orphan = self._ORPHAN_CLOSE_RE.search(self._buf)
+                    if m_orphan:
+                        output += self._buf[:m_orphan.start()]
+                        self._buf = self._buf[m_orphan.end():]
+                        continue
+
                     # Keep a small tail in case a tag straddles two chunks
                     if len(self._buf) > 15:
                         safe = self._buf[:-15]
@@ -1049,6 +1189,14 @@ class NeoMindInterface:
                     break
 
             return output
+
+        def notify_tool_result(self):
+            """Signal that a tool result was just received.
+
+            After a tool result, code fences in the LLM response likely
+            contain the actual tool output, so we stop suppressing them.
+            """
+            self._after_tool_result = True
 
         def flush(self) -> str:
             """Flush remaining buffer (call after stream ends).
@@ -1063,6 +1211,77 @@ class NeoMindInterface:
                 self._suppressing = False
                 self._suppress_type = None
                 return ""
+            # Strip any orphan closing tags from remaining buffer
+            out = self._ORPHAN_CLOSE_RE.sub('', self._buf)
+            self._buf = ""
+            return out
+
+    class _SyntaxHighlightFilter:
+        """Post-processing filter that highlights code blocks in streaming output.
+
+        Wraps around the content display path. Buffers text when inside a code
+        block, applies pygments highlighting on close, and passes through
+        non-code text immediately.
+        """
+
+        _OPEN_RE = re.compile(r'```(\w+)?\s*\n?$')
+
+        def __init__(self):
+            self._buf = ""
+            self._in_block = False
+            self._language = ""
+
+        def write(self, text: str) -> str:
+            """Feed a chunk. Returns text safe to print (may be highlighted)."""
+            self._buf += text
+            output = ""
+
+            while True:
+                if self._in_block:
+                    # Look for closing ```
+                    idx = self._buf.find('```')
+                    if idx == -1:
+                        # Keep buffering — don't emit code until block closes
+                        break
+                    # Found closing fence — highlight the block
+                    code = self._buf[:idx]
+                    highlighted = highlight_code_block(code, self._language)
+                    output += highlighted
+                    rest = self._buf[idx + 3:]
+                    if rest.startswith('\n'):
+                        rest = rest[1:]
+                    self._buf = rest
+                    self._in_block = False
+                    self._language = ""
+                    continue
+                else:
+                    # Look for opening ```lang
+                    m = self._OPEN_RE.search(self._buf)
+                    if m:
+                        # Emit text before the fence
+                        output += self._buf[:m.start()]
+                        self._language = m.group(1) or ''
+                        self._in_block = True
+                        self._buf = self._buf[m.end():]
+                        continue
+                    # No complete fence opener — check for partial at end
+                    # Keep last few chars in case ``` straddles chunks
+                    if len(self._buf) > 4:
+                        safe = self._buf[:-4]
+                        self._buf = self._buf[-4:]
+                        output += safe
+                    break
+
+            return output
+
+        def flush(self) -> str:
+            """Flush remaining buffer at end of stream."""
+            if self._in_block:
+                # Unclosed code block — highlight what we have
+                code = self._buf
+                self._buf = ""
+                self._in_block = False
+                return highlight_code_block(code, self._language)
             out = self._buf
             self._buf = ""
             return out
@@ -1158,8 +1377,25 @@ class NeoMindInterface:
         tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
         params = tool_call.params if hasattr(tool_call, 'params') else {}
 
+        # Get risk level and explanation from PermissionManager
+        risk_label = ""
+        explanation = ""
+        try:
+            from agent.services.permission_manager import PermissionManager
+            pm = PermissionManager()
+            risk = pm.classify_risk(tool_name, level.value, params)
+            risk_label = risk.value.upper()
+            explanation = pm.explain_permission(tool_name, level.value, params)
+        except Exception:
+            risk_label = level.value.upper()
+
         # Build permission panel with tool preview
         preview_lines = [f"[bold]{tool_name}[/bold] ({level.value})"]
+        if risk_label:
+            risk_color = {"LOW": "green", "MEDIUM": "yellow", "HIGH": "orange1", "CRITICAL": "red"}.get(risk_label, "yellow")
+            preview_lines.append(f"  Risk: [{risk_color}]{risk_label}[/{risk_color}]")
+        if explanation:
+            preview_lines.append(f"  [dim]{explanation}[/dim]")
         if params:
             for k, v in params.items():
                 val_str = str(v)[:100]
@@ -1215,11 +1451,13 @@ class NeoMindInterface:
         The canonical AgenticLoop.run() is async, so we bridge from the sync
         CLI world via asyncio.run().
         """
-        if self.chat.mode != "coding":
-            return  # Only in coding mode
+        if self.chat.mode not in ("coding", "fin"):
+            return  # Only in coding and finance modes
 
         if max_iterations is None:
-            max_iterations = self._AGENTIC_HARD_LIMIT
+            # Check for CLI --max-turns override
+            cli_max = getattr(self.chat, '_cli_max_turns', None)
+            max_iterations = cli_max if cli_max is not None else self._AGENTIC_HARD_LIMIT
 
         import asyncio
         from agent.agentic import AgenticLoop, AgenticConfig
@@ -1228,7 +1466,13 @@ class NeoMindInterface:
         def _sync_llm_caller(messages):
             """Wrapper around self.chat.stream_response for the agentic loop."""
             self.chat._skip_next_user_add = True
+            # Install content filter to suppress <tool_call> tags from display.
+            # Without this, tool_call blocks leak to the terminal during
+            # agentic loop iterations (the initial filter was cleared after
+            # the first _stream_and_render call).
+            self.chat._content_filter = self._CodeFenceFilter()
             response_text = self.chat.stream_response("[Continue based on the tool results above.]")
+            self.chat._content_filter = None
             return response_text
 
         # Async LLM caller — wraps the sync one via to_thread
@@ -1265,15 +1509,22 @@ class NeoMindInterface:
 
         last_response = history[-1]["content"]
 
-        # Track auto-approval across the session (user said "all")
-        auto_approved = False
+        # Use instance-level auto_approved so "always allow" persists across turns
         stop_event = None
 
         # Inner async function to consume the async generator
         async def _async_event_loop():
-            nonlocal auto_approved, stop_event
+            nonlocal stop_event
             async for event in loop.run(last_response, history, llm_caller):
                 if event.type == "tool_start":
+                    # Stop any existing spinner before starting a new one
+                    if stop_event:
+                        stop_event.set()
+                        time.sleep(0.1)  # Let spinner thread finish
+                        sys.stderr.write("\r\033[K")  # Clear spinner line
+                        sys.stderr.flush()
+                        stop_event = None
+
                     # Check permission before execution
                     class _ToolCallProxy:
                         def __init__(self, tool_name, params, preview_text):
@@ -1285,20 +1536,40 @@ class NeoMindInterface:
 
                     tool_call = _ToolCallProxy(event.tool_name, event.tool_params, event.tool_preview or "")
 
-                    # Use existing permission logic
-                    approved, auto_approved = self._check_permission(tool_call, auto_approved)
+                    # Use existing permission logic (persists across turns)
+                    approved, self._auto_approved = self._check_permission(tool_call, self._auto_approved)
                     event.approved = approved
 
                     if approved:
-                        # Show spinner with tool name
+                        # Show tool name + status on a dedicated line (don't mix with LLM text)
+                        tool_preview = event.tool_preview or ""
+                        # Truncate preview for display
+                        if len(tool_preview) > 60:
+                            tool_preview = tool_preview[:57] + "..."
+                        sys.stderr.write(f"\r\033[K\U0001f527 {event.tool_name}({tool_preview}) ...")
+                        sys.stderr.flush()
+                        # Also run spinner
                         preview = event.tool_preview or event.tool_name
-                        stop_event = self._start_spinner("Thinking…")
-                        self._update_spinner(stop_event, f"Thinking… {preview}")
+                        stop_event = self._start_spinner(f"\U0001f527 {event.tool_name}({tool_preview}) ...")
                     # else: loop will stop after this iteration
 
                 elif event.type == "tool_result":
-                    # Show tool result (collapsible)
-                    if event.result_success:
+                    # STOP spinner before printing tool result
+                    if stop_event:
+                        stop_event.set()
+                        time.sleep(0.1)  # Let spinner thread finish
+                        sys.stderr.flush()
+                        stop_event = None
+
+                    # Show tool status on dedicated line, then clear
+                    tool_name = getattr(event, 'tool_name', '') or ''
+                    success = event.result_success
+                    status_icon = '\u2713' if success else '\u2717'
+                    sys.stderr.write(f"\r\033[K\U0001f527 {tool_name} {status_icon}\n")
+                    sys.stderr.flush()
+
+                    # Show tool result details (collapsible)
+                    if success:
                         output = event.result_output or ""
                         preview = output[:200]
                         if len(output) > 200:
@@ -1308,23 +1579,16 @@ class NeoMindInterface:
                     else:
                         self._print(f"  [red]\u2717[/red] {event.result_error or 'Unknown error'}")
 
-                    # Update spinner with result status
-                    if stop_event:
-                        if event.result_success:
-                            brief = (event.result_output or "").split('\n')[0][:50]
-                            if brief:
-                                self._update_spinner(stop_event, f"Thinking\u2026 {brief}")
-                        else:
-                            brief = (event.result_error or "").split('\n')[0][:50]
-                            if brief:
-                                self._update_spinner(stop_event, f"Thinking\u2026 {brief}")
-                            else:
-                                self._update_spinner(stop_event, "Thinking\u2026 (error)")
+                    # Visual separator between tool results
+                    self._print("")
 
                 elif event.type == "llm_response":
                     # LLM response already streamed by llm_caller's stream_response
                     if stop_event:
                         stop_event.set()
+                        time.sleep(0.1)  # Let spinner thread finish
+                        sys.stderr.write("\r\033[K")  # Clear spinner line
+                        sys.stderr.flush()
                         stop_event = None
 
                 elif event.type == "skill_match":
@@ -1341,12 +1605,20 @@ class NeoMindInterface:
                     # Loop finished naturally
                     if stop_event:
                         stop_event.set()
+                        time.sleep(0.1)
+                        sys.stderr.write("\r\033[K")
+                        sys.stderr.flush()
+                        stop_event = None
                     break
 
                 elif event.type == "error":
                     # An error occurred in the loop
                     if stop_event:
                         stop_event.set()
+                        time.sleep(0.1)
+                        sys.stderr.write("\r\033[K")
+                        sys.stderr.flush()
+                        stop_event = None
                     self._print(f"[red]Agent error: {event.error_message}[/red]")
                     break
 
@@ -1378,7 +1650,12 @@ class NeoMindInterface:
 
         self.chat._ui_on_first_token = lambda: stop_event.set()
         # Install content filter to suppress code fences from display
-        self.chat._content_filter = self._CodeFenceFilter()
+        content_filter = self._CodeFenceFilter()
+        # If this is a continuation after tool execution, notify the filter
+        # so it preserves code fences that contain actual tool output.
+        if skip_user_add:
+            content_filter.notify_tool_result()
+        self.chat._content_filter = content_filter
 
         try:
             if skip_user_add:
@@ -1407,8 +1684,11 @@ class NeoMindInterface:
         self.chat._ui_on_first_token = lambda: stop.set()
 
         # In coding mode, install content filter to suppress code fences
+        # In other modes, install syntax highlight filter for code blocks
         if self.chat.mode == "coding":
             self.chat._content_filter = self._CodeFenceFilter()
+        elif PYGMENTS_AVAILABLE:
+            self.chat._content_filter = self._SyntaxHighlightFilter()
 
         try:
             self.chat.stream_response(prompt)
@@ -1448,18 +1728,23 @@ class NeoMindInterface:
             if history and history[-1]["role"] == "assistant":
                 raw = history[-1]["content"].strip()
                 if raw:
-                    # Strip any tool_call blocks for display
+                    # Strip any tool_call blocks and orphan closing tags for display
                     import re
                     cleaned = re.sub(
-                        r'<tool_call>.*?</tool_call>',
+                        r'<tool_call>.*?</tool_(?:call|result)>',
                         '', raw, flags=re.DOTALL
+                    ).strip()
+                    # Strip orphan closing tags (</tool_call> or </tool_result> without opener)
+                    cleaned = re.sub(
+                        r'\s*</tool_(?:call|result)>\s*',
+                        '', cleaned
                     ).strip()
                     cleaned = re.sub(
                         r'```(?:bash|shell|sh|console)\s*\n.*?```',
                         '', cleaned, flags=re.DOTALL
                     ).strip()
                     if cleaned:
-                        self._print(cleaned)
+                        self._print(highlight_code_blocks_in_text(cleaned))
                     else:
                         self._print("[dim](Agent executed tools but produced no visible summary)[/dim]")
 
@@ -1468,6 +1753,12 @@ class NeoMindInterface:
         self.display_welcome()
 
         if not PROMPT_TOOLKIT_AVAILABLE:
+            self._run_fallback()
+            return
+
+        # Use plain fallback when running in test/automation mode
+        # (prompt_toolkit ANSI escapes break pexpect prompt detection)
+        if os.environ.get('NEOMIND_DISABLE_VAULT') and os.environ.get('NEOMIND_DISABLE_MEMORY'):
             self._run_fallback()
             return
 
@@ -1483,7 +1774,17 @@ class NeoMindInterface:
             status = "on" if self.chat.thinking_enabled else "off"
             event.app.current_buffer.insert_text("")  # noop to refresh toolbar
 
-        @bindings.add("escape", eager=True)
+        # NOTE: Bind multi-key sequence (escape, enter) BEFORE the lone-escape
+        # binding so prompt_toolkit's key matcher prefers the longer sequence.
+        # Also do NOT use eager=True on the lone-escape binding — eager would
+        # fire the moment Escape is seen, preventing the (escape, enter) chord
+        # from ever matching.
+        @bindings.add("escape", "enter")
+        def _newline(event):
+            """Esc+Enter (Meta+Enter / Alt+Enter): insert literal newline."""
+            event.current_buffer.insert_text("\n")
+
+        @bindings.add("escape")
         def _clear_input(event):
             buf = event.current_buffer
             # If completion menu is showing, dismiss it first
@@ -1494,17 +1795,20 @@ class NeoMindInterface:
 
         @bindings.add("c-l")
         def _clear_screen(event):
+            # prompt_toolkit's renderer.clear() does not always wipe the
+            # scrollback / full screen on every terminal emulator. Pair it
+            # with a direct ANSI clear so behavior is consistent everywhere.
+            try:
+                sys.stdout.write("\x1b[2J\x1b[H")
+                sys.stdout.flush()
+            except Exception:
+                pass
             event.app.renderer.clear()
 
         @bindings.add("c-e")
         def _expand_thinking(event):
             """Ctrl+E: open /expand to view thinking turns."""
             event.app.exit(result="/expand")
-
-        # Shift+Enter for newline continuation
-        @bindings.add("escape", "enter")
-        def _newline(event):
-            event.current_buffer.insert_text("\n")
 
         self._completer = SlashCommandCompleter(
             mode=self.chat.mode,
@@ -1534,6 +1838,11 @@ class NeoMindInterface:
                 style=style,
                 multiline=False,
                 enable_history_search=True,
+                # TY12 fix: disable mouse support so pasted ANSI escape sequences
+                # aren't misinterpreted as mouse events (which caused a crash in
+                # prompt_toolkit/key_binding/bindings/mouse.py: "not enough values
+                # to unpack (expected 3, got 1)").
+                mouse_support=False,
             )
         except Exception as e:
             self._print(f"[dim]prompt_toolkit init failed ({e}), using fallback[/dim]")
@@ -1573,7 +1882,11 @@ class NeoMindInterface:
 
             except KeyboardInterrupt:
                 # Ctrl+C during input just cancels current line
-                self._print("")
+                # Wrap recovery emit so a third rapid Ctrl+C doesn't kill the process
+                try:
+                    self._print("")
+                except KeyboardInterrupt:
+                    pass
                 continue
             except EOFError:
                 # Ctrl+D
@@ -1615,7 +1928,10 @@ class NeoMindInterface:
                 self._stream_and_render(user_input)
 
             except KeyboardInterrupt:
-                print()
+                try:
+                    print()
+                except KeyboardInterrupt:
+                    pass
                 continue
             except EOFError:
                 print("\nGoodbye!")
@@ -1640,8 +1956,18 @@ class NeoMindInterface:
 # Entry point
 # ──────────────────────────────────────────────────────────────────────────────
 
-def interactive_chat(mode: str = "chat"):
-    """Launch the NeoMind interface."""
+def interactive_chat(mode: str = "chat", resume_session: str = None,
+                     system_prompt: str = None, verbose: bool = False,
+                     max_turns: int = None):
+    """Launch the NeoMind interface.
+
+    Args:
+        mode: Session mode (chat, coding, fin)
+        resume_session: Session name/id to resume
+        system_prompt: Custom system prompt override
+        verbose: Enable verbose/debug mode
+        max_turns: Max agentic loop iterations
+    """
     api_key = os.environ.get("DEEPSEEK_API_KEY")
     if not api_key:
         print("DEEPSEEK_API_KEY not found in environment.")
@@ -1660,5 +1986,51 @@ def interactive_chat(mode: str = "chat"):
     if chat.mode != mode:
         chat.switch_mode(mode, persist=False)
 
+    # Apply CLI overrides
+    if verbose:
+        chat.verbose_mode = True
+    if system_prompt:
+        chat.system_prompt = system_prompt
+    if max_turns is not None:
+        # Store max_turns so the interface can use it for agentic loop limits
+        chat._cli_max_turns = max_turns
+
     interface = NeoMindInterface(chat)
+
+    # Resume session if requested
+    if resume_session:
+        try:
+            from agent.cli_command_system import CommandDispatcher
+            dispatcher = getattr(chat, '_command_dispatcher', None)
+            if dispatcher:
+                # CommandDispatcher.dispatch is async — await it via asyncio.run
+                # so the resume-from-crash path doesn't get a coroutine back.
+                import asyncio
+                try:
+                    result = asyncio.run(
+                        dispatcher.dispatch(f"/resume {resume_session}", agent=chat)
+                    )
+                except RuntimeError:
+                    # Already inside an event loop — fall back to a fresh loop
+                    loop = asyncio.new_event_loop()
+                    try:
+                        result = loop.run_until_complete(
+                            dispatcher.dispatch(f"/resume {resume_session}", agent=chat)
+                        )
+                    finally:
+                        loop.close()
+                if result and getattr(result, 'text', None):
+                    print(result.text)
+            else:
+                # Fallback: load session directly via state manager
+                if hasattr(chat, 'state_manager') and chat.state_manager:
+                    data = chat.state_manager.load_session(resume_session)
+                    if data and 'messages' in data:
+                        chat.conversation_history = data['messages']
+                        print(f"Resumed session: {resume_session} ({len(data['messages'])} messages)")
+                    else:
+                        print(f"Session not found: {resume_session}")
+        except Exception as e:
+            print(f"Warning: Could not resume session: {e}")
+
     interface.run()

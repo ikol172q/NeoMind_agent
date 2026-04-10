@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Lazy import for hooks to avoid circular dependencies
 _hooks_module = None
+_user_hook_runner = None
 
 
 def _get_hooks_module():
@@ -52,6 +53,18 @@ def _get_hooks_module():
         except Exception as e:
             logger.debug(f"Integration hooks unavailable: {e}")
     return _hooks_module
+
+
+def _get_user_hook_runner():
+    """Lazy load user-configurable HookRunner if available."""
+    global _user_hook_runner
+    if _user_hook_runner is None:
+        try:
+            from agent.services.hooks import HookRunner
+            _user_hook_runner = HookRunner()
+        except Exception as e:
+            logger.debug(f"User hooks unavailable: {e}")
+    return _user_hook_runner
 
 
 @dataclass
@@ -149,6 +162,44 @@ class AgenticLoop:
             self._parser = ToolCallParser()
         return self._parser
 
+    @staticmethod
+    def _strip_extra_tool_calls(response: str, executed_tool_call) -> str:
+        """Remove duplicate/extra <tool_call> blocks from LLM response.
+
+        Keeps only the first <tool_call>...</tool_call> block (which was
+        actually executed) and strips all subsequent ones. This prevents
+        the conversation history from containing multiple tool_call blocks
+        that encourage the LLM to generate even more duplicates.
+
+        Also handles unclosed <tool_call> tags at the end of the response.
+        """
+        import re as _re
+        # Find all <tool_call>...</tool_call> blocks (or unclosed ones)
+        all_blocks = list(_re.finditer(
+            r'<tool_call>.*?</tool_(?:call|result)>',
+            response, _re.DOTALL,
+        ))
+        if len(all_blocks) <= 1:
+            # Also handle unclosed trailing <tool_call> blocks
+            trailing = _re.search(r'<tool_call>\s*\{[^}]*$', response)
+            if trailing:
+                response = response[:trailing.start()].rstrip()
+            return response
+
+        # Keep the first block, strip the rest
+        first_end = all_blocks[0].end()
+        cleaned = response[:first_end]
+        # After the last block, keep any trailing text that isn't a tool_call
+        last_end = all_blocks[-1].end()
+        trailing_text = response[last_end:].strip()
+        if trailing_text:
+            cleaned += "\n" + trailing_text
+
+        logger.info(
+            f"[agentic] Stripped {len(all_blocks) - 1} extra tool_call blocks from response"
+        )
+        return cleaned
+
     def _get_tool_definition(self, tool_name: str):
         """Look up a ToolDefinition from the registry by name."""
         if hasattr(self.registry, '_tool_definitions'):
@@ -191,6 +242,17 @@ class AgenticLoop:
         current_response = llm_response
         matched_skills = []
         matched_skill_id = None
+        # Track consecutive identical errors to prevent infinite retry loops
+        _last_failed_key = None
+        _consecutive_errors = 0
+        _MAX_CONSECUTIVE_ERRORS = 2  # Stop after 2 identical failures
+
+        # Bug #3 fix: also detect when the LLM repeats the *same assistant
+        # response* multiple times even when individual tool calls don't
+        # match exactly. Hash on a normalized prefix of the response.
+        _last_response_sig = None
+        _repeated_response_count = 0
+        _MAX_REPEATED_RESPONSES = 2  # 2 identical responses → force stop
 
         for iteration in range(self.config.max_iterations):
             # 0. On first iteration, try to match skills from context
@@ -227,15 +289,56 @@ class AgenticLoop:
                 except Exception as e:
                     logger.debug(f"Skill matching failed (non-fatal): {e}")
 
+            # 0b. Bug #3 fix: detect repeated assistant responses (the LLM
+            # is stuck in a loop, regenerating essentially the same answer).
+            # We hash on a normalized prefix so trivial whitespace differences
+            # don't defeat detection.
+            try:
+                import hashlib as _hashlib
+                _norm = " ".join((current_response or "").split())[:2000]
+                _sig = _hashlib.md5(_norm.encode("utf-8", errors="replace")).hexdigest()
+                if _sig and _sig == _last_response_sig:
+                    _repeated_response_count += 1
+                else:
+                    _last_response_sig = _sig
+                    _repeated_response_count = 1
+                if _repeated_response_count >= _MAX_REPEATED_RESPONSES:
+                    logger.warning(
+                        f"[agentic] Detected {_repeated_response_count} identical "
+                        f"assistant responses in a row — forcing stop to break loop."
+                    )
+                    yield AgenticEvent(
+                        type="error",
+                        iteration=iteration,
+                        error_message=(
+                            "Forced stop: assistant produced the same response "
+                            f"{_repeated_response_count} times in a row "
+                            "(infinite-loop guard)."
+                        ),
+                    )
+                    yield AgenticEvent(type="done", iteration=iteration)
+                    return
+            except Exception as _e:
+                logger.debug(f"[agentic] repeated-response detector failed: {_e}")
+
             # 1. Parse tool call (pure CPU, no I/O — safe to call directly)
             tool_call = parser.parse(current_response)
             if not tool_call:
                 if '<tool_call>' in current_response:
+                    # Log full response for debugging PARSE FAILED issues
                     logger.error(
                         f"[agentic] Response contains <tool_call> but parser returned None! "
                         f"Response snippet: {current_response[:300]}"
                     )
-                    print(f"[agentic] ⚠️ tool_call tag present but PARSE FAILED. Snippet: {current_response[:200]}", flush=True)
+                    logger.error(
+                        f"[agentic] PARSE FAILED full output ({len(current_response)} chars): "
+                        f"{current_response[:1000]}"
+                    )
+                    # Internal diagnostic — never expose to the user terminal.
+                    logger.debug(
+                        f"[agentic] tool_call tag present but PARSE FAILED. "
+                        f"Snippet: {current_response[:200]}"
+                    )
                 yield AgenticEvent(type="done", iteration=iteration)
                 return
 
@@ -275,13 +378,34 @@ class AgenticLoop:
                 else:
                     result = await self._execute(tool_call)
             except Exception as e:
-                logger.error(f"Tool execution error: {e}", exc_info=True)
+                # Full traceback only at DEBUG level (hidden from user by default)
+                logger.debug(f"Tool execution error details:", exc_info=True)
+                logger.error(f"Tool execution error: {e}")
                 from agent.coding.tools import ToolResult
                 result = ToolResult(False, error=str(e))
 
             # 3b. Apply token budget to tool result (truncate if too large)
             if self.config.token_budget and result.output:
                 result.output = self.config.token_budget.apply_tool_result_budget(result.output)
+
+            # 3c. Track consecutive identical errors to prevent infinite retry loops
+            if not result.success:
+                import json as _json
+                error_key = f"{tool_call.tool_name}:{_json.dumps(tool_call.params, sort_keys=True, default=str)}"
+                if error_key == _last_failed_key:
+                    _consecutive_errors += 1
+                else:
+                    _last_failed_key = error_key
+                    _consecutive_errors = 1
+
+                if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    logger.warning(
+                        f"[agentic] {_consecutive_errors} consecutive identical errors for "
+                        f"{tool_call.tool_name}, forcing wrap-up"
+                    )
+            else:
+                _last_failed_key = None
+                _consecutive_errors = 0
 
             # 4. Format result for history
             from agent.coding.tool_parser import format_tool_result
@@ -367,14 +491,25 @@ class AgenticLoop:
                     except Exception as e:
                         logger.error(f"[agentic] Compaction failed: {e}")
 
-            # After soft limit, tell LLM to wrap up
-            if iteration >= self.config.soft_limit - 1:
+            # After soft limit or consecutive errors, tell LLM to wrap up
+            if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                continuation = (
+                    "The same command has failed multiple times with the same error. "
+                    "STOP retrying this command. Instead, explain the error to the user "
+                    "and suggest an alternative approach. Do NOT make another tool call."
+                )
+            elif iteration >= self.config.soft_limit - 1:
                 continuation = self.config.wrapup_prompt
             else:
                 continuation = self.config.continuation_prompt
 
             combined = feedback + "\n\n" + continuation
-            messages.append({"role": "assistant", "content": current_response})
+            # Strip extra tool_call blocks from the response before storing in history.
+            # LLMs sometimes generate multiple <tool_call> tags in one response, but
+            # we only execute the first. Keeping extras in history encourages the LLM
+            # to repeat them in subsequent turns.
+            cleaned_response = self._strip_extra_tool_calls(current_response, tool_call)
+            messages.append({"role": "assistant", "content": cleaned_response})
             messages.append({"role": "user", "content": combined})
 
             # 6a. Call pre_llm_call hook (if enabled)
@@ -470,6 +605,15 @@ class AgenticLoop:
                 iteration=iteration,
                 llm_text=current_response,
             )
+
+            # After soft limit, if LLM still wants tools, FORCE stop
+            if iteration >= self.config.soft_limit:
+                tool_call_check = parser.parse(current_response)
+                if tool_call_check:
+                    # LLM ignored wrapup — force final response
+                    logger.info(f"[agentic] Forcing stop: LLM still requesting tools after soft_limit (iteration {iteration})")
+                    yield AgenticEvent(type="done", iteration=iteration)
+                    return
 
             # Add to messages for next iteration
             # (Don't add here — next iteration's parse will use current_response,
@@ -579,15 +723,46 @@ class AgenticLoop:
                     from agent.coding.tools import ToolResult
                     return ToolResult(False, error=f"Must Read '{path}' before editing. Use the Read tool first.")
 
+        # ── PreToolUse hook: user-configurable shell hooks ──────────
+        hook_runner = _get_user_hook_runner()
+        if hook_runner:
+            try:
+                pre_result = await asyncio.to_thread(
+                    hook_runner.run_pre_tool_use,
+                    tool_call.tool_name,
+                    tool_call.params,
+                )
+                if not pre_result.allowed:
+                    from agent.coding.tools import ToolResult
+                    deny_msg = pre_result.stdout or pre_result.stderr or "Blocked by pre_tool_use hook"
+                    return ToolResult(False, error=f"Hook denied: {deny_msg}")
+            except Exception as e:
+                logger.debug(f"PreToolUse hook error (non-fatal): {e}")
+
         # Apply defaults and execute
         params = tool_def.apply_defaults(tool_call.params)
 
         # Async-aware execution: if the tool is async, await it directly;
         # otherwise run it in a thread to avoid blocking the event loop.
         if asyncio.iscoroutinefunction(tool_def.execute):
-            return await tool_def.execute(**params)
+            result = await tool_def.execute(**params)
         else:
-            return await asyncio.to_thread(tool_def.execute, **params)
+            result = await asyncio.to_thread(tool_def.execute, **params)
+
+        # ── PostToolUse hook: user-configurable shell hooks ─────────
+        if hook_runner:
+            try:
+                await asyncio.to_thread(
+                    hook_runner.run_post_tool_use,
+                    tool_call.tool_name,
+                    tool_call.params,
+                    result.output or result.error or "",
+                    not result.success,
+                )
+            except Exception as e:
+                logger.debug(f"PostToolUse hook error (non-fatal): {e}")
+
+        return result
 
     def get_tool_prompt(self) -> str:
         """Generate the tool system prompt section from registered tools.

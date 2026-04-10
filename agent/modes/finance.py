@@ -417,24 +417,30 @@ class FinancePersonality(BasePersonality, SharedCommandsMixin):
                 memory = core_fc.get('memory')
 
         if action == "add" and len(parts) > 1:
-            ticker = parts[1].upper().lstrip("$")
+            tickers = [t.upper().lstrip("$") for t in parts[1:]]
+            added = []
+            for ticker in tickers:
+                if memory:
+                    try:
+                        memory.add_to_watchlist(ticker)
+                    except Exception:
+                        pass
+                added.append(f"${ticker}")
             if memory:
-                try:
-                    memory.add_to_watchlist(ticker)
-                    return f"✅ Added ${ticker} to watchlist."
-                except Exception:
-                    pass
-            return f"✅ ${ticker} noted. (Persistent storage not configured — will reset on restart)"
+                return f"✅ Added {', '.join(added)} to watchlist."
+            return f"✅ {', '.join(added)} noted. (Persistent storage not configured — will reset on restart)"
 
         elif action in ("rm", "remove", "del") and len(parts) > 1:
-            ticker = parts[1].upper().lstrip("$")
-            if memory:
-                try:
-                    memory.remove_from_watchlist(ticker)
-                    return f"🗑️ Removed ${ticker} from watchlist."
-                except Exception:
-                    pass
-            return f"🗑️ ${ticker} removal noted."
+            tickers = [t.upper().lstrip("$") for t in parts[1:]]
+            removed = []
+            for ticker in tickers:
+                if memory:
+                    try:
+                        memory.remove_from_watchlist(ticker)
+                    except Exception:
+                        pass
+                removed.append(f"${ticker}")
+            return f"🗑️ Removed {', '.join(removed)} from watchlist."
 
         else:  # show
             if memory:
