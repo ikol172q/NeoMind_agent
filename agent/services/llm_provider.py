@@ -101,6 +101,34 @@ DEFAULT_SPEC: Dict[str, int] = {
     "default_max": 8192,
 }
 
+# ── Model aliases ────────────────────────────────────────────────
+# Maps friendly/short names to actual model IDs.
+# Allows `/switch opus` or `--model sonnet` style usage.
+MODEL_ALIASES: Dict[str, str] = {
+    # Claude-style aliases → DeepSeek equivalents
+    "opus": "deepseek-reasoner",
+    "sonnet": "deepseek-chat",
+    "haiku": "deepseek-chat",
+    # Short aliases
+    "reasoner": "deepseek-reasoner",
+    "coder": "deepseek-coder",
+    "chat": "deepseek-chat",
+    # GLM aliases
+    "glm": "glm-5",
+    "flash": "glm-4.5-flash",
+    # Moonshot aliases
+    "kimi": "kimi-k2.5",
+    "moonshot": "moonshot-v1-128k",
+}
+
+
+def resolve_model_alias(model_id: str) -> str:
+    """Resolve a model alias to its actual model ID.
+
+    Returns the original model_id if no alias matches.
+    """
+    return MODEL_ALIASES.get(model_id.lower(), model_id)
+
 # ── TokenSight proxy support ─────────────────────────────────────
 _TOKENSIGHT_PROXY_URL = os.getenv("TOKENSIGHT_PROXY_URL", "").rstrip("/")
 _TOKENSIGHT_ROUTES = {
@@ -406,6 +434,16 @@ class LLMProviderService:
             f"default {spec['default_max']//1000}K)"
         )
         print(f"Switch:  /switch <model_id>  (e.g. /switch glm-5)")
+        # Show aliases
+        alias_groups: Dict[str, List[str]] = {}
+        for alias, target in MODEL_ALIASES.items():
+            alias_groups.setdefault(target, []).append(alias)
+        if alias_groups:
+            alias_strs = [
+                f"{', '.join(aliases)}→{target}"
+                for target, aliases in sorted(alias_groups.items())
+            ]
+            print(f"Aliases: {' | '.join(alias_strs)}")
         print("=" * 60 + "\n")
 
     # ── Model Switching ────────────────────────────────────────────
@@ -413,8 +451,13 @@ class LLMProviderService:
     def set_model(self, model_id: str) -> bool:
         """Switch to a different model (may change provider).
 
+        Supports aliases: 'opus' → 'deepseek-reasoner', 'sonnet' → 'deepseek-chat', etc.
         Returns True if model was switched successfully, False otherwise.
         """
+        original_id = model_id
+        model_id = resolve_model_alias(model_id)
+        if model_id != original_id:
+            self._status_print(f"Resolved alias '{original_id}' → '{model_id}'", "info")
         new_provider = self.resolve_provider(model_id)
 
         if not new_provider["api_key"]:

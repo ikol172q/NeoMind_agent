@@ -72,6 +72,10 @@ class ServiceRegistry:
         self._session_storage = _UNSET
         self._agent_memory = _UNSET
 
+        # Hooks & Plugins
+        self._hook_runner = _UNSET
+        self._plugin_loader = _UNSET
+
         # Workflow & Evolution
         self._evidence = _UNSET
         self._guard = _UNSET
@@ -331,6 +335,10 @@ class ServiceRegistry:
                 # Auto-inject system context
                 git_status, os_info, date_str = collect_system_context()
                 self._prompt_composer.set_context(git_status, os_info, date_str)
+                # Auto-discover NEOMIND.md / project.md guidance
+                self._prompt_composer.inject_project_guidance(
+                    workspace_root=os.getcwd()
+                )
             except Exception:
                 self._prompt_composer = None
         return self._prompt_composer
@@ -389,6 +397,34 @@ class ServiceRegistry:
             except Exception:
                 self._session_notes = None
         return self._session_notes
+
+    # ── Hooks & Plugins ───────────────────────────────────────────────
+
+    @property
+    def hook_runner(self):
+        """HookRunner — user-configurable PreToolUse/PostToolUse shell hooks."""
+        if self._hook_runner is _UNSET:
+            try:
+                from agent.services.hooks import HookRunner
+                self._hook_runner = HookRunner()
+            except Exception:
+                self._hook_runner = None
+        return self._hook_runner
+
+    @property
+    def plugin_loader(self):
+        """PluginLoader — user plugins from ~/.neomind/plugins/."""
+        if self._plugin_loader is _UNSET:
+            try:
+                from agent.services.plugin_loader import PluginLoader
+                self._plugin_loader = PluginLoader()
+                # Auto-load all discovered plugins on first access.
+                # tool_registry is optional; plugins that don't need it
+                # will still load and register their capabilities.
+                self._plugin_loader.load_all()
+            except Exception:
+                self._plugin_loader = None
+        return self._plugin_loader
 
     # ── Workflow & Evolution ──────────────────────────────────────────
     # These are fully decoupled singletons. Try own init first,
