@@ -156,32 +156,55 @@ class SkillLoader:
         self._skills: Dict[str, Skill] = {}
         self._loaded = False
 
-    def load_all(self) -> int:
-        """Scan and load all SKILL.md files. Returns count loaded."""
+    def load_all(self, skills_dirs: Optional[List[Path]] = None) -> int:
+        """Scan and load all SKILL.md files. Returns count loaded.
+
+        Args:
+            skills_dirs: Additional directories to scan for skills.
+                         Each directory should contain category subdirectories
+                         (shared/, chat/, coding/, fin/). If None, the user
+                         skills directory (~/.neomind/skills/) is scanned
+                         automatically in addition to the built-in skills.
+        """
         self._skills.clear()
         count = 0
 
-        # Scan: shared/ + chat/ + coding/ + fin/
-        for category in ["shared", "chat", "coding", "fin"]:
-            category_dir = self.skills_dir / category
-            if not category_dir.is_dir():
-                continue
+        # Build list of directories to scan: built-in + user + extras
+        scan_dirs = [self.skills_dir]
 
-            for skill_dir in category_dir.iterdir():
-                if not skill_dir.is_dir():
+        # Always include user skills directory
+        user_skills_dir = Path.home() / ".neomind" / "skills"
+        if user_skills_dir.is_dir() and user_skills_dir != self.skills_dir:
+            scan_dirs.append(user_skills_dir)
+
+        # Include any explicitly provided directories
+        if skills_dirs:
+            for d in skills_dirs:
+                if d.is_dir() and d not in scan_dirs:
+                    scan_dirs.append(d)
+
+        # Scan: shared/ + chat/ + coding/ + fin/ in each directory
+        for base_dir in scan_dirs:
+            for category in ["shared", "chat", "coding", "fin"]:
+                category_dir = base_dir / category
+                if not category_dir.is_dir():
                     continue
 
-                skill_file = skill_dir / "SKILL.md"
-                if not skill_file.exists():
-                    continue
+                for skill_dir in category_dir.iterdir():
+                    if not skill_dir.is_dir():
+                        continue
 
-                try:
-                    skill = self._parse_skill_file(skill_file, category)
-                    if skill:
-                        self._skills[skill.name] = skill
-                        count += 1
-                except Exception as e:
-                    print(f"⚠️  Failed to load skill {skill_file}: {e}")
+                    skill_file = skill_dir / "SKILL.md"
+                    if not skill_file.exists():
+                        continue
+
+                    try:
+                        skill = self._parse_skill_file(skill_file, category)
+                        if skill:
+                            self._skills[skill.name] = skill
+                            count += 1
+                    except Exception as e:
+                        print(f"⚠️  Failed to load skill {skill_file}: {e}")
 
         self._loaded = True
         return count

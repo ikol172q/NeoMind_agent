@@ -237,6 +237,15 @@ class NaturalLanguageInterpreter:
             Tuple of (suggested_command, confidence_score) or (None, 0.0)
         """
         text = text.strip()
+
+        # ── BUG-008 guard: reject conversational / polite inputs ────────
+        # Inputs like "Show me the first 5 lines of main.py" are natural
+        # language requests that must reach the LLM, not be rewritten into
+        # a bare /read command.  The should_suggest() heuristic already
+        # detects these; honour it here too.
+        if not self.should_suggest(text):
+            return None, 0.0
+
         # Adjust confidence threshold based on mode
         threshold = self.confidence_threshold
         if mode == "coding":

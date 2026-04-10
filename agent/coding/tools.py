@@ -955,10 +955,53 @@ class ToolRegistry:
             return ToolResult(False, error=f"WebFetch error: {e}")
 
     def _exec_web_search(self, query: str, num_results: int = 5) -> ToolResult:
+        # Bug #2 fix: WebSearchTool exposes async ``search()``, not ``execute()``.
+        # Drive it via asyncio and format the WebSearchResult into plain text.
         try:
-            result = self._get_web_search_tool().execute(
-                query=query, num_results=num_results)
-            return ToolResult(True, output=result)
+            num_results = int(num_results) if num_results is not None else 5
+        except (TypeError, ValueError):
+            num_results = 5
+        try:
+            import asyncio as _asyncio
+            tool = self._get_web_search_tool()
+
+            async def _run():
+                return await tool.search(query=query, num_results=num_results)
+
+            try:
+                # If we're already inside a running loop, run on a fresh loop
+                # in a worker thread to avoid "loop already running" errors.
+                _asyncio.get_running_loop()
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    fut = ex.submit(lambda: _asyncio.new_event_loop().run_until_complete(_run()))
+                    search_result = fut.result()
+            except RuntimeError:
+                # No running loop — safe to use asyncio.run
+                search_result = _asyncio.run(_run())
+
+            if not getattr(search_result, "success", False):
+                return ToolResult(
+                    False,
+                    error=f"WebSearch error: {getattr(search_result, 'error', 'unknown error')}",
+                )
+
+            hits = getattr(search_result, "results", []) or []
+            if not hits:
+                return ToolResult(True, output=f"No results for: {query}")
+
+            lines = [f"# WebSearch results for: {query}", ""]
+            for i, hit in enumerate(hits, 1):
+                title = getattr(hit, "title", "") or ""
+                url = getattr(hit, "url", "") or ""
+                snippet = getattr(hit, "snippet", "") or ""
+                lines.append(f"{i}. {title}")
+                if url:
+                    lines.append(f"   {url}")
+                if snippet:
+                    lines.append(f"   {snippet}")
+                lines.append("")
+            return ToolResult(True, output="\n".join(lines).rstrip())
         except Exception as e:
             return ToolResult(False, error=f"WebSearch error: {e}")
 
@@ -1631,6 +1674,17 @@ class ToolRegistry:
 
     def _exec_read(self, path: str, offset: int = 0, limit: int = 0) -> ToolResult:
         """Execute file read with metadata, staleness tracking, and deduplication."""
+        # Bug #1 fix: LLMs sometimes pass offset/limit as strings ("0") instead
+        # of ints. Coerce defensively so the tool does not crash.
+        try:
+            offset = int(offset) if offset is not None else 0
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = int(limit) if limit is not None else 0
+        except (TypeError, ValueError):
+            limit = 0
+
         resolved = self._resolve_path(path)
 
         # Deduplication: if exact same range was already read, return abbreviated
@@ -1664,12 +1718,51 @@ class ToolRegistry:
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — file writes are disabled. Exit plan mode first.")
         result = self.write_file(path, content)
-        result.metadata["file_path"] = self._resolve_path(path)
+        resolved = self._resolve_path(path)
+        result.metadata["file_path"] = resolved
         if result.success:
+            # Bug #4 fix: phantom Write — write_file reported success but
+            # nothing landed on disk. Verify the file actually exists and
+            # has the expected size before reporting success to the LLM.
+            try:
+                expected_bytes = len(content.encode("utf-8"))
+            except Exception:
+                expected_bytes = len(content)
+            try:
+                if not os.path.exists(resolved):
+                    return ToolResult(
+                        False,
+                        error=(
+                            f"Write verification failed: file does not exist "
+                            f"after write: {resolved}"
+                        ),
+                        metadata={"file_path": resolved},
+                    )
+                actual_bytes = os.path.getsize(resolved)
+                if actual_bytes != expected_bytes:
+                    return ToolResult(
+                        False,
+                        error=(
+                            f"Write verification failed: expected {expected_bytes} "
+                            f"bytes on disk, found {actual_bytes} bytes at {resolved}"
+                        ),
+                        metadata={
+                            "file_path": resolved,
+                            "expected_bytes": expected_bytes,
+                            "actual_bytes": actual_bytes,
+                        },
+                    )
+            except OSError as e:
+                return ToolResult(
+                    False,
+                    error=f"Write verification failed: {e}",
+                    metadata={"file_path": resolved},
+                )
             result.metadata["bytes_written"] = len(content)
             result.metadata["lines_written"] = content.count("\n") + (
                 1 if content and not content.endswith("\n") else 0
             )
+            result.metadata["verified_bytes"] = expected_bytes
         return result
 
     def _exec_edit(self, path: str, old_string: str, new_string: str,
@@ -1834,10 +1927,19 @@ class ToolRegistry:
         Security: ensures resolved path stays within the workspace and
         passes all path traversal prevention checks.
         """
-        # Run path traversal checks via SafetyManager
+        # Expand ~ to actual home directory FIRST (before any checks)
+        if path.startswith('~'):
+            path = os.path.expanduser(path)
+
+        # Run full safety check (includes protected files, path traversal, etc.)
         try:
             from agent.services.safety_service import SafetyManager
             sm = SafetyManager(workspace_root=self.working_dir)
+            # Check is_path_safe (covers protected files, system dirs, etc.)
+            ok, reason = sm.is_path_safe(path, operation)
+            if not ok:
+                raise ValueError(f"Path security check failed: {reason}")
+            # Also check path traversal specifically
             ok, reason = sm.validate_path_traversal(path, operation)
             if not ok:
                 raise ValueError(f"Path security check failed: {reason}")
@@ -1849,7 +1951,12 @@ class ToolRegistry:
             p = pathlib.Path(self.working_dir) / p
         resolved = str(p.resolve())
         workspace_abs = str(pathlib.Path(self.working_dir).resolve())
-        if not resolved.startswith(workspace_abs):
+        # Allow workspace paths, /tmp/, and macOS temp dirs (/var/folders/)
+        # macOS: /tmp is a symlink to /private/tmp, so include both
+        _SAFE_EXTERNAL_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/")
+        if not resolved.startswith(workspace_abs) and not any(
+            resolved.startswith(prefix) for prefix in _SAFE_EXTERNAL_PREFIXES
+        ):
             raise ValueError(f"Path '{path}' resolves outside workspace")
         return resolved
 
@@ -2247,10 +2354,37 @@ class ToolRegistry:
             for entry in entries:
                 if entry.name.startswith(".") and entry.name in (".git", ".venv", "__pycache__"):
                     continue
-                if entry.is_dir():
+                # DR05 fix: use lstat() so broken symlinks don't raise FileNotFoundError.
+                # Also guard with try/except for any other stat() failure (permissions, etc.)
+                try:
+                    is_symlink = entry.is_symlink()
+                    st = entry.lstat()
+                    import stat as _stat_mod
+                    is_dir = _stat_mod.S_ISDIR(st.st_mode)
+                except OSError:
+                    lines.append(f"  {entry.name:<40} {'<stat err>':>8}")
+                    continue
+
+                if is_symlink:
+                    # Distinguish broken vs valid symlinks without crashing
+                    try:
+                        target_exists = entry.exists()
+                    except OSError:
+                        target_exists = False
+                    if not target_exists:
+                        lines.append(f"  {entry.name:<40} {'<broken link>':>8}")
+                    else:
+                        try:
+                            target = os.readlink(str(entry))
+                        except OSError:
+                            target = "?"
+                        lines.append(f"  {entry.name} -> {target}")
+                    continue
+
+                if is_dir:
                     lines.append(f"  {entry.name}/")
                 else:
-                    size = entry.stat().st_size
+                    size = st.st_size
                     if size < 1024:
                         size_str = f"{size}B"
                     elif size < 1024 * 1024:
