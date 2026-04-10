@@ -188,7 +188,7 @@ BASH_SECURITY_CHECKS = {
         "severity": "critical",
     },
     "wget_pipe": {
-        "pattern": r"\bwget\b.*-O\s*-\s*\|\s*(bash|sh|python)",
+        "pattern": r"\bwget\b.*-O\s*-.*\|\s*(bash|sh|python)",
         "description": "wget piped to shell interpreter",
         "severity": "critical",
     },
@@ -220,6 +220,59 @@ BASH_SECURITY_CHECKS = {
 }
 
 
+SENSITIVE_SYSTEM_FILES = [
+    '/etc/passwd', '/etc/shadow', '/etc/master.passwd', '/etc/sudoers',
+    '/etc/security/passwd', '/etc/gshadow', '/etc/group',
+]
+
+
+def _check_protected_file_access(command: str) -> List[Tuple[str, str, str]]:
+    """Detect bash commands that read/write protected credential/config files.
+
+    Checks two categories:
+    1. User credential files from SafetyManager.PROTECTED_FILES (relative to ~)
+    2. Sensitive system files (absolute paths like /etc/passwd, /etc/shadow)
+
+    Returns:
+        List of (check_name, description, severity) for each match.
+    """
+    from agent.services.safety_service import SafetyManager
+
+    findings = []
+    home = os.path.expanduser('~')
+
+    # --- Check user credential/config files (relative to $HOME) ---
+    for pf in SafetyManager.PROTECTED_FILES:
+        # Build variants: ~/.ssh/id_rsa, $HOME/.ssh/id_rsa, /Users/x/.ssh/id_rsa
+        tilde_path = os.path.join('~', pf)
+        home_var_path = os.path.join('$HOME', pf)
+        abs_path = os.path.join(home, pf)
+
+        for variant in (tilde_path, home_var_path, abs_path):
+            # Escape for regex — match the literal path as a token boundary
+            escaped = re.escape(variant)
+            # Match if the path appears as a standalone token (not as substring of a longer path)
+            if re.search(r'(?:^|\s|[;|&`"\'])' + escaped + r'(?:\s|$|[;|&`"\'])', command):
+                findings.append((
+                    'protected_file_access',
+                    f'Access to protected file blocked: {pf}',
+                    'critical',
+                ))
+                break  # Don't report same file multiple times
+
+    # --- Check sensitive system files (absolute paths) ---
+    for sf in SENSITIVE_SYSTEM_FILES:
+        escaped = re.escape(sf)
+        if re.search(r'(?:^|\s|[;|&`"\'])' + escaped + r'(?:\s|$|[;|&`"\'])', command):
+            findings.append((
+                'protected_file_access',
+                f'Access to sensitive system file blocked: {sf}',
+                'critical',
+            ))
+
+    return findings
+
+
 def validate_bash_security(command: str) -> List[Tuple[str, str, str]]:
     """Run extended bash security checks against a command.
 
@@ -229,6 +282,9 @@ def validate_bash_security(command: str) -> List[Tuple[str, str, str]]:
         List of (check_name, description, severity) for each match.
     """
     findings = []
+
+    # Phase 0: Protected file access checks
+    findings.extend(_check_protected_file_access(command))
 
     # Phase 1: Regex pattern checks
     for name, check in BASH_SECURITY_CHECKS.items():

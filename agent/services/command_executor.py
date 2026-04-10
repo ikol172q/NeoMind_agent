@@ -227,12 +227,12 @@ class CommandExecutor:
                     process.stderr = process.stderr[:self.max_output_size // 2] + "\n...[output truncated]"
 
             return {
-                'success': True,
+                'success': process.returncode == 0,
                 'returncode': process.returncode,
                 'stdout': process.stdout,
                 'stderr': process.stderr,
                 'execution_time': execution_time,
-                'error_message': ''
+                'error_message': '' if process.returncode == 0 else f'Command exited with code {process.returncode}'
             }
 
         except subprocess.TimeoutExpired:

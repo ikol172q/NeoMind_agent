@@ -293,6 +293,10 @@ class AgentConfigManager:
     def system_prompt(self) -> str:
         return self._active.get("system_prompt", "")
 
+    @system_prompt.setter
+    def system_prompt(self, value: str):
+        self._active["system_prompt"] = value
+
     @property
     def search_enabled(self) -> bool:
         return self._active.get("search_enabled", True)
