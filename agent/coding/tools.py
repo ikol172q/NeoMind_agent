@@ -1895,17 +1895,28 @@ class ToolRegistry:
             return self._tool_definitions[canonical]
         return None
 
-    def get_all_tools(self) -> List[Any]:
-        """Get all registered tool definitions in display order."""
+    def get_all_tools(self, mode: Optional[str] = None) -> List[Any]:
+        """Get all registered tool definitions in display order.
+
+        If `mode` is provided, tools are filtered by their `allowed_modes`
+        attribute: only tools whose allowed_modes is None (shared) or
+        contains `mode` are returned. This is the mode-gating mechanism
+        that lets fin-mode LLMs see `finance_*` tools, coding-mode LLMs
+        see `code_*` tools, etc., without cross-mode leakage.
+
+        When `mode` is None, all tools are returned (legacy behaviour).
+        """
         # Display order: Bash, Read, Write, Edit, Glob, Grep, LS
         order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"]
         result = []
         for name in order:
             if name in self._tool_definitions:
-                result.append(self._tool_definitions[name])
+                tool_def = self._tool_definitions[name]
+                if tool_def.is_available_in_mode(mode):
+                    result.append(tool_def)
         # Append any tools not in the default order
         for name, tool_def in self._tool_definitions.items():
-            if name not in order:
+            if name not in order and tool_def.is_available_in_mode(mode):
                 result.append(tool_def)
         return result
 
