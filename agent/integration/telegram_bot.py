@@ -682,13 +682,18 @@ class NeoMindTelegramBot:
             fallbacks = ", ".join(f"{p['name']}:{p['model']}" for p in chain[1:])
             lines.append(f"🔗 备选: {fallbacks}")
 
-        # LiteLLM health
-        state = self._state_mgr._read_state()
-        litellm_info = state.get("litellm", {})
-        config = self._state_mgr.get_bot_config("neomind")
-        provider_mode = config.get("provider_mode", "direct")
-        health = "🟢" if litellm_info.get("health_ok") else "🔴"
-        lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
+        # Provider wiring — prefer the LLM Router display when it's
+        # actually in use, otherwise fall back to litellm/direct status.
+        router_base, router_key = self._router_env()
+        if primary == "router" and router_base and router_key:
+            lines.append(f"🔌 Router: 🟢 <code>{router_base}</code>")
+        else:
+            state = self._state_mgr._read_state()
+            litellm_info = state.get("litellm", {})
+            config = self._state_mgr.get_bot_config("neomind")
+            provider_mode = config.get("provider_mode", "direct")
+            health = "🟢" if litellm_info.get("health_ok") else "🔴"
+            lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
 
         # ── Search ──
         search = self.components.get("search")
