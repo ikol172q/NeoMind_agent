@@ -12,7 +12,7 @@ From any NeoMind REPL in coding mode:
 
 NeoMind will:
 1. Spin up a 2-agent team via `/team create telegram-selftest`
-2. Spawn a **tester** worker that uses Telethon to send real messages to `@neomindagent_bot`
+2. Spawn a **tester** worker that uses Telethon to send real messages to `@your_neomind_bot`
 3. Spawn a **fixer** worker that reads bug reports and patches source
 4. Run the scenario gate from `tests/qa_archive/plans/2026-04-10_telegram_validation_v1.py`
 5. Loop: tester runs → flags fails → fixer patches → tester re-verifies
@@ -107,7 +107,7 @@ The "validated by" column must reference a specific SID from the scenario librar
 ## Coordinator checklist
 
 Before each run, verify:
-1. `@neomindagent_bot` is RUNNING: `docker exec neomind-telegram supervisorctl status neomind-agent`
+1. `@your_neomind_bot` is RUNNING: `docker exec neomind-telegram supervisorctl status neomind-agent`
 2. `git status --short` is clean (no uncommitted WIP that could be lost)
 3. `~/.config/neomind-tester/telethon.env` exists with valid credentials
 4. `tests/integration/telegram_tester.py` exists and imports cleanly

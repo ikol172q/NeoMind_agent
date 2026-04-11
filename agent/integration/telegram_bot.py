@@ -347,7 +347,7 @@ class NeoMindTelegramBot:
         if msg.chat.type == "private":
             return True
         # Group chat: check if command has @username suffix
-        text = msg.text.split()[0]  # e.g. "/model@neomindagent_bot"
+        text = msg.text.split()[0]  # e.g. "/model@your_neomind_bot"
         if "@" in text:
             # Explicit target — check if it's us
             target = text.split("@", 1)[1].lower()

@@ -38,7 +38,7 @@ Should show an `iTerm2` process listening on `127.0.0.1:1912`. If empty, iTerm2 
 In the newly-launched iTerm2:
 
 ```
-cd /Users/paomian_kong/Desktop/NeoMind_agent
+cd $REPO_ROOT
 claude
 ```
 
@@ -97,4 +97,4 @@ Scenario replies are sent to a live iTerm2 window — you can visually inspect w
 - **Evidence**: `tests/qa_archive/results/2026-04-11_closed_loop_pass.md` + `tests/qa_archive/results/2026-04-11_pre_activation_smoke.md` + `plans/2026-04-11_todo_activation_closed_loop.md`
 - **Memory updates**: `reference_canary_pipeline.md` + `feedback_canary_orchestrator_gotchas.md` added to MEMORY.md index
 
-The canary bot (`@neomindagent_test_bot`, container `neomind-canary`) is still running in the background. You can leave it running between sessions — it only consumes ~1GB memory and uses the test bot token (no production impact).
+The canary bot (`@your_canary_bot_example`, container `neomind-canary`) is still running in the background. You can leave it running between sessions — it only consumes ~1GB memory and uses the test bot token (no production impact).

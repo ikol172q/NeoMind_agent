@@ -36,7 +36,7 @@ Architecture:
 
 ```
 ┌─────────────────────────────────────────────────┐
-│         @neomindagent_bot (production)          │
+│         @your_neomind_bot (production)          │
 │  Container: neomind-telegram                    │
 │  Token: TELEGRAM_BOT_TOKEN                      │
 │  Always serves real users                       │
@@ -46,7 +46,7 @@ Architecture:
                        │ (restart only after canary PASS)
                        │
 ┌─────────────────────────────────────────────────┐
-│       @neomindagent_test_bot (canary)            │
+│       @your_canary_bot_example (canary)            │
 │  Container: neomind-canary                      │
 │  Token: TELEGRAM_TEST_BOT_TOKEN                 │
 │  Restarts FIRST on every evolution              │
@@ -59,7 +59,7 @@ Architecture:
 
 #### Prerequisites (user action required)
 
-- [ ] **User creates a second bot via @BotFather** → `@neomindagent_test_bot` or similar
+- [ ] **User creates a second bot via @BotFather** → `@your_canary_bot_example` or similar
 - [ ] **User adds `TELEGRAM_TEST_BOT_TOKEN=...` to `.env`** (note: NOT the production token)
 - [ ] **User creates a separate Telegram account or uses the same account** for the canary tester (can reuse existing tester credentials)
 
@@ -111,7 +111,7 @@ Architecture:
   ```
   so the same tester code can target either the production or canary bot by env.
 
-- [ ] **`~/.config/neomind-tester/telethon.env`**: add `TG_CANARY_BOT_USERNAME=@neomindagent_test_bot`
+- [ ] **`~/.config/neomind-tester/telethon.env`**: add `TG_CANARY_BOT_USERNAME=@your_canary_bot_example`
 
 - [ ] **`tests/qa_archive/plans/2026-04-10_telegram_validation_v1.py`**: no changes required — scenarios are bot-agnostic.
 
@@ -249,7 +249,7 @@ Both can be done independently; they don't share code.
 
 ## Open questions for user
 
-1. **Canary bot token**: willing to create `@neomindagent_test_bot` via @BotFather?
+1. **Canary bot token**: willing to create `@your_canary_bot_example` via @BotFather?
 2. **Canary state isolation**: OK with a separate `/data/neomind-canary/` directory, or prefer the same directory with a `canary=true` flag?
 3. **iTerm2 Python API**: already enabled on your machine, or needs setup?
 4. **Which to prioritize**: canary first, iTerm2 first, or both in parallel (across 2 sessions)?

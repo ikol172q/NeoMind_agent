@@ -1,6 +1,6 @@
 {
   "timestamp": "2026-04-10 00:36:54",
-  "bot": "@neomindagent_bot",
+  "bot": "@your_neomind_bot",
   "elapsed_seconds": 851.2,
   "total": 30,
   "passed": 24,
@@ -122,7 +122,7 @@
       "sent": "/status",
       "verdict": "PASS",
       "reason": "",
-      "first_reply_snippet": "**NeoMind Status**\n\n🧩 模式: **fin** | 思考: OFF\n🤖 模型: `kimi-k2.5` via router\n🧠 思考模型: `deepseek-reasoner`\n🔌 Router: 🔴 http://host.docker.internal:8000/v1\n\n🔍 搜索引擎: 5 源 (T1:5 T2:0 T3:0)\n   内容提取: ✅\n📊 数据源: Finnhub, yfinance, AKShare, CoinGecko\n🧠 加密记忆: ✅\n📱 Sync 模式: openclaw\n\n🤖 Bot: @neomindagent_bot\n🤝 OpenCla"
+      "first_reply_snippet": "**NeoMind Status**\n\n🧩 模式: **fin** | 思考: OFF\n🤖 模型: `kimi-k2.5` via router\n🧠 思考模型: `deepseek-reasoner`\n🔌 Router: 🔴 http://host.docker.internal:8000/v1\n\n🔍 搜索引擎: 5 源 (T1:5 T2:0 T3:0)\n   内容提取: ✅\n📊 数据源: Finnhub, yfinance, AKShare, CoinGecko\n🧠 加密记忆: ✅\n📱 Sync 模式: openclaw\n\n🤖 Bot: @your_neomind_bot\n🤝 OpenCla"
     },
     {
       "sid": "Q01",

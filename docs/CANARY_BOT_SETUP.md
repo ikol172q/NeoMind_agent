@@ -19,7 +19,7 @@ on reboot the downtime can compound.
 
 With a canary bot:
 
-1. The proposed change deploys to **@neomindagent_test_bot first** (a
+1. The proposed change deploys to **@your_canary_bot_example first** (a
    completely separate Telegram bot you create via @BotFather).
 2. The Telethon validator (see `tests/qa_archive/plans/2026-04-10_telegram_validation_v1.py`)
    runs the `gate_b3` or `gate_final` subset against the canary bot.
@@ -38,12 +38,12 @@ rolls back the canary only.
 1. Open Telegram and DM **@BotFather**.
 2. Send `/newbot`.
 3. Pick a display name (e.g. `NeoMind Canary`).
-4. Pick a username ending in `bot` (e.g. `neomindagent_test_bot`).
+4. Pick a username ending in `bot` (e.g. `your_canary_bot_example`).
 5. Copy the token BotFather hands back — looks like `1234567890:AbCdEf...`.
 
 ### 2. Add the token to `.env`
 
-Open `/Users/paomian_kong/Desktop/NeoMind_agent/.env` and add:
+Open `$REPO_ROOT/.env` and add:
 
 ```
 # Second Telegram bot used by the canary deployment pipeline.
@@ -60,10 +60,10 @@ container reads `TELEGRAM_TEST_BOT_TOKEN` and maps it into its own
 Edit `~/.config/neomind-tester/telethon.env` and add:
 
 ```
-TG_CANARY_BOT_USERNAME=@neomindagent_test_bot
+TG_CANARY_BOT_USERNAME=@your_canary_bot_example
 ```
 
-(Keep `TG_BOT_USERNAME=@neomindagent_bot` as-is — that's your
+(Keep `TG_BOT_USERNAME=@your_neomind_bot` as-is — that's your
 production bot and the tester still defaults to it. Only the canary
 flow flips to the test bot via the env variable
 `NEOMIND_TESTER_TARGET=canary`.)
@@ -71,7 +71,7 @@ flow flips to the test bot via the env variable
 ### 4. Start the canary container
 
 ```
-cd /Users/paomian_kong/Desktop/NeoMind_agent
+cd $REPO_ROOT
 docker compose --profile canary up -d neomind-canary
 ```
 
@@ -97,7 +97,7 @@ Should show RUNNING.
 ### 5. Smoke-test the preflight check
 
 ```
-cd /Users/paomian_kong/Desktop/NeoMind_agent
+cd $REPO_ROOT
 .venv/bin/python -c "
 from agent.evolution.canary_deploy import CanaryDeployer
 d = CanaryDeployer()

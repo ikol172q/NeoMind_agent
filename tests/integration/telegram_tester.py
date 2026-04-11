@@ -13,7 +13,7 @@ This is the canonical Telegram tester driver. It is imported by:
 
 Role contract (non-negotiable):
   - This module is a TESTER. It NEVER modifies source code.
-  - It only sends real messages to @neomindagent_bot and reports verdicts.
+  - It only sends real messages to @your_neomind_bot and reports verdicts.
   - Subagents using this module must have "read-only under agent/ and tests/"
     enforcement via their prompt; fixer agents never touch this driver.
 
@@ -23,7 +23,7 @@ Setup:
         TG_API_ID=...
         TG_API_HASH=...
         TG_PHONE=+1...
-        TG_BOT_USERNAME=@neomindagent_bot
+        TG_BOT_USERNAME=@your_neomind_bot
   3. .venv/bin/pip install telethon (already installed in neo venv)
   4. .venv/bin/python -m tests.integration.telegram_tester
      .venv/bin/python -m tests.integration.telegram_tester --plan smoke
