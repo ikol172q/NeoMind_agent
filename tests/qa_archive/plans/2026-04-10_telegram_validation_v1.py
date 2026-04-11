@@ -149,7 +149,11 @@ D_SCENARIOS: List[Scenario] = [
 
 T_SCENARIOS: List[Scenario] = [
     ("T01", "/tune", 15, ["tune", "prompt", "reset", "trigger", "status"], "T"),
-    ("T02", "/tune status", 15, ["配置", "status", "当前", "默认", "覆盖"], "T"),
+    # Empty-state reply is "📋 No custom overrides — using all defaults."
+    # — match on the English words the bot actually uses, not the Chinese
+    # ones I assumed in v1.
+    ("T02", "/tune status", 15,
+        ["overrides", "defaults", "custom", "📋", "配置"], "T"),
     ("T03", "/tune prompt 回复请更简洁些", 20,
         ["已", "追加", "prompt", "更简洁"], "T"),
     ("T04", "/tune status", 15, ["更简洁"], "T"),  # confirms T03 persisted
@@ -157,7 +161,9 @@ T_SCENARIOS: List[Scenario] = [
         ["已", "添加", "trigger", "半导体"], "T"),
     ("T06", "/tune reset", 15,
         ["已重置", "重置", "reset", "默认"], "T"),
-    ("T07", "/tune status", 15, ["默认", "无", "empty", "none"], "T"),
+    # Post-reset state returns to "No custom overrides" English empty state.
+    ("T07", "/tune status", 15,
+        ["overrides", "defaults", "No custom", "📋"], "T"),
     ("T08", "/tune 让搜索结果更偏向中文新闻源", 45,
         ["已", "中文", "新闻", "搜索", "源", "trigger"], "T"),
 ]
@@ -186,8 +192,11 @@ A_SCENARIOS: List[Scenario] = [
         ["Hacker News", "HN", "top", "upvotes", "story", "news.ycombinator"], "A"),
     ("A10", "/hooks", 15,
         ["hooks", "钩子", "diagnostic", "registered", "active"], "A"),
+    # /history reply on empty chat is "没有对话记录" (Chinese) — the
+    # original v1 keywords were wrong. Accept either empty-state Chinese
+    # or the verbose English "history active messages" form.
     ("A11", "/history", 15,
-        ["messages", "history", "active", "消息"], "A"),
+        ["对话", "记录", "messages", "history", "active", "消息", "没有"], "A"),
     ("A12", "/admin stats", 15,
         ["Stats", "database", "messages", "总数", "chats"], "A"),
 ]
