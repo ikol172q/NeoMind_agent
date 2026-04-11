@@ -4121,32 +4121,50 @@ class NeoMindTelegramBot:
         EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
-            # Try providers in order
+            # Try providers in order. On HTTP 429 (rate limit), retry the same
+            # provider with backoff honoring Retry-After before advancing to
+            # the next — important when the chain has only one entry (router).
             response = None
             used_provider = None
             for provider in providers:
-                try:
-                    print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
-                    _temp = _safe_temperature(provider["model"])
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda p=provider, t=_temp: req.post(
-                            p["base_url"],
-                            headers={"Authorization": f"Bearer {p['api_key']}",
-                                     "Content-Type": "application/json"},
-                            json={"model": p["model"], "messages": messages,
-                                  "max_tokens": 4096, "temperature": t, "stream": True},
-                            timeout=90,
-                            stream=True,
-                        ))
-                    if response.status_code == 200:
-                        used_provider = provider
-                        break
-                    else:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
+                        _temp = _safe_temperature(provider["model"])
+                        response = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda p=provider, t=_temp: req.post(
+                                p["base_url"],
+                                headers={"Authorization": f"Bearer {p['api_key']}",
+                                         "Content-Type": "application/json"},
+                                json={"model": p["model"], "messages": messages,
+                                      "max_tokens": 4096, "temperature": t, "stream": True},
+                                timeout=90,
+                                stream=True,
+                            ))
+                        if response.status_code == 200:
+                            used_provider = provider
+                            break
+                        if response.status_code == 429 and _attempts_429 < 2:
+                            # Honor Retry-After header; fall back to exponential
+                            retry_after = response.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 5.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 5.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 30.0)
+                            print(f"[llm-stream] ⏳ {provider['name']} 429, retry-after={wait_s}s (attempt {_attempts_429+1}/2)", flush=True)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue  # retry same provider
                         print(f"[llm-stream] ❌ {provider['name']} returned {response.status_code}", flush=True)
-                        continue  # try next provider
-                except Exception as e:
-                    print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
-                    continue
+                        break  # non-retryable, advance to next provider
+                    except Exception as e:
+                        print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
+                        break  # advance to next provider
+                if used_provider:
+                    break
+                # else: advance to next provider in outer loop
 
             if not response or response.status_code != 200:
                 status = response.status_code if response else "all failed"
@@ -4708,29 +4726,45 @@ class NeoMindTelegramBot:
         EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
-            # Step 2: Stream the response (try providers in order)
+            # Step 2: Stream the response (try providers in order, with
+            # per-provider 429 retry-after backoff — critical when chain
+            # has only one entry like the router).
             response = None
             used_provider = None
             for provider in providers:
-                try:
-                    print(f"[llm-think] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
-                    response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
-                        p["base_url"],
-                        headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
-                        json={"model": p["model"], "messages": messages, "max_tokens": 4096, "stream": True},
-                        timeout=120,
-                        stream=True,
-                    ))
-                    if response.status_code == 200:
-                        used_provider = provider
-                        print(f"[llm-think] ✅ Connected to {provider['name']}:{provider['model']}", flush=True)
-                        break
-                    else:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        print(f"[llm-think] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
+                        response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
+                            p["base_url"],
+                            headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
+                            json={"model": p["model"], "messages": messages, "max_tokens": 4096, "stream": True},
+                            timeout=120,
+                            stream=True,
+                        ))
+                        if response.status_code == 200:
+                            used_provider = provider
+                            print(f"[llm-think] ✅ Connected to {provider['name']}:{provider['model']}", flush=True)
+                            break
+                        if response.status_code == 429 and _attempts_429 < 2:
+                            retry_after = response.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 5.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 5.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 30.0)
+                            print(f"[llm-think] ⏳ {provider['name']} 429, retry-after={wait_s}s (attempt {_attempts_429+1}/2)", flush=True)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue  # retry same provider
                         print(f"[llm-think] ❌ {provider['name']} returned {response.status_code}", flush=True)
-                        continue  # try next provider
-                except Exception as e:
-                    print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
-                    continue  # try next provider
+                        break  # non-retryable, advance provider
+                    except Exception as e:
+                        print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
+                        break
+                if used_provider:
+                    break
 
             if not response or response.status_code != 200:
                 status = response.status_code if response else "all timed out"
