@@ -2,7 +2,7 @@
 
 Authoritative scenario library for Phase B validation of the slash-command
 taxonomy v5 cleanup and subsequent tool refactor. Every scenario sends a
-REAL message via Telethon to @neomindagent_bot and verifies the REAL
+REAL message via Telethon to @your_neomind_bot and verifies the REAL
 reply — no mocks, no pexpect, no harness sanitization.
 
 This file is the single source of truth for what "tested" means in this
@@ -308,14 +308,14 @@ X_SCENARIOS: List[Scenario] = [
 # ── G — Group chat (8, OPTIONAL — skip if no test group) ──────────────
 
 G_SCENARIOS: List[Scenario] = [
-    ("G01", "/status@neomindagent_bot", 15, ["status", "kimi", "router"], "G"),
-    ("G02", "@neomindagent_bot 苹果今天多少钱", 90, ["Apple", "AAPL", "$"], "G"),
-    ("G03", "/stock@neomindagent_bot AAPL", 30, ["AAPL", "$"], "G"),
-    ("G04", "/clear@neomindagent_bot", 15, ["归档", "clear"], "G"),
+    ("G01", "/status@your_neomind_bot", 15, ["status", "kimi", "router"], "G"),
+    ("G02", "@your_neomind_bot 苹果今天多少钱", 90, ["Apple", "AAPL", "$"], "G"),
+    ("G03", "/stock@your_neomind_bot AAPL", 30, ["AAPL", "$"], "G"),
+    ("G04", "/clear@your_neomind_bot", 15, ["归档", "clear"], "G"),
     ("G05", "random message no mention no slash", 10, [], "G"),  # expect NO reply
-    ("G06", "/help@neomindagent_bot", 15, ["commands", "help", "命令"], "G"),
-    ("G07", "@neomindagent_bot 什么是 PE 不要搜索", 90, ["市盈率", "PE"], "G"),
-    ("G08", "/mode@neomindagent_bot fin", 15, ["fin", "已切换"], "G"),
+    ("G06", "/help@your_neomind_bot", 15, ["commands", "help", "命令"], "G"),
+    ("G07", "@your_neomind_bot 什么是 PE 不要搜索", 90, ["市盈率", "PE"], "G"),
+    ("G08", "/mode@your_neomind_bot fin", 15, ["fin", "已切换"], "G"),
 ]
 
 

@@ -1,7 +1,7 @@
 # Telegram-Focused Test Plan
 **Date:** 2026-04-09
 **Driver:** Telethon (real Telegram client, not tmux)
-**Why:** User uses NeoMind primarily through @neomindagent_bot for finance/research, NOT for coding inside Telegram. Coding is done in CLI / VS Code. This plan deliberately excludes scenarios that the user never actually runs in Telegram.
+**Why:** User uses NeoMind primarily through @your_neomind_bot for finance/research, NOT for coding inside Telegram. Coding is done in CLI / VS Code. This plan deliberately excludes scenarios that the user never actually runs in Telegram.
 
 ## What We Test (200 scenarios)
 

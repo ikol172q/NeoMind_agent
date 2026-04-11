@@ -2,10 +2,10 @@
 
 Architecture (see plans/TODO_zero_downtime_self_evolution.md):
 
-    production bot (@neomindagent_bot)
+    production bot (@your_neomind_bot)
         ↑ restart ONLY after canary passes
         │
-    canary bot (@neomindagent_test_bot)  ← restarted first on every evolve
+    canary bot (@your_canary_bot_example)  ← restarted first on every evolve
         ↑ Telethon validator hits this
 
 Flow:

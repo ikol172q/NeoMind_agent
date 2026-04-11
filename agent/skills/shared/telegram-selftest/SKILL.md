@@ -16,7 +16,7 @@ This skill is the Telegram counterpart of `agent/skills/shared/selftest/SKILL.md
 
 The user's primary interfaces are **Telegram** (for voice / quick chat / mobile) and **CLI** (for coding / batch work). Bugs in either are fatal because that's all the user has. CLI bugs are caught by the tmux-based `selftest` skill. Telegram bugs need a different driver: **Telethon** (a real MTProto client), not tmux.
 
-Pexpect / CLI harnesses cannot test Telegram at all because they don't speak MTProto. Telethon speaks MTProto, logs in as a real user, and sends real messages to `@neomindagent_bot` — the same path a real human takes.
+Pexpect / CLI harnesses cannot test Telegram at all because they don't speak MTProto. Telethon speaks MTProto, logs in as a real user, and sends real messages to `@your_neomind_bot` — the same path a real human takes.
 
 ## The two-agent contract
 
@@ -62,7 +62,7 @@ Send this exact briefing to the tester via mailbox:
 
 ```
 You are the TESTER. NEVER modify source code. Use ONLY Telethon through
-tests/integration/telegram_tester.py to interact with @neomindagent_bot.
+tests/integration/telegram_tester.py to interact with @your_neomind_bot.
 
 REQUIRED METHOD (no exceptions):
   1. Import SUBSETS from
@@ -155,7 +155,7 @@ This skill depends on:
 - `tests/qa_archive/plans/2026-04-10_telegram_validation_v1.py` — the scenario library
 - `agent/agentic/swarm.py` — Mailbox, TaskQueue, TeamManager
 - `~/.config/neomind-tester/telethon.env` — TG_API_ID, TG_API_HASH, TG_PHONE, TG_BOT_USERNAME (user's Telegram account)
-- The live `@neomindagent_bot` running in Docker
+- The live `@your_neomind_bot` running in Docker
 
 ## Limitations (NOT covered by this skill)
 

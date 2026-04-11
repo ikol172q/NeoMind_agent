@@ -10,7 +10,7 @@ Tiny regression floor captured just before activating the canary bot pipeline + 
 - Bot pid: **24450** (unchanged across the run — no crash / restart)
 - Bot uptime before run: 873s (~14.6 min since last restart)
 - Bot uptime after run:  1175s (~19.6 min) — delta 302s = exactly the run window
-- Bot username: `@neomindagent_bot` (production)
+- Bot username: `@your_neomind_bot` (production)
 - Prelude: `/clear` → `/mode fin`, `/think` left OFF
 
 ## Per-scenario results
@@ -48,7 +48,7 @@ Noise observed (not failing): router returned HTTP 429 repeatedly for `kimi-k2.5
 
 **Floor captured. Safe to proceed with canary activation.** If any post-activation run shows new tracebacks, a changed bot pid, `API error: all failed > 0`, or S2/S4 regressing from PASS, that is a real regression vs this floor.
 
-Bot health note: `@neomindagent_bot` stayed responsive the whole run (every scenario got a reply within its budget) and pid 24450 survived unchanged — bot is healthy.
+Bot health note: `@your_neomind_bot` stayed responsive the whole run (every scenario got a reply within its budget) and pid 24450 survived unchanged — bot is healthy.
 
 ## Artifacts
 

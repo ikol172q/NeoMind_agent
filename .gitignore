@@ -162,3 +162,7 @@ FIX_LOG.md
 # But keep the qa_archive FIX_LOG tracked — it's a canonical audit trail
 # documented in tests/qa_archive/README.md as part of the archive layout.
 !tests/qa_archive/FIX_LOG.md
+
+# Phase D / canary-deploy host-side evolution state (2026-04-11)
+.host_evolution_data/
+.mycontext

@@ -22,7 +22,7 @@ A nightly cron that runs a 5-scenario subset of the Telethon validator against t
 # /usr/local/bin/neomind-canary-nightly.sh
 set -euo pipefail
 
-cd /Users/user/Desktop/NeoMind_agent
+cd $REPO_ROOT
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Make sure canary is still up
@@ -101,7 +101,7 @@ All 5 were validated in the Phase A pre-activation smoke (2026-04-11). PASS thre
 ### Alerting
 
 Simple — if the nightly run fails (exit non-zero or `RESULT: <4/5`), the log file contains the diagnostics. A future enhancement could:
-- Post a message to `@neomindagent_bot` itself ("canary nightly FAIL at $(date)")
+- Post a message to `@your_neomind_bot` itself ("canary nightly FAIL at $(date)")
 - Write a JSON file `~/.neomind/canary-nightly-status.json` that xbar reads and shows a red indicator
 
 For now, the log file + manual check is sufficient given a daily cadence.

@@ -89,7 +89,7 @@ all 12 scenarios exercise.
 ## Prod post-promote 3-probe results
 
 Both after-add and after-revert probes returned 3/3 PASS against
-`@neomindagent_bot` via Telethon:
+`@your_neomind_bot` via Telethon:
 
 | Probe | Sent            | After-add reply                                                                 | After-revert reply                                                              | Verdict |
 |-------|-----------------|---------------------------------------------------------------------------------|---------------------------------------------------------------------------------|---------|
@@ -124,9 +124,9 @@ The marker string appears EXACTLY once in prod's agent.log, between the
 (revert-leg) LIVE marker:
 
 ```
-14252: [bot] ✅ @neomindagent_bot is LIVE — listening for messages   ← add-leg boot
+14252: [bot] ✅ @your_neomind_bot is LIVE — listening for messages   ← add-leg boot
 14253: [bot] canary-closed-loop-marker-2026-04-11                    ← marker printed once
-14495: [bot] ✅ @neomindagent_bot is LIVE — listening for messages   ← revert-leg boot
+14495: [bot] ✅ @your_neomind_bot is LIVE — listening for messages   ← revert-leg boot
        (no marker line after 14495 — code reverted successfully)
 ```
 
@@ -199,7 +199,7 @@ exactly as designed.
 - Orchestrator scripts: `/tmp/phase_d_evolve.py`, `/tmp/phase_d_revert.py`
 - Prod probe script: `/tmp/phase_d_prod_probe.py`
 - Add-leg log: `/tmp/phase_d_evolve.log`
-- Transaction records: `/Users/user/Desktop/NeoMind_agent/.host_evolution_data/transactions.jsonl`
+- Transaction records: `$REPO_ROOT/.host_evolution_data/transactions.jsonl`
 - Git tags: `evolve-20260411-144811-867061-16351`,
   `evolve-revert-20260411-150739-292048-25704`
 - Prod agent log: `docker exec neomind-telegram cat /data/neomind/agent.log`
