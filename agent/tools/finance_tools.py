@@ -702,20 +702,43 @@ async def finance_persona_debate(
         return {"ok": False, "error": "investment personas module unavailable"}
 
     symbol = (symbol or "").upper().strip()
+    # Empty symbol → list-only mode: return the persona catalogue.
     if not symbol:
-        return {"ok": False, "error": "empty symbol"}
+        try:
+            from agent.finance.investment_personas import PERSONAS
+        except ImportError:
+            return {"ok": False, "error": "investment personas module unavailable"}
+        return {
+            "ok": True,
+            "mode": "list_only",
+            "note": "Available investor personas (call again with a symbol to debate).",
+            "personas": [
+                {"name": p.name, "philosophy": p.philosophy}
+                for p in PERSONAS.values()
+            ],
+        }
 
     try:
-        # Check for active thesis (debate_with_personas requires one)
+        # Check for active thesis (debate_with_personas requires one).
+        # When there's no thesis we still return a useful success payload:
+        # the catalogue of available personas. This lets the LLM answer
+        # "list the investor personas you have" without building a thesis.
         if hasattr(digest_engine, "_theses") and symbol not in digest_engine._theses:
-            # No active thesis — return persona list + guidance instead
             return {
-                "ok": False,
-                "error": f"no active thesis for {symbol}. Build one via /stock {symbol} first.",
+                "ok": True,
+                "mode": "list_only",
                 "symbol": symbol,
-                "available_personas": [
-                    {"key": k, "name": p.name, "philosophy": p.philosophy}
-                    for k, p in PERSONAS.items()
+                "note": (
+                    f"No active thesis for {symbol}; returning persona "
+                    f"catalogue. Use /stock {symbol} to build a thesis "
+                    f"and re-run for a full debate."
+                ),
+                "personas": [
+                    {
+                        "name": p.name,
+                        "philosophy": p.philosophy,
+                    }
+                    for p in PERSONAS.values()
                 ],
             }
 
@@ -1141,11 +1164,18 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
     registered += 1
 
     # 12. finance_persona_debate (fin-only)
-    async def _exec_persona(symbol: str, persona_filter: str = None, **_ignore):
+    async def _exec_persona(symbol: str = "", persona_filter: str = None, **_ignore):
         from agent.coding.tools import ToolResult
         data = await finance_persona_debate(digest, symbol, persona_filter)
         if data.get("ok"):
             personas = data.get("personas", [])
+            if data.get("mode") == "list_only":
+                lines = [f"• {p['name']} — {p.get('philosophy','')[:100]}"
+                         for p in personas]
+                header = data.get("note", "Available personas:")
+                return ToolResult(True,
+                                  output=f"{header}\n" + "\n".join(lines),
+                                  metadata=data)
             lines = [f"{p.get('icon','')} {p['name']}: {p.get('philosophy','')[:80]}"
                      for p in personas]
             return ToolResult(True, output="\n".join(lines) or "no personas matched",
@@ -1155,16 +1185,18 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
     registry._tool_definitions["finance_persona_debate"] = ToolDefinition(
         name="finance_persona_debate",
         description=(
-            "Multi-persona investment analysis on a stock. Runs each "
-            "investor archetype (value, growth, contrarian, etc.) "
-            "against the symbol's active thesis. Requires an active "
-            "thesis — build one via /stock first. Use when the user "
-            "asks 'from a value investing perspective' or 'what would "
-            "Buffett/Graham think of X'."
+            "Multi-persona investment analysis. Call with symbol='' "
+            "(empty string) to LIST available investor personas "
+            "(value, growth, contrarian, etc.) with their philosophies. "
+            "Call with a real symbol (e.g. 'AAPL') to run each persona "
+            "against that symbol's active thesis — requires building "
+            "one via /stock first. Use for 'list personas' queries and "
+            "for 'what would Buffett think of X' style questions."
         ),
         parameters=[
             ToolParam("symbol", ParamType.STRING,
-                      "Stock ticker (e.g. AAPL)"),
+                      "Stock ticker (e.g. AAPL), or empty string to list personas",
+                      required=False, default=""),
             ToolParam("persona_filter", ParamType.STRING,
                       "Optional: limit to one persona (value/growth/contrarian)",
                       required=False, default=None),
