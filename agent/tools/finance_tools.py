@@ -474,12 +474,20 @@ async def finance_compute(
         logger.warning(
             f"finance_compute({formula!r}) missing {e}; got keys={list(args.keys())}"
         )
+        _EXAMPLES = {
+            "cagr": '{"formula":"cagr","initial":100,"final":200,"years":5}',
+            "compound": '{"formula":"compound","principal":10000,"annual_rate":0.08,"years":10}',
+            "sharpe": '{"formula":"sharpe","portfolio_return":0.2,"risk_free_rate":0.04,"std_deviation":0.3}',
+            "var": '{"formula":"var","portfolio_value":1000000,"mean_return":0.08,"std_deviation":0.2}',
+        }
         return {
             "ok": False,
             "error": (
                 f"missing required argument {e}. You passed "
                 f"keys={sorted(args.keys())}. Required for {f!r}: "
-                f"{_REQUIRED_KEYS.get(f, [])}. Retry with those exact keys."
+                f"{_REQUIRED_KEYS.get(f, [])}. Extract the numbers "
+                f"from the user's message and retry with EXACTLY this "
+                f"JSON shape: {_EXAMPLES.get(f, '{}')}."
             ),
         }
     except Exception as e:
@@ -1185,13 +1193,17 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
     registry._tool_definitions["finance_persona_debate"] = ToolDefinition(
         name="finance_persona_debate",
         description=(
-            "Multi-persona investment analysis. Call with symbol='' "
-            "(empty string) to LIST available investor personas "
-            "(value, growth, contrarian, etc.) with their philosophies. "
-            "Call with a real symbol (e.g. 'AAPL') to run each persona "
-            "against that symbol's active thesis — requires building "
-            "one via /stock first. Use for 'list personas' queries and "
-            "for 'what would Buffett think of X' style questions."
+            "Multi-persona investment analysis — THE RIGHT TOOL for "
+            "any 'value investing / 价值投资 / Buffett / Graham / "
+            "Munger / growth investor / contrarian' angle on a stock. "
+            "Also handles 'moat / 护城河 / margin of safety / 安全边际' "
+            "questions. Call with symbol='' to LIST available personas "
+            "(value, growth, contrarian, etc.). Call with a real "
+            "symbol (e.g. 'AAPL') to run each persona's rubric against "
+            "it — returns philosophy, criteria, and red flags for "
+            "each archetype. PREFER THIS over finance_get_stock when "
+            "the user asks for a perspective / framework / angle "
+            "rather than a raw price quote."
         ),
         parameters=[
             ToolParam("symbol", ParamType.STRING,
