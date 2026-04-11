@@ -327,6 +327,15 @@ async def finance_compute(
     if not quant_engine:
         return {"ok": False, "error": "quant engine not available"}
 
+    _REQUIRED_KEYS = {
+        "cagr": ["initial", "final", "years"],
+        "compound": ["principal", "annual_rate", "years"],
+        "sharpe": ["portfolio_return", "risk_free_rate", "std_deviation"],
+        "var": ["portfolio_value", "mean_return", "std_deviation"],
+        "bs": ["S", "K", "T", "r", "sigma"],
+        "dcf": ["cash_flows", "terminal_value", "discount_rate"],
+    }
+
     # Normalize common LLM-emitted argument name variants to canonical names.
     # The LLM (deepseek-reasoner) is creative with parameter naming, so we
     # accept synonyms rather than force it onto one convention.
@@ -462,7 +471,17 @@ async def finance_compute(
             "supported": ["cagr", "compound", "sharpe", "var", "bs", "dcf"],
         }
     except KeyError as e:
-        return {"ok": False, "error": f"missing required argument: {e}"}
+        logger.warning(
+            f"finance_compute({formula!r}) missing {e}; got keys={list(args.keys())}"
+        )
+        return {
+            "ok": False,
+            "error": (
+                f"missing required argument {e}. You passed "
+                f"keys={sorted(args.keys())}. Required for {f!r}: "
+                f"{_REQUIRED_KEYS.get(f, [])}. Retry with those exact keys."
+            ),
+        }
     except Exception as e:
         logger.exception(f"finance_compute({formula!r}) failed")
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
