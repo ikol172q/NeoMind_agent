@@ -3749,6 +3749,26 @@ class NeoMindTelegramBot:
         router_provider = self._build_router_provider(mode=mode, thinking=thinking)
         if router_provider:
             chain = [router_provider] + chain
+            # Per-mode upstream fallback: when the primary upstream (kimi-k2.5
+            # for fin) hits an upstream org-rate-limit (HTTP 429), the router
+            # alone can't help because it proxies to the same moonshot org.
+            # Add a second router entry with a different model routed to a
+            # different upstream (deepseek-chat → deepseek) so the provider
+            # loop falls through to an independent rate-bucket.
+            _FALLBACK_MODEL = {
+                "fin": "deepseek-chat" if not thinking else None,
+                "coding": "kimi-k2.5" if not thinking else None,
+                "chat": "kimi-k2.5" if not thinking else None,
+            }
+            fb_model = _FALLBACK_MODEL.get(mode)
+            if fb_model and fb_model != router_provider["model"]:
+                router_base, router_key = self._router_env()
+                chain.insert(1, {
+                    "name": "router-fallback",
+                    "api_key": router_key,
+                    "base_url": f"{router_base}/chat/completions",
+                    "model": fb_model,
+                })
 
         # Re-order the remainder based on per-chat mode preference (keeps
         # the router at index 0; affects only the direct-upstream fallbacks).
