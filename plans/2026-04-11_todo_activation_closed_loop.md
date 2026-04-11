@@ -150,9 +150,19 @@ Canary state is volume-isolated (`neomind-canary-data`) so there's no risk of ca
 
 ## Assistant's status flags (filled in during execution)
 
-- [ ] Phase A complete
-- [ ] Phase B complete (blocked on B1)
-- [ ] Phase C complete (blocked on B2)
-- [ ] Phase D complete
-- [ ] Phase E complete
-- [ ] Closed-loop PASS evidence written
+- [x] Phase A complete (commit `2203748`)
+- [x] Phase B complete (commit `ce47011` infra + `3cf92ae` entrypoint fix; canary `@neomindagent_test_bot` LIVE)
+- [ ] Phase C complete (deferred to session end — needs iTerm2 restart)
+- [x] Phase D complete (commits `69ba06b` add-leg + `370889c` revert-leg + `cd0b081` evidence file)
+- [ ] Phase E in progress (memory records updated, nightly cron stub pending)
+- [x] Closed-loop PASS evidence written (`tests/qa_archive/results/2026-04-11_closed_loop_pass.md`)
+
+## Phase D measured results
+
+| Leg | Total duration | Canary validator | promote_to_prod | Post-probes |
+|---|---|---|---|---|
+| Forward (add marker) | 540.6s | 532.9s (11/12 PASS) | 6.0s | 3/3 PASS |
+| Revert (remove marker) | 642.2s | 634.4s (9/12 PASS, 3 known flakes) | 6.1s | 3/3 PASS |
+| **Real user downtime** | **12.1s** (2 × ~6s promote_to_prod restarts) | | | |
+
+Production pid history: `24450 → 25616 → 25942`. Both containers 0 tracebacks throughout.
