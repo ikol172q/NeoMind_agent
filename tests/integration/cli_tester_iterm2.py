@@ -67,18 +67,20 @@ class ITerm2APIUnavailable(RuntimeError):
     """
 
 
-# Default prompt-ready regex — matches both prompt_toolkit's "> " and
-# the CLI's ANSI-coloured prompt. Override via `prompt_regex=` if the
-# target app uses a different marker.
-DEFAULT_PROMPT_RE = re.compile(r"(\x1b\[[0-9;]*m)?>\s*$")
+# Default prompt-ready regex — matches NeoMind's `[mode] >` prompt
+# (where mode is chat/coding/fin). Searched across the whole captured
+# screen, not just the last line, because prompt_toolkit renders a
+# status bar below the prompt.
+DEFAULT_PROMPT_RE = re.compile(r"\[(chat|coding|fin)\]\s*>")
 
 
 @dataclass
 class ITerm2Config:
     """Caller-configurable defaults."""
-    # Shell command that launches the NeoMind CLI. Default assumes the
-    # canonical project venv + `python -m agent`.
-    launch_cmd: str = ".venv/bin/python -m agent"
+    # Shell command that launches the NeoMind CLI. Default is the project
+    # venv running `main.py interactive --mode fin` so slash commands
+    # like /status and finance NL dispatch are immediately available.
+    launch_cmd: str = ".venv/bin/python main.py interactive --mode fin"
     # cwd for the iTerm2 session. Default: NeoMind repo root.
     cwd: str = str(Path(__file__).resolve().parents[2])
     # Window/session geometry for the initial boot.
@@ -182,13 +184,12 @@ class ITerm2CliTester:
         cmd = launch_cmd or self.config.launch_cmd
         wd = cwd or self.config.cwd
 
-        profile = await iterm2.PartialProfile.async_query(self._connection)
-        # We don't mutate the user's profile — just pass `command` on
-        # the new-window call so the shell starts with the CLI already
-        # running.
+        # Wrap the CLI command in an interactive bash so the shell stays
+        # alive if the CLI exits — we can still capture the terminal
+        # buffer for diagnostics instead of losing the window.
+        shell_cmd = f"/bin/bash -c 'cd {_shquote(wd)} && {cmd}; echo; echo __neomind_cli_exited__; exec /bin/bash -i'"
         window = await iterm2.Window.async_create(
-            self._connection,
-            command=f"cd {_shquote(wd)} && {cmd}",
+            self._connection, command=shell_cmd,
         )
         if window is None:
             raise RuntimeError(
@@ -196,11 +197,24 @@ class ITerm2CliTester:
                 "failed. Check iTerm2 Console.app for errors."
             )
         self._window = window
-        # Default tab / default session.
-        tab = window.current_tab
-        self._session = tab.current_session if tab else None
+
+        # Refresh app state and locate the session id for the new window.
+        # iTerm2 doesn't populate tabs/sessions on the Window object from
+        # async_create — we need to re-fetch App and walk its windows.
+        await asyncio.sleep(0.5)
+        app = await iterm2.async_get_app(self._connection)
+        self._session = None
+        for w in app.windows:
+            if w.window_id == window.window_id:
+                for t in w.tabs:
+                    for s in t.sessions:
+                        self._session = s
+                        break
+                    if self._session:
+                        break
+                break
         if self._session is None:
-            raise RuntimeError("iTerm2 window has no current session")
+            raise RuntimeError("iTerm2 window has no session after create")
 
         # Set geometry to requested size — this propagates as a real
         # SIGWINCH / terminal-resize event to the child process.
@@ -278,7 +292,9 @@ class ITerm2CliTester:
         """Fire a real terminal resize event (propagates SIGWINCH)."""
         if self._session is None:
             raise RuntimeError("no active session")
-        await self._session.async_set_grid_size(cols, rows)
+        # iTerm2 Session.async_set_grid_size takes a Size, not two ints.
+        import iterm2.util as _util
+        await self._session.async_set_grid_size(_util.Size(cols, rows))
 
     # ── Output primitives ────────────────────────────────────────────
 
@@ -337,15 +353,11 @@ class ITerm2CliTester:
         regex = prompt_regex or DEFAULT_PROMPT_RE
         dead = time.time() + (timeout or self.config.boot_timeout_sec)
         while time.time() < dead:
-            screen = await self.capture()
-            # Check the last non-empty line only — prompts always
-            # sit at the bottom.
-            last_non_empty = ""
-            for line in reversed(screen.splitlines()):
-                if line.strip():
-                    last_non_empty = line
-                    break
-            if regex.search(last_non_empty):
+            screen = await self.capture(lines=60)
+            # Search across the whole visible screen — prompt_toolkit
+            # renders status bars / footers below the actual prompt
+            # so it's not always the last non-empty line.
+            if regex.search(screen):
                 return True
             await asyncio.sleep(0.3)
         return False
