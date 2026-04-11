@@ -159,3 +159,6 @@ IMPLEMENTATION_SUMMARY.md
 FEATURE_LIST.md
 TESTING_GUIDE.md
 FIX_LOG.md
+# But keep the qa_archive FIX_LOG tracked — it's a canonical audit trail
+# documented in tests/qa_archive/README.md as part of the archive layout.
+!tests/qa_archive/FIX_LOG.md
