@@ -101,6 +101,7 @@ class ToolDefinition:
         always_load: bool = True,
         is_open_world: bool = False,
         interrupt_behavior: str = 'cancel',
+        allowed_modes: Optional[set] = None,
     ):
         self.name = name
         self.description = description
@@ -112,9 +113,27 @@ class ToolDefinition:
         self.always_load = always_load      # If True, always in system prompt
         self.is_open_world_flag = is_open_world  # Fetches external/untrusted data
         self.interrupt_behavior_mode = interrupt_behavior  # 'cancel' or 'block'
+        # Mode gating: only show this tool in these personality modes.
+        # None = always available (legacy behaviour / shared tools).
+        # Set of mode names e.g. {"fin"}, {"coding"}, {"chat", "fin"}.
+        self.allowed_modes: Optional[set] = allowed_modes
 
         # Build lookup for fast param access
         self._param_map: Dict[str, ToolParam] = {p.name: p for p in parameters}
+
+    def is_available_in_mode(self, mode: Optional[str]) -> bool:
+        """Check whether this tool is allowed in the given personality mode.
+
+        A tool with `allowed_modes is None` is always available (legacy /
+        shared tools). A tool with an explicit set is only available when
+        the current mode is in that set. If mode is None (caller didn't
+        pass a mode), legacy "always available" behaviour applies.
+        """
+        if self.allowed_modes is None:
+            return True
+        if mode is None:
+            return True  # caller didn't specify mode — don't filter
+        return mode in self.allowed_modes
 
     def is_read_only(self, params: Optional[Dict[str, Any]] = None) -> bool:
         """Check if this tool (with given params) is a read-only operation.
