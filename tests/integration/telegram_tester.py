@@ -170,7 +170,7 @@ class TelegramBotTester:
         so we also re-fetch the latest version of each tracked message.
         """
         deadline = time.time() + timeout
-        quiet_window = 8.0   # was 3 — too short for streaming LLMs
+        quiet_window = 14.0  # fin-mode tool-error→retry→markdown can take 10s+
         last_received = time.time()
         replies = []
         tracked_ids = set()
