@@ -568,6 +568,193 @@ async def finance_watchlist_show(chat_store: Any, chat_id: int) -> Dict[str, Any
         return {"ok": False, "error": f"{type(e).__name__}: {e}"}
 
 
+# ── Dual-entry tools (Phase B.6) ──────────────────────────────────────
+# These three have BOTH a user-facing slash command AND a LLM-callable
+# tool. The slash handler and the tool function share the same
+# underlying implementation so results stay consistent.
+
+async def web_hn_top(
+    category: str = "top",
+    limit: int = 10,
+    min_score: int = 0,
+) -> Dict[str, Any]:
+    """Fetch top Hacker News stories.
+
+    Shared across all modes — HN is not fin-specific. Wraps
+    `agent.integration.hackernews.fetch_top_stories` and returns a
+    dict the LLM can read.
+
+    Args:
+        category: one of "top", "best", "new", "ask", "show", "job"
+        limit: max stories to return (capped at 30)
+        min_score: minimum score filter (0 = no filter)
+    """
+    try:
+        from agent.integration.hackernews import fetch_top_stories
+    except ImportError as e:
+        return {"ok": False, "error": f"hackernews module unavailable: {e}"}
+
+    limit = max(1, min(int(limit), 30))
+    try:
+        stories = await fetch_top_stories(
+            category=category, limit=limit, min_score=min_score
+        )
+        if not stories:
+            return {
+                "ok": False,
+                "error": f"no stories for category '{category}'",
+                "category": category,
+            }
+        items = [
+            {
+                "title": s.title,
+                "url": s.url or f"https://news.ycombinator.com/item?id={s.id}",
+                "score": s.score,
+                "comments": s.comments,
+                "by": s.by,
+                "time": s.time.isoformat() if getattr(s, "time", None) else None,
+                "id": s.id,
+            }
+            for s in stories[:limit]
+        ]
+        return {
+            "ok": True,
+            "category": category,
+            "count": len(items),
+            "stories": items,
+        }
+    except Exception as e:
+        logger.exception(f"web_hn_top({category!r}) failed")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+async def finance_persona_debate(
+    digest_engine: Any,
+    symbol: str,
+    persona_filter: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Run multi-persona investment analysis on a symbol.
+
+    Wraps DigestEngine.debate_with_personas. Each persona (value,
+    growth, contrarian, etc.) weighs in on the symbol using its
+    rubric. Returns the combined analysis as a dict.
+
+    Args:
+        symbol: ticker to analyze (e.g. "AAPL")
+        persona_filter: optional persona name to limit to one persona
+            (e.g. "value"); None = all personas
+    """
+    if not digest_engine:
+        return {"ok": False, "error": "digest engine not available"}
+    try:
+        from agent.finance.investment_personas import PERSONAS
+    except ImportError:
+        return {"ok": False, "error": "investment personas module unavailable"}
+
+    symbol = (symbol or "").upper().strip()
+    if not symbol:
+        return {"ok": False, "error": "empty symbol"}
+
+    try:
+        # Check for active thesis (debate_with_personas requires one)
+        if hasattr(digest_engine, "_theses") and symbol not in digest_engine._theses:
+            # No active thesis — return persona list + guidance instead
+            return {
+                "ok": False,
+                "error": f"no active thesis for {symbol}. Build one via /stock {symbol} first.",
+                "symbol": symbol,
+                "available_personas": [
+                    {"key": k, "name": p.name, "philosophy": p.philosophy}
+                    for k, p in PERSONAS.items()
+                ],
+            }
+
+        result = digest_engine.debate_with_personas(symbol)
+        if "error" in result:
+            return {"ok": False, "error": result["error"], "symbol": symbol}
+
+        personas_out = []
+        for p in result.get("persona_prompts", []):
+            if persona_filter and persona_filter.lower() not in p.get("persona_name", "").lower():
+                continue
+            personas_out.append({
+                "name": p.get("persona_name"),
+                "icon": p.get("persona_icon"),
+                "horizon": p.get("horizon"),
+                "philosophy": p.get("philosophy"),
+                "criteria": p.get("rubric_criteria", [])[:5],
+                "red_flags": p.get("red_flags", [])[:3],
+            })
+
+        return {
+            "ok": True,
+            "symbol": symbol,
+            "base_debate": result.get("base_debate", {}),
+            "personas": personas_out,
+            "filter": persona_filter,
+        }
+    except Exception as e:
+        logger.exception(f"finance_persona_debate({symbol!r}) failed")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
+async def finance_rag_query(
+    rag_index: Any,
+    question: str,
+    symbol: Optional[str] = None,
+    top_k: int = 3,
+) -> Dict[str, Any]:
+    """Query the financial document RAG index.
+
+    Wraps FinanceRAG.query. Performs semantic search over ingested
+    financial documents (10-Ks, earnings transcripts, research
+    reports) filtered optionally by symbol.
+
+    Args:
+        question: natural-language query
+        symbol: optional ticker to filter results
+        top_k: number of results to return
+    """
+    if not rag_index:
+        return {
+            "ok": False,
+            "error": "RAG not enabled (install faiss-cpu + sentence-transformers)",
+        }
+    if not question or not question.strip():
+        return {"ok": False, "error": "empty question"}
+
+    try:
+        results = rag_index.query(question, top_k=int(top_k), symbol=symbol)
+        if not results:
+            return {
+                "ok": False,
+                "error": "no matching documents",
+                "question": question,
+                "symbol": symbol,
+            }
+        items = []
+        for r in results:
+            meta = getattr(r.chunk, "metadata", {}) or {}
+            items.append({
+                "rank": r.rank,
+                "score": round(r.score, 4),
+                "source": meta.get("source_file", meta.get("source", "?")),
+                "symbol": meta.get("symbol"),
+                "text_preview": (r.chunk.text or "")[:400],
+            })
+        return {
+            "ok": True,
+            "question": question,
+            "symbol": symbol,
+            "top_k": top_k,
+            "results": items,
+            "count": len(items),
+        }
+    except Exception as e:
+        logger.exception(f"finance_rag_query({question!r}) failed")
+        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+
+
 # ── Tool registry registration ────────────────────────────────────────
 
 def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
@@ -593,9 +780,11 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
     quant = components.get("quant")
     digest = components.get("digest")
     search = components.get("search")
+    rag = components.get("rag")
     chat_store = components.get("chat_store")
 
     fin_modes = {"fin"}
+    shared_modes = {"chat", "coding", "fin"}  # shared tools visible in all modes
     registered = 0
 
     # 1. finance_get_stock
@@ -866,5 +1055,115 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
     )
     registered += 1
 
-    logger.info(f"[finance_tools] registered {registered} fin tools with allowed_modes={{'fin'}}")
+    # ── Phase B.6 dual-entry tools ────────────────────────────────
+
+    # 11. web_hn_top (shared — all modes)
+    async def _exec_hn(category: str = "top", limit: int = 10, **_ignore):
+        from agent.coding.tool_schema import ToolResult
+        data = await web_hn_top(category, limit)
+        if data.get("ok"):
+            lines = [
+                f"{i+1}. [{s['score']} pts] {s['title']} ({s['url']})"
+                for i, s in enumerate(data.get("stories", []))
+            ]
+            return ToolResult(True, output="\n".join(lines), metadata=data)
+        return ToolResult(False, error=data.get("error", "hn fetch failed"))
+
+    registry._tool_definitions["web_hn_top"] = ToolDefinition(
+        name="web_hn_top",
+        description=(
+            "Fetch top Hacker News stories. Category: top / best / new / "
+            "ask / show / job. Use when the user asks for HN headlines, "
+            "top tech news, or 'what's on Hacker News'."
+        ),
+        parameters=[
+            ToolParam("category", ParamType.STRING,
+                      "top / best / new / ask / show / job",
+                      required=False, default="top"),
+            ToolParam("limit", ParamType.INTEGER,
+                      "Max stories to return (1-30)",
+                      required=False, default=10),
+        ],
+        permission_level=PermissionLevel.READ_ONLY,
+        execute=_exec_hn,
+        allowed_modes=shared_modes,  # available in all modes
+    )
+    registered += 1
+
+    # 12. finance_persona_debate (fin-only)
+    async def _exec_persona(symbol: str, persona_filter: str = None, **_ignore):
+        from agent.coding.tool_schema import ToolResult
+        data = await finance_persona_debate(digest, symbol, persona_filter)
+        if data.get("ok"):
+            personas = data.get("personas", [])
+            lines = [f"{p.get('icon','')} {p['name']}: {p.get('philosophy','')[:80]}"
+                     for p in personas]
+            return ToolResult(True, output="\n".join(lines) or "no personas matched",
+                              metadata=data)
+        return ToolResult(False, error=data.get("error", "persona debate failed"))
+
+    registry._tool_definitions["finance_persona_debate"] = ToolDefinition(
+        name="finance_persona_debate",
+        description=(
+            "Multi-persona investment analysis on a stock. Runs each "
+            "investor archetype (value, growth, contrarian, etc.) "
+            "against the symbol's active thesis. Requires an active "
+            "thesis — build one via /stock first. Use when the user "
+            "asks 'from a value investing perspective' or 'what would "
+            "Buffett/Graham think of X'."
+        ),
+        parameters=[
+            ToolParam("symbol", ParamType.STRING,
+                      "Stock ticker (e.g. AAPL)"),
+            ToolParam("persona_filter", ParamType.STRING,
+                      "Optional: limit to one persona (value/growth/contrarian)",
+                      required=False, default=None),
+        ],
+        permission_level=PermissionLevel.READ_ONLY,
+        execute=_exec_persona,
+        allowed_modes=fin_modes,
+    )
+    registered += 1
+
+    # 13. finance_rag_query (fin-only)
+    async def _exec_rag(question: str, symbol: str = None, top_k: int = 3, **_ignore):
+        from agent.coding.tool_schema import ToolResult
+        data = await finance_rag_query(rag, question, symbol, top_k)
+        if data.get("ok"):
+            lines = [
+                f"[{r['rank']}] {r['source']} (score {r['score']}): {r['text_preview'][:200]}"
+                for r in data.get("results", [])
+            ]
+            return ToolResult(True, output="\n\n".join(lines), metadata=data)
+        return ToolResult(False, error=data.get("error", "rag query failed"))
+
+    registry._tool_definitions["finance_rag_query"] = ToolDefinition(
+        name="finance_rag_query",
+        description=(
+            "Semantic search over ingested financial documents (10-Ks, "
+            "earnings transcripts, research reports). Requires the RAG "
+            "index to be enabled (faiss-cpu + sentence-transformers). "
+            "Use when the user asks about specific details in documents "
+            "they've ingested."
+        ),
+        parameters=[
+            ToolParam("question", ParamType.STRING,
+                      "Natural-language query"),
+            ToolParam("symbol", ParamType.STRING,
+                      "Optional ticker to filter results",
+                      required=False, default=None),
+            ToolParam("top_k", ParamType.INTEGER,
+                      "Number of results",
+                      required=False, default=3),
+        ],
+        permission_level=PermissionLevel.READ_ONLY,
+        execute=_exec_rag,
+        allowed_modes=fin_modes,
+    )
+    registered += 1
+
+    logger.info(
+        f"[finance_tools] registered {registered} tools: "
+        f"10 fin-only + 1 shared (hn) + 2 fin-only (persona, rag)"
+    )
     return registered
