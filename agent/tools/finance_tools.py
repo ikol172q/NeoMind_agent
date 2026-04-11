@@ -474,20 +474,18 @@ async def finance_compute(
         logger.warning(
             f"finance_compute({formula!r}) missing {e}; got keys={list(args.keys())}"
         )
-        _EXAMPLES = {
-            "cagr": '{"formula":"cagr","initial":100,"final":200,"years":5}',
-            "compound": '{"formula":"compound","principal":10000,"annual_rate":0.08,"years":10}',
-            "sharpe": '{"formula":"sharpe","portfolio_return":0.2,"risk_free_rate":0.04,"std_deviation":0.3}',
-            "var": '{"formula":"var","portfolio_value":1000000,"mean_return":0.08,"std_deviation":0.2}',
-        }
+        required = _REQUIRED_KEYS.get(f, [])
         return {
             "ok": False,
             "error": (
-                f"missing required argument {e}. You passed "
-                f"keys={sorted(args.keys())}. Required for {f!r}: "
-                f"{_REQUIRED_KEYS.get(f, [])}. Extract the numbers "
-                f"from the user's message and retry with EXACTLY this "
-                f"JSON shape: {_EXAMPLES.get(f, '{}')}."
+                f"missing required argument {e}. Required keys for "
+                f"{f!r}: {required}. IMPORTANT: the user's question "
+                f"contains the actual numbers — extract them from the "
+                f"user's message (look for values like '10000 元', "
+                f"'8%', '10 年') and retry this tool with those real "
+                f"numbers as JSON params. If retrying is not possible, "
+                f"compute the answer directly from the formula in "
+                f"your text reply without calling the tool again."
             ),
         }
     except Exception as e:
