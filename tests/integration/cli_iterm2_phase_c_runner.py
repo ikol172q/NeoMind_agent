@@ -127,7 +127,7 @@ async def run_one(tester: ITerm2CliTester, sc: Scenario) -> tuple:
 async def main() -> int:
     try:
         cfg = ITerm2Config(
-            launch_cmd=".venv/bin/python -m agent",
+            launch_cmd=".venv/bin/python main.py interactive --mode fin",
             cwd=str(REPO_ROOT),
             cols=120,
             rows=40,
