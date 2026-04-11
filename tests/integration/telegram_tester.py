@@ -177,6 +177,24 @@ class TelegramBotTester:
 
         THINKING_MARKERS = ("💭", "Thinking", "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
 
+        # Chinese/English progress-indicator phrases emitted by the bot
+        # as placeholder messages while a slow tool (WebSearch, agentic
+        # loop, LLM streaming) is still running. If the reply text is
+        # ONLY one of these, we must keep waiting for the real answer.
+        # Matches the "🔍 正在搜索相关信息...", "⚙️ 正在执行工具...",
+        # "💭 正在整合搜索结果..." strings that telegram_bot.py emits.
+        PROGRESS_PHRASES = (
+            "正在搜索",         # "searching..."
+            "正在执行",         # "executing tool..."
+            "正在整合",         # "synthesizing search results..."
+            "正在处理",         # "processing..."
+            "Searching",
+            "Running",
+            "Executing",
+            "Thinking",
+            "Analyzing",
+        )
+
         def looks_thinking(text: str) -> bool:
             t = (text or "").strip()
             if not t:
@@ -184,6 +202,11 @@ class TelegramBotTester:
             # Strict: only treat as "still thinking" if message is short AND
             # contains a marker. Long answers may also use 💭 as decoration.
             if len(t) < 50 and any(m in t for m in THINKING_MARKERS):
+                return True
+            # Chinese/English progress placeholders — these are ALWAYS
+            # transient, even if >50 chars, because the bot edits them
+            # in place with the real answer.
+            if len(t) < 200 and any(p in t for p in PROGRESS_PHRASES):
                 return True
             return False
 
