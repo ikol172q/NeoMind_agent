@@ -392,11 +392,8 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("think", self._cmd_think))
         self._app.add_handler(CommandHandler("history", self._cmd_history))
         self._app.add_handler(CommandHandler("clear", self._cmd_clear))
-        self._app.add_handler(CommandHandler("archive", self._cmd_archive))
-        self._app.add_handler(CommandHandler("purge", self._cmd_purge))
         self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("context", self._cmd_context))
-        self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
         self._app.add_handler(CommandHandler("hn", self._cmd_hn))
         self._app.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
         self._app.add_handler(CommandHandler("skills", self._cmd_skills))
@@ -422,10 +419,12 @@ class NeoMindTelegramBot:
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
         ))
-        # Catch finance slash commands
+        # Catch finance slash commands (routed to openclaw_skill or LLM agentic
+        # loop). /memory removed — it had no real handler. Other loop entries
+        # will be migrated to thin wrappers over finance_* tools in Phase B.
         for cmd in ["stock", "crypto", "news", "digest", "compute", "portfolio",
                      "predict", "alert", "compare", "watchlist", "risk",
-                     "sources", "chart", "calendar", "memory"]:
+                     "sources", "chart", "calendar"]:
             self._app.add_handler(CommandHandler(cmd, self._handle_command))
         # Catch unrecognized commands (typos like /model instead of /mode)
         self._app.add_handler(MessageHandler(
@@ -482,22 +481,27 @@ class NeoMindTelegramBot:
         except Exception as e:
             logger.error(f"[bot] Post-restart verifier crashed: {e}", exc_info=True)
 
-        # Register command menu in Telegram (visible in autocomplete)
+        # Register command menu in Telegram (visible in autocomplete).
+        # Only Tier 1 (user-facing meta) + Tier 2 (fin quick-access) are
+        # shown here. Admin / advanced commands (Tier 4) still work when
+        # typed but are hidden from the autocomplete to keep the menu clean.
         from telegram import BotCommand
         await self._app.bot.set_my_commands([
+            # Tier 1 — universal meta
             BotCommand("mode", "切换人格 (chat/coding/fin)"),
             BotCommand("model", "查看/切换模型"),
             BotCommand("think", "开关深度思考"),
-            BotCommand("provider", "切换 provider (litellm/direct)"),
             BotCommand("status", "查看当前状态"),
             BotCommand("clear", "清空对话历史"),
-            BotCommand("help", "查看所有命令"),
+            BotCommand("usage", "查看 LLM 用量和费用"),
+            BotCommand("tune", "调整 NeoMind 的 prompt 和配置"),
+            BotCommand("help", "查看能力和命令"),
+            # Tier 2 — fin mode quick-access
             BotCommand("stock", "股票查询 (fin 模式)"),
             BotCommand("crypto", "加密货币 (fin 模式)"),
             BotCommand("news", "多源新闻搜索"),
-            BotCommand("hn", "Hacker News"),
-            BotCommand("hooks", "系统诊断 (漂移/蒸馏/图谱)"),
-            BotCommand("restart", "重启 agent 进程"),
+            BotCommand("digest", "市场每日摘要"),
+            BotCommand("market", "市场概览"),
         ])
 
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -963,15 +967,6 @@ class NeoMindTelegramBot:
             f"🗑 对话已归档（{count} 条消息）\nLLM 重新开始，旧消息已存档"
         )
 
-    async def _cmd_archive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /archive → /clear."""
-        await self._cmd_clear(update, context)
-
-    async def _cmd_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /purge → /admin purge."""
-        context.args = ["purge"] + (list(context.args) if context.args else [])
-        await self._cmd_admin(update, context)
-
     async def _cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /admin — unified admin panel.
 
@@ -1186,11 +1181,6 @@ class NeoMindTelegramBot:
             f"{'⚠️ 接近上限，建议 /clear 归档' if pct >= 60 else '✅ 充足'}",
             parse_mode=ParseMode.HTML,
         )
-
-    async def _cmd_setctx(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /setctx → /admin setctx."""
-        context.args = ["setctx"] + (list(context.args) if context.args else [])
-        await self._cmd_admin(update, context)
 
     async def _cmd_hn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /hn — fetch Hacker News stories.
