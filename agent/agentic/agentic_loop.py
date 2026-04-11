@@ -252,7 +252,11 @@ class AgenticLoop:
         # match exactly. Hash on a normalized prefix of the response.
         _last_response_sig = None
         _repeated_response_count = 0
-        _MAX_REPEATED_RESPONSES = 2  # 2 identical responses → force stop
+        _MAX_REPEATED_RESPONSES = 3  # 3 identical responses → force stop
+        # Track whether the immediately-prior iteration executed a failing
+        # tool call. The LLM gets a fresh chance to self-correct after a
+        # tool error without tripping the repeat detector.
+        _prev_iter_tool_error = False
 
         for iteration in range(self.config.max_iterations):
             # 0. On first iteration, try to match skills from context
@@ -297,6 +301,13 @@ class AgenticLoop:
                 import hashlib as _hashlib
                 _norm = " ".join((current_response or "").split())[:2000]
                 _sig = _hashlib.md5(_norm.encode("utf-8", errors="replace")).hexdigest()
+                # After a tool error, let the LLM have a fresh retry: reset
+                # the repeat counter so it gets at least one more chance
+                # to self-correct before hitting the loop guard.
+                if _prev_iter_tool_error:
+                    _last_response_sig = None
+                    _repeated_response_count = 0
+                    _prev_iter_tool_error = False
                 if _sig and _sig == _last_response_sig:
                     _repeated_response_count += 1
                 else:
@@ -403,6 +414,9 @@ class AgenticLoop:
                         f"[agentic] {_consecutive_errors} consecutive identical errors for "
                         f"{tool_call.tool_name}, forcing wrap-up"
                     )
+                # Mark so the repeat-response detector gives the LLM a
+                # fresh slate on the next iteration.
+                _prev_iter_tool_error = True
             else:
                 _last_failed_key = None
                 _consecutive_errors = 0
