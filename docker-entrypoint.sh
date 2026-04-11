@@ -24,10 +24,17 @@ ok()    { echo -e "${GREEN}[neomind]${NC} $1"; }
 err()   { echo -e "${RED}[neomind]${NC} $1"; }
 
 # ── Validate required API key ────────────────────────────
-if [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$ZAI_API_KEY" ]; then
+# Accept any of the supported authentication paths:
+#   - LLM_ROUTER_API_KEY: local LiteLLM proxy (current default for
+#     fin/chat modes, routes to moonshot/deepseek/glm/ollama).
+#   - DEEPSEEK_API_KEY:   direct DeepSeek fallback
+#   - ZAI_API_KEY:        direct z.ai fallback
+# NeoMind is happy as long as at least one route exists.
+if [ -z "$LLM_ROUTER_API_KEY" ] && [ -z "$DEEPSEEK_API_KEY" ] && [ -z "$ZAI_API_KEY" ]; then
     err "No API key found!"
-    echo "  Set DEEPSEEK_API_KEY or ZAI_API_KEY in your .env file"
-    echo "  or pass via: docker run -e DEEPSEEK_API_KEY=your_key ..."
+    echo "  Set LLM_ROUTER_API_KEY (recommended), DEEPSEEK_API_KEY,"
+    echo "  or ZAI_API_KEY in your .env file, or pass via:"
+    echo "    docker run -e LLM_ROUTER_API_KEY=your_key ..."
     exit 1
 fi
 
