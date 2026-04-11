@@ -764,12 +764,20 @@ class AgenticLoop:
 
         return result
 
-    def get_tool_prompt(self) -> str:
+    def get_tool_prompt(self, mode: Optional[str] = None) -> str:
         """Generate the tool system prompt section from registered tools.
 
         This should be appended to the system prompt so the LLM knows
         what tools are available and how to call them.
+
+        Args:
+            mode: Optional personality mode ("fin", "coding", "chat").
+                When provided, tools are filtered via
+                ToolRegistry.get_all_tools(mode) so the LLM only sees
+                tools whose allowed_modes include this mode (plus
+                legacy tools with allowed_modes=None which are always
+                visible). When None, legacy behavior — all tools.
         """
         from agent.coding.tool_schema import generate_tool_prompt
-        tools = self.registry.get_all_tools()
+        tools = self.registry.get_all_tools(mode=mode)
         return generate_tool_prompt(tools)
