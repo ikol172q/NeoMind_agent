@@ -152,16 +152,19 @@ class OpenClawFinanceSkill:
             return "⚠️ Data hub not available."
 
         try:
-            data = await self._data_hub.get_stock_price(symbol)
-            if data:
-                price = data.get("price", "?")
-                change = data.get("change", 0)
-                change_pct = data.get("change_pct", 0)
+            # FinanceDataHub exposes get_quote() returning a StockQuote
+            # dataclass; there is no get_stock_price() method.
+            quote = await self._data_hub.get_quote(symbol)
+            if quote and quote.price:
+                price = quote.price.value
+                change = quote.change or 0
+                change_pct = quote.change_pct or 0
                 sign = "+" if change >= 0 else ""
                 icon = "📈" if change >= 0 else "📉"
-                source = data.get("source", "")
+                source = quote.price.source
+                name_line = f" — {quote.name}" if quote.name else ""
                 return (
-                    f"{icon} **{symbol}** ${price}\n"
+                    f"{icon} **{symbol}**{name_line} ${price}\n"
                     f"Change: {sign}{change} ({sign}{change_pct}%)\n"
                     f"Source: {source} · {datetime.now().strftime('%H:%M UTC')}"
                 )
@@ -178,16 +181,25 @@ class OpenClawFinanceSkill:
         if not self._data_hub:
             return "⚠️ Data hub not available."
 
+        # CoinGecko expects coin IDs (bitcoin, ethereum), not ticker symbols
+        _coin_id_map = {
+            "BTC": "bitcoin", "ETH": "ethereum", "SOL": "solana",
+            "XRP": "ripple", "DOGE": "dogecoin", "ADA": "cardano",
+            "BNB": "binancecoin", "AVAX": "avalanche-2", "MATIC": "matic-network",
+            "DOT": "polkadot", "LINK": "chainlink", "UNI": "uniswap",
+            "LTC": "litecoin", "TRX": "tron", "ATOM": "cosmos",
+        }
+        coin_id = _coin_id_map.get(symbol, symbol.lower())
         try:
-            data = await self._data_hub.get_crypto_price(symbol)
-            if data:
-                price = data.get("price", "?")
-                change_24h = data.get("change_24h", 0)
+            quote = await self._data_hub.get_crypto(coin_id)
+            if quote and quote.price:
+                price = quote.price.value
+                change_24h = quote.change_24h_pct or 0
                 sign = "+" if change_24h >= 0 else ""
                 return (
-                    f"{'📈' if change_24h >= 0 else '📉'} **{symbol}** ${price:,.2f}\n"
+                    f"{'📈' if change_24h >= 0 else '📉'} **{quote.symbol or symbol}** ${price:,.2f}\n"
                     f"24h: {sign}{change_24h:.2f}%\n"
-                    f"Source: {data.get('source', '')} · {datetime.now().strftime('%H:%M UTC')}"
+                    f"Source: {quote.price.source} · {datetime.now().strftime('%H:%M UTC')}"
                 )
             return f"No data found for {symbol}."
         except Exception as e:
@@ -397,10 +409,10 @@ class OpenClawFinanceSkill:
             results = []
             for ticker in tickers[:3]:
                 try:
-                    data = await self._data_hub.get_stock_price(ticker)
-                    if data:
-                        price = data.get("price", "?")
-                        change = data.get("change", 0)
+                    quote = await self._data_hub.get_quote(ticker)
+                    if quote and quote.price:
+                        price = quote.price.value
+                        change = quote.change or 0
                         sign = "+" if change >= 0 else ""
                         results.append(f"**{ticker}** ${price} ({sign}{change})")
                 except Exception:

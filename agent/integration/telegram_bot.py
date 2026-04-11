@@ -3497,6 +3497,61 @@ class NeoMindTelegramBot:
         "chat": "deepseek",     # DeepSeek for general chat
     }
 
+    # ── Per-mode default model for the local LLM Router ──────────
+    # When LLM_ROUTER_API_KEY is set, all LLM traffic goes through the
+    # local router (host.docker.internal:8000/v1) and the router resolves
+    # the model id to the upstream provider. These are the defaults used
+    # when no per-chat override or persisted mode_model is present.
+    _ROUTER_DEFAULT_MODELS = {
+        "fin": "kimi-k2.5",
+        "coding": "deepseek-chat",
+        "chat": "deepseek-chat",
+    }
+    _ROUTER_THINKING_MODEL = "deepseek-reasoner"
+
+    def _router_env(self) -> Tuple[str, str]:
+        """Return (base_url, api_key) for the local LLM router, or ("","") if unset."""
+        base = (os.getenv("LLM_ROUTER_BASE_URL") or "").rstrip("/")
+        key = os.getenv("LLM_ROUTER_API_KEY") or ""
+        return base, key
+
+    def _build_router_provider(self, mode: str, thinking: bool = False) -> Optional[dict]:
+        """Build a single 'router' provider entry for the given mode.
+
+        The router is a local OpenAI-compatible proxy that takes a `model`
+        field and forwards to the right upstream (DeepSeek, Moonshot, z.ai,
+        Ollama). Returns None if LLM_ROUTER_* env vars are not set.
+        """
+        base, key = self._router_env()
+        if not base or not key:
+            return None
+
+        # Model resolution priority:
+        #   1. Persisted mode_models in provider-state.json (if real, not "?")
+        #   2. _ROUTER_DEFAULT_MODELS for this mode
+        #   3. kimi-k2.5 as final fallback
+        model = None
+        try:
+            cfg = self._state_mgr.get_bot_config("neomind")
+            persisted = cfg.get("mode_models", {}).get(mode, {})
+            candidate = persisted.get("thinking_model" if thinking else "model", "")
+            if candidate and candidate != "?":
+                model = candidate
+        except Exception:
+            pass
+        if not model:
+            model = (
+                self._ROUTER_THINKING_MODEL if thinking
+                else self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+            )
+
+        return {
+            "name": "router",
+            "api_key": key,
+            "base_url": f"{base}/chat/completions",
+            "model": model,
+        }
+
     def _resolve_api(self, thinking: bool = False, chat_id: int = 0) -> tuple:
         """Returns (api_key, base_url, model) — picks first available provider.
 
@@ -3674,18 +3729,32 @@ class NeoMindTelegramBot:
         """
         chain = self._state_mgr.get_provider_chain("neomind", thinking=thinking)
 
-        # Re-order chain based on per-chat mode preference
+        # Determine current mode
         if chat_id:
             mode = self._store.get_mode(chat_id)
         else:
             mode = "fin"  # default for Telegram bot
+
+        # ── LLM Router: if LLM_ROUTER_* is set, prepend a single router
+        # provider for the current mode. The router is an OpenAI-compatible
+        # local proxy (host.docker.internal:8000/v1) that resolves the
+        # `model` field to the right upstream. Traffic goes through it
+        # exclusively when configured, so the router provider is the
+        # primary and any direct-upstream entries from get_provider_chain
+        # become fallbacks.
+        router_provider = self._build_router_provider(mode=mode, thinking=thinking)
+        if router_provider:
+            chain = [router_provider] + chain
+
+        # Re-order the remainder based on per-chat mode preference (keeps
+        # the router at index 0; affects only the direct-upstream fallbacks).
         preferred = self._MODE_PREFERRED_PROVIDER.get(mode)
-        if preferred and len(chain) > 1:
-            # Move preferred provider to front, keep rest as fallback
-            preferred_items = [p for p in chain if p["name"] == preferred]
-            others = [p for p in chain if p["name"] != preferred]
+        if preferred and len(chain) > 2:
+            head, tail = chain[:1], chain[1:]
+            preferred_items = [p for p in tail if p["name"] == preferred]
+            others = [p for p in tail if p["name"] != preferred]
             if preferred_items:
-                chain = preferred_items + others
+                chain = head + preferred_items + others
 
         return chain
 
@@ -3694,38 +3763,55 @@ class NeoMindTelegramBot:
 
         Called once at startup so xbar can dynamically display model info
         without hardcoding. Re-called whenever provider config changes.
+
+        NEVER writes literal "?" into the state file. When the provider
+        chain for a given mode is empty (e.g. only LLM_ROUTER_* is set and
+        no per-provider keys), fall back to _ROUTER_DEFAULT_MODELS so the
+        state always reflects the model the bot will actually use.
         """
         try:
-            # Build mode→model mapping from _MODE_PREFERRED_PROVIDER + provider chain
+            router_base, router_key = self._router_env()
+            has_router = bool(router_base and router_key)
+
             mode_models = {}
             for mode, preferred_provider in self._MODE_PREFERRED_PROVIDER.items():
-                # Get the chain as if this mode were active
-                chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
-                think_chain = self._state_mgr.get_provider_chain("neomind", thinking=True)
-
-                # Find the preferred provider's models
                 normal_model = None
                 think_model = None
-                for p in chain:
-                    if p["name"] == preferred_provider:
-                        normal_model = p["model"]
-                        break
-                for p in think_chain:
-                    if p["name"] == preferred_provider:
-                        think_model = p["model"]
-                        break
+                provider_name = preferred_provider
 
-                # Fallback to first in chain
-                if not normal_model and chain:
-                    normal_model = chain[0]["model"]
-                    preferred_provider = chain[0]["name"]
-                if not think_model and think_chain:
-                    think_model = think_chain[0]["model"]
+                if has_router:
+                    # Router is primary — use the mode's router default model
+                    normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                    think_model = self._ROUTER_THINKING_MODEL
+                    provider_name = "router"
+                else:
+                    # Fall back to direct provider chain
+                    chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
+                    think_chain = self._state_mgr.get_provider_chain("neomind", thinking=True)
+                    for p in chain:
+                        if p["name"] == preferred_provider:
+                            normal_model = p["model"]
+                            break
+                    for p in think_chain:
+                        if p["name"] == preferred_provider:
+                            think_model = p["model"]
+                            break
+                    if not normal_model and chain:
+                        normal_model = chain[0]["model"]
+                        provider_name = chain[0]["name"]
+                    if not think_model and think_chain:
+                        think_model = think_chain[0]["model"]
+                    # Final defensive fallback: router defaults so we
+                    # still publish SOMETHING real rather than "?"
+                    if not normal_model:
+                        normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                    if not think_model:
+                        think_model = self._ROUTER_THINKING_MODEL
 
                 mode_models[mode] = {
-                    "provider": preferred_provider,
-                    "model": normal_model or "?",
-                    "thinking_model": think_model or "?",
+                    "provider": provider_name,
+                    "model": normal_model,
+                    "thinking_model": think_model,
                 }
 
             self._state_mgr.update_mode_models("neomind", mode_models, updated_by="bot_startup")
