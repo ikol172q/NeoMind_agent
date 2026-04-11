@@ -116,10 +116,10 @@ services:
   # Production stays up throughout.
   #
   # Prerequisites (one-time user setup):
-  #   1. Create a second bot via @BotFather → e.g. @neomindagent_test_bot
+  #   1. Create a second bot via @BotFather → e.g. @your_canary_bot_example
   #   2. Add to .env:
   #        TELEGRAM_TEST_BOT_TOKEN=<new bot token from BotFather>
-  #        TG_CANARY_BOT_USERNAME=@neomindagent_test_bot
+  #        TG_CANARY_BOT_USERNAME=@your_canary_bot_example
   #   3. docker compose --profile canary up -d neomind-canary
   #
   # See docs/CANARY_BOT_SETUP.md for the full walkthrough.

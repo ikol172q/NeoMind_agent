@@ -22,7 +22,7 @@ A nightly cron that runs a 5-scenario subset of the Telethon validator against t
 # /usr/local/bin/neomind-canary-nightly.sh
 set -euo pipefail
 
-cd /Users/localuser/Desktop/NeoMind_agent
+cd $REPO_ROOT
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
 # Make sure canary is still up
