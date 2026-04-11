@@ -2670,26 +2670,18 @@ class NeoMindTelegramBot:
             return "\n\n---\n\n".join(contexts)
         return None
 
-    # All commands that should be routed to the LLM for processing
-    # Includes shared + personality-specific commands
-    _LLM_ROUTED_COMMANDS = {
-        # Shared commands (available in all modes)
-        "/summarize", "/reason", "/debug", "/explain", "/refactor",
-        "/translate", "/generate", "/search", "/plan", "/task",
-        "/execute", "/auto", "/skill",
-        "/freeze", "/unfreeze", "/guard", "/verbose",
-        "/read", "/links", "/crawl", "/webmap", "/logs",
-        # Chat personality — exploration
-        "/deep", "/compare", "/draft", "/brainstorm", "/tldr", "/explore",
-        # Finance personality — money-making
-        "/stock", "/portfolio", "/market", "/news", "/watchlist", "/quant",
-        # Coding personality — development
-        "/code", "/write", "/edit", "/run", "/git", "/diff", "/browse",
-        "/undo", "/test", "/apply", "/grep", "/find", "/fix", "/analyze",
-    }
-
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle unrecognized commands: route shared commands or suggest fixes."""
+        """Handle unrecognized slash commands.
+
+        Flow:
+          1. Try to execute as a system-level command (/arch, /dashboard, /upgrade, …)
+          2. If text looks like a close typo of a real command, suggest the correction
+          3. Otherwise: **strip the leading `/` and treat as natural-language input**.
+             This is the "graceful fallthrough" path — any deprecated or unknown
+             slash is silently treated as a chat message so the LLM can respond.
+             It preserves muscle memory for removed slash commands and protects
+             voice/new users from cryptic "unknown command" errors.
+        """
         if not self._is_command_for_me(update):
             return
         text = update.message.text or ""
@@ -2701,43 +2693,37 @@ class NeoMindTelegramBot:
             await self._send_long_message(update.message, system_result)
             return
 
-        # 2. Shared commands → route through LLM (it handles them natively)
-        if cmd in self._LLM_ROUTED_COMMANDS:
-            await self._process_and_reply(update, text, "shared_command")
-            return
-
-        # 3. Common typos / close matches
+        # 2. Common typos / close matches — still a helpful nudge
         suggestions = {
             "/models": "/model",
             "/modes": "/mode",
             "/switch": "/model",
-            "/stocks": "/stock",
-            "/price": "/stock",
-            "/btc": "/crypto BTC",
-            "/eth": "/crypto ETH",
-            "/bitcoin": "/crypto BTC",
             "/config": "/status",
             "/settings": "/status",
-            "/fetch": "/read",
-            "/open": "/read",
-            "/visit": "/read",
-            "/webpage": "/read",
-            "/link": "/links",
-            "/spider": "/crawl",
-            "/scrape": "/crawl",
         }
-
         suggestion = suggestions.get(cmd)
         if suggestion:
             await update.message.reply_text(
                 f"你是不是想说 <code>{suggestion}</code>？",
                 parse_mode=ParseMode.HTML,
             )
-        else:
-            await update.message.reply_text(
-                f"未知命令: {cmd}\n发 <code>/help</code> 查看可用命令",
-                parse_mode=ParseMode.HTML,
-            )
+            return
+
+        # 3. Graceful fallthrough: strip the leading `/` from the command token
+        #    so the bot treats `/foo bar baz` as the natural-language message
+        #    `foo bar baz`. This keeps all deprecated commands working — the
+        #    LLM (in the user's current mode) figures out what to do.
+        #
+        #    We preserve the `@botname` suffix stripping that real CommandHandler
+        #    does for group chats: `/foo@neomindbot` → `foo`.
+        stripped_cmd = cmd.lstrip("/")
+        if "@" in stripped_cmd:
+            stripped_cmd = stripped_cmd.split("@", 1)[0]
+        rest = text[len(cmd):].lstrip()
+        rewritten = f"{stripped_cmd} {rest}".strip() if rest else stripped_cmd
+
+        # Forward to the normal natural-language processing path
+        await self._process_and_reply(update, rewritten, "natural_fallthrough")
 
     async def _try_system_command(self, cmd: str, text: str) -> Optional[str]:
         """Try to execute a system command directly (no LLM needed).
