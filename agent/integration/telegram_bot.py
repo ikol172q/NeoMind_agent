@@ -3441,12 +3441,15 @@ class NeoMindTelegramBot:
             if extra:
                 extra_prompt = f"\n\nUSER CUSTOMIZATIONS:\n{extra}"
 
-        # Append tool definitions from canonical agentic layer
+        # Append tool definitions from canonical agentic layer. Pass the
+        # current chat's mode so finance_* tools only appear in fin mode,
+        # code_* tools only in coding mode, etc. (mode-gating introduced
+        # in ToolDefinition.allowed_modes per eea40a0 + Phase B.3).
         tool_prompt = ""
         try:
             agentic = self._get_agentic_loop()
             if agentic:
-                tool_prompt = "\n\n" + agentic.get_tool_prompt()
+                tool_prompt = "\n\n" + agentic.get_tool_prompt(mode=current_mode)
         except Exception as e:
             logger.debug(f"Failed to generate tool prompt: {e}")
 
@@ -3681,6 +3684,26 @@ class NeoMindTelegramBot:
                         print("[agentic]   → self.components is None/empty", flush=True)
                     elif "search" not in self.components:
                         print(f"[agentic]   → available components: {list(self.components.keys())}", flush=True)
+
+                # ── Finance tools (Phase B.3): register 10 fin-mode tools ──
+                # Gated by allowed_modes={"fin"} so they only appear in the
+                # LLM's tool list when the user is in fin mode. Safe to call
+                # even if some components (digest, quant, rag) are missing —
+                # each tool checks its dependency and returns {ok: False}.
+                try:
+                    from agent.tools.finance_tools import register_finance_tools
+                    _reg_components = {
+                        "data_hub": self.components.get("data_hub") if self.components else None,
+                        "quant": self.components.get("quant") if self.components else None,
+                        "digest": self.components.get("digest") if self.components else None,
+                        "search": self.components.get("search") if self.components else None,
+                        "rag": self.components.get("rag") if self.components else None,
+                        "chat_store": self._store,
+                    }
+                    _fin_count = register_finance_tools(registry, _reg_components)
+                    print(f"[agentic] {_fin_count} finance_* tools registered (fin mode only) ✅", flush=True)
+                except Exception as e:
+                    print(f"[agentic] ⚠️ finance tools registration failed: {e}", flush=True)
 
                 config = AgenticConfig(
                     max_iterations=3,    # Telegram: 搜一次最多补搜一次，不要无限循环
