@@ -62,7 +62,13 @@ for line in ENV_FILE.read_text().splitlines():
 API_ID = int(env.get("TG_API_ID", "0"))
 API_HASH = env.get("TG_API_HASH", "")
 PHONE = env.get("TG_PHONE", "")
-BOT_USERNAME = env.get("TG_BOT_USERNAME", "")
+# NEOMIND_TESTER_TARGET=canary switches the tester to the canary bot
+# (zero-downtime evolution pipeline). Defaults to production bot.
+_TARGET = os.environ.get("NEOMIND_TESTER_TARGET", "prod").strip().lower()
+if _TARGET == "canary":
+    BOT_USERNAME = env.get("TG_CANARY_BOT_USERNAME") or env.get("TG_BOT_USERNAME", "")
+else:
+    BOT_USERNAME = env.get("TG_BOT_USERNAME", "")
 
 if not (API_ID and API_HASH and PHONE and BOT_USERNAME):
     print("❌ Missing required keys in env file. Need: TG_API_ID, TG_API_HASH, TG_PHONE, TG_BOT_USERNAME", file=sys.stderr)
