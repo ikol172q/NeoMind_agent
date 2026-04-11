@@ -901,7 +901,16 @@ class HybridSearchEngine:
 
         # Tier 1: Always available, no API key needed
         self.tier1_sources = {}
-        if HAS_DDG:
+        # DuckDuckGo sources are gated behind NEOMIND_ENABLE_DDG=1 because the
+        # duckduckgo_search package (v8.x) hangs indefinitely inside a
+        # C-level call when DDG rate-limits the caller. asyncio.wait_for at
+        # the source level can't cancel the thread-pool worker, so enough
+        # hung DDG calls exhaust the default executor and deadlock every
+        # subsequent run_in_executor — including other chat handlers.
+        # Google News RSS + site-specific RSS feeds cover the finance /
+        # news use cases without this failure mode. Set the env var to
+        # re-enable at your own risk.
+        if HAS_DDG and os.getenv("NEOMIND_ENABLE_DDG") == "1":
             self.tier1_sources["ddg_en"] = DuckDuckGoSource(region="en-us")
             self.tier1_sources["ddg_zh"] = DuckDuckGoSource(region="cn-zh")
         # Google News RSS — always free, no API key
