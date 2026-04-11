@@ -4819,8 +4819,43 @@ class NeoMindTelegramBot:
                     chat_id, "assistant", response_text.strip(), chat_type,
                     thinking=thinking_text,
                 )
-                await self._send_long_message(msg, response_text.strip(),
-                                               html_suffix=search_footer)
+
+                # Strip <tool_call> blocks before user-visible send so raw XML
+                # never shows up as literal text in the reply.
+                _clean_display = re.sub(
+                    r'<tool_call>.*?</tool_(?:call|result)>', '',
+                    response_text.strip(), flags=re.DOTALL,
+                )
+                _clean_display = re.sub(
+                    r'</?tool_(?:call|result)>', '', _clean_display,
+                ).strip()
+                if _clean_display:
+                    await self._send_long_message(
+                        msg, _clean_display, html_suffix=search_footer,
+                    )
+
+                # ── Agentic loop: if the response contains tool calls, execute them ──
+                # (mirrors _ask_llm_stream_normal; reasoning models like
+                # deepseek-reasoner emit <tool_call> blocks in `content` too,
+                # and without this path fin-mode tools never fire.)
+                if '<tool_call>' in response_text and used_provider:
+                    print(
+                        f"[agentic] Detected <tool_call> in thinking-mode "
+                        f"response ({len(response_text)} chars), starting "
+                        f"agentic loop", flush=True,
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._run_agentic_tool_loop(
+                                msg, response_text.strip(), chat_id, chat_type,
+                                used_provider,
+                            ),
+                            timeout=300,
+                        )
+                    except asyncio.TimeoutError:
+                        await msg.reply_text(
+                            "⚠️ 工具执行超时（5分钟），已终止"
+                        )
             else:
                 await msg.reply_text("⚠️ No response generated")
 

@@ -789,7 +789,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 1. finance_get_stock
     async def _exec_stock(symbol: str, market: str = "us", **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_get_stock(data_hub, symbol, market)
         if data.get("ok"):
             summary = (
@@ -822,7 +822,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 2. finance_get_crypto
     async def _exec_crypto(symbol: str, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_get_crypto(data_hub, symbol)
         if data.get("ok"):
             summary = (
@@ -852,7 +852,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 3. finance_market_overview
     async def _exec_market(**_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_market_overview(data_hub)
         if data.get("ok"):
             lines = [f"{q['symbol']} ${q['price']} ({q.get('change_pct', 0):+.2f}%)"
@@ -876,7 +876,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 4. finance_news_search
     async def _exec_news(query: str, max_results: int = 5, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_news_search(search, query, max_results=max_results)
         if data.get("ok"):
             lines = [f"{i+1}. [{it['source']}] {it['title']} — {it['url']}"
@@ -904,7 +904,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 5. finance_market_digest
     async def _exec_digest(**_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_market_digest(digest)
         if data.get("ok"):
             return ToolResult(True,
@@ -927,7 +927,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 6. finance_compute
     async def _exec_compute(formula: str, **args):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_compute(quant, formula, **args)
         if data.get("ok"):
             return ToolResult(True, output=str(data), metadata=data)
@@ -957,7 +957,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 7. finance_economic_calendar
     async def _exec_calendar(days: int = 7, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_economic_calendar(days)
         return ToolResult(True, output=str(data), metadata=data)
 
@@ -979,7 +979,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 8. finance_risk_calc
     async def _exec_risk(metric: str, **args):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_risk_calc(quant, metric, **args)
         if data.get("ok"):
             return ToolResult(True, output=str(data), metadata=data)
@@ -1004,7 +1004,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 9. finance_portfolio_show
     async def _exec_portfolio_show(chat_id: int = 0, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_portfolio_show(chat_store, chat_id)
         if data.get("ok"):
             return ToolResult(True,
@@ -1031,7 +1031,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 10. finance_watchlist_show
     async def _exec_watchlist_show(chat_id: int = 0, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_watchlist_show(chat_store, chat_id)
         if data.get("ok"):
             return ToolResult(True,
@@ -1059,7 +1059,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 11. web_hn_top (shared — all modes)
     async def _exec_hn(category: str = "top", limit: int = 10, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await web_hn_top(category, limit)
         if data.get("ok"):
             lines = [
@@ -1092,7 +1092,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 12. finance_persona_debate (fin-only)
     async def _exec_persona(symbol: str, persona_filter: str = None, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_persona_debate(digest, symbol, persona_filter)
         if data.get("ok"):
             personas = data.get("personas", [])
@@ -1127,7 +1127,7 @@ def register_finance_tools(registry: Any, components: Dict[str, Any]) -> int:
 
     # 13. finance_rag_query (fin-only)
     async def _exec_rag(question: str, symbol: str = None, top_k: int = 3, **_ignore):
-        from agent.coding.tool_schema import ToolResult
+        from agent.coding.tools import ToolResult
         data = await finance_rag_query(rag, question, symbol, top_k)
         if data.get("ok"):
             lines = [
