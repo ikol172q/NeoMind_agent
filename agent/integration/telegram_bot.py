@@ -31,7 +31,7 @@ import asyncio
 import logging
 import html
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +41,20 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("neomind.telegram")
+
+
+def _safe_temperature(model: str, default: float = 0.7) -> float:
+    """Return a temperature value the upstream provider will accept.
+
+    Some routed models reject anything other than 1.0 (e.g. kimi-k2.5).
+    Centralised here so every chat-completion call site stays consistent.
+    """
+    if not model:
+        return default
+    m = model.lower()
+    if m.startswith("kimi"):
+        return 1.0
+    return default
 
 try:
     from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -398,6 +412,7 @@ class NeoMindTelegramBot:
         # System commands
         self._app.add_handler(CommandHandler("hooks", self._cmd_hooks))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
+        self._app.add_handler(CommandHandler("evolve", self._cmd_evolve))
         # Web commands: /read, /links, /crawl
         self._app.add_handler(CommandHandler("read", self._cmd_web_read))
         self._app.add_handler(CommandHandler("links", self._cmd_web_links))
@@ -424,6 +439,48 @@ class NeoMindTelegramBot:
         # Start polling
         await self._app.initialize()
         await self._app.start()
+
+        # ── Post-restart evolution verification ──────────────────────
+        # If the last startup was a self-evolution restart, re-import every
+        # applied module in THIS process to prove the new code loads cleanly.
+        # On failure we git-reset-hard to the rollback tag and schedule
+        # another supervisorctl restart BEFORE Telegram polling begins —
+        # so users never see a broken version of the bot respond to a
+        # message. Stash the result for _check_restart_intent to notify.
+        self._evolution_verify_result: Optional[Tuple[Dict[str, Any], str]] = None
+        try:
+            from agent.evolution.post_restart_verify import verify_pending_evolution
+            intent, verify_status = verify_pending_evolution()
+            if intent is not None:
+                self._evolution_verify_result = (intent, verify_status)
+                if verify_status == "rolled_back":
+                    logger.warning(
+                        "[bot] Evolution verification FAILED; rollback scheduled. "
+                        "Polling will start on the next supervised restart with original code."
+                    )
+                    print(
+                        "[bot] ⚠️ evolution rolled back — waiting for recovery restart",
+                        flush=True,
+                    )
+                    # Stay up briefly so the user notification can be sent,
+                    # but do NOT start Telegram polling — supervisord will
+                    # replace this process any moment now.
+                    await asyncio.sleep(5)
+                    return
+                if verify_status == "rollback_failed":
+                    logger.critical(
+                        "[bot] Evolution verification AND rollback both failed. "
+                        "Refusing to start Telegram polling — manual recovery required."
+                    )
+                    print(
+                        "[bot] 🚨 CRITICAL: evolution + rollback both failed — "
+                        "not starting polling. See /data/neomind/evolution/ for the intent file.",
+                        flush=True,
+                    )
+                    return
+                logger.info(f"[bot] Evolution verification PASSED: {intent.get('tag')}")
+        except Exception as e:
+            logger.error(f"[bot] Post-restart verifier crashed: {e}", exc_info=True)
 
         # Register command menu in Telegram (visible in autocomplete)
         from telegram import BotCommand
@@ -1831,7 +1888,7 @@ class NeoMindTelegramBot:
                 json={
                     "model": model,
                     "messages": [{"role": "user", "content": interpret_prompt}],
-                    "max_tokens": 200, "temperature": 0.1,
+                    "max_tokens": 200, "temperature": _safe_temperature(model, 0.1),
                 },
                 timeout=15,
             ))
@@ -2377,6 +2434,200 @@ class NeoMindTelegramBot:
         result = self._exec_restart_command(arg)
         await self._send_long_message(msg, result)
 
+    async def _cmd_evolve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /evolve — inspect and control the self-evolution transaction log.
+
+        Sub-commands:
+            /evolve                   → list 10 most recent transactions
+            /evolve list [N]          → list N most recent (default 10)
+            /evolve status <tag>      → full detail of one transaction
+            /evolve last              → full detail of the most recent transaction
+            /evolve revert <tag>      → git reset --hard to tag + restart agent
+        """
+        msg = update.message
+        args = context.args if context.args else []
+        sub = (args[0].lower() if args else "list")
+
+        try:
+            from agent.evolution.transaction import (
+                get_transaction_log, get_pending_intent,
+            )
+        except ImportError as e:
+            await msg.reply_text(f"⚠️ Evolution module not available: {e}")
+            return
+
+        # ── list ──
+        if sub == "list":
+            try:
+                n = int(args[1]) if len(args) > 1 else 10
+            except (ValueError, IndexError):
+                n = 10
+            entries = get_transaction_log(limit=n)
+            if not entries:
+                await msg.reply_text("📭 No evolution transactions recorded yet.")
+                return
+
+            lines = [f"📜 <b>Last {len(entries)} evolution transactions:</b>\n"]
+            for e in entries:
+                tag = e.get("tag", "?")
+                status = e.get("status", "?")
+                reason = (e.get("reason") or "")[:60]
+                files_n = len(e.get("applied_files") or [])
+                icon = {
+                    "committed": "✅",
+                    "rolled_back": "↩️",
+                    "post_restart_failed": "⚠️",
+                    "in_progress": "⏳",
+                }.get(status, "•")
+                lines.append(
+                    f"{icon} <code>{tag}</code> [{files_n} files]\n"
+                    f"   {reason}"
+                )
+            pending = get_pending_intent()
+            if pending:
+                lines.append(f"\n⏳ <b>Pending intent:</b> <code>{pending.tag}</code>")
+            await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        # ── last ──
+        if sub == "last":
+            entries = get_transaction_log(limit=1)
+            if not entries:
+                await msg.reply_text("📭 No evolution transactions recorded yet.")
+                return
+            await msg.reply_text(
+                self._format_evolve_detail(entries[0]),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── status <tag> ──
+        if sub == "status":
+            if len(args) < 2:
+                await msg.reply_text("Usage: <code>/evolve status &lt;tag&gt;</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            want = args[1]
+            entries = get_transaction_log(limit=200)
+            match = next((e for e in entries if e.get("tag") == want), None)
+            if not match:
+                await msg.reply_text(f"❌ No transaction found with tag <code>{want}</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            await msg.reply_text(
+                self._format_evolve_detail(match),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── revert <tag> ──
+        if sub == "revert":
+            if len(args) < 2:
+                await msg.reply_text("Usage: <code>/evolve revert &lt;tag&gt;</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            want = args[1]
+            entries = get_transaction_log(limit=500)
+            match = next((e for e in entries if e.get("tag") == want), None)
+            if not match:
+                await msg.reply_text(
+                    f"❌ Refusing to revert: no transaction log entry for "
+                    f"<code>{want}</code>. List recent tags with <code>/evolve list</code>.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            ok, result_msg = self._execute_evolve_revert(want, reason="user /evolve revert via chat")
+            await msg.reply_text(result_msg, parse_mode=ParseMode.HTML)
+            return
+
+        await msg.reply_text(
+            "Usage:\n"
+            "<code>/evolve list [N]</code> — recent transactions\n"
+            "<code>/evolve last</code> — last transaction detail\n"
+            "<code>/evolve status &lt;tag&gt;</code> — specific transaction\n"
+            "<code>/evolve revert &lt;tag&gt;</code> — rollback + restart",
+            parse_mode=ParseMode.HTML,
+        )
+
+    def _format_evolve_detail(self, entry: Dict[str, Any]) -> str:
+        """Render a single transaction log entry as HTML for Telegram."""
+        tag = entry.get("tag", "?")
+        reason = entry.get("reason", "")
+        status = entry.get("status", "?")
+        started = (entry.get("started_at") or "")[:19]
+        finished = (entry.get("finished_at") or "")[:19]
+        files = entry.get("applied_files") or []
+        error = entry.get("error") or ""
+        timings = entry.get("stage_timings") or {}
+
+        icon = {
+            "committed": "✅",
+            "rolled_back": "↩️",
+            "post_restart_failed": "⚠️",
+            "in_progress": "⏳",
+        }.get(status, "•")
+
+        lines = [
+            f"{icon} <b>Transaction</b> <code>{tag}</code>",
+            f"<b>Reason:</b> {reason}",
+            f"<b>Status:</b> {status}",
+            f"<b>Started:</b> {started}",
+        ]
+        if finished:
+            lines.append(f"<b>Finished:</b> {finished}")
+
+        if files:
+            file_list = "\n".join(f"  • <code>{f}</code>" for f in files[:15])
+            lines.append(f"<b>Files ({len(files)}):</b>\n{file_list}")
+
+        if timings:
+            total = sum(float(v) for v in timings.values() if isinstance(v, (int, float)))
+            stages = "  ".join(f"{k}={float(v):.2f}s" for k, v in timings.items())
+            lines.append(f"<b>Timings</b> (total {total:.2f}s): {stages}")
+
+        if error:
+            lines.append(f"<b>Error:</b> <code>{error[:500]}</code>")
+
+        lines.append(f"\n<i>Revert: <code>/evolve revert {tag}</code></i>")
+        return "\n".join(lines)
+
+    def _execute_evolve_revert(self, tag: str, reason: str) -> Tuple[bool, str]:
+        """Actually perform a revert: git reset --hard <tag> then supervisorctl restart."""
+        try:
+            from agent.evolution.self_edit import SelfEditor
+            repo_dir = str(SelfEditor.REPO_DIR)
+        except Exception:
+            repo_dir = "/app"
+
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                ["git", "reset", "--hard", tag],
+                cwd=repo_dir, capture_output=True, text=True, timeout=20,
+            )
+        except Exception as e:
+            return False, f"❌ git reset failed: {e}"
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()[-400:]
+            return False, f"❌ git reset --hard <code>{tag}</code> failed:\n<code>{err}</code>"
+
+        try:
+            _sp.Popen(
+                ["sh", "-c", "sleep 2 && supervisorctl restart neomind-agent"],
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            )
+            schedule_msg = "Agent restart scheduled in 2s."
+        except Exception as e:
+            schedule_msg = f"⚠️ Could not schedule restart automatically: {e}"
+
+        return True, (
+            f"↩️ <b>Reverted to</b> <code>{tag}</code>\n"
+            f"<b>Reason:</b> {reason}\n"
+            f"{schedule_msg}"
+        )
+
     # ── URL Auto-detection for LLM context ─────────────────────────
 
     _URL_RE = re.compile(r'https?://[^\s<>"\']+')
@@ -2908,11 +3159,20 @@ class NeoMindTelegramBot:
         re.IGNORECASE,
     )
 
+    # Explicit opt-out: user told us NOT to search. Honour the directive.
+    _SEARCH_OPTOUT_RE = re.compile(
+        r'(不要搜索|不用搜索|别搜索|不搜索|不要联网|不联网|直接(回答|告诉)|'
+        r"don'?t search|do not search|no search|without search(?:ing)?|"
+        r'just from your knowledge|from your knowledge only|skip the search)',
+        re.IGNORECASE,
+    )
+
     def _should_search(self, text: str) -> bool:
         """Decide if a user message would benefit from web search augmentation.
 
         Returns True for ANY informational query — not just finance.
-        Returns False only for greetings, single-word responses, commands.
+        Returns False only for greetings, single-word responses, commands,
+        or when the user explicitly opted out of search.
         """
         stripped = text.strip()
         # Skip very short messages
@@ -2920,6 +3180,9 @@ class NeoMindTelegramBot:
             return False
         # Skip greetings, commands, acknowledgements
         if self._SEARCH_SKIP_RE.match(stripped):
+            return False
+        # Honour explicit "no search" directive
+        if self._SEARCH_OPTOUT_RE.search(stripped):
             return False
 
         # Lazy-init the compiled regex (built once, reused)
@@ -2968,7 +3231,7 @@ class NeoMindTelegramBot:
                         "model": provider["model"],
                         "messages": [{"role": "user", "content": extract_prompt}],
                         "max_tokens": 150,
-                        "temperature": 0.3,
+                        "temperature": _safe_temperature(provider["model"], 0.3),
                     },
                 ) as resp:
                     if resp.status == 200:
@@ -3597,7 +3860,7 @@ class NeoMindTelegramBot:
                 response = await loop.run_in_executor(None, lambda p=provider, t=timeout: req.post(
                     p["base_url"],
                     headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
-                    json={"model": p["model"], "messages": messages, "max_tokens": 4096, "temperature": 0.7, "stream": False},
+                    json={"model": p["model"], "messages": messages, "max_tokens": 4096, "temperature": _safe_temperature(p["model"]), "stream": False},
                     timeout=t,
                 ))
                 latency = int((time.time() - t_start) * 1000)
@@ -3724,6 +3987,22 @@ class NeoMindTelegramBot:
         if compact_notice:
             self._last_compact_notice = compact_notice
 
+        # If user explicitly opted out of search, tell the LLM not to call any
+        # tools. Without this nudge, kimi-k2.5 in fin mode keeps emitting
+        # <tool_call>WebSearch</tool_call> wrappers and the agentic loop runs
+        # for >90s, blowing past the user's "answer directly" intent.
+        no_tools_requested = bool(self._SEARCH_OPTOUT_RE.search(user_message))
+        if no_tools_requested:
+            messages.insert(-1, {
+                "role": "system",
+                "content": (
+                    "The user has explicitly asked you NOT to search the web. "
+                    "Do NOT emit any <tool_call> blocks. Do NOT call WebSearch, "
+                    "Bash, or any tool. Answer directly from your training "
+                    "knowledge in the user's language. Be concise."
+                ),
+            })
+
         # Auto-search augmentation: inject web results if the query warrants it
         search_footer = ""
         if self._should_search(user_message):
@@ -3758,13 +4037,14 @@ class NeoMindTelegramBot:
             for provider in providers:
                 try:
                     print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
+                    _temp = _safe_temperature(provider["model"])
                     response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda p=provider: req.post(
+                        None, lambda p=provider, t=_temp: req.post(
                             p["base_url"],
                             headers={"Authorization": f"Bearer {p['api_key']}",
                                      "Content-Type": "application/json"},
                             json={"model": p["model"], "messages": messages,
-                                  "max_tokens": 4096, "temperature": 0.7, "stream": True},
+                                  "max_tokens": 4096, "temperature": t, "stream": True},
                             timeout=90,
                             stream=True,
                         ))
@@ -3954,8 +4234,30 @@ class NeoMindTelegramBot:
             except Exception:
                 await msg.reply_text(f"⚠️ Error: {e}")
 
+        # User opted out of tools — strip any tool_call blocks the LLM emitted
+        # anyway and re-render the cleaned text in the live message.
+        if no_tools_requested and response_text and '<tool_call>' in response_text:
+            import re as _re_strip
+            cleaned = _re_strip.sub(
+                r'<tool_call>.*?</tool_(?:call|result)>', '', response_text, flags=_re_strip.DOTALL
+            ).strip()
+            if not cleaned:
+                cleaned = "（已按你的要求跳过搜索，但模型这次没有生成正文，请重新发送你的问题。）"
+            try:
+                await live_msg.edit_text(
+                    self._md_to_html(cleaned),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                try:
+                    await live_msg.edit_text(cleaned[:4000], disable_web_page_preview=True)
+                except Exception:
+                    pass
+            response_text = cleaned
+
         # ── Agentic loop: if response contains tool calls, execute them ──
-        if response_text and '<tool_call>' in response_text and used_provider:
+        if response_text and '<tool_call>' in response_text and used_provider and not no_tools_requested:
             print(f"[agentic] Detected <tool_call> in response ({len(response_text)} chars), starting agentic loop", flush=True)
             # Clean the displayed message: strip the raw <tool_call> block
             # so the user sees only the natural language part
@@ -4031,7 +4333,7 @@ class NeoMindTelegramBot:
                             headers={"Authorization": f"Bearer {provider['api_key']}",
                                      "Content-Type": "application/json"},
                             json={"model": provider["model"], "messages": nudge_messages,
-                                  "max_tokens": 4096, "temperature": 0.7},
+                                  "max_tokens": 4096, "temperature": _safe_temperature(provider["model"])},
                         ) as nudge_resp:
                             if nudge_resp.status == 200:
                                 nudge_data = await nudge_resp.json()
@@ -4101,7 +4403,7 @@ class NeoMindTelegramBot:
                         "model": provider["model"],
                         "messages": msgs,
                         "max_tokens": 4096,
-                        "temperature": 0.7,
+                        "temperature": _safe_temperature(provider["model"]),
                         "stream": True,
                     },
                 ) as resp:
@@ -4138,7 +4440,7 @@ class NeoMindTelegramBot:
                             "model": provider["model"],
                             "messages": msgs,
                             "max_tokens": 4096,
-                            "temperature": 0.7,
+                            "temperature": _safe_temperature(provider["model"]),
                         },
                     ) as resp2:
                         if resp2.status == 200:

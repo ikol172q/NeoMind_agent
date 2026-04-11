@@ -1,0 +1,272 @@
+{
+  "timestamp": "2026-04-10 00:36:54",
+  "bot": "@neomindagent_bot",
+  "elapsed_seconds": 851.2,
+  "total": 30,
+  "passed": 24,
+  "failed": 6,
+  "by_category": {
+    "finance": {
+      "PASS": 6,
+      "FAIL": 0
+    },
+    "switch": {
+      "PASS": 6,
+      "FAIL": 0
+    },
+    "qa": {
+      "PASS": 5,
+      "FAIL": 1
+    },
+    "search": {
+      "PASS": 3,
+      "FAIL": 3
+    },
+    "system": {
+      "PASS": 4,
+      "FAIL": 2
+    }
+  },
+  "results": [
+    {
+      "sid": "F01",
+      "category": "finance",
+      "sent": "/stock AAPL",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "📈 **AAPL** — Apple Inc. $260.49\nChange: +1.59 (+0.614135%)\nSource: yfinance · 07:22 UTC"
+    },
+    {
+      "sid": "F02",
+      "category": "finance",
+      "sent": "/stock NVDA",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "📈 **NVDA** — NVIDIA Corporation $183.91\nChange: +1.83 (+1.00505%)\nSource: yfinance · 07:23 UTC"
+    },
+    {
+      "sid": "F03",
+      "category": "finance",
+      "sent": "/stock TSLA",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "📈 **TSLA** — Tesla, Inc. $345.62\nChange: +2.37 (+0.690457%)\nSource: yfinance · 07:23 UTC"
+    },
+    {
+      "sid": "F04",
+      "category": "finance",
+      "sent": "/crypto BTC",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "📈 **BTC** $71,757.00\n24h: +1.08%\nSource: CoinGecko · 07:23 UTC"
+    },
+    {
+      "sid": "F05",
+      "category": "finance",
+      "sent": "/crypto ETH",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "📈 **ETH** $2,186.66\n24h: +0.22%\nSource: CoinGecko · 07:24 UTC"
+    },
+    {
+      "sid": "F06",
+      "category": "finance",
+      "sent": "/quant CAGR 100 200 5",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "⚙️ 正在执行工具..."
+    },
+    {
+      "sid": "M01",
+      "category": "switch",
+      "sent": "/mode fin",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "已经在 **fin** 模式了"
+    },
+    {
+      "sid": "M02",
+      "category": "switch",
+      "sent": "/model",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "🤖 当前模型: `kimi-k2.5`（fin 默认）\n\n🔌 **Router models:**\n  `deepseek-chat`\n  `deepseek-reasoner`\n  `gemma4:26b`\n  `gemma4:31b`\n  `gemma4:e4b`\n  `glm-4.7`\n  `glm-4.7-flash`\n  `glm-4.7-flashx`\n  `glm-5`\n  `kimi-k2.5` ← 当前\n  `qwen3:14b`\n\n切换: `/model <id>`\n恢复: `/model reset`"
+    },
+    {
+      "sid": "M03",
+      "category": "switch",
+      "sent": "/mode coding",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "✅ 已切换到 **coding** 模式\n编程助手模式 — 代码分析、文件操作、shell"
+    },
+    {
+      "sid": "M04",
+      "category": "switch",
+      "sent": "/model",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "🤖 当前模型: `deepseek-chat`（coding 默认）\n\n🔌 **Router models:**\n  `deepseek-chat` ← 当前\n  `deepseek-reasoner`\n  `gemma4:26b`\n  `gemma4:31b`\n  `gemma4:e4b`\n  `glm-4.7`\n  `glm-4.7-flash`\n  `glm-4.7-flashx`\n  `glm-5`\n  `kimi-k2.5`\n  `qwen3:14b`\n\n切换: `/model <id>`\n恢复: `/model reset`"
+    },
+    {
+      "sid": "M05",
+      "category": "switch",
+      "sent": "/mode fin",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "✅ 已切换到 **fin** 模式\n金融智能模式 — 股票、加密货币、新闻、量化分析"
+    },
+    {
+      "sid": "M06",
+      "category": "switch",
+      "sent": "/status",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**NeoMind Status**\n\n🧩 模式: **fin** | 思考: OFF\n🤖 模型: `kimi-k2.5` via router\n🧠 思考模型: `deepseek-reasoner`\n🔌 Router: 🔴 http://host.docker.internal:8000/v1\n\n🔍 搜索引擎: 5 源 (T1:5 T2:0 T3:0)\n   内容提取: ✅\n📊 数据源: Finnhub, yfinance, AKShare, CoinGecko\n🧠 加密记忆: ✅\n📱 Sync 模式: openclaw\n\n🤖 Bot: @neomindagent_bot\n🤝 OpenCla"
+    },
+    {
+      "sid": "Q01",
+      "category": "qa",
+      "sent": "什么是市盈率? 不要搜索, 直接告诉我",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**市盈率（P/E）= 股价 ÷ 每股收益**\n\n说白了就是：市场愿意为每1块钱的净利润出多少钱买你的股票。\n\n**实战意义：**\n- PE 15倍 → 投资回本需要15年（假设利润不变）\n- PE越高，说明市场越看好未来增长（或估值越泡沫）\n\n**常见区间：**\n- 银行/地产：5-10倍（低增长，低估值）\n- 消费/医药：20-40倍（稳增长，溢价）\n- 科技股：50倍以上（高预期，高风险）\n\n**两个陷阱别踩：**\n1. **静态vs动态** — Trailing PE（过去）和Forward PE（预测）可能差一倍\n2. **价值陷阱** — PE低≠便宜，可能是利润在见顶回落（如周期"
+    },
+    {
+      "sid": "Q02",
+      "category": "qa",
+      "sent": "什么是夏普比率? 不要搜索",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**夏普比率 = (投资收益 - 无风险利率) ÷ 波动率**\n\n衡量你每冒一份险，赚到多少超额回报。\n\n**判读标准：**\n- <1：风险补偿不足，不值得\n- 1-2：及格，大多数基金在此区间  \n- >2：优秀，风控效率较高\n- >3：顶尖（但需警惕杠杆或数据区间过短）\n\n**注意：**\n- 分母是**标准差**（上下波动都算风险），所以高波动资产天然吃亏\n- 必须与**同类资产**对比，债券和股票的夏普不可直接比较\n- 它是**效率指标**而非收益指标——货币基金夏普可能很高，但收益极低\n\n**进阶版：索提诺比率**只惩罚\"下行波动\"，对偏股型基金更公平。"
+    },
+    {
+      "sid": "Q03",
+      "category": "qa",
+      "sent": "什么是 ETF? 直接回答, 不要搜索",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**ETF = 交易所交易基金（Exchange-Traded Fund）**\n\n一句话：**像股票一样实时买卖，像基金一样分散持仓，被动跟踪指数。**\n\n**核心特征：**\n- **实时交易** — 开盘时间内随时成交，价格每秒变动\n- **被动管理** — 跟踪特定指数（沪深300、纳指100等），不依赖基金经理选股\n- **费用极低** — 管理费通常0.15%-0.5%，远低于主动基金1.5%+\n- **持仓透明** — 每日公布具体买了哪些股票\n\n**常见类型：**\n- 宽基ETF（沪深300、标普500）\n- 行业ETF（半导体、医药、新能源）\n- 跨境ETF（纳指、日经、恒生，支"
+    },
+    {
+      "sid": "Q04",
+      "category": "qa",
+      "sent": "解释一下美元微笑理论, 不要搜索",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**美元微笑理论（Stephen Jen 提出）**\n\n描述美元在经济周期不同阶段的走势，形状像个**U型微笑**：\n\n**左侧嘴角（经济衰退）→ 美元强**\n- 全球避险情绪升温，资金涌入美元资产（美债、现金）\n- 避险需求压倒一切，美元成为\" least bad option\"\n\n**中间谷底（温和复苏）→ 美元弱**\n- 美国增速平平，资本流向海外寻求更高收益（新兴市场、欧洲）\n- 风险偏好回升，美元作为避风港被抛弃\n\n**右侧嘴角（强劲增长）→ 美元强**\n- 美国经济领跑全球，资本回流追逐高收益率资产（美股、美元债）\n- 美联储鹰派，利差优势扩大\n\n**实战启示：**\n- 美元不是简"
+    },
+    {
+      "sid": "Q05",
+      "category": "qa",
+      "sent": "什么是 DCA 定投? 不要搜索",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**DCA（Dollar-Cost Averaging）= 定投**\n\n固定时间、固定金额买入同一资产，不管涨跌。\n\n**核心逻辑：**\n- **摊平成本** — 高点买得少，低点买得多，长期持仓成本趋于市场均价下方\n- **去情绪化** — 机械执行，避免\"追涨杀跌\"的人性弱点\n- **降低择时压力** — 不需要判断\"最低点\"，适合没空盯盘的投资者\n\n**数学现实：**\n假设每月投1000元，股价从100跌到50再涨回100：\n- 第1月：买10股（100元）\n- 第2月：买20股（50元）  \n- 第3月：买10股（100元）\n- 持仓成本 = 3000÷40 = **75元**，低于算"
+    },
+    {
+      "sid": "Q06",
+      "category": "qa",
+      "sent": "什么是 risk parity? 不要搜索",
+      "verdict": "FAIL",
+      "reason": "none of ['risk parity', '风险平价', '权重'] found",
+      "first_reply_snippet": "✅ **WebSearch**\n1. [ddg_en] 美元指数（DXY）- Investing.com\n   URL: https://cn.investing.com/indices/usdollar\n   - English (USA)\n- English (UK)\n- English (India)\n- English (Canada)\n- English (Australia)\n- English (South Africa)\n- English (Philippines)\n- English (Nigeria)\n- Deutsch\n- Español (España)\n- Espa"
+    },
+    {
+      "sid": "S01",
+      "category": "search",
+      "sent": "今天 SPY 收盘价是多少",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "抱歉，我违反了你的指令。你明确说了\"不要搜索\"，我不该执行搜索。\n\n既然数据已返回，简要补充：**美元指数当前约98.92，处于52周区间（95.55-101.98）的中低位，近期因地缘避险+美联储高利率（3.5-3.75%）获得支撑，分析师关注99.50能否突破。**\n\n这正好验证了刚才说的**美元微笑理论右侧嘴角**——美国经济相对强势（利率优势、AI科技领先）叠加避险需求，美元走强。\n\n回到你的问题：我之前的DCA解释是否有不清楚的地方？或者你想探讨定投策略在具体资产上的应用？"
+    },
+    {
+      "sid": "S02",
+      "category": "search",
+      "sent": "今天美元指数是多少",
+      "verdict": "FAIL",
+      "reason": "none of ['美元', 'DXY', '指数'] found",
+      "first_reply_snippet": "🔍 正在搜索相关信息..."
+    },
+    {
+      "sid": "S03",
+      "category": "search",
+      "sent": "Just from your knowledge: name 3 Buffett quotes (no search)",
+      "verdict": "FAIL",
+      "reason": "none of ['Buffett', '巴菲特'] found",
+      "first_reply_snippet": "1. **\"Price is what you pay. Value is what you get.\"**  \n   （价格是你付出的，价值是你得到的。）\n\n2. **\"Be fearful when others are greedy, and greedy when others are fearful.\"**  \n   （别人贪婪时我恐惧，别人恐惧时我贪婪。）\n\n3. **\"Rule No. 1: Never lose money. Rule No. 2: Never forget Rule No. 1.\"**  \n   （第一法则：永远不要亏钱。第二法则：永远不要忘记第一法则。）"
+    },
+    {
+      "sid": "S04",
+      "category": "search",
+      "sent": "今天 BTC 多少美元",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**比特币当前价格：约 $70,400 - $72,000 区间**\n\n**关键数据点：**\n- 现货价格震荡于 **$70,400** 附近（Bitcoin.com News，2026-03-10）\n- 日内交易区间集中在 **$70,000-$72,000**（Cointelegraph，2026-04-09）\n- 关键阻力位：**$71,000-$72,000**\n\n**市场动态：**\n据Cointelegraph最新数据，尽管上周日有持有超7年的\"OG鲸鱼\"抛售了2.71亿美元BTC，但市场吸收能力较强，未引发大幅下跌，价格仍维持在7万美元上方。这与今年1月类似规模的鲸鱼抛售（导致13"
+    },
+    {
+      "sid": "S05",
+      "category": "search",
+      "sent": "Without searching: explain CAPM",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**CAPM（资本资产定价模型）**\n\n**公式：**  \nE(R) = Rf + β × (Rm - Rf)\n\n**三要素：**\n- **Rf**：无风险利率（通常取国债收益率）\n- **β**：系统性风险系数（市场波动1%，该资产波动β%）\n- **(Rm - Rf)**：市场风险溢价（投资者承担市场风险要求的额外回报）\n\n**核心逻辑：**  \n资产的预期收益**只与系统性风险（β）相关**，非系统性风险（个股特有风险）可通过分散投资消除，不应获得额外补偿。\n\n**实战用途：**\n- 计算股权资本成本（Cost of Equity）\n- 评估投资组合经理绩效（是否跑赢风险调整后的基准）\n"
+    },
+    {
+      "sid": "S06",
+      "category": "search",
+      "sent": "今天最大的财经新闻是什么",
+      "verdict": "FAIL",
+      "reason": "none of ['新闻', 'news', 'today', '今天'] found",
+      "first_reply_snippet": "🔍 正在搜索相关信息..."
+    },
+    {
+      "sid": "U01",
+      "category": "system",
+      "sent": "/status",
+      "verdict": "FAIL",
+      "reason": "no reply",
+      "first_reply_snippet": ""
+    },
+    {
+      "sid": "U02",
+      "category": "system",
+      "sent": "/context",
+      "verdict": "FAIL",
+      "reason": "no reply",
+      "first_reply_snippet": ""
+    },
+    {
+      "sid": "U03",
+      "category": "system",
+      "sent": "/cost",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "✅ **WebSearch**\n1. [gnews_zh] 震荡加剧！以黎谈判提振市场美股收涨原油冲高回落_股票_全球资讯 - bihainews.com\n   URL: https://news.google.com/rss/articles/CBMiaEFVX3lxTFA4VlE4QXFpSW1faWhCQWFMajB3NHljTFFHdXJWRWFXUGE0WEx0WGJ2c0N4MWdHYUFHMDFVZXFVYUZDQ1ZpNldQeVFGcmV4cDdaaGpNeW9jNnFVUTVqZmpybEJKYVN6YlVE?oc=5\n   Date: 2026-04-10\n   震荡加剧"
+    },
+    {
+      "sid": "U04",
+      "category": "system",
+      "sent": "/help",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "**今天（4月9日）最大财经新闻：美伊停火协议**\n\n**市场反应（华尔街见闻，4月8日）：**\n- 美股三大指数 **+2%**\n- 半导体指数创历史新高\n- 油价创疫情以来最大单日跌幅\n\n**背景：** 此前美以针对伊朗的军事行动（\"史诗狂怒行动\"）导致布伦特原油飙至85美元，避险情绪推升美元。停火消息确认后，风险资产全线反弹，能源价格回吐地缘溢价。\n\n**次要头条：**\n- **Bitmine 转板NYSE** + 回购授权扩至40亿美元（持有ETH总量近4%）\n\n**市场含义：** 典型的\"和平交易\"（peace trade）模式——地缘风险退潮时，股票涨、油价跌、避险资产（美元、黄金"
+    },
+    {
+      "sid": "U05",
+      "category": "system",
+      "sent": "/think",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "🧠 Thinking mode: **ON**\nModel: `deepseek-reasoner`\n\n开启后每条回复会包含思考过程（灰色字体）。回复更深入但更慢。"
+    },
+    {
+      "sid": "U06",
+      "category": "system",
+      "sent": "/clear",
+      "verdict": "PASS",
+      "reason": "",
+      "first_reply_snippet": "🗑 对话已归档（48 条消息）\nLLM 重新开始，旧消息已存档"
+    }
+  ]
+}
