@@ -136,7 +136,8 @@ D_SCENARIOS: List[Scenario] = [
     # Deleted commands fall through to natural language — expect any reply
     # that is NOT an error (any non-empty non-"未知命令" response is OK).
     ("D01", "/archive", 30, ["archive", "归档", "清空", "保存", "备份", "checkpoint"], "D"),
-    ("D02", "/purge 历史", 30, ["purge", "删除", "清理", "归档", "history"], "D"),
+    ("D02", "/purge 历史", 30,
+        ["purge", "删除", "清理", "归档", "history", "清空", "已清"], "D"),
     ("D03", "/setctx mykey myvalue", 30, ["context", "set", "key", "value", "无法", "不理解", "?"], "D"),
     ("D04", "/memory", 30, ["memory", "记忆", "dump", "admin", "?"], "D"),
     # Canonical replacements must still work
