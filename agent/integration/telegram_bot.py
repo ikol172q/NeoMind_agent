@@ -507,7 +507,6 @@ class NeoMindTelegramBot:
         await self._app.updater.start_polling(drop_pending_updates=True)
 
         print(f"[bot] ✅ @{bot_info.username} is LIVE — listening for messages", flush=True)
-        print("[bot] canary-closed-loop-marker-2026-04-11", flush=True)
 
         # Check if this is a post-self-restart boot → notify user
         asyncio.create_task(self._check_restart_intent())
