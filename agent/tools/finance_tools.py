@@ -327,6 +327,37 @@ async def finance_compute(
     if not quant_engine:
         return {"ok": False, "error": "quant engine not available"}
 
+    # Normalize common LLM-emitted argument name variants to canonical names.
+    # The LLM (deepseek-reasoner) is creative with parameter naming, so we
+    # accept synonyms rather than force it onto one convention.
+    _ALIASES = {
+        # cagr
+        "start": "initial", "start_value": "initial", "initial_value": "initial",
+        "begin": "initial", "begin_value": "initial", "value_init": "initial",
+        "v0": "initial", "beginning_value": "initial",
+        "end": "final", "end_value": "final", "final_value": "final",
+        "value_final": "final", "val_final": "final", "vn": "final",
+        "ending_value": "final",
+        # compound
+        "capital": "principal", "amount": "principal",
+        "starting_amount": "principal", "start_amount": "principal",
+        "initial_amount": "principal", "pv": "principal",
+        "rate": "annual_rate", "interest_rate": "annual_rate",
+        "r_annual": "annual_rate", "apr": "annual_rate",
+        "n": "years", "period": "years", "duration": "years",
+        "term": "years", "t_years": "years",
+        "monthly": "monthly_contribution", "deposit": "monthly_contribution",
+        "contribution": "monthly_contribution",
+        # sharpe / var
+        "return": "portfolio_return", "expected_return": "portfolio_return",
+        "mean": "portfolio_return",
+        "rf": "risk_free_rate", "risk_free": "risk_free_rate",
+        "std": "std_deviation", "stddev": "std_deviation",
+        "sigma_p": "std_deviation", "volatility": "std_deviation",
+        "portfolio": "portfolio_value", "value": "portfolio_value",
+    }
+    args = {_ALIASES.get(k, k): v for k, v in args.items()}
+
     f = (formula or "").strip().lower()
     try:
         if f == "cagr":
