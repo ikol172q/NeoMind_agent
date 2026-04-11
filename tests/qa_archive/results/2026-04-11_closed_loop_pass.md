@@ -199,7 +199,7 @@ exactly as designed.
 - Orchestrator scripts: `/tmp/phase_d_evolve.py`, `/tmp/phase_d_revert.py`
 - Prod probe script: `/tmp/phase_d_prod_probe.py`
 - Add-leg log: `/tmp/phase_d_evolve.log`
-- Transaction records: `/Users/user/Desktop/NeoMind_agent/.host_evolution_data/transactions.jsonl`
+- Transaction records: `$REPO_ROOT/.host_evolution_data/transactions.jsonl`
 - Git tags: `evolve-20260411-144811-867061-16351`,
   `evolve-revert-20260411-150739-292048-25704`
 - Prod agent log: `docker exec neomind-telegram cat /data/neomind/agent.log`

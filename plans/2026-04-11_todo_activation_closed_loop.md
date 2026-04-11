@@ -31,7 +31,7 @@ These are the two physical actions I cannot perform from a shell:
 ### B1. Create the canary Telegram bot
 
 1. Open Telegram, DM **@BotFather**
-2. `/newbot` → pick display name "NeoMind Canary" → pick username `your_neomind_test_bot` (or similar, must end in `bot`)
+2. `/newbot` → pick display name "NeoMind Canary" → pick username `your_canary_bot_example` (or similar, must end in `bot`)
 3. Copy the token BotFather returns (looks like `1234567890:AbCdEf...`)
 4. **Paste the token back to the assistant** so it can fill `.env` and `telethon.env` for you
 
@@ -56,7 +56,7 @@ Each step lands as a commit so the closed loop is fully reconstructible.
 
 - [x] **A1** Write this activation plan (you're reading it)
 - [ ] **A2** Verify the Final Gate baseline (HEAD `d45707a`) is still in a known-green state. Quick 5-scenario smoke (`/status` + `AAPL 现价` + one persona query + one /tune + one compound math) so we have a fresh regression floor BEFORE touching anything. Commit result to `tests/qa_archive/results/2026-04-11_pre_activation_smoke.md`.
-- [ ] **A3** Add `TG_CANARY_BOT_USERNAME=@your_neomind_test_bot` placeholder to `.env.example` so the change is documented even before the user populates the real username. Keep `.env` untouched.
+- [ ] **A3** Add `TG_CANARY_BOT_USERNAME=@your_canary_bot_example` placeholder to `.env.example` so the change is documented even before the user populates the real username. Keep `.env` untouched.
 - [ ] **A4** Add a `.env` ingest helper to `docs/CANARY_BOT_SETUP.md` so B1 is documented end-to-end.
 
 ### Phase B — canary bot activation (needs B1 token)
@@ -107,7 +107,7 @@ Each step lands as a commit so the closed loop is fully reconstructible.
 **Full PASS checklist:**
 
 1. Production `@your_neomind_bot` uptime > 99% during the entire activation (allow ~5-10s blip only for `promote_to_prod` restart)
-2. `@your_neomind_test_bot` (canary) runs through a full `gate_b3` scenario set without regressions vs the Final Gate baseline
+2. `@your_canary_bot_example` (canary) runs through a full `gate_b3` scenario set without regressions vs the Final Gate baseline
 3. `ITerm2CliTester` runs 5 real scenarios against a live iTerm2 window (visible to the user, not backgrounded) and every scenario PASSes against expected screen content
 4. An end-to-end evolution commit moves through `EvolutionTransaction.apply → smoke → canary_deploy_and_verify → promote_to_prod` and the production bot still serves real users at every step
 5. An end-to-end revert moves through the same pipeline and returns to `d45707a`-equivalent state
@@ -151,7 +151,7 @@ Canary state is volume-isolated (`neomind-canary-data`) so there's no risk of ca
 ## Assistant's status flags (filled in during execution)
 
 - [x] Phase A complete (commit `2203748`)
-- [x] Phase B complete (commit `ce47011` infra + `3cf92ae` entrypoint fix; canary `@your_neomind_test_bot` LIVE)
+- [x] Phase B complete (commit `ce47011` infra + `3cf92ae` entrypoint fix; canary `@your_canary_bot_example` LIVE)
 - [ ] Phase C complete (deferred to session end — needs iTerm2 restart)
 - [x] Phase D complete (commits `69ba06b` add-leg + `370889c` revert-leg + `cd0b081` evidence file)
 - [ ] Phase E in progress (memory records updated, nightly cron stub pending)

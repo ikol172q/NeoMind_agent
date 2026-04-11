@@ -42,7 +42,7 @@ No restart required — the API socket comes up immediately.
 ### 2. Verify the venv has the client library
 
 ```
-cd /Users/user/Desktop/NeoMind_agent
+cd $REPO_ROOT
 .venv/bin/pip show iterm2 | head -3
 ```
 
@@ -55,7 +55,7 @@ Should show `iterm2 2.x`. If not:
 ### 3. Smoke test the connection
 
 ```
-cd /Users/user/Desktop/NeoMind_agent
+cd $REPO_ROOT
 .venv/bin/python tests/integration/cli_tester_iterm2.py
 ```
 
