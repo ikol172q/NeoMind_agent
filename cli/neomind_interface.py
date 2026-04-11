@@ -1968,11 +1968,26 @@ def interactive_chat(mode: str = "chat", resume_session: str = None,
         verbose: Enable verbose/debug mode
         max_turns: Max agentic loop iterations
     """
-    api_key = os.environ.get("DEEPSEEK_API_KEY")
+    # Accept any of the supported authentication paths (mirrors the
+    # docker-entrypoint.sh fix in commit 3cf92ae):
+    #   - LLM_ROUTER_API_KEY: local LiteLLM proxy (current default)
+    #   - DEEPSEEK_API_KEY:   direct DeepSeek fallback
+    #   - ZAI_API_KEY:        direct z.ai fallback
+    # NeoMindAgent routes via the provider chain so any of these is enough.
+    api_key = (
+        os.environ.get("DEEPSEEK_API_KEY")
+        or os.environ.get("LLM_ROUTER_API_KEY")
+        or os.environ.get("ZAI_API_KEY")
+    )
     if not api_key:
-        print("DEEPSEEK_API_KEY not found in environment.")
-        print("Please set it in your .env file or enter it now.")
-        api_key = input("Enter your API key: ").strip()
+        print("No API key found in environment.")
+        print("Set LLM_ROUTER_API_KEY (recommended), DEEPSEEK_API_KEY,")
+        print("or ZAI_API_KEY in your .env file, or enter a key now.")
+        try:
+            import getpass
+            api_key = getpass.getpass("Enter your API key (hidden): ").strip()
+        except Exception:
+            api_key = input("Enter your API key: ").strip()
         if not api_key:
             print("API key is required!")
             return
