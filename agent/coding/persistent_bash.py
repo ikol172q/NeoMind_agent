@@ -205,10 +205,25 @@ class PersistentBash:
         output = self._format_output(stdout_lines, stderr_lines)
         truncated = self._truncate_middle(output)
 
+        # On failure, surface the actual stderr in the `error` field
+        # (not just "Exit code: N"). format_tool_result() prepends this
+        # to what the LLM sees, so a bare "Exit code: 1" gives the LLM
+        # zero diagnostic info and it ends up retrying the same broken
+        # command. Include the stderr tail (last ~800 chars) so the
+        # LLM can see WHY the command failed.
+        if exit_code == 0:
+            error_msg = ""
+        else:
+            stderr_text = "".join(stderr_lines).rstrip("\n")
+            if stderr_text:
+                error_msg = f"Exit code {exit_code}: {stderr_text[-800:]}"
+            else:
+                error_msg = f"Exit code {exit_code} (no stderr)"
+
         return ToolResult(
             success=(exit_code == 0),
             output=truncated,
-            error="" if exit_code == 0 else f"Exit code: {exit_code}",
+            error=error_msg,
         )
 
     def _format_output(self, stdout_lines: list, stderr_lines: list) -> str:
