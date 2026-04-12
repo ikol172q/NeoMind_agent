@@ -67,11 +67,25 @@ class ITerm2APIUnavailable(RuntimeError):
     """
 
 
-# Default prompt-ready regex — matches NeoMind's `[mode] >` prompt
-# (where mode is chat/coding/fin). Searched across the whole captured
-# screen, not just the last line, because prompt_toolkit renders a
-# status bar below the prompt.
-DEFAULT_PROMPT_RE = re.compile(r"\[(chat|coding|fin)\]\s*>")
+# Default prompt-ready regex — matches NeoMind's CLI prompt in any mode.
+#
+# Two shapes are recognized:
+#   1. Bracketed-mode prompt: `[chat] >` / `[fin] >` / `[coding] >`
+#      (some modes prefix the prompt with the mode name in brackets).
+#   2. Bare prompt: a line containing only `>` (optionally followed by
+#      whitespace). Coding mode renders its prompt this way — just `>`
+#      on its own line under the status bar.
+#
+# Searched across the whole captured screen (re.MULTILINE), not just
+# the last line, because prompt_toolkit renders a status bar below the
+# prompt. The bare-`>` branch is anchored to line start/end so it does
+# NOT match the status bar row (e.g. "... |  Ctrl+D exit") or the
+# "Model: deepseek-chat ..." header — neither of which is a solitary
+# `>` on its own line.
+DEFAULT_PROMPT_RE = re.compile(
+    r"(?:\[(?:chat|coding|fin)\]\s*>)|(?:^>\s*$)",
+    re.MULTILINE,
+)
 
 
 @dataclass
