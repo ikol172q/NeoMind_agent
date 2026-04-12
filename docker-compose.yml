@@ -106,6 +106,74 @@ services:
         limits:
           memory: 2G
 
+  # ── NeoMind Telegram CANARY (zero-downtime self-evolution) ─────
+  # Started only via the "canary" profile:
+  #   docker compose --profile canary up -d neomind-canary
+  #
+  # Purpose: EvolutionTransaction deploys proposed changes to this
+  # container FIRST, runs the Telethon validator against the canary
+  # bot token, and only after PASS triggers the production restart.
+  # Production stays up throughout.
+  #
+  # Prerequisites (one-time user setup):
+  #   1. Create a second bot via @BotFather → e.g. @your_canary_bot_example
+  #   2. Add to .env:
+  #        TELEGRAM_TEST_BOT_TOKEN=<new bot token from BotFather>
+  #        TG_CANARY_BOT_USERNAME=@your_canary_bot_example
+  #   3. docker compose --profile canary up -d neomind-canary
+  #
+  # See docs/CANARY_BOT_SETUP.md for the full walkthrough.
+  neomind-canary:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: neomind-canary
+    profiles: ["canary", "full"]
+    env_file: .env
+    environment:
+      - TERM=xterm-256color
+      - HOME=/data
+      - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+      # Canary swaps the Telegram token for the test bot so polling
+      # and sendMessage hit a disjoint bot. Keeps canary traffic
+      # invisible to real users.
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_TEST_BOT_TOKEN:-}
+      # Marker so application code can choose a different state file
+      # and avoid polluting production chat_history / provider state.
+      - NEOMIND_CANARY=1
+    volumes:
+      # Isolated state directory — no shared mount with production.
+      - neomind-canary-data:/data/neomind
+      - ${NEOMIND_STATE_DIR:-~/.neomind}:/data/.neomind
+      - ${OPENCLAW_CONFIG_DIR:-openclaw-config}:/data/openclaw:ro
+      # Live-mount the same source tree as production so the canary
+      # picks up code changes as soon as a self-edit commits.
+      - .:/app
+      - /app/__pycache__
+      - /app/.venv
+    expose:
+      - "18791"
+    # Canary should NOT auto-restart — the EvolutionTransaction
+    # orchestrator explicitly manages its lifecycle so a crash
+    # surfaces as a canary FAIL instead of silent recovery.
+    restart: "no"
+    networks:
+      - neomind-net
+    command: ["telegram"]
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:18791/health', timeout=5)"]
+      interval: 30s
+      timeout: 10s
+      retries: 2
+      start_period: 30s
+    # Half the production memory budget — canary only serves the
+    # Telethon validator, not real users.
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
   # ── OpenClaw (optional — only with --profile full) ─────
   openclaw-gateway:
     image: ${OPENCLAW_IMAGE:-ghcr.io/openclaw/openclaw:latest}
@@ -185,6 +253,7 @@ networks:
 
 volumes:
   neomind-data:
+  neomind-canary-data:
   openclaw-config:
   openclaw-workspace:
   searxng-data:

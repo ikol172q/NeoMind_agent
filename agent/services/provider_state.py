@@ -111,7 +111,14 @@ class ProviderStateManager:
             self._state_dir = Path(home) / ".neomind"
 
         self._state_dir.mkdir(parents=True, exist_ok=True)
-        self.state_file = self._state_dir / "provider-state.json"
+        # Canary isolation: when NEOMIND_CANARY=1 is set (see docker-compose
+        # neomind-canary service) use a separate file so canary chat traffic
+        # and transient provider overrides don't leak into production state
+        # via the shared ~/.neomind bind mount.
+        if os.getenv("NEOMIND_CANARY", "").strip() == "1":
+            self.state_file = self._state_dir / "provider-state.canary.json"
+        else:
+            self.state_file = self._state_dir / "provider-state.json"
 
         # mtime cache
         self._cached_state: Optional[dict] = None

@@ -32,6 +32,11 @@ from .cache import SearchCache, DiskSearchCache
 from .metrics import SearchMetrics
 from .vector_store import LocalVectorStore
 
+# Phase 1: Chat 搜索增强
+from .multi_source import MultiSourceSynthesizer, SynthesisStrategy
+from .deep_summarizer import DeepSummarizer, SummaryResult, summarize
+from .citation_manager import CitationManager, Citation, create_citation
+
 __all__ = [
     "UniversalSearchEngine",
     "SearchItem", "SearchResult",
@@ -45,4 +50,8 @@ __all__ = [
     "SearchCache", "DiskSearchCache",
     "SearchMetrics",
     "LocalVectorStore",
+    # Phase 1: Chat 搜索增强
+    "MultiSourceSynthesizer", "SynthesisStrategy",
+    "DeepSummarizer", "SummaryResult", "summarize",
+    "CitationManager", "Citation", "create_citation",
 ]

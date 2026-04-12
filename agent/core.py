@@ -149,6 +149,41 @@ class NeoMindAgent:
         """
         from agent.services.llm_provider import PROVIDERS, proxy_url
         model = model or self.model
+
+        # LLM Router takes priority over everything else when configured.
+        # This mirrors telegram_bot._build_router_provider(): if
+        # LLM_ROUTER_API_KEY + LLM_ROUTER_BASE_URL are set, route every
+        # chat-completions request through the local LiteLLM proxy
+        # regardless of model. Without this, CLI code paths fell back to
+        # the PROVIDERS loop below which tries api.deepseek.com directly
+        # with whatever api_key was passed in — and when the caller
+        # passed LLM_ROUTER_API_KEY (the only key env var they had), the
+        # result was "Authentication Fails, Your api key: ****auth is
+        # invalid" because LLM_ROUTER_API_KEY is not a valid DeepSeek key.
+        router_base = (os.getenv("LLM_ROUTER_BASE_URL") or "").rstrip("/")
+        router_key = os.getenv("LLM_ROUTER_API_KEY") or ""
+        if router_base and router_key:
+            # The .env typically holds Docker-flavored
+            # `http://host.docker.internal:8000/v1` because the Telegram
+            # bot runs in a container. When the CLI runs on the host
+            # (macOS), `host.docker.internal` doesn't resolve, so we
+            # transparently rewrite it to `127.0.0.1`. The router is a
+            # host-level Python process listening on *:8000 either way.
+            if "host.docker.internal" in router_base:
+                import socket
+                try:
+                    socket.gethostbyname("host.docker.internal")
+                except socket.gaierror:
+                    router_base = router_base.replace(
+                        "host.docker.internal", "127.0.0.1"
+                    )
+            return {
+                "name": "router",
+                "base_url": f"{router_base}/chat/completions",
+                "models_url": f"{router_base}/models",
+                "api_key": router_key,
+            }
+
         litellm_enabled = os.getenv("LITELLM_ENABLED", "").lower() in ("true", "1", "yes")
 
         if litellm_enabled:
@@ -315,6 +350,64 @@ class NeoMindAgent:
         self._unified_logger = self.services.logger  # triggers lazy init
         if self._unified_logger:
             self._status_print("Unified logger loaded", "debug")
+
+        # ── Phase 1 (Claude Code Architecture) ──────────────────────────
+        # New modular components extracted from core.py, inspired by Claude Code.
+        # These work alongside existing code — no breaking changes.
+
+        # State Manager: centralized session state + feature flags
+        try:
+            from .state_manager import StateManager
+            self._state_manager = StateManager(config=agent_config)
+            self._state_manager.session.mode = self.mode
+            self._state_manager.session.model = self.model
+            self._status_print("StateManager initialized", "debug")
+        except Exception as e:
+            self._state_manager = None
+            self._status_print(f"StateManager init failed (non-fatal): {e}", "debug")
+
+        # Dynamic Prompt Composer: static/dynamic boundary for caching
+        try:
+            from .prompt_composer import DynamicPromptComposer
+            self._prompt_composer = DynamicPromptComposer.from_config(agent_config)
+            self._status_print("DynamicPromptComposer initialized", "debug")
+        except Exception as e:
+            self._prompt_composer = None
+            self._status_print(f"PromptComposer init failed (non-fatal): {e}", "debug")
+
+        # Query Engine: turn loop with token budget + compaction
+        try:
+            from .query_engine import QueryEngine
+            self._query_engine = QueryEngine(
+                tool_registry=None,  # Will connect after tool registry is set up
+                prompt_composer=self._prompt_composer,
+                llm_caller=None,  # Will connect to streaming LLM
+                config=agent_config,
+            )
+            self._status_print("QueryEngine initialized", "debug")
+        except Exception as e:
+            self._query_engine = None
+            self._status_print(f"QueryEngine init failed (non-fatal): {e}", "debug")
+
+        # CLI Command System: Claude Code-style command registry
+        try:
+            from .cli_command_system import create_default_registry, CommandDispatcher
+            self._command_registry = create_default_registry()
+            self._command_dispatcher = CommandDispatcher(
+                self._command_registry,
+                context={
+                    "registry": self._command_registry,
+                    "query_engine": self._query_engine,
+                    "config": agent_config,
+                },
+            )
+            self._status_print(
+                f"CLI CommandRegistry: {self._command_registry.count} commands", "debug"
+            )
+        except Exception as e:
+            self._command_registry = None
+            self._command_dispatcher = None
+            self._status_print(f"CLI CommandSystem init failed (non-fatal): {e}", "debug")
 
         if not self.api_key:
             raise ValueError("API key is required. Set DEEPSEEK_API_KEY environment variable or pass it as argument.")
@@ -1027,11 +1120,14 @@ Remember: Always ask for permission before making changes!
         elif total_tokens > agent_config.context_warning_threshold * max_context:
             self._status_print(f"⚠️  Context warning: {total_tokens}/{max_context} tokens used", "info")
 
+        # Respect model-level fixed temperature (e.g. kimi-k2.5 only accepts temperature=1)
+        actual_temperature = spec.get("fixed_temperature", temperature)
+
         payload = {
             "model": self.model,
             "messages": messages,
             "stream": False,
-            "temperature": temperature,
+            "temperature": actual_temperature,
             "max_tokens": max_tokens,
         }
         # Only add thinking param for providers that support it (DeepSeek)
@@ -1116,29 +1212,9 @@ Remember: Always ask for permission before making changes!
         return handle_auto_command(self, subcommand)
 
     def handle_mode_command(self, command: str) -> Optional[str]:
-        """Handle /mode command for switching between chat, coding, and fin modes."""
-        command = command.strip().lower()
-        if not command or command == "status":
-            return f"Current mode: {self.mode}"
-        elif command == "chat":
-            success = self.switch_mode("chat")
-            return "Switched to chat mode." if success else "Failed to switch to chat mode."
-        elif command == "coding":
-            success = self.switch_mode("coding")
-            return "Switched to coding mode." if success else "Failed to switch to coding mode."
-        elif command == "fin":
-            success = self.switch_mode("fin")
-            return "Switched to fin mode." if success else "Failed to switch to fin mode."
-        elif command == "help":
-            return (
-                "/mode command usage:\n"
-                "  /mode chat      - Switch to chat mode\n"
-                "  /mode coding    - Switch to coding mode\n"
-                "  /mode status    - Show current mode\n"
-                "  /mode help      - Show this help"
-            )
-        else:
-            return "Invalid mode. Use 'chat', 'coding', 'status', or 'help'."
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_mode_command
+        return handle_mode_command(self, command)
 
     def handle_skills_command(self, command: str) -> Optional[str]:
         """Delegate to general_commands module."""
@@ -1226,77 +1302,44 @@ Remember: Always ask for permission before making changes!
     # Thin wrappers kept for backward compat — tests call self.agent.handle_X_command().
 
     def handle_summarize_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_summarize_command(command)
-        if not command or not command.strip():
-            return "Usage: /summarize <text>"
-        prompt = f"Summarize the following content concisely:\n\n{command.strip()}"
-        try:
-            return f"📝 Summary:\n{self.generate_completion([{'role': 'user', 'content': prompt}], temperature=0.3, max_tokens=1000)}"
-        except Exception as e:
-            return f"❌ Failed to generate summary: {e}"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_summarize_command
+        return handle_summarize_command(self, command)
 
     def handle_translate_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_translate_command(command)
-        return "Usage: /translate <text> [to <language>]"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_translate_command
+        return handle_translate_command(self, command)
 
     def handle_generate_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_generate_command(command)
-        return "Usage: /generate <prompt>"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_generate_command
+        return handle_generate_command(self, command)
 
     def handle_reason_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_reason_command(command)
-        return "Usage: /reason <problem>"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_reason_command
+        return handle_reason_command(self, command)
 
     def handle_debug_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_debug_command(command)
-        return "Usage: /debug <file_path> or /debug <code snippet>"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_debug_command
+        return handle_debug_command(self, command)
 
     def handle_explain_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_explain_command(command)
-        return "Usage: /explain <file_path> or /explain <code snippet>"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_explain_command
+        return handle_explain_command(self, command)
 
     def handle_refactor_command(self, command: str) -> Optional[str]:
-        if hasattr(self, '_active_personality') and self._active_personality:
-            return self._active_personality._shared_handle_refactor_command(command)
-        return "Usage: /refactor <file_path>"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_refactor_command
+        return handle_refactor_command(self, command)
 
     def handle_grep_command(self, command: str) -> Optional[str]:
-        """
-        Handle /grep command to search for text across files.
-        Usage: /grep <pattern> [path]
-        """
-        if not command.strip():
-            return "Usage: /grep <pattern> [path]"
-
-        parts = command.strip().split()
-        pattern = parts[0]
-        path = parts[1] if len(parts) > 1 else "."
-
-        # Use ripgrep if available, else Python regex
-        try:
-            import subprocess
-            result = subprocess.run(
-                ["rg", "-n", "-i", pattern, path],
-                capture_output=True,
-                text=True,
-                timeout=10
-            )
-            if result.returncode == 0:
-                output = result.stdout
-                if not output.strip():
-                    return f"🔍 No matches for pattern '{pattern}' in {path}"
-                return f"🔍 Grep results for '{pattern}' in {path}:\n{output}"
-            else:
-                # Fallback to Python regex
-                return self._grep_fallback(pattern, path)
-        except (subprocess.SubprocessError, FileNotFoundError):
-            return self._grep_fallback(pattern, path)
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_grep_command
+        return handle_grep_command(self, command)
 
     def _grep_fallback(self, pattern: str, path: str) -> str:
         """Fallback grep using Python regex."""
@@ -1319,77 +1362,24 @@ Remember: Always ask for permission before making changes!
         return f"🔍 Grep results for '{pattern}' in {path} (Python fallback):\n" + "\n".join(matches[:50])  # Limit output
 
     def handle_find_command(self, command: str) -> Optional[str]:
-        """
-        Handle /find command to find files matching pattern.
-        Usage: /find <pattern> [path]
-        """
-        if not command.strip():
-            return "Usage: /find <pattern> [path]"
-
-        parts = command.strip().split()
-        pattern = parts[0]
-        path = parts[1] if len(parts) > 1 else "."
-
-        import os
-        import fnmatch
-        matches = []
-        for root, dirs, files in os.walk(path):
-            for name in files + dirs:
-                if fnmatch.fnmatch(name, pattern):
-                    full_path = os.path.join(root, name)
-                    matches.append(full_path)
-        if not matches:
-            return f"📭 No files/directories matching '{pattern}' in {path}"
-        return f"📂 Found {len(matches)} matches for '{pattern}' in {path}:\n" + "\n".join(matches[:50])
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_find_command
+        return handle_find_command(self, command)
 
     def handle_verbose_command(self, command: str) -> Optional[str]:
-        """
-        Handle /verbose command to toggle verbose debug output.
-        Usage: /verbose [on|off|toggle]
-        """
-        cmd = command.strip().lower()
-        if cmd == "on":
-            self.verbose_mode = True
-            status = "ENABLED"
-        elif cmd == "off":
-            self.verbose_mode = False
-            status = "DISABLED"
-        elif cmd == "toggle" or cmd == "":
-            self.toggle_verbose_mode()
-            status = "TOGGLED"
-        else:
-            return f"❌ Invalid option: {cmd}. Use /verbose [on|off|toggle]"
-
-        if self.verbose_mode and self.status_buffer:
-            result = [f"🔊 Verbose mode: {status}", "📋 Recent debug messages:"]
-            for entry in self.status_buffer[-10:]:  # Show last 10 messages
-                result.append(f"  [{entry['level']}] {entry['message']}")
-            return "\n".join(result)
-        return f"🔊 Verbose mode: {status}"
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_verbose_command
+        return handle_verbose_command(self, command)
 
     def handle_clear_command(self, command: str) -> Optional[str]:
-        """
-        Handle /clear command to clear conversation history.
-        Usage: /clear
-        """
-        self.clear_history()
-        return "🗑️ Conversation history cleared."
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_clear_command
+        return handle_clear_command(self, command)
 
     def handle_history_command(self, command: str) -> Optional[str]:
-        """
-        Handle /history command to show conversation history.
-        Usage: /history
-        """
-        if not self.conversation_history:
-            return "📭 No conversation history."
-
-        result = ["📜 Conversation History:"]
-        for i, msg in enumerate(self.conversation_history, 1):
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            preview = content[:100] + "..." if len(content) > 100 else content
-            result.append(f"{i}. [{role}] {preview}")
-        return "\n".join(result)
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_history_command
+        return handle_history_command(self, command)
 
     def handle_context_command(self, command: str) -> Optional[str]:
         """Delegate to general_commands module."""
@@ -1397,27 +1387,19 @@ Remember: Always ask for permission before making changes!
         return handle_context_command(self, command)
 
     def handle_think_command(self, command: str) -> Optional[str]:
-        """
-        Handle /think command to toggle thinking mode.
-        Usage: /think
-        """
-        self.toggle_thinking_mode()
-        status = "enabled" if self.thinking_enabled else "disabled"
-        return f"🤔 Thinking mode {status}."
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_think_command
+        return handle_think_command(self, command)
 
     def handle_quit_command(self, command: str) -> Optional[str]:
-        """
-        Handle /quit command to exit (signal to CLI).
-        Usage: /quit or /exit
-        """
-        # Return special message that CLI can interpret
-        return "🛑 Quit command received. Use Ctrl+C or type /quit in the CLI to exit."
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_quit_command
+        return handle_quit_command(self, command)
 
     def handle_exit_command(self, command: str) -> Optional[str]:
-        """
-        Handle /exit command (alias for /quit).
-        """
-        return self.handle_quit_command(command)
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_exit_command
+        return handle_exit_command(self, command)
 
     # ── Vault: session journal ──────────────────────────────────────────
 
@@ -1458,6 +1440,9 @@ Remember: Always ask for permission before making changes!
             except Exception:
                 pass  # Non-fatal — never block exit
 
+        # ── Session: auto-save for resume ────────────────────────────
+        self.save_session()
+
         # ── Vault Promoter: SharedMemory → MEMORY.md ─────────────────
         # Promote patterns with 3+ occurrences to long-term vault memory.
         # Runs at end of each session (lightweight — reads pattern counts, appends if needed).
@@ -1469,6 +1454,57 @@ Remember: Always ask for permission before making changes!
                     self._status_print(f"Promoted {promoted} patterns to MEMORY.md", "debug")
             except Exception:
                 pass  # Non-fatal — never block exit
+
+    def save_session(self, name: str = None):
+        """Save current session state for later resume via /resume.
+
+        Called automatically on exit, or manually via /save.
+        """
+        try:
+            import json as _json
+            session_dir = os.path.join(os.path.expanduser('~'), '.neomind', 'sessions')
+            os.makedirs(session_dir, exist_ok=True)
+
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            session_name = name or f"session_{timestamp}"
+            safe_name = "".join(c if c.isalnum() or c in '-_' else '_' for c in session_name)
+            filepath = os.path.join(session_dir, f"{safe_name}.json")
+
+            user_turns = [m for m in self.conversation_history if m.get('role') == 'user']
+
+            # Collect files_read state for resume
+            files_read = []
+            tools = getattr(self, 'tools', None)
+            if tools and hasattr(tools, '_files_read'):
+                files_read = list(tools._files_read)
+
+            session_data = {
+                'name': session_name,
+                'timestamp': timestamp,
+                'mode': getattr(self, 'mode', 'chat'),
+                'model': getattr(self, 'model', 'unknown'),
+                'turn_count': len(user_turns),
+                'cwd': os.getcwd(),
+                'files_read': files_read,
+                'tool_call_count': getattr(self, '_tool_call_count', 0),
+                'history': self.conversation_history[:],
+            }
+
+            with open(filepath, 'w') as f:
+                _json.dump(session_data, f)
+
+            # Keep only last 20 sessions
+            import glob as _glob
+            files = sorted(_glob.glob(os.path.join(session_dir, '*.json')))
+            if len(files) > 20:
+                for old in files[:-20]:
+                    try:
+                        os.remove(old)
+                    except Exception:
+                        pass
+
+        except Exception:
+            pass  # Non-fatal — never block exit
 
     # NEW: Webpage reading capabilities
 
@@ -1584,599 +1620,41 @@ Remember: Always ask for permission before making changes!
         return clean_text(text)
 
     def handle_read_command(self, url_or_command: str) -> str:
-        """
-        Handle /read command for webpage reading with enhanced capabilities
-        Automatically adds content to conversation history for AI awareness
-        """
-        if not url_or_command or url_or_command.strip() == "":
-            help_text = """
-    📚 /read Command Usage:
-    /read <url>                     - Read webpage content and make AI aware of it
-    /read <file_path>               - Read local file (supports line ranges: file.py:10-20)
-    /read --debug <url>            - Show debugging info (doesn't add to AI memory)
-    /read --strategy <n> <url>     - Use specific strategy (0-4)
-    /read --no-ai <url|file>       - Read without adding to AI memory
-
-    Strategies (for webpages only):
-    0: trafilatura (best for articles)
-    1: beautifulsoup (smart extraction)
-    2: html2text (markdown conversion)
-    3: requests-html (JavaScript sites)
-    4: fallback (basic extraction)
-
-    Note: By default, all content is added to AI memory so you can ask questions about it.
-            """.strip()
-            return help_text
-
-        parts = url_or_command.split()
-
-        # Parse flags
-        debug = False
-        strategy = None
-        no_ai = False  # New flag to prevent adding to AI memory
-        url = None
-
-        # Parse flags
-        i = 0
-        while i < len(parts):
-            if parts[i] == '--debug':
-                debug = True
-                parts.pop(i)
-            elif parts[i] == '--strategy':
-                if i + 1 < len(parts):
-                    try:
-                        strategy = int(parts[i + 1])
-                        parts.pop(i)  # Remove --strategy
-                        parts.pop(i)  # Remove the number
-                    except ValueError:
-                        return self.formatter.error(f"Invalid strategy number. Must be 0-4.")
-                else:
-                    return self.formatter.error("Missing strategy number. Use: /read --strategy <0-4> <url>")
-            elif parts[i] == '--no-ai':
-                no_ai = True
-                parts.pop(i)
-            else:
-                i += 1
-
-        # The remaining parts should form the URL
-        if not parts:
-            return self.formatter.error("Please provide a URL")
-        
-        url = ' '.join(parts)
-
-        # ── Follow-up from /links: "/read 3" reads link #3 ──────────
-        if url.isdigit() and self._last_links:
-            link_num = int(url)
-            if link_num in self._last_links:
-                url = self._last_links[link_num]
-                print(f"🔗 Following link #{link_num}: {url}")
-            else:
-                return self.formatter.error(
-                    f"Link #{link_num} not found. Available: {min(self._last_links)}–{max(self._last_links)}"
-                )
-
-        # Check if this is a local file path
-        if self._is_likely_file_path(url):
-            return self._handle_file_read(url, no_ai)
-
-        print(f"🌐 Processing: {url}")
-        
-        if debug:
-            # Run all strategies and show results
-            results = []
-            strategies = []
-            if HAS_TRAFILATURA:
-                strategies.append(("trafilatura", self._try_trafilatura))
-            strategies.append(("beautifulsoup", self._try_beautifulsoup))
-            if HAS_HTML2TEXT:
-                strategies.append(("html2text", self._try_html2text))
-            if HAS_REQUESTS_HTML:
-                strategies.append(("requests-html", self._try_requests_html))
-            strategies.append(("fallback", self._try_fallback))
-
-            best_content = None
-            best_score = 0
-
-            for name, strategy_func in strategies:
-                try:
-                    content = strategy_func(url, 5000)
-                    if content:
-                        score = self._score_content(content)
-                        results.append(f"{name}: {score}/100, {len(content)} chars")
-                        if score > best_score:
-                            best_content = content
-                            best_score = score
-                except Exception as e:
-                    results.append(f"{name}: ERROR - {str(e)}")
-
-            if best_content:
-                debug_info = "\n".join(results)
-                final_result = self._format_result(url, best_content, best_score)
-                return f"🔍 Debug Results:\n{debug_info}\n\n{final_result}"
-            else:
-                return self.formatter.error(f"All strategies failed for {url}")
-        
-        elif strategy is not None:
-            # Use specific strategy
-            strategies = [
-                self._try_trafilatura,
-                self._try_beautifulsoup,
-                self._try_html2text,
-                self._try_requests_html,
-                self._try_fallback,
-            ]
-
-            if 0 <= strategy < len(strategies):
-                content = strategies[strategy](url, 20000)
-                if content:
-                    score = self._score_content(content)
-                    formatted_content = self._format_result(url, content, score)
-
-                    # Add to conversation history unless --no-ai flag is set
-                    if not no_ai:
-                        self._add_webpage_to_memory(url, content)
-
-                    return formatted_content
-                else:
-                    return self.formatter.error(f"Strategy {strategy} failed to extract content")
-            else:
-                return self.formatter.error(f"Invalid strategy number. Use 0-{len(strategies)-1}")
-
-        else:
-            # Normal reading with best strategy (default behavior)
-            content = self.read_webpage(url)
-
-            # Add to conversation history unless --no-ai flag is set
-            if not no_ai:
-                self._add_webpage_to_memory(url, content)
-            
-            return content
+        """Delegate to file_ops_commands module."""
+        from agent.services.file_ops_commands import handle_read_command
+        return handle_read_command(self, url_or_command)
 
     def _read_interactive_content(self, prompt: str = "Enter content (end with EOF: Ctrl+D on Unix, Ctrl+Z on Windows):") -> str:
-        """Read multiline content from stdin until EOF."""
-        import sys
-        lines = []
-        if sys.stdin.isatty():
-            print(prompt)
-            print("Type your content line by line. Press Ctrl+D (Unix) or Ctrl+Z (Windows) when done.")
-        try:
-            for line in sys.stdin:
-                lines.append(line)
-        except KeyboardInterrupt:
-            print("\nInput interrupted.")
-            return ""
-        return "".join(lines)
+        """Delegate to file_ops_commands module."""
+        from agent.services.file_ops_commands import _read_interactive_content
+        return _read_interactive_content(prompt)
 
     def handle_write_command(self, command: str) -> str:
-        """
-        Handle /write command for creating or overwriting files.
-
-        Usage:
-          /write <file_path> [content]   - Write content to file (content optional)
-          /write --interactive <file_path> - Enter content interactively
-
-        If content is not provided, reads from stdin until EOF (Ctrl+D on Unix, Ctrl+Z on Windows).
-        """
-        if not command or command.strip() == "":
-            help_text = """
-📝 /write Command Usage:
-  /write <file_path> [content]   - Write content to file
-  /write --interactive <file_path> - Enter content interactively (end with EOF)
-
-Examples:
-  /write hello.txt "Hello World"
-  /write script.py "print('hello')"
-  /write --interactive notes.md
-            """.strip()
-            return help_text
-
-        # Auto-switch to coding mode for write command
-        if self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        # Parse flags
-        interactive = False
-        parts = command.split()
-        # Check for --interactive flag
-        if parts[0] == '--interactive':
-            interactive = True
-            parts.pop(0)
-
-        if not parts:
-            return self.formatter.error("Please provide a file path")
-
-        file_path = parts[0]
-        content = ' '.join(parts[1:]) if len(parts) > 1 else ""
-
-        # If interactive mode or no content provided, read from stdin
-        if interactive or not content:
-            content = self._read_interactive_content()
-            if not content:
-                return self.formatter.warning("No content provided. File not written.")
-
-        # ── Guard check ──────────────────────────────────────────────
-        is_allowed, guard_warning = self._check_file_guards(file_path)
-        if not is_allowed:
-            self._log_evidence("file_edit", file_path, guard_warning, severity="warning")
-            return self.formatter.warning(f"🧊 FROZEN: {guard_warning}")
-
-        # Ensure code analyzer is initialized
-        if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
-
-        # Write file
-        success, message = self.code_analyzer.write_file_safe(file_path, content)
-        if success:
-            # Log to evidence trail
-            self._log_evidence("file_edit", file_path, f"write_success, {len(content)} bytes", severity="info")
-            return self.formatter.success(message)
-        else:
-            self._log_evidence("file_edit", file_path, f"write_failed: {message}", severity="warning")
-            return self.formatter.error(message)
+        """Delegate to file_ops_commands module."""
+        from agent.services.file_ops_commands import handle_write_command
+        return handle_write_command(self, command)
 
     def handle_edit_command(self, command: str) -> str:
-        """
-        Handle /edit command for editing files with code changes.
-
-        Usage:
-          /edit <file_path> "<old_code>" "<new_code>" [--description "desc"]
-          /edit --help
-
-        Examples:
-          /edit test.py "print('hello')" "print('Hello World')"
-        """
-        import shlex
-        import os
-        from .code_analyzer import CodeAnalyzer
-        if not command or command.strip() == "":
-            help_text = """
-📝 /edit Command Usage:
-  /edit <file_path> "<old_code>" "<new_code>"   - Replace old code with new code
-  /edit --help                                  - Show this help
-
-Examples:
-  /edit script.py "print('old')" "print('new')"
-  /edit script.py "def old():" "def new():"
-            """.strip()
-            return help_text
-
-        # Auto-switch to coding mode for edit command
-        if self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        # Parse flags
-        parts = []
-        try:
-            parts = shlex.split(command)
-        except ValueError as e:
-            return self.formatter.error(f"Invalid command syntax: {e}")
-
-        if not parts:
-            return self.formatter.error("Please provide a file path")
-
-        file_path = parts[0]
-        description = "Manual edit via /edit command"
-        line = None
-        old_code = ""
-        new_code = ""
-
-        # Parse flags
-        i = 1
-        while i < len(parts):
-            if parts[i] == '--description':
-                if i + 1 < len(parts):
-                    description = parts[i + 1]
-                    i += 2
-                else:
-                    return self.formatter.error("Missing description after --description")
-            else:
-                # Treat as old_code and new_code positional arguments
-                if i + 1 < len(parts):
-                    old_code = parts[i]
-                    new_code = parts[i + 1]
-                    i += 2
-                else:
-                    return self.formatter.error("Need both old_code and new_code arguments")
-                break  # No more flags after positional args
-
-        # Ensure we have old_code and new_code
-        if not old_code or not new_code:
-            return self.formatter.error("Missing old_code or new_code")
-
-        # Initialize code analyzer if needed
-        if not self.code_analyzer:
-            self.code_analyzer = CodeAnalyzer(os.getcwd(), safety_manager=self.safety_manager)
-
-        # Validate change
-        is_valid, error_msg = self.validate_proposed_change(old_code, new_code, file_path)
-        if not is_valid:
-            return self.formatter.error(f"Change validation failed: {error_msg}")
-
-        # Propose change
-        result = self.propose_code_change(file_path, old_code, new_code, description, line)
-        return result
+        """Delegate to file_ops_commands module."""
+        from agent.services.file_ops_commands import handle_edit_command
+        return handle_edit_command(self, command)
 
     def handle_run_command(self, command: str) -> str:
-        """
-        Handle /run command for executing shell commands safely.
-
-        Usage:
-          /run <command> [args...]
-
-        Example:
-          /run ls -la
-          /run python --version
-        """
-        if not command or command.strip() == "":
-            help_text = """
-🔧 /run Command Usage:
-  /run <command> [args...]   - Execute a shell command safely
-
-Examples:
-  /run ls -la
-  /run python --version
-  /run echo "Hello"
-            """.strip()
-            return help_text
-
-        # Auto-switch to coding mode for run command
-        if self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        # ── Guard check ──────────────────────────────────────────────
-        is_allowed, guard_warning = self._check_guards(command)
-        if not is_allowed:
-            self._log_evidence("command", command, guard_warning, severity="warning")
-            return self.formatter.warning(f"🛑 BLOCKED by safety guard:\n{guard_warning}")
-
-        # Determine working directory
-        import os
-        cwd = os.getcwd()
-        if self.code_analyzer:
-            cwd = self.code_analyzer.root_path
-
-        # Execute using command executor
-        result = self.command_executor.execute(command, cwd=cwd)
-        # Log command execution
-        log_operation('execute', command, result['success'],
-                     f"cwd={cwd}, exit_code={result['returncode']}, time={result['execution_time']:.2f}s")
-
-        # Log to evidence trail
-        self._log_evidence("command", command, f"exit_code={result['returncode']}", severity="info" if result['success'] else "warning")
-
-        # Format result using formatter
-        if not result['success']:
-            return self.formatter.error(result['error_message'])
-
-        # Build formatted output
-        output = f"🚀 Command: {command}\n"
-        output += f"📁 Working directory: {cwd}\n"
-        output += f"⏱️  Execution time: {result['execution_time']:.2f}s\n"
-        output += f"📤 Exit code: {result['returncode']}\n"
-
-        if result['stdout']:
-            output += f"\n📤 STDOUT:\n{result['stdout'].rstrip()}\n"
-        if result['stderr']:
-            output += f"\n📤 STDERR:\n{result['stderr'].rstrip()}\n"
-
-        if result['returncode'] == 0:
-            output += f"\n{self.formatter.success('Command completed successfully.')}"
-        else:
-            output += f"\n{self.formatter.warning('Command failed (non-zero exit code).')}"
-
-        return output
+        """Delegate to exec_commands module."""
+        from agent.services.exec_commands import handle_run_command
+        return handle_run_command(self, command)
 
     def handle_git_command(self, command: str) -> str:
-        """
-        Handle /git command for version control operations.
+        """Delegate to exec_commands module."""
+        from agent.services.exec_commands import handle_git_command
+        return handle_git_command(self, command)
 
-        Usage:
-          /git <subcommand> [args...]
-
-        Examples:
-          /git status
-          /git diff
-          /git log --oneline -5
-          /git commit -m "message"
-          /git push origin main
-        """
-        if not command or command.strip() == "":
-            help_text = """
-🔄 /git Command Usage:
-  /git <subcommand> [args...]   - Execute git command safely
-
-Common subcommands:
-  status, diff, log, commit, push, pull, branch, checkout, clone, init
-
-Examples:
-  /git status
-  /git diff
-  /git log --oneline -5
-  /git commit -m "message"
-  /git push origin main
-            """.strip()
-            return help_text
-
-        # Auto-switch to coding mode for git command
-        if self.mode != 'coding':
-            self.switch_mode('coding', persist=False)
-
-        # Determine working directory
-        import os
-        cwd = os.getcwd()
-        if self.code_analyzer:
-            cwd = self.code_analyzer.root_path
-
-        # Execute using command executor's git-specific method
-        result = self.command_executor.execute_git(command, cwd=cwd)
-
-        # Format result using formatter
-        if not result['success']:
-            return self.formatter.error(result['error_message'])
-
-        # Build formatted output
-        output = f"🔄 Git command: git {command}\n"
-        output += f"📁 Working directory: {cwd}\n"
-        output += f"⏱️  Execution time: {result['execution_time']:.2f}s\n"
-        output += f"📤 Exit code: {result['returncode']}\n"
-
-        if result['stdout']:
-            output += f"\n📤 STDOUT:\n{result['stdout'].rstrip()}\n"
-        if result['stderr']:
-            output += f"\n📤 STDERR:\n{result['stderr'].rstrip()}\n"
-
-        if result['returncode'] == 0:
-            output += f"\n{self.formatter.success('Git command completed successfully.')}"
-        else:
-            output += f"\n{self.formatter.warning('Git command failed (non-zero exit code).')}"
-
-        return output
 
     def handle_help_command(self, command: str = "") -> str:
-        """
-        Handle /help command.
-        Usage: /help [command]
-        Examples:
-          /help          - Show all available commands
-          /help write    - Show detailed help for /write command
-        """
-        help_texts = {
-            "write": """
-📝 /write Command:
-  /write <file_path> [content]   - Write content to file
-  /write --interactive <file_path> - Enter content interactively
+        """Handle /help command — delegates to help_system module."""
+        from agent.services.help_system import get_help
+        return get_help(command)
 
-Examples:
-  /write hello.txt "Hello World"
-  /write script.py "print('hello')"
-""",
-            "edit": """
-📝 /edit Command:
-  /edit <file_path> "<old_code>" "<new_code>"   - Replace old code with new code
-
-Examples:
-  /edit script.py "print('old')" "print('new')"
-""",
-            "read": """
-📚 /read Command:
-  /read <url>                     - Read webpage content
-  /read <file_path>               - Read local file (supports line ranges)
-  /read --debug <url>            - Show debugging info
-  /read --strategy <n> <url>     - Use specific strategy (0-4)
-""",
-            "run": """
-🔧 /run Command:
-  /run <command> [args...]   - Execute a shell command safely
-
-Examples:
-  /run ls -la
-  /run python --version
-""",
-            "git": """
-🔄 /git Command:
-  /git <subcommand> [args...]   - Execute git command safely
-
-Common subcommands: status, diff, log, commit, push, pull, branch, checkout
-""",
-            "code": """
-📁 /code Command:
-  /code scan [path]              - Scan codebase
-  /code summary                  - Show codebase summary
-  /code find <pattern>          - Find files matching pattern
-  /code read <file_path>        - Read and analyze a file
-  /code analyze <file_path>     - Analyze file structure
-  /code search <text>           - Search for text in code
-  /code changes                 - Show pending changes
-  /code apply                   - Apply pending changes
-  /code clear                   - Clear pending changes
-  /code self-scan              - Scan agent's own codebase
-  /code self-improve <feature> - Suggest improvements
-  /code self-apply             - Apply self-improvements safely
-""",
-            "search": """
-🔍 /search Command:
-  /search <query>   - Search the web using DuckDuckGo
-""",
-            "models": """
-🤖 /models Command:
-  /models list      - List available models (all providers)
-  /models switch <model> - Switch to a different model
-""",
-            "fix": """
-🔧 /fix Command:
-  /fix <file_path> [description] - Automatically fix code issues
-""",
-            "analyze": """
-🔬 /analyze Command:
-  /analyze <file_path> - Analyze code for issues and suggest improvements
-""",
-            "diff": """
-📝 /diff Command:
-  /diff <file1> <file2>        - Compare two files
-  /diff --git <file>           - Show git diff for file
-  /diff --backup <file>        - Compare with latest backup
-
-Examples:
-  /diff old.py new.py
-  /diff --git agent/core.py
-""",
-            "browse": """
-📁 /browse Command:
-  /browse [path]              - Browse directory (default: current)
-  /browse --details [path]    - Show detailed listing with sizes
-  /browse --filter <ext>      - Filter by extension (e.g., .py)
-
-Examples:
-  /browse
-  /browse agent/
-  /browse --details src/
-""",
-            "undo": """
-↩️ /undo Command:
-  /undo list [n]              - List recent changes (default: 5)
-  /undo last                  - Revert last change
-  /undo <change_id>           - Revert specific change by index
-
-Examples:
-  /undo list
-  /undo last
-  /undo 2
-""",
-            "test": """
-🧪 /test Command:
-  /test                       - Run basic development tests (dev_test.py)
-  /test unit                  - Run unit tests (if available)
-  /test all                   - Run all available tests
-
-Examples:
-  /test
-  /test unit
-""",
-            "apply": """
-🔧 /apply Command (alias for /code apply):
-  /apply              - Apply pending changes with confirmation
-  /apply force        - Apply without interactive confirmation
-  /apply confirm      - Apply with confirmation (same as /apply)
-
-Note: This is an alias for /code apply.
-""",
-        }
-
-        if not command:
-            # Show all commands
-            result = "🤖 Available Commands:\n\n"
-            for cmd in sorted(help_texts.keys()):
-                # Extract first line of each help text
-                first_line = help_texts[cmd].strip().split('\n')[0]
-                result += f"{first_line}\n"
-            result += "\n💡 Use /help <command> for detailed usage."
-            return result
-        else:
-            cmd = command.strip().lower()
-            if cmd in help_texts:
-                return help_texts[cmd].strip()
-            else:
-                return self.formatter.error(f"No help available for '{command}'. Available commands: {', '.join(sorted(help_texts.keys()))}")
 
     def handle_diff_command(self, command: str) -> str:
         """Handle /diff command — delegates to file_commands module."""
@@ -2203,32 +1681,10 @@ Note: This is an alias for /code apply.
         from agent.services.file_commands import handle_test_command
         return handle_test_command(self, command)
 
-    def handle_apply_command(self, command: str) -> str:
-        """Handle /apply command (alias for /code apply).
-
-        Usage:
-          /apply              - Apply pending changes with confirmation
-          /apply force        - Apply without interactive confirmation
-          /apply confirm      - Apply with confirmation (same as /apply)
-          /apply --help       - Show help
-        """
-        if command and command.strip().lower() in ['--help', 'help']:
-            help_text = """
-🔧 /apply Command (alias for /code apply):
-  /apply              - Apply pending changes with confirmation
-  /apply force        - Apply without interactive confirmation
-  /apply confirm      - Apply with confirmation (same as /apply)
-  /apply --help       - Show this help
-
-Note: This is an alias for /code apply. See '/help code' for more details.
-            """.strip()
-            return help_text
-
-        # Map to /code apply subcommand
-        if command and 'force' in command.lower():
-            return self._code_apply_changes_confirm(force=True)
-        else:
-            return self._code_apply_changes()
+    def handle_apply_command(self, command: str) -> Optional[str]:
+        """Delegate to utility_commands module."""
+        from agent.services.utility_commands import handle_apply_command
+        return handle_apply_command(self, command)
 
     # ── Workflow command handlers (delegates to agent.services.workflow_commands) ──
 

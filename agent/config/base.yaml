@@ -69,6 +69,28 @@ language:
   # When data conflicts between languages, note both versions
   cross_language_conflict_resolution: "present_both"
 
+# === API & File Limits ===
+# Safety limits for file operations and API interactions
+limits:
+  # Maximum image file size for processing (bytes)
+  image_max_size_bytes: 5242880        # 5MB
+  # Maximum PDF pages per read
+  pdf_max_pages: 100
+  # Maximum PDF file size (bytes)
+  pdf_max_size_bytes: 20971520         # 20MB
+  # Maximum media attachments per request
+  max_media_per_request: 100
+  # Default max output tokens
+  default_max_tokens: 32000
+  # Context compaction threshold (fraction of context window)
+  compact_threshold: 0.90
+  # Maximum file size for read/write operations (bytes)
+  max_file_size_bytes: 10485760        # 10MB
+  # Maximum lines per file read
+  max_lines_per_read: 5000
+  # Maximum output characters per tool result
+  max_tool_output_chars: 30000
+
 # === Cost & Token Tracking ===
 # NeoMind currently uses cloud LLM APIs (not local models).
 # Every API call costs money. Every token matters.
