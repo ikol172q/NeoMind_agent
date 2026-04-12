@@ -384,6 +384,65 @@ class NeoMindTelegramBot:
         from .openclaw_skill import OpenClawFinanceSkill
         self._skill = OpenClawFinanceSkill(components=self.components)
 
+        # ── Canary user whitelist (group -1 pre-handler) ──────────────
+        # When NEOMIND_CANARY=1 is set, silently drop any update whose
+        # sender is NOT in the canary allow-list. Prevents random users
+        # from discovering the canary bot (@your_canary_bot_example)
+        # and burning LLM tokens against the owner's Moonshot/DeepSeek
+        # account. The production bot (no NEOMIND_CANARY env) is
+        # unaffected — it still accepts any private-chat DM per the
+        # MessageRouter.should_respond() logic.
+        #
+        # Allow-list resolution order:
+        #   1. NEOMIND_CANARY_ALLOWED_USERS — comma-separated user IDs
+        #      dedicated to canary. Recommended for production use so
+        #      the canary can whitelist the Telethon tester account
+        #      without granting it /admin on production.
+        #   2. TELEGRAM_ADMIN_USERS — fallback for simple setups.
+        if os.getenv("NEOMIND_CANARY", "").strip() == "1":
+            from telegram.ext import TypeHandler, ApplicationHandlerStop
+
+            _canary_allowed_raw = os.getenv("NEOMIND_CANARY_ALLOWED_USERS", "").strip()
+            if _canary_allowed_raw:
+                admin_set = {
+                    int(x) for x in _canary_allowed_raw.split(",")
+                    if x.strip().isdigit()
+                }
+                _source = "NEOMIND_CANARY_ALLOWED_USERS"
+            else:
+                admin_set = set(self.config.admin_users)
+                _source = "TELEGRAM_ADMIN_USERS (fallback)"
+            if not admin_set:
+                print("[bot] ⚠️ NEOMIND_CANARY=1 but no allow-list configured "
+                      "— canary will reject ALL messages including yours. "
+                      "Set NEOMIND_CANARY_ALLOWED_USERS or TELEGRAM_ADMIN_USERS "
+                      "in .env.", flush=True)
+
+            async def _canary_admin_gate(update, context):
+                # Let internal update types (edited_message, channel_post,
+                # etc.) fall through — they rarely carry useful sender info.
+                msg = getattr(update, "message", None) or getattr(update, "edited_message", None)
+                if msg is None or msg.from_user is None:
+                    raise ApplicationHandlerStop  # drop
+                user_id = msg.from_user.id
+                if user_id not in admin_set:
+                    # Silent drop — no reply, no log spam. Attacker
+                    # discovering the bot just gets silence.
+                    raise ApplicationHandlerStop
+                # Admin user — allow normal handler chain to run.
+
+            # Group -1 runs before everything else. Raising
+            # ApplicationHandlerStop aborts the whole update dispatch.
+            self._app.add_handler(
+                TypeHandler(Update, _canary_admin_gate),
+                group=-1,
+            )
+            print(
+                f"[bot] 🛡 NEOMIND_CANARY=1: whitelist active "
+                f"({len(admin_set)} user(s) from {_source})",
+                flush=True,
+            )
+
         # Register handlers
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("help", self._cmd_help))
