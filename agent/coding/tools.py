@@ -1989,6 +1989,25 @@ class ToolRegistry:
             command: Shell command to execute
             timeout: Timeout in seconds (default 120)
         """
+        # Guard: reject raw Python source mistakenly passed as a shell command.
+        # Reasoner models sometimes feed their own markdown code blocks to Bash.
+        _py_reject_msg = (
+            "ERROR: This looks like raw Python source, not a shell command.\n"
+            "Use `python3 -c '<code>'` to run Python inline, OR write code to a "
+            "file first then `python3 file.py`.\n"
+            "Do NOT pass raw Python source as Bash commands."
+        )
+        _stripped = command.lstrip()
+        if (
+            _stripped.startswith(("def ", "class ", "from ", "return ", "@"))
+            or re.match(r"^import\s+[A-Za-z_][\w\.]*\s*$", _stripped)
+            or "```" in command
+            or re.search(r"\bdef\s+\w+\s*\([^)]*\)\s*:?\s*def\s+\w+", command)
+            or re.search(r"\breturn\s+\w+def\s+\w+", command)
+            or re.search(r"^@\w+def\s+\w+", _stripped)
+            or re.search(r"^import\s+\w+\w+\.\w+", _stripped)
+        ):
+            return ToolResult(False, error=_py_reject_msg)
         try:
             pb = self._get_persistent_bash()
             return pb.execute(command, timeout=timeout)
