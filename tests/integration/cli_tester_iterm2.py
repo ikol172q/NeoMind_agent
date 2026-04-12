@@ -133,6 +133,26 @@ class ITerm2CliTester:
         self._app = None
         self._window = None
         self._session = None
+        # Recording state: maps absolute_line_index -> text. Active when not None.
+        self._recording: Optional[dict] = None
+
+    def start_recording(self) -> None:
+        """Begin accumulating ALL visible lines across captures by absolute scrollback index.
+        Subsequent capture() calls will populate the recording dict.
+        """
+        self._recording = {}
+
+    def stop_recording(self) -> str:
+        """Stop recording and return the joined content sorted by absolute line index.
+        Returns the FULL terminal content seen during recording, even lines that
+        scrolled off the visible screen — provided we polled fast enough that
+        no line was lost from iTerm2's scrollback history.
+        """
+        rec = self._recording or {}
+        self._recording = None
+        if not rec:
+            return ""
+        return "\n".join(rec[k] for k in sorted(rec.keys()))
 
     # ── Context manager ──────────────────────────────────────────────
 
@@ -317,15 +337,57 @@ class ITerm2CliTester:
 
         Returns the visible screen plus up to `lines` of scrollback
         from the history. `lines=0` means just the visible screen.
+
+        If recording is active (start_recording() called), ALSO populates
+        the recording dict with ALL visible lines indexed by absolute
+        scrollback position so the full terminal content across the entire
+        recording session can be reconstructed even if lines later scroll off.
         """
         if self._session is None:
             raise RuntimeError("no active session")
         n = lines or self.config.default_capture_lines
         contents = await self._session.async_get_screen_contents()
-        out: List[str] = []
         total = contents.number_of_lines
+        # Absolute position of the first line of the visible screen in the
+        # full scrollback history (including any lost from head).
+        scrollback_offset = contents.number_of_lines_above_screen
+        # If recording, capture EVERY visible line by absolute index.
+        if self._recording is not None:
+            for i in range(total):
+                line = contents.line(i)
+                if line is None:
+                    continue
+                abs_idx = scrollback_offset + i
+                self._recording[abs_idx] = line.string
+        out: List[str] = []
         start = max(0, total - n)
         for i in range(start, total):
+            line = contents.line(i)
+            if line is None:
+                continue
+            out.append(line.string)
+        return "\n".join(out)
+
+    async def total_lines(self) -> int:
+        """Return the current scrollback line count (used as a snapshot marker)."""
+        if self._session is None:
+            raise RuntimeError("no active session")
+        contents = await self._session.async_get_screen_contents()
+        return contents.number_of_lines
+
+    async def capture_since(self, start_line: int) -> str:
+        """Capture EVERY line from start_line to the current end of scrollback.
+
+        Use total_lines() before sending input to record a baseline, then call
+        this after the response is done to get the full delta — no truncation,
+        no scroll-off, regardless of how long the bot's response was.
+        """
+        if self._session is None:
+            raise RuntimeError("no active session")
+        contents = await self._session.async_get_screen_contents()
+        total = contents.number_of_lines
+        out: List[str] = []
+        for i in range(max(0, start_line), total):
             line = contents.line(i)
             if line is None:
                 continue
@@ -367,7 +429,7 @@ class ITerm2CliTester:
         regex = prompt_regex or DEFAULT_PROMPT_RE
         dead = time.time() + (timeout or self.config.boot_timeout_sec)
         while time.time() < dead:
-            screen = await self.capture(lines=60)
+            screen = await self.capture(lines=500)
             # Search across the whole visible screen — prompt_toolkit
             # renders status bars / footers below the actual prompt
             # so it's not always the last non-empty line.
