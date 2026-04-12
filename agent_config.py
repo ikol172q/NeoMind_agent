@@ -293,6 +293,10 @@ class AgentConfigManager:
     def system_prompt(self) -> str:
         return self._active.get("system_prompt", "")
 
+    @system_prompt.setter
+    def system_prompt(self, value: str):
+        self._active["system_prompt"] = value
+
     @property
     def search_enabled(self) -> bool:
         return self._active.get("search_enabled", True)
@@ -349,6 +353,10 @@ class AgentConfigManager:
 
     @property
     def permission_mode(self) -> str:
+        # Environment variable override for non-interactive / CI contexts
+        env_mode = os.environ.get("NEOMIND_AUTO_ACCEPT")
+        if env_mode and env_mode.strip().lower() in ("1", "true", "yes"):
+            return "auto_accept"
         return getattr(self, '_permission_mode_override', None) or self.get("permissions.mode", "normal")
 
     @permission_mode.setter

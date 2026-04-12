@@ -48,6 +48,11 @@ class ServiceRegistry:
         self._task_manager = _UNSET
         self._safety = _UNSET
 
+        # Feature flags, Sandbox, Permissions
+        self._feature_flags = _UNSET
+        self._sandbox = _UNSET
+        self._permission_manager = _UNSET
+
         # Lazy (heavier)
         self._search = _UNSET
         self._vault = _UNSET
@@ -57,6 +62,19 @@ class ServiceRegistry:
         self._nl_interpreter = _UNSET
         self._context = _UNSET
         self._llm_provider = _UNSET
+
+        # AutoDream, Session Notes, Memory Selector, Prompt Composer, Swarm, etc.
+        self._auto_dream = _UNSET
+        self._session_notes = _UNSET
+        self._memory_selector = _UNSET
+        self._prompt_composer = _UNSET
+        self._frustration_detector = _UNSET
+        self._session_storage = _UNSET
+        self._agent_memory = _UNSET
+
+        # Hooks & Plugins
+        self._hook_runner = _UNSET
+        self._plugin_loader = _UNSET
 
         # Workflow & Evolution
         self._evidence = _UNSET
@@ -124,6 +142,49 @@ class ServiceRegistry:
             except Exception:
                 self._safety = None
         return self._safety
+
+    @property
+    def permission_manager(self):
+        """PermissionManager for tool access control."""
+        if self._permission_manager is _UNSET:
+            try:
+                from agent.services.permission_manager import PermissionManager, PermissionMode
+                mode_str = self.config.get("permissions.mode", "normal") if hasattr(self.config, 'get') else "normal"
+                mode_map = {
+                    'normal': PermissionMode.NORMAL,
+                    'auto_accept': PermissionMode.AUTO_ACCEPT,
+                    'accept_edits': PermissionMode.ACCEPT_EDITS,
+                    'dont_ask': PermissionMode.DONT_ASK,
+                    'plan': PermissionMode.PLAN,
+                    'bypass': PermissionMode.BYPASS,
+                }
+                mode = mode_map.get(mode_str, PermissionMode.NORMAL)
+                self._permission_manager = PermissionManager(mode=mode)
+            except Exception:
+                self._permission_manager = None
+        return self._permission_manager
+
+    @property
+    def feature_flags(self):
+        """FeatureFlagService for runtime feature gating."""
+        if self._feature_flags is _UNSET:
+            try:
+                from agent.services.feature_flags import get_feature_flags
+                self._feature_flags = get_feature_flags()
+            except Exception:
+                self._feature_flags = None
+        return self._feature_flags
+
+    @property
+    def sandbox(self):
+        """SandboxManager for isolated command execution."""
+        if self._sandbox is _UNSET:
+            try:
+                from agent.services.sandbox import SandboxManager
+                self._sandbox = SandboxManager(workspace_root=os.getcwd())
+            except Exception:
+                self._sandbox = None
+        return self._sandbox
 
     # ── Lazy Service Properties (heavier, on-demand) ──────────────────
 
@@ -250,6 +311,121 @@ class ServiceRegistry:
                 self._llm_provider = None
         return self._llm_provider
 
+    @property
+    def auto_dream(self):
+        """AutoDream — background memory consolidation."""
+        if self._auto_dream is _UNSET:
+            try:
+                from agent.evolution.auto_dream import AutoDream
+                self._auto_dream = AutoDream(
+                    shared_memory=self.memory,
+                    vault=self.vault,
+                )
+            except Exception:
+                self._auto_dream = None
+        return self._auto_dream
+
+    @property
+    def prompt_composer(self):
+        """PromptComposer — modular system prompt construction."""
+        if self._prompt_composer is _UNSET:
+            try:
+                from agent.prompts.composer import PromptComposer, collect_system_context
+                self._prompt_composer = PromptComposer()
+                # Auto-inject system context
+                git_status, os_info, date_str = collect_system_context()
+                self._prompt_composer.set_context(git_status, os_info, date_str)
+                # Auto-discover NEOMIND.md / project.md guidance
+                self._prompt_composer.inject_project_guidance(
+                    workspace_root=os.getcwd()
+                )
+            except Exception:
+                self._prompt_composer = None
+        return self._prompt_composer
+
+    @property
+    def memory_selector(self):
+        """MemorySelector — LLM-based memory relevance selection."""
+        if self._memory_selector is _UNSET:
+            try:
+                from agent.memory.memory_selector import MemorySelector
+                self._memory_selector = MemorySelector()
+            except Exception:
+                self._memory_selector = None
+        return self._memory_selector
+
+    @property
+    def frustration_detector(self):
+        """FrustrationDetector — detect negative user signals."""
+        if self._frustration_detector is _UNSET:
+            try:
+                from agent.services.frustration_detector import detect_frustration
+                self._frustration_detector = detect_frustration
+            except Exception:
+                self._frustration_detector = None
+        return self._frustration_detector
+
+    @property
+    def session_storage_writer(self):
+        """SessionWriter — JSONL append-only session persistence."""
+        if self._session_storage is _UNSET:
+            try:
+                from agent.services.session_storage import SessionWriter
+                self._session_storage = SessionWriter()
+            except Exception:
+                self._session_storage = None
+        return self._session_storage
+
+    @property
+    def agent_memory(self):
+        """AgentMemory — per-agent persistent knowledge."""
+        if self._agent_memory is _UNSET:
+            try:
+                from agent.memory.agent_memory import AgentMemory
+                self._agent_memory = AgentMemory(agent_type='default')
+            except Exception:
+                self._agent_memory = None
+        return self._agent_memory
+
+    @property
+    def session_notes(self):
+        """SessionNotes — auto-maintained session context notes."""
+        if self._session_notes is _UNSET:
+            try:
+                from agent.services.session_notes import SessionNotes
+                self._session_notes = SessionNotes()
+            except Exception:
+                self._session_notes = None
+        return self._session_notes
+
+    # ── Hooks & Plugins ───────────────────────────────────────────────
+
+    @property
+    def hook_runner(self):
+        """HookRunner — user-configurable PreToolUse/PostToolUse shell hooks."""
+        if self._hook_runner is _UNSET:
+            try:
+                from agent.services.hooks import HookRunner
+                self._hook_runner = HookRunner()
+            except Exception:
+                self._hook_runner = None
+        return self._hook_runner
+
+    @property
+    def plugin_loader(self):
+        """PluginLoader — user plugins from ~/.neomind/plugins/."""
+        if self._plugin_loader is _UNSET:
+            try:
+                from agent.services.plugin_loader import PluginLoader
+                self._plugin_loader = PluginLoader()
+                # Auto-load all discovered plugins on first access.
+                # tool_registry is optional; plugins that don't need it
+                # will still load and register their capabilities.
+                self._plugin_loader.load_all()
+            except Exception:
+                self._plugin_loader = None
+        return self._plugin_loader
+
     # ── Workflow & Evolution ──────────────────────────────────────────
     # These are fully decoupled singletons. Try own init first,
     # bridge to core as fallback during migration.
@@ -332,12 +508,22 @@ class ServiceRegistry:
 
     # ── Lifecycle Hooks (called by core.py) ──────────────────────────
 
-    def on_turn_complete(self, turn_count: int) -> None:
-        """Called after each response. Triggers scheduled evolution tasks."""
+    def on_turn_complete(self, turn_count: int, conversation_history: list = None) -> None:
+        """Called after each response. Triggers scheduled evolution tasks and AutoDream."""
         sched = self.evolution_scheduler
         if sched is not None:
             try:
                 sched.on_turn_complete(turn_count)
+            except Exception:
+                pass
+
+        # AutoDream: notify turn complete and attempt consolidation
+        dream = self.auto_dream
+        if dream is not None:
+            try:
+                dream.on_turn_complete()
+                if conversation_history:
+                    dream.maybe_consolidate(conversation_history)
             except Exception:
                 pass
 

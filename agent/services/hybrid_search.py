@@ -901,7 +901,16 @@ class HybridSearchEngine:
 
         # Tier 1: Always available, no API key needed
         self.tier1_sources = {}
-        if HAS_DDG:
+        # DuckDuckGo sources are gated behind NEOMIND_ENABLE_DDG=1 because the
+        # duckduckgo_search package (v8.x) hangs indefinitely inside a
+        # C-level call when DDG rate-limits the caller. asyncio.wait_for at
+        # the source level can't cancel the thread-pool worker, so enough
+        # hung DDG calls exhaust the default executor and deadlock every
+        # subsequent run_in_executor — including other chat handlers.
+        # Google News RSS + site-specific RSS feeds cover the finance /
+        # news use cases without this failure mode. Set the env var to
+        # re-enable at your own risk.
+        if HAS_DDG and os.getenv("NEOMIND_ENABLE_DDG") == "1":
             self.tier1_sources["ddg_en"] = DuckDuckGoSource(region="en-us")
             self.tier1_sources["ddg_zh"] = DuckDuckGoSource(region="cn-zh")
         # Google News RSS — always free, no API key
@@ -1000,14 +1009,27 @@ class HybridSearchEngine:
         is_finance = any(kw in q_lower for kw in _finance_keywords)
 
         # Launch searches for all (source, query) combinations
-        # Skip RSS feeds for non-finance queries (they're all finance/crypto)
+        # Skip RSS feeds for non-finance queries (they're all finance/crypto).
+        # Each per-source call gets its own hard timeout so a single hung
+        # backend (e.g. rate-limited DDGS) cannot stall the chat handler.
+        async def _bounded_source_search(src, q, ttl):
+            try:
+                return await asyncio.wait_for(
+                    src.search(q, max_results=max_results),
+                    timeout=ttl,
+                )
+            except asyncio.TimeoutError:
+                return TimeoutError(f"source timed out after {ttl}s")
+            except Exception as e:
+                return e
+
         tasks = {}
         for q in queries:
             for name, source in all_sources.items():
                 if name == "rss" and not is_finance:
                     continue  # RSS feeds are finance-only, skip for general queries
                 task_key = f"{name}___{q}"
-                tasks[task_key] = source.search(q, max_results=max_results)
+                tasks[task_key] = _bounded_source_search(source, q, 8.0)
 
         task_results = await asyncio.gather(
             *tasks.values(), return_exceptions=True

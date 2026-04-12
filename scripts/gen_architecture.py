@@ -89,7 +89,7 @@ def discover_test_files(root: Path, agent_modules: set):
 # ═══════════════════════════════════════════
 # STUB DETECTION
 # ═══════════════════════════════════════════
-def parse_stub_redirect(path: str) -> str | None:
+def parse_stub_redirect(path: str) -> Optional[str]:
     """Detect sys.modules stub files and return their redirect target dotpath."""
     try:
         src = Path(path).read_text(errors="replace")
@@ -176,7 +176,7 @@ def build_dotpath_index(module_ids, stubs):
     return dp2f
 
 
-def resolve(imp: str, dp2f: dict) -> str | None:
+def resolve(imp: str, dp2f: dict) -> Optional[str]:
     """Resolve a dotted import to a file path."""
     if imp in dp2f:
         return dp2f[imp]

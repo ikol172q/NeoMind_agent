@@ -413,8 +413,8 @@ class TestProviderChain(TestProviderStateBase):
     """Test get_provider_chain() builds correct ordered fallback list."""
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
-        "ZAI_API_KEY": "sk-zai-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
+        "ZAI_API_KEY": "sk-test-zai-placeholder",
         "LITELLM_API_KEY": "",
     }, clear=False)
     def test_direct_mode_chain(self):
@@ -428,8 +428,8 @@ class TestProviderChain(TestProviderStateBase):
         self.assertEqual(chain[0]["model"], "deepseek-chat")
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
-        "ZAI_API_KEY": "sk-zai-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
+        "ZAI_API_KEY": "sk-test-zai-placeholder",
         "LITELLM_API_KEY": "sk-litellm-test",
         "LITELLM_BASE_URL": "http://localhost:4000/v1",
     }, clear=False)
@@ -446,7 +446,7 @@ class TestProviderChain(TestProviderStateBase):
         self.assertEqual(chain[0]["model"], "local")
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
         "ZAI_API_KEY": "",
         "LITELLM_API_KEY": "",
     }, clear=False)
@@ -460,7 +460,7 @@ class TestProviderChain(TestProviderStateBase):
         self.assertEqual(chain[0]["name"], "deepseek")
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
         "ZAI_API_KEY": "",
         "LITELLM_API_KEY": "",
     }, clear=False)
@@ -485,8 +485,8 @@ class TestProviderChain(TestProviderStateBase):
         self.assertEqual(chain, [])
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
-        "ZAI_API_KEY": "sk-zai-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
+        "ZAI_API_KEY": "sk-test-zai-placeholder",
         "LITELLM_API_KEY": "sk-litellm-test",
     }, clear=False)
     def test_litellm_mode_with_thinking(self):
@@ -604,7 +604,7 @@ class TestStatusText(TestProviderStateBase):
     """Test get_status_text() formatting."""
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
         "ZAI_API_KEY": "",
         "LITELLM_API_KEY": "",
     }, clear=False)
@@ -616,7 +616,7 @@ class TestStatusText(TestProviderStateBase):
         self.assertIn("direct", text)
 
     @patch.dict(os.environ, {
-        "DEEPSEEK_API_KEY": "sk-ds-test",
+        "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
         "ZAI_API_KEY": "",
         "LITELLM_API_KEY": "",
     }, clear=False)

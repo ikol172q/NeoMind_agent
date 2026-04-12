@@ -12,11 +12,26 @@ import os
 import sys
 import re
 import time
+import json
 import asyncio
 import difflib
+import requests
 from typing import Optional, List, Dict, Tuple, Any
 
 from agent.code_analyzer import CodeAnalyzer
+from agent_config import agent_config
+
+try:
+    from agent.services.safety_service import log_operation
+except ImportError:
+    def log_operation(*args, **kwargs):
+        pass  # No-op if logger not available
+
+try:
+    from agent.workflow.sprint import SprintManager
+    HAS_SPRINT = True
+except ImportError:
+    HAS_SPRINT = False
 
 
 def handle_code_command(core, command: str) -> str:
@@ -247,6 +262,9 @@ def add_code_context_instructions(core):
     Add code-specific instructions to the current conversation
     This is called when user is asking about code but not using /fix or /analyze
     """
+    # Skip if custom system prompt override is active (headless --system-prompt)
+    if getattr(core, '_custom_system_prompt_override', False):
+        return
     code_instructions = """
     IMPORTANT: For code changes, use this format:
 
@@ -373,6 +391,10 @@ Please analyze this code structure.""")
 def _code_search(core, search_text: str) -> str:
     """Search for text in code files"""
     if not core.code_analyzer:
+        # Fall back to grep when no codebase has been scanned
+        if search_text and hasattr(core, 'handle_grep_command'):
+            core._safe_print(f"🔍 No codebase scanned — falling back to grep for '{search_text}'")
+            return core.handle_grep_command(search_text)
         return core.formatter.error("No codebase scanned. Use '/code scan <path>' first.")
         
     if not search_text:
@@ -503,7 +525,7 @@ def _order_changes_by_dependencies(core, changes):
         return changes
     # Determine root path: use agent_root for self-modifications, else code_analyzer.root_path
     import os
-    root_path = core.agent_root if hasattr(self, 'agent_root') else (core.code_analyzer.root_path if core.code_analyzer else os.getcwd())
+    root_path = core.agent_root if hasattr(core, 'agent_root') else (core.code_analyzer.root_path if core.code_analyzer else os.getcwd())
     planner = Planner(root_path)
     ordered = planner.plan_changes(changes)
     return ordered
@@ -870,6 +892,10 @@ def get_token_count(core) -> int:
 
 def _ensure_system_prompt(core):
     """Ensure system prompt is present in conversation history."""
+    # When a custom --system-prompt override is active (headless mode),
+    # skip re-injection so the custom prompt stays as the sole system msg.
+    if getattr(core, '_custom_system_prompt_override', False):
+        return
     if not agent_config.system_prompt:
         return
     # Check if any system prompt already exists
@@ -900,9 +926,9 @@ def debug_agent_status(core):
     print(f"  • API Key: {'Set' if core.api_key else 'Not set'}")
     print(f"  • Conversation history length: {len(core.conversation_history)}")
     print(f"  • Code analyzer: {'Initialized' if core.code_analyzer else 'Not initialized'}")
-    print(f"  • Auto-fix mode: {'ACTIVE' if hasattr(self, 'auto_fix_mode') and core.auto_fix_mode else 'Inactive'}")
+    print(f"  • Auto-fix mode: {'ACTIVE' if hasattr(core, 'auto_fix_mode') and core.auto_fix_mode else 'Inactive'}")
         
-    if hasattr(self, 'current_fix_file'):
+    if hasattr(core, 'current_fix_file'):
         print(f"  • Current fix file: {core.current_fix_file}")
         
     print(f"  • Pending changes: {len(core.code_changes_pending)}")
@@ -1048,7 +1074,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         skip_user_add = False
 
     # Check if caller already added the user message (agentic loop re-prompt)
-    if getattr(self, '_skip_next_user_add', False):
+    if getattr(core, '_skip_next_user_add', False):
         skip_user_add = True
         core._skip_next_user_add = False
 
@@ -1142,11 +1168,14 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
     except Exception as e:
         core._status_print(f"Pre-call hooks error (non-fatal): {e}", "debug")
 
+    # Respect model-level fixed temperature (e.g. kimi-k2.5 only accepts temperature=1)
+    actual_temperature = spec.get("fixed_temperature", temperature or agent_config.temperature)
+
     payload = {
         "model": core.model,
         "messages": messages_for_api,
         "stream": True,
-        "temperature": temperature or agent_config.temperature,
+        "temperature": actual_temperature,
         "max_tokens": actual_max_tokens,
     }
 
@@ -1178,6 +1207,12 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         if response.status_code != 200:
             core._status_print(f"❌ Error {response.status_code}: {response.text}", "critical")
             core.conversation_history.pop()
+            # Surface auth failures so callers (e.g. headless main.py) can show
+            # a clear message and exit non-zero instead of swallowing them.
+            if response.status_code in (401, 403):
+                raise PermissionError(
+                    "API authentication failed (check DEEPSEEK_API_KEY)"
+                )
             return None
 
         core._status_print(f"Streaming response...", "debug")
@@ -1191,44 +1226,57 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         thinking_start_time = None
         last_thinking_summary_time = 0
         content_was_displayed = False  # Track if any visible content was printed
+        _thinking_already_displayed = False  # Prevent thinking summary re-display
 
         # Callback to notify UI layer (spinner) on first token
         def _notify_first_token():
             nonlocal first_token_notified
             if not first_token_notified:
                 first_token_notified = True
-                cb = getattr(self, '_ui_on_first_token', None)
+                cb = getattr(core, '_ui_on_first_token', None)
                 if cb:
                     try:
                         cb()
                     except Exception:
                         pass
 
-        def _summarize_thinking(text, max_len=60):
+        def _summarize_thinking(text, max_len=100):
             """Extract a brief summary from thinking content for spinner display."""
             # Take the last meaningful sentence/phrase
             lines = text.strip().split('\n')
             for line in reversed(lines):
                 line = line.strip()
-                if len(line) > 10:
+                if len(line) > 5:
                     if len(line) > max_len:
+                        # Try to cut at a word boundary
+                        cut = line[:max_len].rfind(' ')
+                        if cut > max_len // 2:
+                            return line[:cut] + "…"
                         return line[:max_len - 1] + "…"
                     return line
             return ""
 
         def _update_thinking_spinner(reasoning_so_far):
-            """Update the spinner label with a thinking summary (via stderr)."""
+            """Update the spinner label with a thinking summary (via stderr).
+
+            Skips writing when called from the agentic loop (which has its
+            own spinner) to prevent concurrent stderr writes that overlap.
+            """
+            # Skip if the agentic loop already owns the spinner
+            if getattr(core, '_skip_next_user_add', False):
+                return
             nonlocal last_thinking_summary_time
             now = time.time()
-            # Update at most every 2 seconds to avoid flickering
-            if now - last_thinking_summary_time < 2:
+            # Update at most every 0.5 seconds to keep it responsive
+            if now - last_thinking_summary_time < 0.5:
                 return
             last_thinking_summary_time = now
-            summary = _summarize_thinking(reasoning_so_far)
-            if summary:
-                elapsed = now - (thinking_start_time or now)
-                sys.stderr.write(f"\r\033[K\033[36m⠸\033[0m Thinking… \033[2m{summary}\033[0m")
-                sys.stderr.flush()
+            elapsed = now - (thinking_start_time or now)
+            if elapsed >= 1.0:
+                sys.stderr.write(f"\r\033[K\033[36m⠸\033[0m Thinking… \033[2m({elapsed:.0f}s)\033[0m")
+            else:
+                sys.stderr.write(f"\r\033[K\033[36m⠸\033[0m Thinking…")
+            sys.stderr.flush()
 
         try:
             for line in response.iter_lines():
@@ -1261,18 +1309,33 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
 
                                 content = delta.get("content", "")
                                 if content:
+                                    # Filter DeepSeek thinking end token
+                                    content = content.replace('<｜end▁of▁thinking｜>', '')
+                                    content = content.replace('<|end▁of▁thinking|>', '')
+                                    if not content.strip():
+                                        continue  # Skip empty content after filtering
                                     if not is_final_response_active:
                                         # Transition: thinking → response
+                                        # Clear any spinner remnants from stderr
+                                        sys.stderr.write("\r\033[K")
+                                        sys.stderr.flush()
                                         _notify_first_token()  # Stop spinner
 
-                                        if has_seen_reasoning and thinking_start_time:
+                                        if has_seen_reasoning and thinking_start_time and not _thinking_already_displayed:
+                                            _thinking_already_displayed = True
                                             # Show condensed thinking summary
                                             elapsed = time.time() - thinking_start_time
                                             summary = _summarize_thinking(reasoning_content)
                                             if COLORS_ENABLED:
-                                                print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
+                                                if summary:
+                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s — {summary}{COLOR_RESET}")
+                                                else:
+                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
                                             else:
-                                                print(f"Thought for {elapsed:.1f}s")
+                                                if summary:
+                                                    print(f"Thought for {elapsed:.1f}s — {summary}")
+                                                else:
+                                                    print(f"Thought for {elapsed:.1f}s")
                                         else:
                                             _notify_first_token()
                                         is_final_response_active = True
@@ -1281,7 +1344,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                     # Accumulate full response regardless of filter
                                     full_response += content
                                     # Content filter: suppress code fences if active
-                                    _cf = getattr(self, '_content_filter', None)
+                                    _cf = getattr(core, '_content_filter', None)
                                     if _cf:
                                         display = _cf.write(content)
                                         if display:
@@ -1305,7 +1368,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                 return None
 
         # Flush content filter if active
-        _cf = getattr(self, '_content_filter', None)
+        _cf = getattr(core, '_content_filter', None)
         if _cf:
             remaining = _cf.flush()
             if remaining:
@@ -1349,7 +1412,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     core._response_turn_count = 0
                     try:
                         changed_context = core._vault_watcher.get_changed_context(
-                            mode=getattr(self, 'mode', 'chat')
+                            mode=getattr(core, 'mode', 'chat')
                         )
                         if changed_context:
                             core.add_to_history("system", changed_context)
@@ -1372,11 +1435,11 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
 
             # ── Log to unified logger ────────────────────────────────────
             # Track LLM API calls with token usage and latency
+            prompt_tokens = core.context_manager.count_conversation_tokens()
+            completion_tokens = core.context_manager.count_tokens(full_response)
+            latency_ms = (time.time() - start_time) * 1000 if start_time else 0
             if core._unified_logger:
                 try:
-                    prompt_tokens = core.context_manager.count_conversation_tokens()
-                    completion_tokens = core.context_manager.count_tokens(full_response)
-                    latency_ms = (time.time() - start_time) * 1000 if start_time else 0
                     core._unified_logger.log_llm_call(
                         model=core.model,
                         prompt_tokens=prompt_tokens,
@@ -1387,6 +1450,22 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     )
                 except Exception as e:
                     core._status_print(f"Unified logger LLM call failed (non-fatal): {e}", "debug")
+
+            # ── Update QueryEngine budget for /cost command ───────────────
+            if hasattr(core, '_query_engine') and core._query_engine:
+                try:
+                    from agent_config import agent_config as _ac
+                    pricing = _ac._config.get("cost", {}).get("model_pricing", {}).get(core.model, {})
+                    input_price = pricing.get("input", 0.0)  # per 1M tokens
+                    output_price = pricing.get("output", 0.0)
+                    cost = (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
+                    core._query_engine.budget.record_usage(
+                        input_tokens=prompt_tokens,
+                        output_tokens=completion_tokens,
+                        cost_usd=cost,
+                    )
+                except Exception:
+                    pass  # Non-fatal
 
             # ── Integration hooks: post-response (drift, distillation, degradation) ──
             try:
@@ -1426,9 +1505,65 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                 except Exception:
                     pass  # Non-fatal — never block response delivery
 
+            # ── AutoDream: attempt memory consolidation during idle ────────
+            if hasattr(core, 'services') and core.services is not None:
+                try:
+                    dream = core.services.auto_dream
+                    if dream is not None:
+                        dream.on_turn_complete()
+                        history = getattr(core, 'conversation_history', None)
+                        if history:
+                            dream.maybe_consolidate(history)
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── Session Notes: auto-update structured notes ──────────
+                try:
+                    notes = core.services.session_notes
+                    if notes is not None:
+                        history = getattr(core, 'conversation_history', None)
+                        tool_count = getattr(core, '_tool_call_count', 0)
+                        total_chars = sum(len(str(m.get('content', ''))) for m in (history or []))
+                        est_tokens = total_chars // 4
+                        notes.maybe_update(
+                            messages=history or [],
+                            tool_count=tool_count,
+                            est_tokens=est_tokens,
+                        )
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── Frustration detection on last user message ─────────
+                try:
+                    detector = core.services.frustration_detector
+                    if detector and core.conversation_history:
+                        last_user = None
+                        for m in reversed(core.conversation_history):
+                            if m.get('role') == 'user':
+                                last_user = str(m.get('content', ''))
+                                break
+                        if last_user:
+                            signals = detector(last_user)
+                            if signals:
+                                from agent.services.frustration_detector import get_frustration_guidance
+                                guidance = get_frustration_guidance(signals)
+                                if guidance:
+                                    core._status_print(f"📊 {guidance}", "debug")
+                except Exception:
+                    pass  # Non-fatal
+
+                # ── JSONL session storage: append messages ─────────────
+                try:
+                    sw = core.services.session_storage_writer
+                    if sw and full_response:
+                        sw.append_message('assistant', full_response[:10000])
+                        sw.flush()
+                except Exception:
+                    pass  # Non-fatal
+
         # Store thinking content for expansion later
         if reasoning_content:
-            if not hasattr(self, '_thinking_history'):
+            if not hasattr(core, '_thinking_history'):
                 core._thinking_history = []
             core._thinking_history.append({
                 "timestamp": time.time(),
@@ -1442,8 +1577,8 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         # ============================================
 
         # Check if we're in auto-fix mode and have a file to fix
-        if (hasattr(self, 'auto_fix_mode') and core.auto_fix_mode and 
-            hasattr(self, 'current_fix_file') and core.current_fix_file and 
+        if (hasattr(core, 'auto_fix_mode') and core.auto_fix_mode and
+            hasattr(core, 'current_fix_file') and core.current_fix_file and
             full_response):
 
             print(f"\n{'='*80}")
@@ -1475,6 +1610,10 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         print(f"\n❌ Network error: {e}")
         core.conversation_history.pop()
         return None
+    except PermissionError:
+        # Auth failure (401/403): bubble up so callers can show a clear
+        # error message and exit non-zero in headless mode.
+        raise
     except Exception as e:
         print(f"\n⚠️  Unexpected error: {e}")
         import traceback
@@ -1589,7 +1728,7 @@ def _handle_auto_fix_confirmation(core):
                 print(f"\n🔄 Applying changes...")
 
                 # Show diff before applying
-                if hasattr(self, 'original_file_content'):
+                if hasattr(core, 'original_file_content'):
                     success, message, current_content = core.code_analyzer.read_file_safe(core.current_fix_file)
                     if success:
                         print(f"\n📊 Showing changes:")
@@ -1600,7 +1739,7 @@ def _handle_auto_fix_confirmation(core):
                 print(f"\n{result}")
 
             elif choice in ['diff', 'show', 'preview', '2']:
-                if hasattr(self, 'original_file_content'):
+                if hasattr(core, 'original_file_content'):
                     success, message, current_content = core.code_analyzer.read_file_safe(core.current_fix_file)
                     if success:
                         print(f"\n📊 DIFF VIEW:")
@@ -1646,10 +1785,36 @@ def _handle_auto_fix_confirmation(core):
     
 def auto_detect_and_read_file(core, text: str) -> Optional[str]:
     """
-    Automatically detect file paths in text and read them
+    Automatically detect file paths in text and read them.
+    Only triggers when the input is purely a file path (bare path),
+    NOT when a filename is embedded in a natural language sentence.
     Returns: File content if found and readable
     """
-    import re  # ADD THIS LINE at the beginning of the method!
+    import re
+
+    text = text.strip()
+
+    # Guard: only auto-detect when the input looks like a bare file path.
+    # If the text contains spaces and is NOT a path that happens to have
+    # spaces (i.e. it doesn't start with /, ./, ../, ~/, or a Windows drive),
+    # treat it as natural language and skip auto-detection entirely.
+    if ' ' in text:
+        # Allow paths that start with explicit path prefixes even if they
+        # contain spaces (e.g. "/some path/file.py"), but reject anything
+        # that looks like a natural language sentence.
+        if not re.match(r'^(?:[A-Za-z]:\\|/|\.{1,2}/|~/)', text):
+            return None
+        # Even with a path prefix, reject if the text contains natural
+        # language words that are clearly not part of a file path.
+        natural_lang_indicators = [
+            'show', 'read', 'open', 'display', 'print', 'list', 'find',
+            'search', 'help', 'what', 'how', 'why', 'can', 'please',
+            'the', 'first', 'last', 'lines', 'line', 'of', 'in', 'from',
+            'me', 'give', 'get', 'write', 'edit', 'delete', 'create',
+        ]
+        words = text.lower().split()
+        if any(w in natural_lang_indicators for w in words):
+            return None
 
     # Patterns for file paths
     patterns = [
@@ -1657,7 +1822,7 @@ def auto_detect_and_read_file(core, text: str) -> Optional[str]:
         r'/(?:[^/]+\/)*[^/]+\.[a-zA-Z0-9]+',  # Unix absolute
         r'(?:\.{1,2}/)?(?:[^/\s]+/)*[^/\s]+\.[a-zA-Z0-9]+',  # Relative
     ]
-        
+
     for pattern in patterns:
         matches = re.findall(pattern, text)
         for match in matches:
@@ -1746,8 +1911,9 @@ def classify_and_enhance_input(core, text: str) -> Optional[str]:
             line_start = match.group(2) if match.group(2) else None
             line_end = match.group(3) if match.group(3) else None
 
-            # Check if it's a known file extension
-            if any(ext in file_path for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
+            # Check if it's a known file extension AND path is ASCII-only
+            # (prevents Chinese text like "读main.py前3行" from being classified as a file path)
+            if file_path.isascii() and any(ext in file_path for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
                 core._safe_print(f"📄 Detected file path with line numbers: {text}")
                 log_operation("file_path_detection", text, True, f"path={file_path}, lines={line_start}-{line_end}")
 
@@ -1761,11 +1927,12 @@ def classify_and_enhance_input(core, text: str) -> Optional[str]:
                     return f"/read {file_path}"
 
     # 3. Simple filename (just a filename without path)
+    # MUST be ASCII-only to avoid matching Chinese text like "读main.py前3行"
     simple_file_pattern = r'^([^/\s]+\.\w+)$'
     match = re.match(simple_file_pattern, text)
     if match:
         filename = match.group(1)
-        if any(ext in filename for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
+        if filename.isascii() and any(ext in filename for ext in ['.py', '.js', '.java', '.txt', '.md', '.json', '.yaml', '.yml', '.html', '.css']):
             core._safe_print(f"📄 Detected simple filename: {filename}")
             log_operation("filename_detection", text, True, f"filename={filename}")
             return f"/read {filename}"

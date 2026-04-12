@@ -31,7 +31,7 @@ import asyncio
 import logging
 import html
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Any, Callable
+from typing import Dict, List, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -41,6 +41,20 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("neomind.telegram")
+
+
+def _safe_temperature(model: str, default: float = 0.7) -> float:
+    """Return a temperature value the upstream provider will accept.
+
+    Some routed models reject anything other than 1.0 (e.g. kimi-k2.5).
+    Centralised here so every chat-completion call site stays consistent.
+    """
+    if not model:
+        return default
+    m = model.lower()
+    if m.startswith("kimi"):
+        return 1.0
+    return default
 
 try:
     from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -333,7 +347,7 @@ class NeoMindTelegramBot:
         if msg.chat.type == "private":
             return True
         # Group chat: check if command has @username suffix
-        text = msg.text.split()[0]  # e.g. "/model@neomindagent_bot"
+        text = msg.text.split()[0]  # e.g. "/model@your_neomind_bot"
         if "@" in text:
             # Explicit target — check if it's us
             target = text.split("@", 1)[1].lower()
@@ -378,11 +392,8 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("think", self._cmd_think))
         self._app.add_handler(CommandHandler("history", self._cmd_history))
         self._app.add_handler(CommandHandler("clear", self._cmd_clear))
-        self._app.add_handler(CommandHandler("archive", self._cmd_archive))
-        self._app.add_handler(CommandHandler("purge", self._cmd_purge))
         self._app.add_handler(CommandHandler("admin", self._cmd_admin))
         self._app.add_handler(CommandHandler("context", self._cmd_context))
-        self._app.add_handler(CommandHandler("setctx", self._cmd_setctx))
         self._app.add_handler(CommandHandler("hn", self._cmd_hn))
         self._app.add_handler(CommandHandler("subscribe", self._cmd_subscribe))
         self._app.add_handler(CommandHandler("skills", self._cmd_skills))
@@ -398,6 +409,7 @@ class NeoMindTelegramBot:
         # System commands
         self._app.add_handler(CommandHandler("hooks", self._cmd_hooks))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
+        self._app.add_handler(CommandHandler("evolve", self._cmd_evolve))
         # Web commands: /read, /links, /crawl
         self._app.add_handler(CommandHandler("read", self._cmd_web_read))
         self._app.add_handler(CommandHandler("links", self._cmd_web_links))
@@ -407,10 +419,12 @@ class NeoMindTelegramBot:
         self._app.add_handler(MessageHandler(
             filters.Regex(r'^/neo[_ ]') & ~filters.COMMAND, self._handle_message
         ))
-        # Catch finance slash commands
+        # Catch finance slash commands (routed to openclaw_skill or LLM agentic
+        # loop). /memory removed — it had no real handler. Other loop entries
+        # will be migrated to thin wrappers over finance_* tools in Phase B.
         for cmd in ["stock", "crypto", "news", "digest", "compute", "portfolio",
                      "predict", "alert", "compare", "watchlist", "risk",
-                     "sources", "chart", "calendar", "memory"]:
+                     "sources", "chart", "calendar"]:
             self._app.add_handler(CommandHandler(cmd, self._handle_command))
         # Catch unrecognized commands (typos like /model instead of /mode)
         self._app.add_handler(MessageHandler(
@@ -425,22 +439,69 @@ class NeoMindTelegramBot:
         await self._app.initialize()
         await self._app.start()
 
-        # Register command menu in Telegram (visible in autocomplete)
+        # ── Post-restart evolution verification ──────────────────────
+        # If the last startup was a self-evolution restart, re-import every
+        # applied module in THIS process to prove the new code loads cleanly.
+        # On failure we git-reset-hard to the rollback tag and schedule
+        # another supervisorctl restart BEFORE Telegram polling begins —
+        # so users never see a broken version of the bot respond to a
+        # message. Stash the result for _check_restart_intent to notify.
+        self._evolution_verify_result: Optional[Tuple[Dict[str, Any], str]] = None
+        try:
+            from agent.evolution.post_restart_verify import verify_pending_evolution
+            intent, verify_status = verify_pending_evolution()
+            if intent is not None:
+                self._evolution_verify_result = (intent, verify_status)
+                if verify_status == "rolled_back":
+                    logger.warning(
+                        "[bot] Evolution verification FAILED; rollback scheduled. "
+                        "Polling will start on the next supervised restart with original code."
+                    )
+                    print(
+                        "[bot] ⚠️ evolution rolled back — waiting for recovery restart",
+                        flush=True,
+                    )
+                    # Stay up briefly so the user notification can be sent,
+                    # but do NOT start Telegram polling — supervisord will
+                    # replace this process any moment now.
+                    await asyncio.sleep(5)
+                    return
+                if verify_status == "rollback_failed":
+                    logger.critical(
+                        "[bot] Evolution verification AND rollback both failed. "
+                        "Refusing to start Telegram polling — manual recovery required."
+                    )
+                    print(
+                        "[bot] 🚨 CRITICAL: evolution + rollback both failed — "
+                        "not starting polling. See /data/neomind/evolution/ for the intent file.",
+                        flush=True,
+                    )
+                    return
+                logger.info(f"[bot] Evolution verification PASSED: {intent.get('tag')}")
+        except Exception as e:
+            logger.error(f"[bot] Post-restart verifier crashed: {e}", exc_info=True)
+
+        # Register command menu in Telegram (visible in autocomplete).
+        # Only Tier 1 (user-facing meta) + Tier 2 (fin quick-access) are
+        # shown here. Admin / advanced commands (Tier 4) still work when
+        # typed but are hidden from the autocomplete to keep the menu clean.
         from telegram import BotCommand
         await self._app.bot.set_my_commands([
+            # Tier 1 — universal meta
             BotCommand("mode", "切换人格 (chat/coding/fin)"),
             BotCommand("model", "查看/切换模型"),
             BotCommand("think", "开关深度思考"),
-            BotCommand("provider", "切换 provider (litellm/direct)"),
             BotCommand("status", "查看当前状态"),
             BotCommand("clear", "清空对话历史"),
-            BotCommand("help", "查看所有命令"),
+            BotCommand("usage", "查看 LLM 用量和费用"),
+            BotCommand("tune", "调整 NeoMind 的 prompt 和配置"),
+            BotCommand("help", "查看能力和命令"),
+            # Tier 2 — fin mode quick-access
             BotCommand("stock", "股票查询 (fin 模式)"),
             BotCommand("crypto", "加密货币 (fin 模式)"),
             BotCommand("news", "多源新闻搜索"),
-            BotCommand("hn", "Hacker News"),
-            BotCommand("hooks", "系统诊断 (漂移/蒸馏/图谱)"),
-            BotCommand("restart", "重启 agent 进程"),
+            BotCommand("digest", "市场每日摘要"),
+            BotCommand("market", "市场概览"),
         ])
 
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -625,13 +686,18 @@ class NeoMindTelegramBot:
             fallbacks = ", ".join(f"{p['name']}:{p['model']}" for p in chain[1:])
             lines.append(f"🔗 备选: {fallbacks}")
 
-        # LiteLLM health
-        state = self._state_mgr._read_state()
-        litellm_info = state.get("litellm", {})
-        config = self._state_mgr.get_bot_config("neomind")
-        provider_mode = config.get("provider_mode", "direct")
-        health = "🟢" if litellm_info.get("health_ok") else "🔴"
-        lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
+        # Provider wiring — prefer the LLM Router display when it's
+        # actually in use, otherwise fall back to litellm/direct status.
+        router_base, router_key = self._router_env()
+        if primary == "router" and router_base and router_key:
+            lines.append(f"🔌 Router: 🟢 <code>{router_base}</code>")
+        else:
+            state = self._state_mgr._read_state()
+            litellm_info = state.get("litellm", {})
+            config = self._state_mgr.get_bot_config("neomind")
+            provider_mode = config.get("provider_mode", "direct")
+            health = "🟢" if litellm_info.get("health_ok") else "🔴"
+            lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
 
         # ── Search ──
         search = self.components.get("search")
@@ -901,15 +967,6 @@ class NeoMindTelegramBot:
             f"🗑 对话已归档（{count} 条消息）\nLLM 重新开始，旧消息已存档"
         )
 
-    async def _cmd_archive(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /archive → /clear."""
-        await self._cmd_clear(update, context)
-
-    async def _cmd_purge(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /purge → /admin purge."""
-        context.args = ["purge"] + (list(context.args) if context.args else [])
-        await self._cmd_admin(update, context)
-
     async def _cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /admin — unified admin panel.
 
@@ -1124,11 +1181,6 @@ class NeoMindTelegramBot:
             f"{'⚠️ 接近上限，建议 /clear 归档' if pct >= 60 else '✅ 充足'}",
             parse_mode=ParseMode.HTML,
         )
-
-    async def _cmd_setctx(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Alias: /setctx → /admin setctx."""
-        context.args = ["setctx"] + (list(context.args) if context.args else [])
-        await self._cmd_admin(update, context)
 
     async def _cmd_hn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /hn — fetch Hacker News stories.
@@ -1820,24 +1872,58 @@ class NeoMindTelegramBot:
 
         try:
             import requests as req
-            api_key, base_url, model = self._resolve_api(thinking=False, chat_id=chat_id)
-            if not api_key:
-                await msg.reply_text("⚠️ No API key for LLM interpretation")
+            # Use the full provider chain (primary + router-fallback) so a
+            # 429 on kimi-k2.5 falls through to deepseek-chat like the
+            # main LLM paths. Previously this code used _resolve_api which
+            # returned a single provider and had no retry/fallback —
+            # resulting in "⚠️ LLM error: 429" being surfaced directly to
+            # the user whenever the upstream org-rate-limit was hit.
+            providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
+            if not providers:
+                await msg.reply_text("⚠️ No provider available for LLM interpretation")
                 return
 
-            resp = await asyncio.get_event_loop().run_in_executor(None, lambda: req.post(
-                base_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": interpret_prompt}],
-                    "max_tokens": 200, "temperature": 0.1,
-                },
-                timeout=15,
-            ))
+            resp = None
+            used_provider = None
+            for provider in providers:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        resp = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda p=provider: req.post(
+                                p["base_url"],
+                                headers={"Authorization": f"Bearer {p['api_key']}",
+                                         "Content-Type": "application/json"},
+                                json={
+                                    "model": p["model"],
+                                    "messages": [{"role": "user", "content": interpret_prompt}],
+                                    "max_tokens": 200,
+                                    "temperature": _safe_temperature(p["model"], 0.1),
+                                },
+                                timeout=15,
+                            ))
+                        if resp.status_code == 200:
+                            used_provider = provider
+                            break
+                        if resp.status_code == 429 and _attempts_429 < 2:
+                            retry_after = resp.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 3.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 3.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 15.0)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue
+                        break  # non-retryable, advance provider
+                    except Exception:
+                        break
+                if used_provider:
+                    break
 
-            if resp.status_code != 200:
-                await msg.reply_text(f"⚠️ LLM error: {resp.status_code}")
+            if not resp or resp.status_code != 200:
+                status = resp.status_code if resp else "all failed"
+                await msg.reply_text(f"⚠️ LLM error: {status}")
                 return
 
             result = resp.json()["choices"][0]["message"]["content"].strip()
@@ -2377,6 +2463,200 @@ class NeoMindTelegramBot:
         result = self._exec_restart_command(arg)
         await self._send_long_message(msg, result)
 
+    async def _cmd_evolve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /evolve — inspect and control the self-evolution transaction log.
+
+        Sub-commands:
+            /evolve                   → list 10 most recent transactions
+            /evolve list [N]          → list N most recent (default 10)
+            /evolve status <tag>      → full detail of one transaction
+            /evolve last              → full detail of the most recent transaction
+            /evolve revert <tag>      → git reset --hard to tag + restart agent
+        """
+        msg = update.message
+        args = context.args if context.args else []
+        sub = (args[0].lower() if args else "list")
+
+        try:
+            from agent.evolution.transaction import (
+                get_transaction_log, get_pending_intent,
+            )
+        except ImportError as e:
+            await msg.reply_text(f"⚠️ Evolution module not available: {e}")
+            return
+
+        # ── list ──
+        if sub == "list":
+            try:
+                n = int(args[1]) if len(args) > 1 else 10
+            except (ValueError, IndexError):
+                n = 10
+            entries = get_transaction_log(limit=n)
+            if not entries:
+                await msg.reply_text("📭 No evolution transactions recorded yet.")
+                return
+
+            lines = [f"📜 <b>Last {len(entries)} evolution transactions:</b>\n"]
+            for e in entries:
+                tag = e.get("tag", "?")
+                status = e.get("status", "?")
+                reason = (e.get("reason") or "")[:60]
+                files_n = len(e.get("applied_files") or [])
+                icon = {
+                    "committed": "✅",
+                    "rolled_back": "↩️",
+                    "post_restart_failed": "⚠️",
+                    "in_progress": "⏳",
+                }.get(status, "•")
+                lines.append(
+                    f"{icon} <code>{tag}</code> [{files_n} files]\n"
+                    f"   {reason}"
+                )
+            pending = get_pending_intent()
+            if pending:
+                lines.append(f"\n⏳ <b>Pending intent:</b> <code>{pending.tag}</code>")
+            await msg.reply_text("\n".join(lines), parse_mode=ParseMode.HTML)
+            return
+
+        # ── last ──
+        if sub == "last":
+            entries = get_transaction_log(limit=1)
+            if not entries:
+                await msg.reply_text("📭 No evolution transactions recorded yet.")
+                return
+            await msg.reply_text(
+                self._format_evolve_detail(entries[0]),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── status <tag> ──
+        if sub == "status":
+            if len(args) < 2:
+                await msg.reply_text("Usage: <code>/evolve status &lt;tag&gt;</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            want = args[1]
+            entries = get_transaction_log(limit=200)
+            match = next((e for e in entries if e.get("tag") == want), None)
+            if not match:
+                await msg.reply_text(f"❌ No transaction found with tag <code>{want}</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            await msg.reply_text(
+                self._format_evolve_detail(match),
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        # ── revert <tag> ──
+        if sub == "revert":
+            if len(args) < 2:
+                await msg.reply_text("Usage: <code>/evolve revert &lt;tag&gt;</code>",
+                                     parse_mode=ParseMode.HTML)
+                return
+            want = args[1]
+            entries = get_transaction_log(limit=500)
+            match = next((e for e in entries if e.get("tag") == want), None)
+            if not match:
+                await msg.reply_text(
+                    f"❌ Refusing to revert: no transaction log entry for "
+                    f"<code>{want}</code>. List recent tags with <code>/evolve list</code>.",
+                    parse_mode=ParseMode.HTML,
+                )
+                return
+
+            ok, result_msg = self._execute_evolve_revert(want, reason="user /evolve revert via chat")
+            await msg.reply_text(result_msg, parse_mode=ParseMode.HTML)
+            return
+
+        await msg.reply_text(
+            "Usage:\n"
+            "<code>/evolve list [N]</code> — recent transactions\n"
+            "<code>/evolve last</code> — last transaction detail\n"
+            "<code>/evolve status &lt;tag&gt;</code> — specific transaction\n"
+            "<code>/evolve revert &lt;tag&gt;</code> — rollback + restart",
+            parse_mode=ParseMode.HTML,
+        )
+
+    def _format_evolve_detail(self, entry: Dict[str, Any]) -> str:
+        """Render a single transaction log entry as HTML for Telegram."""
+        tag = entry.get("tag", "?")
+        reason = entry.get("reason", "")
+        status = entry.get("status", "?")
+        started = (entry.get("started_at") or "")[:19]
+        finished = (entry.get("finished_at") or "")[:19]
+        files = entry.get("applied_files") or []
+        error = entry.get("error") or ""
+        timings = entry.get("stage_timings") or {}
+
+        icon = {
+            "committed": "✅",
+            "rolled_back": "↩️",
+            "post_restart_failed": "⚠️",
+            "in_progress": "⏳",
+        }.get(status, "•")
+
+        lines = [
+            f"{icon} <b>Transaction</b> <code>{tag}</code>",
+            f"<b>Reason:</b> {reason}",
+            f"<b>Status:</b> {status}",
+            f"<b>Started:</b> {started}",
+        ]
+        if finished:
+            lines.append(f"<b>Finished:</b> {finished}")
+
+        if files:
+            file_list = "\n".join(f"  • <code>{f}</code>" for f in files[:15])
+            lines.append(f"<b>Files ({len(files)}):</b>\n{file_list}")
+
+        if timings:
+            total = sum(float(v) for v in timings.values() if isinstance(v, (int, float)))
+            stages = "  ".join(f"{k}={float(v):.2f}s" for k, v in timings.items())
+            lines.append(f"<b>Timings</b> (total {total:.2f}s): {stages}")
+
+        if error:
+            lines.append(f"<b>Error:</b> <code>{error[:500]}</code>")
+
+        lines.append(f"\n<i>Revert: <code>/evolve revert {tag}</code></i>")
+        return "\n".join(lines)
+
+    def _execute_evolve_revert(self, tag: str, reason: str) -> Tuple[bool, str]:
+        """Actually perform a revert: git reset --hard <tag> then supervisorctl restart."""
+        try:
+            from agent.evolution.self_edit import SelfEditor
+            repo_dir = str(SelfEditor.REPO_DIR)
+        except Exception:
+            repo_dir = "/app"
+
+        import subprocess as _sp
+        try:
+            result = _sp.run(
+                ["git", "reset", "--hard", tag],
+                cwd=repo_dir, capture_output=True, text=True, timeout=20,
+            )
+        except Exception as e:
+            return False, f"❌ git reset failed: {e}"
+
+        if result.returncode != 0:
+            err = (result.stderr or result.stdout or "").strip()[-400:]
+            return False, f"❌ git reset --hard <code>{tag}</code> failed:\n<code>{err}</code>"
+
+        try:
+            _sp.Popen(
+                ["sh", "-c", "sleep 2 && supervisorctl restart neomind-agent"],
+                stdout=_sp.DEVNULL, stderr=_sp.DEVNULL,
+            )
+            schedule_msg = "Agent restart scheduled in 2s."
+        except Exception as e:
+            schedule_msg = f"⚠️ Could not schedule restart automatically: {e}"
+
+        return True, (
+            f"↩️ <b>Reverted to</b> <code>{tag}</code>\n"
+            f"<b>Reason:</b> {reason}\n"
+            f"{schedule_msg}"
+        )
+
     # ── URL Auto-detection for LLM context ─────────────────────────
 
     _URL_RE = re.compile(r'https?://[^\s<>"\']+')
@@ -2414,26 +2694,18 @@ class NeoMindTelegramBot:
             return "\n\n---\n\n".join(contexts)
         return None
 
-    # All commands that should be routed to the LLM for processing
-    # Includes shared + personality-specific commands
-    _LLM_ROUTED_COMMANDS = {
-        # Shared commands (available in all modes)
-        "/summarize", "/reason", "/debug", "/explain", "/refactor",
-        "/translate", "/generate", "/search", "/plan", "/task",
-        "/execute", "/auto", "/skill",
-        "/freeze", "/unfreeze", "/guard", "/verbose",
-        "/read", "/links", "/crawl", "/webmap", "/logs",
-        # Chat personality — exploration
-        "/deep", "/compare", "/draft", "/brainstorm", "/tldr", "/explore",
-        # Finance personality — money-making
-        "/stock", "/portfolio", "/market", "/news", "/watchlist", "/quant",
-        # Coding personality — development
-        "/code", "/write", "/edit", "/run", "/git", "/diff", "/browse",
-        "/undo", "/test", "/apply", "/grep", "/find", "/fix", "/analyze",
-    }
-
     async def _handle_unknown_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle unrecognized commands: route shared commands or suggest fixes."""
+        """Handle unrecognized slash commands.
+
+        Flow:
+          1. Try to execute as a system-level command (/arch, /dashboard, /upgrade, …)
+          2. If text looks like a close typo of a real command, suggest the correction
+          3. Otherwise: **strip the leading `/` and treat as natural-language input**.
+             This is the "graceful fallthrough" path — any deprecated or unknown
+             slash is silently treated as a chat message so the LLM can respond.
+             It preserves muscle memory for removed slash commands and protects
+             voice/new users from cryptic "unknown command" errors.
+        """
         if not self._is_command_for_me(update):
             return
         text = update.message.text or ""
@@ -2445,43 +2717,37 @@ class NeoMindTelegramBot:
             await self._send_long_message(update.message, system_result)
             return
 
-        # 2. Shared commands → route through LLM (it handles them natively)
-        if cmd in self._LLM_ROUTED_COMMANDS:
-            await self._process_and_reply(update, text, "shared_command")
-            return
-
-        # 3. Common typos / close matches
+        # 2. Common typos / close matches — still a helpful nudge
         suggestions = {
             "/models": "/model",
             "/modes": "/mode",
             "/switch": "/model",
-            "/stocks": "/stock",
-            "/price": "/stock",
-            "/btc": "/crypto BTC",
-            "/eth": "/crypto ETH",
-            "/bitcoin": "/crypto BTC",
             "/config": "/status",
             "/settings": "/status",
-            "/fetch": "/read",
-            "/open": "/read",
-            "/visit": "/read",
-            "/webpage": "/read",
-            "/link": "/links",
-            "/spider": "/crawl",
-            "/scrape": "/crawl",
         }
-
         suggestion = suggestions.get(cmd)
         if suggestion:
             await update.message.reply_text(
                 f"你是不是想说 <code>{suggestion}</code>？",
                 parse_mode=ParseMode.HTML,
             )
-        else:
-            await update.message.reply_text(
-                f"未知命令: {cmd}\n发 <code>/help</code> 查看可用命令",
-                parse_mode=ParseMode.HTML,
-            )
+            return
+
+        # 3. Graceful fallthrough: strip the leading `/` from the command token
+        #    so the bot treats `/foo bar baz` as the natural-language message
+        #    `foo bar baz`. This keeps all deprecated commands working — the
+        #    LLM (in the user's current mode) figures out what to do.
+        #
+        #    We preserve the `@botname` suffix stripping that real CommandHandler
+        #    does for group chats: `/foo@neomindbot` → `foo`.
+        stripped_cmd = cmd.lstrip("/")
+        if "@" in stripped_cmd:
+            stripped_cmd = stripped_cmd.split("@", 1)[0]
+        rest = text[len(cmd):].lstrip()
+        rewritten = f"{stripped_cmd} {rest}".strip() if rest else stripped_cmd
+
+        # Forward to the normal natural-language processing path
+        await self._process_and_reply(update, rewritten, "natural_fallthrough")
 
     async def _try_system_command(self, cmd: str, text: str) -> Optional[str]:
         """Try to execute a system command directly (no LLM needed).
@@ -2908,11 +3174,20 @@ class NeoMindTelegramBot:
         re.IGNORECASE,
     )
 
+    # Explicit opt-out: user told us NOT to search. Honour the directive.
+    _SEARCH_OPTOUT_RE = re.compile(
+        r'(不要搜索|不用搜索|别搜索|不搜索|不要联网|不联网|直接(回答|告诉)|'
+        r"don'?t search|do not search|no search|without search(?:ing)?|"
+        r'just from your knowledge|from your knowledge only|skip the search)',
+        re.IGNORECASE,
+    )
+
     def _should_search(self, text: str) -> bool:
         """Decide if a user message would benefit from web search augmentation.
 
         Returns True for ANY informational query — not just finance.
-        Returns False only for greetings, single-word responses, commands.
+        Returns False only for greetings, single-word responses, commands,
+        or when the user explicitly opted out of search.
         """
         stripped = text.strip()
         # Skip very short messages
@@ -2920,6 +3195,9 @@ class NeoMindTelegramBot:
             return False
         # Skip greetings, commands, acknowledgements
         if self._SEARCH_SKIP_RE.match(stripped):
+            return False
+        # Honour explicit "no search" directive
+        if self._SEARCH_OPTOUT_RE.search(stripped):
             return False
 
         # Lazy-init the compiled regex (built once, reused)
@@ -2968,7 +3246,7 @@ class NeoMindTelegramBot:
                         "model": provider["model"],
                         "messages": [{"role": "user", "content": extract_prompt}],
                         "max_tokens": 150,
-                        "temperature": 0.3,
+                        "temperature": _safe_temperature(provider["model"], 0.3),
                     },
                 ) as resp:
                     if resp.status == 200:
@@ -3197,12 +3475,15 @@ class NeoMindTelegramBot:
             if extra:
                 extra_prompt = f"\n\nUSER CUSTOMIZATIONS:\n{extra}"
 
-        # Append tool definitions from canonical agentic layer
+        # Append tool definitions from canonical agentic layer. Pass the
+        # current chat's mode so finance_* tools only appear in fin mode,
+        # code_* tools only in coding mode, etc. (mode-gating introduced
+        # in ToolDefinition.allowed_modes per eea40a0 + Phase B.3).
         tool_prompt = ""
         try:
             agentic = self._get_agentic_loop()
             if agentic:
-                tool_prompt = "\n\n" + agentic.get_tool_prompt()
+                tool_prompt = "\n\n" + agentic.get_tool_prompt(mode=current_mode)
         except Exception as e:
             logger.debug(f"Failed to generate tool prompt: {e}")
 
@@ -3233,6 +3514,61 @@ class NeoMindTelegramBot:
         "coding": "deepseek",   # DeepSeek for coding
         "chat": "deepseek",     # DeepSeek for general chat
     }
+
+    # ── Per-mode default model for the local LLM Router ──────────
+    # When LLM_ROUTER_API_KEY is set, all LLM traffic goes through the
+    # local router (host.docker.internal:8000/v1) and the router resolves
+    # the model id to the upstream provider. These are the defaults used
+    # when no per-chat override or persisted mode_model is present.
+    _ROUTER_DEFAULT_MODELS = {
+        "fin": "kimi-k2.5",
+        "coding": "deepseek-chat",
+        "chat": "deepseek-chat",
+    }
+    _ROUTER_THINKING_MODEL = "deepseek-reasoner"
+
+    def _router_env(self) -> Tuple[str, str]:
+        """Return (base_url, api_key) for the local LLM router, or ("","") if unset."""
+        base = (os.getenv("LLM_ROUTER_BASE_URL") or "").rstrip("/")
+        key = os.getenv("LLM_ROUTER_API_KEY") or ""
+        return base, key
+
+    def _build_router_provider(self, mode: str, thinking: bool = False) -> Optional[dict]:
+        """Build a single 'router' provider entry for the given mode.
+
+        The router is a local OpenAI-compatible proxy that takes a `model`
+        field and forwards to the right upstream (DeepSeek, Moonshot, z.ai,
+        Ollama). Returns None if LLM_ROUTER_* env vars are not set.
+        """
+        base, key = self._router_env()
+        if not base or not key:
+            return None
+
+        # Model resolution priority:
+        #   1. Persisted mode_models in provider-state.json (if real, not "?")
+        #   2. _ROUTER_DEFAULT_MODELS for this mode
+        #   3. kimi-k2.5 as final fallback
+        model = None
+        try:
+            cfg = self._state_mgr.get_bot_config("neomind")
+            persisted = cfg.get("mode_models", {}).get(mode, {})
+            candidate = persisted.get("thinking_model" if thinking else "model", "")
+            if candidate and candidate != "?":
+                model = candidate
+        except Exception:
+            pass
+        if not model:
+            model = (
+                self._ROUTER_THINKING_MODEL if thinking
+                else self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+            )
+
+        return {
+            "name": "router",
+            "api_key": key,
+            "base_url": f"{base}/chat/completions",
+            "model": model,
+        }
 
     def _resolve_api(self, thinking: bool = False, chat_id: int = 0) -> tuple:
         """Returns (api_key, base_url, model) — picks first available provider.
@@ -3383,6 +3719,26 @@ class NeoMindTelegramBot:
                     elif "search" not in self.components:
                         print(f"[agentic]   → available components: {list(self.components.keys())}", flush=True)
 
+                # ── Finance tools (Phase B.3): register 10 fin-mode tools ──
+                # Gated by allowed_modes={"fin"} so they only appear in the
+                # LLM's tool list when the user is in fin mode. Safe to call
+                # even if some components (digest, quant, rag) are missing —
+                # each tool checks its dependency and returns {ok: False}.
+                try:
+                    from agent.tools.finance_tools import register_finance_tools
+                    _reg_components = {
+                        "data_hub": self.components.get("data_hub") if self.components else None,
+                        "quant": self.components.get("quant") if self.components else None,
+                        "digest": self.components.get("digest") if self.components else None,
+                        "search": self.components.get("search") if self.components else None,
+                        "rag": self.components.get("rag") if self.components else None,
+                        "chat_store": self._store,
+                    }
+                    _fin_count = register_finance_tools(registry, _reg_components)
+                    print(f"[agentic] {_fin_count} finance_* tools registered (fin mode only) ✅", flush=True)
+                except Exception as e:
+                    print(f"[agentic] ⚠️ finance tools registration failed: {e}", flush=True)
+
                 config = AgenticConfig(
                     max_iterations=3,    # Telegram: 搜一次最多补搜一次，不要无限循环
                     soft_limit=2,        # 第 2 次就提示收尾
@@ -3411,18 +3767,52 @@ class NeoMindTelegramBot:
         """
         chain = self._state_mgr.get_provider_chain("neomind", thinking=thinking)
 
-        # Re-order chain based on per-chat mode preference
+        # Determine current mode
         if chat_id:
             mode = self._store.get_mode(chat_id)
         else:
             mode = "fin"  # default for Telegram bot
+
+        # ── LLM Router: if LLM_ROUTER_* is set, prepend a single router
+        # provider for the current mode. The router is an OpenAI-compatible
+        # local proxy (host.docker.internal:8000/v1) that resolves the
+        # `model` field to the right upstream. Traffic goes through it
+        # exclusively when configured, so the router provider is the
+        # primary and any direct-upstream entries from get_provider_chain
+        # become fallbacks.
+        router_provider = self._build_router_provider(mode=mode, thinking=thinking)
+        if router_provider:
+            chain = [router_provider] + chain
+            # Per-mode upstream fallback: when the primary upstream (kimi-k2.5
+            # for fin) hits an upstream org-rate-limit (HTTP 429), the router
+            # alone can't help because it proxies to the same moonshot org.
+            # Add a second router entry with a different model routed to a
+            # different upstream (deepseek-chat → deepseek) so the provider
+            # loop falls through to an independent rate-bucket.
+            _FALLBACK_MODEL = {
+                "fin": "deepseek-chat" if not thinking else None,
+                "coding": "kimi-k2.5" if not thinking else None,
+                "chat": "kimi-k2.5" if not thinking else None,
+            }
+            fb_model = _FALLBACK_MODEL.get(mode)
+            if fb_model and fb_model != router_provider["model"]:
+                router_base, router_key = self._router_env()
+                chain.insert(1, {
+                    "name": "router-fallback",
+                    "api_key": router_key,
+                    "base_url": f"{router_base}/chat/completions",
+                    "model": fb_model,
+                })
+
+        # Re-order the remainder based on per-chat mode preference (keeps
+        # the router at index 0; affects only the direct-upstream fallbacks).
         preferred = self._MODE_PREFERRED_PROVIDER.get(mode)
-        if preferred and len(chain) > 1:
-            # Move preferred provider to front, keep rest as fallback
-            preferred_items = [p for p in chain if p["name"] == preferred]
-            others = [p for p in chain if p["name"] != preferred]
+        if preferred and len(chain) > 2:
+            head, tail = chain[:1], chain[1:]
+            preferred_items = [p for p in tail if p["name"] == preferred]
+            others = [p for p in tail if p["name"] != preferred]
             if preferred_items:
-                chain = preferred_items + others
+                chain = head + preferred_items + others
 
         return chain
 
@@ -3431,38 +3821,55 @@ class NeoMindTelegramBot:
 
         Called once at startup so xbar can dynamically display model info
         without hardcoding. Re-called whenever provider config changes.
+
+        NEVER writes literal "?" into the state file. When the provider
+        chain for a given mode is empty (e.g. only LLM_ROUTER_* is set and
+        no per-provider keys), fall back to _ROUTER_DEFAULT_MODELS so the
+        state always reflects the model the bot will actually use.
         """
         try:
-            # Build mode→model mapping from _MODE_PREFERRED_PROVIDER + provider chain
+            router_base, router_key = self._router_env()
+            has_router = bool(router_base and router_key)
+
             mode_models = {}
             for mode, preferred_provider in self._MODE_PREFERRED_PROVIDER.items():
-                # Get the chain as if this mode were active
-                chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
-                think_chain = self._state_mgr.get_provider_chain("neomind", thinking=True)
-
-                # Find the preferred provider's models
                 normal_model = None
                 think_model = None
-                for p in chain:
-                    if p["name"] == preferred_provider:
-                        normal_model = p["model"]
-                        break
-                for p in think_chain:
-                    if p["name"] == preferred_provider:
-                        think_model = p["model"]
-                        break
+                provider_name = preferred_provider
 
-                # Fallback to first in chain
-                if not normal_model and chain:
-                    normal_model = chain[0]["model"]
-                    preferred_provider = chain[0]["name"]
-                if not think_model and think_chain:
-                    think_model = think_chain[0]["model"]
+                if has_router:
+                    # Router is primary — use the mode's router default model
+                    normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                    think_model = self._ROUTER_THINKING_MODEL
+                    provider_name = "router"
+                else:
+                    # Fall back to direct provider chain
+                    chain = self._state_mgr.get_provider_chain("neomind", thinking=False)
+                    think_chain = self._state_mgr.get_provider_chain("neomind", thinking=True)
+                    for p in chain:
+                        if p["name"] == preferred_provider:
+                            normal_model = p["model"]
+                            break
+                    for p in think_chain:
+                        if p["name"] == preferred_provider:
+                            think_model = p["model"]
+                            break
+                    if not normal_model and chain:
+                        normal_model = chain[0]["model"]
+                        provider_name = chain[0]["name"]
+                    if not think_model and think_chain:
+                        think_model = think_chain[0]["model"]
+                    # Final defensive fallback: router defaults so we
+                    # still publish SOMETHING real rather than "?"
+                    if not normal_model:
+                        normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                    if not think_model:
+                        think_model = self._ROUTER_THINKING_MODEL
 
                 mode_models[mode] = {
-                    "provider": preferred_provider,
-                    "model": normal_model or "?",
-                    "thinking_model": think_model or "?",
+                    "provider": provider_name,
+                    "model": normal_model,
+                    "thinking_model": think_model,
                 }
 
             self._state_mgr.update_mode_models("neomind", mode_models, updated_by="bot_startup")
@@ -3597,7 +4004,7 @@ class NeoMindTelegramBot:
                 response = await loop.run_in_executor(None, lambda p=provider, t=timeout: req.post(
                     p["base_url"],
                     headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
-                    json={"model": p["model"], "messages": messages, "max_tokens": 4096, "temperature": 0.7, "stream": False},
+                    json={"model": p["model"], "messages": messages, "max_tokens": 4096, "temperature": _safe_temperature(p["model"]), "stream": False},
                     timeout=t,
                 ))
                 latency = int((time.time() - t_start) * 1000)
@@ -3724,6 +4131,22 @@ class NeoMindTelegramBot:
         if compact_notice:
             self._last_compact_notice = compact_notice
 
+        # If user explicitly opted out of search, tell the LLM not to call any
+        # tools. Without this nudge, kimi-k2.5 in fin mode keeps emitting
+        # <tool_call>WebSearch</tool_call> wrappers and the agentic loop runs
+        # for >90s, blowing past the user's "answer directly" intent.
+        no_tools_requested = bool(self._SEARCH_OPTOUT_RE.search(user_message))
+        if no_tools_requested:
+            messages.insert(-1, {
+                "role": "system",
+                "content": (
+                    "The user has explicitly asked you NOT to search the web. "
+                    "Do NOT emit any <tool_call> blocks. Do NOT call WebSearch, "
+                    "Bash, or any tool. Answer directly from your training "
+                    "knowledge in the user's language. Be concise."
+                ),
+            })
+
         # Auto-search augmentation: inject web results if the query warrants it
         search_footer = ""
         if self._should_search(user_message):
@@ -3752,31 +4175,50 @@ class NeoMindTelegramBot:
         EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
-            # Try providers in order
+            # Try providers in order. On HTTP 429 (rate limit), retry the same
+            # provider with backoff honoring Retry-After before advancing to
+            # the next — important when the chain has only one entry (router).
             response = None
             used_provider = None
             for provider in providers:
-                try:
-                    print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
-                    response = await asyncio.get_event_loop().run_in_executor(
-                        None, lambda p=provider: req.post(
-                            p["base_url"],
-                            headers={"Authorization": f"Bearer {p['api_key']}",
-                                     "Content-Type": "application/json"},
-                            json={"model": p["model"], "messages": messages,
-                                  "max_tokens": 4096, "temperature": 0.7, "stream": True},
-                            timeout=90,
-                            stream=True,
-                        ))
-                    if response.status_code == 200:
-                        used_provider = provider
-                        break
-                    else:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        print(f"[llm-stream] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:80]}", flush=True)
+                        _temp = _safe_temperature(provider["model"])
+                        response = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda p=provider, t=_temp: req.post(
+                                p["base_url"],
+                                headers={"Authorization": f"Bearer {p['api_key']}",
+                                         "Content-Type": "application/json"},
+                                json={"model": p["model"], "messages": messages,
+                                      "max_tokens": 4096, "temperature": t, "stream": True},
+                                timeout=90,
+                                stream=True,
+                            ))
+                        if response.status_code == 200:
+                            used_provider = provider
+                            break
+                        if response.status_code == 429 and _attempts_429 < 2:
+                            # Honor Retry-After header; fall back to exponential
+                            retry_after = response.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 5.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 5.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 30.0)
+                            print(f"[llm-stream] ⏳ {provider['name']} 429, retry-after={wait_s}s (attempt {_attempts_429+1}/2)", flush=True)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue  # retry same provider
                         print(f"[llm-stream] ❌ {provider['name']} returned {response.status_code}", flush=True)
-                        continue  # try next provider
-                except Exception as e:
-                    print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
-                    continue
+                        break  # non-retryable, advance to next provider
+                    except Exception as e:
+                        print(f"[llm-stream] ❌ {provider['name']} error: {e}", flush=True)
+                        break  # advance to next provider
+                if used_provider:
+                    break
+                # else: advance to next provider in outer loop
 
             if not response or response.status_code != 200:
                 status = response.status_code if response else "all failed"
@@ -3954,8 +4396,30 @@ class NeoMindTelegramBot:
             except Exception:
                 await msg.reply_text(f"⚠️ Error: {e}")
 
+        # User opted out of tools — strip any tool_call blocks the LLM emitted
+        # anyway and re-render the cleaned text in the live message.
+        if no_tools_requested and response_text and '<tool_call>' in response_text:
+            import re as _re_strip
+            cleaned = _re_strip.sub(
+                r'<tool_call>.*?</tool_(?:call|result)>', '', response_text, flags=_re_strip.DOTALL
+            ).strip()
+            if not cleaned:
+                cleaned = "（已按你的要求跳过搜索，但模型这次没有生成正文，请重新发送你的问题。）"
+            try:
+                await live_msg.edit_text(
+                    self._md_to_html(cleaned),
+                    parse_mode=ParseMode.HTML,
+                    disable_web_page_preview=True,
+                )
+            except Exception:
+                try:
+                    await live_msg.edit_text(cleaned[:4000], disable_web_page_preview=True)
+                except Exception:
+                    pass
+            response_text = cleaned
+
         # ── Agentic loop: if response contains tool calls, execute them ──
-        if response_text and '<tool_call>' in response_text and used_provider:
+        if response_text and '<tool_call>' in response_text and used_provider and not no_tools_requested:
             print(f"[agentic] Detected <tool_call> in response ({len(response_text)} chars), starting agentic loop", flush=True)
             # Clean the displayed message: strip the raw <tool_call> block
             # so the user sees only the natural language part
@@ -4031,7 +4495,7 @@ class NeoMindTelegramBot:
                             headers={"Authorization": f"Bearer {provider['api_key']}",
                                      "Content-Type": "application/json"},
                             json={"model": provider["model"], "messages": nudge_messages,
-                                  "max_tokens": 4096, "temperature": 0.7},
+                                  "max_tokens": 4096, "temperature": _safe_temperature(provider["model"])},
                         ) as nudge_resp:
                             if nudge_resp.status == 200:
                                 nudge_data = await nudge_resp.json()
@@ -4101,7 +4565,7 @@ class NeoMindTelegramBot:
                         "model": provider["model"],
                         "messages": msgs,
                         "max_tokens": 4096,
-                        "temperature": 0.7,
+                        "temperature": _safe_temperature(provider["model"]),
                         "stream": True,
                     },
                 ) as resp:
@@ -4138,7 +4602,7 @@ class NeoMindTelegramBot:
                             "model": provider["model"],
                             "messages": msgs,
                             "max_tokens": 4096,
-                            "temperature": 0.7,
+                            "temperature": _safe_temperature(provider["model"]),
                         },
                     ) as resp2:
                         if resp2.status == 200:
@@ -4316,29 +4780,45 @@ class NeoMindTelegramBot:
         EDIT_INTERVAL = 2.5  # Conservative: ~24 edits/min, well under Telegram's limit
 
         try:
-            # Step 2: Stream the response (try providers in order)
+            # Step 2: Stream the response (try providers in order, with
+            # per-provider 429 retry-after backoff — critical when chain
+            # has only one entry like the router).
             response = None
             used_provider = None
             for provider in providers:
-                try:
-                    print(f"[llm-think] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
-                    response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
-                        p["base_url"],
-                        headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
-                        json={"model": p["model"], "messages": messages, "max_tokens": 4096, "stream": True},
-                        timeout=120,
-                        stream=True,
-                    ))
-                    if response.status_code == 200:
-                        used_provider = provider
-                        print(f"[llm-think] ✅ Connected to {provider['name']}:{provider['model']}", flush=True)
-                        break
-                    else:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        print(f"[llm-think] Trying {provider['name']}:{provider['model']} → {provider['base_url'][:50]}", flush=True)
+                        response = await asyncio.get_event_loop().run_in_executor(None, lambda p=provider: req.post(
+                            p["base_url"],
+                            headers={"Authorization": f"Bearer {p['api_key']}", "Content-Type": "application/json"},
+                            json={"model": p["model"], "messages": messages, "max_tokens": 4096, "stream": True},
+                            timeout=120,
+                            stream=True,
+                        ))
+                        if response.status_code == 200:
+                            used_provider = provider
+                            print(f"[llm-think] ✅ Connected to {provider['name']}:{provider['model']}", flush=True)
+                            break
+                        if response.status_code == 429 and _attempts_429 < 2:
+                            retry_after = response.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 5.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 5.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 30.0)
+                            print(f"[llm-think] ⏳ {provider['name']} 429, retry-after={wait_s}s (attempt {_attempts_429+1}/2)", flush=True)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue  # retry same provider
                         print(f"[llm-think] ❌ {provider['name']} returned {response.status_code}", flush=True)
-                        continue  # try next provider
-                except Exception as e:
-                    print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
-                    continue  # try next provider
+                        break  # non-retryable, advance provider
+                    except Exception as e:
+                        print(f"[llm-think] ❌ {provider['name']} error: {e}", flush=True)
+                        break
+                if used_provider:
+                    break
 
             if not response or response.status_code != 200:
                 status = response.status_code if response else "all timed out"
@@ -4427,8 +4907,43 @@ class NeoMindTelegramBot:
                     chat_id, "assistant", response_text.strip(), chat_type,
                     thinking=thinking_text,
                 )
-                await self._send_long_message(msg, response_text.strip(),
-                                               html_suffix=search_footer)
+
+                # Strip <tool_call> blocks before user-visible send so raw XML
+                # never shows up as literal text in the reply.
+                _clean_display = re.sub(
+                    r'<tool_call>.*?</tool_(?:call|result)>', '',
+                    response_text.strip(), flags=re.DOTALL,
+                )
+                _clean_display = re.sub(
+                    r'</?tool_(?:call|result)>', '', _clean_display,
+                ).strip()
+                if _clean_display:
+                    await self._send_long_message(
+                        msg, _clean_display, html_suffix=search_footer,
+                    )
+
+                # ── Agentic loop: if the response contains tool calls, execute them ──
+                # (mirrors _ask_llm_stream_normal; reasoning models like
+                # deepseek-reasoner emit <tool_call> blocks in `content` too,
+                # and without this path fin-mode tools never fire.)
+                if '<tool_call>' in response_text and used_provider:
+                    print(
+                        f"[agentic] Detected <tool_call> in thinking-mode "
+                        f"response ({len(response_text)} chars), starting "
+                        f"agentic loop", flush=True,
+                    )
+                    try:
+                        await asyncio.wait_for(
+                            self._run_agentic_tool_loop(
+                                msg, response_text.strip(), chat_id, chat_type,
+                                used_provider,
+                            ),
+                            timeout=300,
+                        )
+                    except asyncio.TimeoutError:
+                        await msg.reply_text(
+                            "⚠️ 工具执行超时（5分钟），已终止"
+                        )
             else:
                 await msg.reply_text("⚠️ No response generated")
 

@@ -143,76 +143,79 @@ class OpenClawFinanceSkill:
     # ── Command Handlers ─────────────────────────────────────────────
 
     async def _handle_stock(self, args: str, msg: IncomingMessage) -> str:
-        """Look up stock price and fundamentals."""
+        """Look up stock price and fundamentals.
+
+        Thin wrapper over `agent.tools.finance_tools.finance_get_stock`.
+        Both this slash handler and the LLM's `finance_get_stock` tool
+        call the same underlying function, so data is guaranteed
+        consistent between the two entry points (Phase B.5 dual-entry).
+        """
         if not args:
             return "Usage: /stock AAPL\nLook up stock price, fundamentals, and analysis."
 
         symbol = args.upper().split()[0]
-        if not self._data_hub:
-            return "⚠️ Data hub not available."
+        from agent.tools.finance_tools import finance_get_stock
+        data = await finance_get_stock(self._data_hub, symbol)
+        if not data.get("ok"):
+            return f"⚠️ {data.get('error', 'unknown error')}"
 
-        try:
-            data = await self._data_hub.get_stock_price(symbol)
-            if data:
-                price = data.get("price", "?")
-                change = data.get("change", 0)
-                change_pct = data.get("change_pct", 0)
-                sign = "+" if change >= 0 else ""
-                icon = "📈" if change >= 0 else "📉"
-                source = data.get("source", "")
-                return (
-                    f"{icon} **{symbol}** ${price}\n"
-                    f"Change: {sign}{change} ({sign}{change_pct}%)\n"
-                    f"Source: {source} · {datetime.now().strftime('%H:%M UTC')}"
-                )
-            return f"No data found for {symbol}."
-        except Exception as e:
-            return f"⚠️ Lookup failed: {e}"
+        change = data.get("change") or 0
+        change_pct = data.get("change_pct") or 0
+        sign = "+" if change >= 0 else ""
+        icon = "📈" if change >= 0 else "📉"
+        name_line = f" — {data['name']}" if data.get("name") else ""
+        return (
+            f"{icon} **{data['symbol']}**{name_line} ${data['price']}\n"
+            f"Change: {sign}{change} ({sign}{change_pct}%)\n"
+            f"Source: {data['source']} · {datetime.now().strftime('%H:%M UTC')}"
+        )
 
     async def _handle_crypto(self, args: str, msg: IncomingMessage) -> str:
-        """Look up crypto price."""
+        """Look up crypto price.
+
+        Thin wrapper over `agent.tools.finance_tools.finance_get_crypto`.
+        Shares the ticker→coin_id mapping (COIN_ID_MAP) with the LLM
+        tool entry point for consistency.
+        """
         if not args:
             return "Usage: /crypto BTC\nCryptocurrency price, market cap, and trends."
 
         symbol = args.upper().split()[0]
-        if not self._data_hub:
-            return "⚠️ Data hub not available."
+        from agent.tools.finance_tools import finance_get_crypto
+        data = await finance_get_crypto(self._data_hub, symbol)
+        if not data.get("ok"):
+            return f"⚠️ {data.get('error', 'unknown error')}"
 
-        try:
-            data = await self._data_hub.get_crypto_price(symbol)
-            if data:
-                price = data.get("price", "?")
-                change_24h = data.get("change_24h", 0)
-                sign = "+" if change_24h >= 0 else ""
-                return (
-                    f"{'📈' if change_24h >= 0 else '📉'} **{symbol}** ${price:,.2f}\n"
-                    f"24h: {sign}{change_24h:.2f}%\n"
-                    f"Source: {data.get('source', '')} · {datetime.now().strftime('%H:%M UTC')}"
-                )
-            return f"No data found for {symbol}."
-        except Exception as e:
-            return f"⚠️ Lookup failed: {e}"
+        price = data["price"]
+        change_24h = data.get("change_24h_pct") or 0
+        sign = "+" if change_24h >= 0 else ""
+        icon = "📈" if change_24h >= 0 else "📉"
+        return (
+            f"{icon} **{data.get('symbol') or symbol}** ${price:,.2f}\n"
+            f"24h: {sign}{change_24h:.2f}%\n"
+            f"Source: {data['source']} · {datetime.now().strftime('%H:%M UTC')}"
+        )
 
     async def _handle_news(self, args: str, msg: IncomingMessage) -> str:
-        """Multi-source financial news search."""
+        """Multi-source financial news search.
+
+        Thin wrapper over `agent.tools.finance_tools.finance_news_search`.
+        """
         query = args or "financial news today"
-        if not self._search:
-            return "⚠️ Search engine not available."
+        from agent.tools.finance_tools import finance_news_search
+        data = await finance_news_search(self._search, query, max_results=5)
+        if not data.get("ok"):
+            return f"⚠️ {data.get('error', f'no news for: {query}')}"
 
-        try:
-            result = await self._search.search(query, max_results=5)
-            if not result.items:
-                return f"No news found for: {query}"
-
-            lines = [f"📰 **News: {query}**", f"Sources: {len(result.sources_used)} | Queries: {len(result.expanded_queries)}"]
-            for i, item in enumerate(result.items[:5], 1):
-                lang = " 🇨🇳" if item.language == "zh" else ""
-                lines.append(f"{i}. [{item.title}]({item.url}){lang}")
-                if item.snippet:
-                    lines.append(f"   _{item.snippet[:80]}_")
-            return "\n".join(lines)
-        except Exception as e:
-            return f"⚠️ Search failed: {e}"
+        items = data.get("items", [])
+        sources = data.get("sources_used", [])
+        lines = [f"📰 **News: {query}**", f"Sources: {len(sources)}"]
+        for i, item in enumerate(items[:5], 1):
+            lang = " 🇨🇳" if item.get("language") == "zh" else ""
+            lines.append(f"{i}. [{item['title']}]({item['url']}){lang}")
+            if item.get("snippet"):
+                lines.append(f"   _{item['snippet'][:80]}_")
+        return "\n".join(lines)
 
     async def _handle_digest(self, args: str, msg: IncomingMessage) -> str:
         """Generate daily market digest."""
@@ -397,10 +400,10 @@ class OpenClawFinanceSkill:
             results = []
             for ticker in tickers[:3]:
                 try:
-                    data = await self._data_hub.get_stock_price(ticker)
-                    if data:
-                        price = data.get("price", "?")
-                        change = data.get("change", 0)
+                    quote = await self._data_hub.get_quote(ticker)
+                    if quote and quote.price:
+                        price = quote.price.value
+                        change = quote.change or 0
                         sign = "+" if change >= 0 else ""
                         results.append(f"**{ticker}** ${price} ({sign}{change})")
                 except Exception:
