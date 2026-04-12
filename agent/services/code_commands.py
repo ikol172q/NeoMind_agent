@@ -1050,7 +1050,20 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             modified_prompt = suggested_cmd
 
     # Auto-search detection (skip if already a command)
-    if (core.auto_search_enabled and
+    # HARD GATE: NEVER auto-search in coding mode. Codebase queries use
+    # Grep/Read/Bash via the agentic loop, not web search.
+    _is_coding = (
+        getattr(core, "mode", None) == "coding"
+        or os.environ.get("NEOMIND_MODE") == "coding"
+    )
+    if _is_coding:
+        core._status_print(
+            f"[auto_search] BLOCKED — coding mode active (mode={getattr(core, 'mode', '?')})",
+            "info"
+        )
+
+    if (not _is_coding and
+        core.auto_search_enabled and
         not modified_prompt.startswith('/') and
         core.searcher.should_search(modified_prompt)):
         core._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
