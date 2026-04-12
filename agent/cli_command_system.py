@@ -868,9 +868,34 @@ def _build_builtin_commands() -> List[Command]:
         return CommandResult(text="No skills loaded.")
 
     def _cmd_permissions(args: str, agent=None, **kw) -> CommandResult:
-        """Show/manage permissions."""
+        """Show/manage permissions. Accepts: normal | auto | auto_accept | plan.
+
+        With no args → show current mode.
+        With a recognized arg → actually switch mode via the same setter
+        the legacy cli/neomind_interface.py handler uses, so `/permissions
+        auto` in coding mode actually turns off the interactive gate.
+        """
         from agent_config import agent_config
-        mode = agent_config.get("permissions.mode", "normal")
+        if args:
+            arg = args.strip().lower()
+            mode_map = {
+                "auto": "auto_accept", "auto_accept": "auto_accept",
+                "normal": "normal", "plan": "plan",
+            }
+            if arg in mode_map:
+                new_mode = mode_map[arg]
+                try:
+                    agent_config.permission_mode = new_mode
+                except Exception as e:
+                    return CommandResult(text=f"Failed to set mode: {e}")
+                return CommandResult(
+                    text=f"Permission mode: {new_mode}"
+                )
+            return CommandResult(
+                text=f"Usage: /permissions [normal|auto|plan]"
+            )
+        mode = getattr(agent_config, "permission_mode", None) or \
+               agent_config.get("permissions.mode", "normal")
         return CommandResult(text=f"Permission mode: {mode}")
 
     def _cmd_version(args: str, agent=None, **kw) -> CommandResult:

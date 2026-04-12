@@ -2091,7 +2091,13 @@ Remember: Always ask for permission before making changes!
         return propose_code_change(self, *args, **kwargs)
 
     def search_sync(self, *args, **kwargs):
-        """Delegate to code_commands module."""
+        """Delegate to code_commands module.
+
+        HARD GATE: coding mode never does web search. Returns failure marker
+        so the LLM falls back to local Grep/Read/Bash tools.
+        """
+        if getattr(self, "mode", None) == "coding":
+            return False, "[web search disabled in coding mode — use Grep/Read/Bash to search the codebase]"
         from agent.services.code_commands import search_sync
         return search_sync(self, *args, **kwargs)
 
