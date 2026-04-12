@@ -1872,24 +1872,58 @@ class NeoMindTelegramBot:
 
         try:
             import requests as req
-            api_key, base_url, model = self._resolve_api(thinking=False, chat_id=chat_id)
-            if not api_key:
-                await msg.reply_text("⚠️ No API key for LLM interpretation")
+            # Use the full provider chain (primary + router-fallback) so a
+            # 429 on kimi-k2.5 falls through to deepseek-chat like the
+            # main LLM paths. Previously this code used _resolve_api which
+            # returned a single provider and had no retry/fallback —
+            # resulting in "⚠️ LLM error: 429" being surfaced directly to
+            # the user whenever the upstream org-rate-limit was hit.
+            providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
+            if not providers:
+                await msg.reply_text("⚠️ No provider available for LLM interpretation")
                 return
 
-            resp = await asyncio.get_event_loop().run_in_executor(None, lambda: req.post(
-                base_url,
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "user", "content": interpret_prompt}],
-                    "max_tokens": 200, "temperature": _safe_temperature(model, 0.1),
-                },
-                timeout=15,
-            ))
+            resp = None
+            used_provider = None
+            for provider in providers:
+                _attempts_429 = 0
+                while True:
+                    try:
+                        resp = await asyncio.get_event_loop().run_in_executor(
+                            None, lambda p=provider: req.post(
+                                p["base_url"],
+                                headers={"Authorization": f"Bearer {p['api_key']}",
+                                         "Content-Type": "application/json"},
+                                json={
+                                    "model": p["model"],
+                                    "messages": [{"role": "user", "content": interpret_prompt}],
+                                    "max_tokens": 200,
+                                    "temperature": _safe_temperature(p["model"], 0.1),
+                                },
+                                timeout=15,
+                            ))
+                        if resp.status_code == 200:
+                            used_provider = provider
+                            break
+                        if resp.status_code == 429 and _attempts_429 < 2:
+                            retry_after = resp.headers.get("Retry-After", "")
+                            try:
+                                wait_s = float(retry_after) if retry_after else 3.0 * (2 ** _attempts_429)
+                            except ValueError:
+                                wait_s = 3.0 * (2 ** _attempts_429)
+                            wait_s = min(wait_s, 15.0)
+                            await asyncio.sleep(wait_s)
+                            _attempts_429 += 1
+                            continue
+                        break  # non-retryable, advance provider
+                    except Exception:
+                        break
+                if used_provider:
+                    break
 
-            if resp.status_code != 200:
-                await msg.reply_text(f"⚠️ LLM error: {resp.status_code}")
+            if not resp or resp.status_code != 200:
+                status = resp.status_code if resp else "all failed"
+                await msg.reply_text(f"⚠️ LLM error: {status}")
                 return
 
             result = resp.json()["choices"][0]["message"]["content"].strip()
