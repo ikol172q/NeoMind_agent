@@ -149,6 +149,41 @@ class NeoMindAgent:
         """
         from agent.services.llm_provider import PROVIDERS, proxy_url
         model = model or self.model
+
+        # LLM Router takes priority over everything else when configured.
+        # This mirrors telegram_bot._build_router_provider(): if
+        # LLM_ROUTER_API_KEY + LLM_ROUTER_BASE_URL are set, route every
+        # chat-completions request through the local LiteLLM proxy
+        # regardless of model. Without this, CLI code paths fell back to
+        # the PROVIDERS loop below which tries api.deepseek.com directly
+        # with whatever api_key was passed in — and when the caller
+        # passed LLM_ROUTER_API_KEY (the only key env var they had), the
+        # result was "Authentication Fails, Your api key: ****auth is
+        # invalid" because LLM_ROUTER_API_KEY is not a valid DeepSeek key.
+        router_base = (os.getenv("LLM_ROUTER_BASE_URL") or "").rstrip("/")
+        router_key = os.getenv("LLM_ROUTER_API_KEY") or ""
+        if router_base and router_key:
+            # The .env typically holds Docker-flavored
+            # `http://host.docker.internal:8000/v1` because the Telegram
+            # bot runs in a container. When the CLI runs on the host
+            # (macOS), `host.docker.internal` doesn't resolve, so we
+            # transparently rewrite it to `127.0.0.1`. The router is a
+            # host-level Python process listening on *:8000 either way.
+            if "host.docker.internal" in router_base:
+                import socket
+                try:
+                    socket.gethostbyname("host.docker.internal")
+                except socket.gaierror:
+                    router_base = router_base.replace(
+                        "host.docker.internal", "127.0.0.1"
+                    )
+            return {
+                "name": "router",
+                "base_url": f"{router_base}/chat/completions",
+                "models_url": f"{router_base}/models",
+                "api_key": router_key,
+            }
+
         litellm_enabled = os.getenv("LITELLM_ENABLED", "").lower() in ("true", "1", "yes")
 
         if litellm_enabled:
