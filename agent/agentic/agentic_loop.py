@@ -184,7 +184,7 @@ class AgenticLoop:
             trailing = _re.search(r'<tool_call>\s*\{[^}]*$', response)
             if trailing:
                 response = response[:trailing.start()].rstrip()
-            return response
+            return AgenticLoop._dedup_consecutive_paragraphs(response)
 
         # Keep the first block, strip the rest
         first_end = all_blocks[0].end()
@@ -198,7 +198,35 @@ class AgenticLoop:
         logger.info(
             f"[agentic] Stripped {len(all_blocks) - 1} extra tool_call blocks from response"
         )
+
+        # Also deduplicate consecutive identical prose paragraphs that remain
+        # after tool_call blocks were stripped (DeepSeek often duplicates the
+        # surrounding text alongside duplicated tool_call blocks).
+        cleaned = AgenticLoop._dedup_consecutive_paragraphs(cleaned)
+
         return cleaned
+
+    @staticmethod
+    def _dedup_consecutive_paragraphs(text: str) -> str:
+        """Remove consecutive identical lines, then consecutive identical paragraphs."""
+        # --- Line-level dedup (handles single-\n repeated lines) ---
+        lines = text.split('\n')
+        deduped_lines: list[str] = []
+        for line in lines:
+            # Keep blank lines as-is; only dedup non-blank content lines
+            if line.strip() == '':
+                deduped_lines.append(line)
+            elif not deduped_lines or line.strip() != deduped_lines[-1].strip():
+                deduped_lines.append(line)
+        text = '\n'.join(deduped_lines)
+
+        # --- Paragraph-level dedup (handles \n\n repeated blocks) ---
+        paragraphs = text.split('\n\n')
+        deduped = []
+        for para in paragraphs:
+            if not deduped or para.strip() != deduped[-1].strip():
+                deduped.append(para)
+        return '\n\n'.join(deduped)
 
     def _get_tool_definition(self, tool_name: str):
         """Look up a ToolDefinition from the registry by name."""
@@ -245,7 +273,7 @@ class AgenticLoop:
         # Track consecutive identical errors to prevent infinite retry loops
         _last_failed_key = None
         _consecutive_errors = 0
-        _MAX_CONSECUTIVE_ERRORS = 2  # Stop after 2 identical failures
+        _MAX_CONSECUTIVE_ERRORS = 3  # Stop after 3 identical failures (includes 1 auto-retry)
 
         # Bug #3 fix: also detect when the LLM repeats the *same assistant
         # response* multiple times even when individual tool calls don't
@@ -409,12 +437,48 @@ class AgenticLoop:
                     _last_failed_key = error_key
                     _consecutive_errors = 1
 
+                if _consecutive_errors == 2:
+                    # Retry-with-correction: inject the error as a
+                    # message so the LLM can self-correct before we
+                    # force-stop. This gives it one more chance.
+                    correction_msg = (
+                        f"Your tool call to {tool_call.tool_name} failed: "
+                        f"{result.error or (result.output or '')[:300]}. "
+                        f"Parameters were: {tool_call.params}. "
+                        f"Please fix the parameters and retry. Common issues: "
+                        f"missing required parameters, flags concatenated with "
+                        f"arguments (e.g. --flag123 instead of --flag 123), "
+                        f"or wrong format."
+                    )
+                    logger.info(
+                        f"[agentic] Injecting correction message after "
+                        f"{_consecutive_errors} identical errors for {tool_call.tool_name}"
+                    )
+                    # Append the failed response + correction to history
+                    cleaned_response = self._strip_extra_tool_calls(current_response, tool_call)
+                    messages.append({"role": "assistant", "content": cleaned_response})
+                    messages.append({"role": "user", "content": correction_msg})
+                    # Re-prompt the LLM once
+                    try:
+                        current_response = await llm_caller(messages)
+                        yield AgenticEvent(
+                            type="llm_response",
+                            iteration=iteration,
+                            llm_text=current_response,
+                        )
+                        # Continue the loop — the new response will be
+                        # parsed on the next iteration. If it fails again,
+                        # _consecutive_errors will hit 3 and trigger force-stop.
+                        continue
+                    except Exception as retry_err:
+                        logger.error(f"[agentic] Correction retry LLM call failed: {retry_err}")
+                        # Fall through to force-stop
+
                 if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
                     # Hard stop: the LLM is retrying the exact same
-                    # failing tool call. No amount of repeat-counter
-                    # reset will help. Emit a final message telling
-                    # the LLM to answer in plain text without any
-                    # more tool calls, then terminate the loop.
+                    # failing tool call even after correction. Emit a
+                    # final message telling the LLM to answer in plain
+                    # text without any more tool calls, then terminate.
                     logger.warning(
                         f"[agentic] {_consecutive_errors} consecutive identical errors for "
                         f"{tool_call.tool_name} — forcing stop"
@@ -774,6 +838,17 @@ class AgenticLoop:
                     return ToolResult(False, error=f"Hook denied: {deny_msg}")
             except Exception as e:
                 logger.debug(f"PreToolUse hook error (non-fatal): {e}")
+
+        # Normalize DeepSeek flag errors: --flag immediately followed by
+        # hex/alphanum (e.g. "--stat46bba32") → insert a space ("--stat 46bba32").
+        # Only applies to string params likely to be shell commands.
+        import re as _re
+        for _pk, _pv in tool_call.params.items():
+            if isinstance(_pv, str) and '--' in _pv:
+                _fixed = _re.sub(r'(--[a-zA-Z][-a-zA-Z]*)([0-9a-fA-F]{4,})', r'\1 \2', _pv)
+                if _fixed != _pv:
+                    logger.info(f"[agentic] Flag-space fix in {_pk}: {_pv!r} → {_fixed!r}")
+                    tool_call.params[_pk] = _fixed
 
         # Apply defaults and execute
         params = tool_def.apply_defaults(tool_call.params)

@@ -5,7 +5,7 @@ agent:
   max_tokens: 8192
   thinking_enabled: true
   stream: true
-  timeout: 30
+  timeout: 90
   max_retries: 3
   debug: false
   search_enabled: true

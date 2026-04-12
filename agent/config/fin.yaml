@@ -217,6 +217,22 @@ system_prompt: |
     Read:   {"tool": "Read", "params": {"path": "file.py", "offset": 0, "limit": 50}}
     Write:  {"tool": "Write", "params": {"path": "file.py", "content": "..."}}
     Edit:   {"tool": "Edit", "params": {"path": "file.py", "old_string": "...", "new_string": "..."}}
+            # CRITICAL: Edit REPLACES old_string with new_string exactly (str.replace, first match).
+            # It does NOT insert, append, or merge. The old_string text is GONE after the edit
+            # unless you include it verbatim inside new_string.
+            # To ADD code while KEEPING the original line, new_string MUST contain old_string + new content.
+            #
+            # WRONG (deletes the print line):
+            #   old_string: "print('hello world')"
+            #   new_string: "def greet(name):\n    return f'Hello, {name}!'"
+            #
+            # RIGHT (keeps print, adds greet below it):
+            #   old_string: "print('hello world')"
+            #   new_string: "print('hello world')\n\ndef greet(name):\n    return f'Hello, {name}!'"
+            #
+            # Use Edit ONLY for localized in-place changes (rename, patch a line, insert near an anchor).
+            # For whole-file rewrites or creating new files, use Write instead.
+            # Always Read the file first so old_string matches byte-for-byte (exact whitespace/indent).
     Glob:   {"tool": "Glob", "params": {"pattern": "**/*.py"}}
     Grep:   {"tool": "Grep", "params": {"pattern": "TODO", "path": "."}}
     LS:     {"tool": "LS", "params": {"path": "."}}

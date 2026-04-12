@@ -34,6 +34,83 @@ except ImportError:
     HAS_SPRINT = False
 
 
+class StreamSanitizer:
+    """Stateful sanitizer that:
+    1. Normalizes broken markdown fences (```lang<content> -> ```lang\n<content>)
+    2. Skips consecutive duplicate lines (LLM repetition bug)
+
+    feed(chunk) returns the safe-to-emit substring for this chunk.
+    Buffers up to 200 chars across chunks to catch boundary cases.
+    """
+    _FENCE_RE = re.compile(
+        r'```(python|bash|sh|shell|console|json|yaml|toml|js|ts|html|css|sql|go|rust|java|cpp|c|md|markdown|xml|diff|text|plaintext)([^\s`\n])',
+        re.IGNORECASE,
+    )
+
+    def __init__(self):
+        self._buf = ""
+        self._last_line = ""
+
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        self._buf += chunk
+        # Only emit complete lines (everything before the last \n)
+        if "\n" not in self._buf:
+            # No complete line yet — hold off
+            if len(self._buf) > 500:
+                # Safety: flush if buffer grows too large
+                out = self._buf
+                self._buf = ""
+                return self._sanitize(out)
+            return ""
+        last_nl = self._buf.rfind("\n")
+        complete = self._buf[:last_nl + 1]
+        self._buf = self._buf[last_nl + 1:]
+        return self._sanitize(complete)
+
+    def flush(self) -> str:
+        out = self._buf
+        self._buf = ""
+        if not out:
+            return ""
+        return self._sanitize(out)
+
+    @staticmethod
+    def _collapse_repeats(line: str) -> str:
+        """Collapse `XYZXYZXYZ` -> `XYZ` within a line.
+        Handles repeats of any substring length 8+ chars (avoids false positives on short patterns).
+        """
+        # Match a substring of at least 8 chars that repeats 2+ times (non-greedy -> shortest unit)
+        return re.sub(r'(.{8,}?)\1+', r'\1', line)
+
+    def _sanitize(self, text: str) -> str:
+        # Fix 1: normalize fences
+        text = self._FENCE_RE.sub(r'```\1\n\2', text)
+        # Fix 2: skip consecutive duplicate non-blank, non-XML lines
+        out_lines = []
+        for line in text.split("\n"):
+            line = self._collapse_repeats(line)  # NEW: collapse intra-line repeats
+            stripped = line.strip()
+            # Skip XML markup from dedup — never deduplicate tool_call/tool_result tags
+            is_xml = (
+                stripped.startswith("<")
+                or stripped.startswith("tool:")
+                or stripped.startswith("metadata:")
+                or "tool_call" in stripped
+                or "tool_result" in stripped
+            )
+            if stripped and not is_xml and stripped == self._last_line:
+                continue
+            if stripped and not is_xml:
+                self._last_line = stripped
+            # Reset last_line when we see XML so subsequent prose doesn't skip
+            if is_xml:
+                self._last_line = ""
+            out_lines.append(line)
+        return "\n".join(out_lines)
+
+
 def handle_code_command(core, command: str) -> str:
     """
     Handle /code command for code analysis and refactoring
@@ -973,7 +1050,20 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             modified_prompt = suggested_cmd
 
     # Auto-search detection (skip if already a command)
-    if (core.auto_search_enabled and
+    # HARD GATE: NEVER auto-search in coding mode. Codebase queries use
+    # Grep/Read/Bash via the agentic loop, not web search.
+    _is_coding = (
+        getattr(core, "mode", None) == "coding"
+        or os.environ.get("NEOMIND_MODE") == "coding"
+    )
+    if _is_coding:
+        core._status_print(
+            f"[auto_search] BLOCKED — coding mode active (mode={getattr(core, 'mode', '?')})",
+            "info"
+        )
+
+    if (not _is_coding and
+        core.auto_search_enabled and
         not modified_prompt.startswith('/') and
         core.searcher.should_search(modified_prompt)):
         core._status_print(f"🔍 Auto-detected search needed for: {modified_prompt[:50]}...", "debug")
@@ -1227,6 +1317,7 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
         last_thinking_summary_time = 0
         content_was_displayed = False  # Track if any visible content was printed
         _thinking_already_displayed = False  # Prevent thinking summary re-display
+        sanitizer = StreamSanitizer()  # Stateful cross-chunk sanitizer
 
         # Callback to notify UI layer (spinner) on first token
         def _notify_first_token():
@@ -1341,18 +1432,21 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                         is_final_response_active = True
                                         is_reasoning_active = False
 
-                                    # Accumulate full response regardless of filter
-                                    full_response += content
-                                    # Content filter: suppress code fences if active
-                                    _cf = getattr(core, '_content_filter', None)
-                                    if _cf:
-                                        display = _cf.write(content)
-                                        if display:
-                                            print(display, end="", flush=True)
+                                    # Stateful cross-chunk sanitizer (fences + dedup)
+                                    safe = sanitizer.feed(content)
+                                    if safe:
+                                        # Accumulate full response regardless of filter
+                                        full_response += safe
+                                        # Content filter: suppress code fences if active
+                                        _cf = getattr(core, '_content_filter', None)
+                                        if _cf:
+                                            display = _cf.write(safe)
+                                            if display:
+                                                print(display, end="", flush=True)
+                                                content_was_displayed = True
+                                        else:
+                                            print(safe, end="", flush=True)
                                             content_was_displayed = True
-                                    else:
-                                        print(content, end="", flush=True)
-                                        content_was_displayed = True
 
                         except json.JSONDecodeError:
                             continue
@@ -1366,6 +1460,38 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             else:
                 core.conversation_history.pop()
                 return None
+
+        # Final dedup pass on accumulated full_response
+        import re as _re
+        _lines = full_response.split("\n")
+        _clean = []
+        _prev = ""
+        for _l in _lines:
+            _s = _l.strip()
+            # Don't dedup XML/tool markup
+            _is_xml = _s.startswith("<") or _s.startswith("tool:") or "tool_call" in _s or "tool_result" in _s
+            if _s and not _is_xml and _s == _prev:
+                continue
+            if _s and not _is_xml:
+                _prev = _s
+            if _is_xml:
+                _prev = ""
+            _clean.append(_l)
+        full_response = "\n".join(_clean)
+
+        # Flush stateful sanitizer tail
+        tail = sanitizer.flush()
+        if tail:
+            full_response += tail
+            _cf = getattr(core, '_content_filter', None)
+            if _cf:
+                display = _cf.write(tail)
+                if display:
+                    print(display, end="", flush=True)
+                    content_was_displayed = True
+            else:
+                print(tail, end="", flush=True)
+                content_was_displayed = True
 
         # Flush content filter if active
         _cf = getattr(core, '_content_filter', None)

@@ -3241,13 +3241,24 @@ class NeoMindTelegramBot:
         re.IGNORECASE,
     )
 
-    def _should_search(self, text: str) -> bool:
+    def _should_search(self, text: str, chat_id: int = 0) -> bool:
         """Decide if a user message would benefit from web search augmentation.
 
         Returns True for ANY informational query — not just finance.
         Returns False only for greetings, single-word responses, commands,
-        or when the user explicitly opted out of search.
+        when the user explicitly opted out of search, or when the current
+        mode's ``auto_search.enabled`` config flag is ``false``.
         """
+        # ── Per-mode gate: honour auto_search.enabled from mode YAML ──
+        try:
+            from agent_config import AgentConfigManager
+            mode = self._store.get_mode(chat_id) if chat_id else "fin"
+            mode_cfg = AgentConfigManager(mode=mode)
+            if not mode_cfg.auto_search_enabled:
+                return False
+        except Exception:
+            pass  # If config loading fails, fall through to pattern matching
+
         stripped = text.strip()
         # Skip very short messages
         if len(stripped) < 6:
@@ -4041,7 +4052,7 @@ class NeoMindTelegramBot:
 
         # Auto-search augmentation for non-streaming mode
         search_footer = ""
-        if self._should_search(user_message):
+        if self._should_search(user_message, chat_id):
             search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
             if search_ctx:
                 messages.insert(-1, {"role": "system", "content": search_ctx})
@@ -4208,7 +4219,7 @@ class NeoMindTelegramBot:
 
         # Auto-search augmentation: inject web results if the query warrants it
         search_footer = ""
-        if self._should_search(user_message):
+        if self._should_search(user_message, chat_id):
             # Show visible search indicator BEFORE searching
             live_msg = await msg.reply_text("🔍 正在搜索相关信息...")
             search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
@@ -4818,7 +4829,7 @@ class NeoMindTelegramBot:
 
         # Auto-search augmentation for thinking mode
         search_footer = ""
-        if self._should_search(user_message):
+        if self._should_search(user_message, chat_id):
             search_ctx, search_footer = await self._augment_with_search(user_message, chat_id)
             if search_ctx:
                 messages.insert(-1, {"role": "system", "content": search_ctx})
