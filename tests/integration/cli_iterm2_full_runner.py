@@ -139,30 +139,61 @@ SCENARIOS: List[Scenario] = [
 ]
 
 
-# Prompt anchor regex — matches `[fin] > ` or `[chat] >` or `[coding] >`
-PROMPT_RE = re.compile(r"\[(chat|coding|fin)\]\s*>\s*")
+# Prompt anchor regex — matches the CLI prompt line in every mode:
+#   * Bracketed forms: `[chat] >`, `[fin] >`, `[coding] >` (some modes
+#     prefix the prompt with the mode name in brackets).
+#   * Bare form: a line beginning with `>` followed by either end-of-line
+#     OR a single space + arbitrary echoed user text. Coding mode uses
+#     this — its prompt is just `> `.
+#
+# We require MULTILINE so `^` anchors to line start, and we intentionally
+# allow the echoed-input case so `_extract_reply_region` can slice
+# between the echoed-command prompt and the next waiting prompt.
+PROMPT_RE = re.compile(
+    r"(?m)^(?:\[(?:chat|coding|fin)\]\s*>|>)(?:\s|$)"
+)
 
-# Status-bar bottom N lines to strip from capture before keyword check.
-# prompt_toolkit's footer takes ~2-4 lines depending on terminal width.
-STATUS_BAR_STRIP_LINES = 3
+# Status bar signature: prompt_toolkit's bottom_toolbar renders a single
+# pipe-separated line like
+#   " deepseek-chat | coding | auto_accept | think:on | 4% ... Ctrl+D exit"
+# which always contains `Ctrl+D exit` at the tail. We match on that to
+# identify the chrome row deterministically instead of counting lines.
+STATUS_BAR_RE = re.compile(r"Ctrl\+D\s*exit", re.IGNORECASE)
 
 
-def _strip_status_bar(screen: str, strip_n: int = STATUS_BAR_STRIP_LINES) -> str:
-    """Remove the last N non-empty lines which are prompt_toolkit chrome.
+def _strip_status_bar(screen: str, strip_n: int = 0) -> str:
+    """Drop the prompt_toolkit bottom_toolbar row (content-based).
 
-    We work on the full screen top-down and drop the final `strip_n`
-    non-empty lines. Blank lines before the status bar are also dropped.
+    Previous versions counted N non-empty lines from the bottom, which
+    was too aggressive in coding mode — the status bar is only 1 line,
+    so stripping 3 non-empty lines ate the prompt and the reply tail.
+
+    Now we walk from the bottom past trailing blank lines, and if the
+    first non-empty line matches the status-bar signature we drop it
+    (plus any blank padding immediately above it that is clearly part
+    of the toolbar spacer area). Everything above — including the real
+    CLI prompt `>` — is preserved.
+
+    The legacy `strip_n` kwarg is accepted for backwards compatibility
+    but ignored; keep it so existing call sites don't break.
     """
+    del strip_n  # legacy, unused
     lines = screen.splitlines()
-    # Walk from the bottom, skipping blanks and counting non-empty lines.
-    non_empty_from_bottom = 0
     cut_at = len(lines)
-    for i in range(len(lines) - 1, -1, -1):
-        if lines[i].strip():
-            non_empty_from_bottom += 1
-            if non_empty_from_bottom >= strip_n:
-                cut_at = i
-                break
+    # Walk from bottom skipping trailing blank lines.
+    i = len(lines) - 1
+    while i >= 0 and not lines[i].strip():
+        i -= 1
+    # If the first non-empty line from the bottom IS the status bar,
+    # cut it out (and any blank spacer immediately above, to tidy up).
+    if i >= 0 and STATUS_BAR_RE.search(lines[i]):
+        cut_at = i
+        # Also strip a single trailing blank line just above the toolbar
+        # if present — it's the spacer between content and the toolbar.
+        # This does NOT walk past real reply content because we only
+        # consume blanks here.
+        while cut_at - 1 >= 0 and not lines[cut_at - 1].strip():
+            cut_at -= 1
     return "\n".join(lines[:cut_at])
 
 
