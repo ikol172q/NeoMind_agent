@@ -1341,6 +1341,8 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                         is_final_response_active = True
                                         is_reasoning_active = False
 
+                                    # Normalize malformed code fences (e.g. ```pythonraise → ```python\nraise)
+                                    content = re.sub(r'```(\w+)([^\s`])', r'```\1\n\2', content)
                                     # Accumulate full response regardless of filter
                                     full_response += content
                                     # Content filter: suppress code fences if active
