@@ -410,13 +410,35 @@ class AgenticLoop:
                     _consecutive_errors = 1
 
                 if _consecutive_errors >= _MAX_CONSECUTIVE_ERRORS:
+                    # Hard stop: the LLM is retrying the exact same
+                    # failing tool call. No amount of repeat-counter
+                    # reset will help. Emit a final message telling
+                    # the LLM to answer in plain text without any
+                    # more tool calls, then terminate the loop.
                     logger.warning(
                         f"[agentic] {_consecutive_errors} consecutive identical errors for "
-                        f"{tool_call.tool_name}, forcing wrap-up"
+                        f"{tool_call.tool_name} — forcing stop"
                     )
-                # Mark so the repeat-response detector gives the LLM a
-                # fresh slate on the next iteration.
-                _prev_iter_tool_error = True
+                    yield AgenticEvent(
+                        type="error",
+                        iteration=iteration,
+                        error_message=(
+                            f"Forced stop: the same {tool_call.tool_name} "
+                            f"call failed {_consecutive_errors} times in a row "
+                            f"with params {tool_call.params}. "
+                            f"Last error: {result.error or result.output[:200]}"
+                        ),
+                    )
+                    yield AgenticEvent(type="done", iteration=iteration)
+                    return
+                # After ONE failure, give the LLM a fresh slate on the
+                # repeat-response detector so it can self-correct. But
+                # only for the first failure per error_key — on the
+                # second+ identical failure we fall through to the
+                # _MAX_CONSECUTIVE_ERRORS branch above which actually
+                # stops the loop.
+                if _consecutive_errors == 1:
+                    _prev_iter_tool_error = True
             else:
                 _last_failed_key = None
                 _consecutive_errors = 0
