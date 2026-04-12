@@ -97,6 +97,11 @@ class ToolDefinition:
         permission_level: PermissionLevel,
         execute: Callable,
         examples: Optional[List[Dict[str, Any]]] = None,
+        deferred: bool = False,
+        always_load: bool = True,
+        is_open_world: bool = False,
+        interrupt_behavior: str = 'cancel',
+        allowed_modes: Optional[set] = None,
     ):
         self.name = name
         self.description = description
@@ -104,9 +109,114 @@ class ToolDefinition:
         self.permission_level = permission_level
         self.execute = execute
         self.examples = examples or []
+        self.deferred = deferred            # If True, not in initial prompt — use ToolSearch
+        self.always_load = always_load      # If True, always in system prompt
+        self.is_open_world_flag = is_open_world  # Fetches external/untrusted data
+        self.interrupt_behavior_mode = interrupt_behavior  # 'cancel' or 'block'
+        # Mode gating: only show this tool in these personality modes.
+        # None = always available (legacy behaviour / shared tools).
+        # Set of mode names e.g. {"fin"}, {"coding"}, {"chat", "fin"}.
+        self.allowed_modes: Optional[set] = allowed_modes
 
         # Build lookup for fast param access
         self._param_map: Dict[str, ToolParam] = {p.name: p for p in parameters}
+
+    def is_available_in_mode(self, mode: Optional[str]) -> bool:
+        """Check whether this tool is allowed in the given personality mode.
+
+        A tool with `allowed_modes is None` is always available (legacy /
+        shared tools). A tool with an explicit set is only available when
+        the current mode is in that set. If mode is None (caller didn't
+        pass a mode), legacy "always available" behaviour applies.
+        """
+        if self.allowed_modes is None:
+            return True
+        if mode is None:
+            return True  # caller didn't specify mode — don't filter
+        return mode in self.allowed_modes
+
+    def is_read_only(self, params: Optional[Dict[str, Any]] = None) -> bool:
+        """Check if this tool (with given params) is a read-only operation.
+
+        Used by permission system and coordinator to decide tool restrictions.
+        """
+        return self.permission_level == PermissionLevel.READ_ONLY
+
+    def is_destructive(self, params: Optional[Dict[str, Any]] = None) -> bool:
+        """Check if this tool (with given params) is a destructive operation.
+
+        Checks both static permission level and dynamic parameter patterns.
+        """
+        if self.permission_level == PermissionLevel.DESTRUCTIVE:
+            return True
+        # Dynamic check for Bash/PowerShell with dangerous commands
+        if self.name in ('Bash', 'PowerShell') and params:
+            command = params.get('command', '')
+            destructive_patterns = [
+                'rm -rf', 'rm -fr', 'git reset --hard', 'git push --force',
+                'DROP TABLE', 'DROP DATABASE', 'TRUNCATE', 'dd if=', 'mkfs',
+            ]
+            cmd_lower = command.lower()
+            return any(p.lower() in cmd_lower for p in destructive_patterns)
+        return False
+
+    def is_concurrency_safe(self) -> bool:
+        """Check if this tool is safe to run concurrently with other tools."""
+        if self.permission_level == PermissionLevel.READ_ONLY:
+            return True
+        if self.name in ('TaskCreate', 'TaskGet', 'TaskList', 'TaskUpdate'):
+            return True
+        return False
+
+    def requires_user_interaction(self) -> bool:
+        """Check if this tool requires direct user interaction (e.g., AskUser).
+
+        Tools with this flag should defer loading and never auto-approve.
+        """
+        return self.name in ('AskUser', 'AskUserQuestion')
+
+    def is_open_world(self, params: Optional[Dict[str, Any]] = None) -> bool:
+        """Check if this tool fetches external/untrusted data.
+
+        Open-world tools may expose the system to prompt injection from
+        external content. Used for injection warnings in context.
+        """
+        return self.is_open_world_flag
+
+    def get_interrupt_behavior(self) -> str:
+        """Return interrupt behavior: 'cancel' or 'block'.
+
+        - cancel: Ctrl+C kills the tool immediately (default)
+        - block: Ctrl+C queues until tool finishes (for writes in progress)
+        """
+        return self.interrupt_behavior_mode
+
+    def get_activity_description(self, params: Dict[str, Any] = None) -> str:
+        """Return a human-readable description of what this tool is currently doing.
+
+        Shown in the CLI spinner during execution.
+        """
+        if not params:
+            return self.name
+        # Tool-specific descriptions
+        if self.name == 'Read':
+            return f"Reading {params.get('path', '?')}"
+        elif self.name == 'Write':
+            return f"Writing {params.get('path', '?')}"
+        elif self.name == 'Edit':
+            return f"Editing {params.get('path', '?')}"
+        elif self.name in ('Bash', 'PowerShell'):
+            cmd = params.get('command', '?')[:40]
+            return f"Running {cmd}"
+        elif self.name == 'Grep':
+            return f"Searching for '{params.get('pattern', '?')}'"
+        elif self.name == 'Glob':
+            return f"Finding files matching {params.get('pattern', '?')}"
+        elif self.name == 'WebFetch':
+            return f"Fetching {params.get('url', '?')[:40]}"
+        elif self.name == 'WebSearch':
+            return f"Searching web for '{params.get('query', '?')}'"
+        return self.name
 
     def validate_params(self, params: Dict[str, Any]) -> Tuple[bool, str]:
         """Validate parameters against the tool's schema.

@@ -583,14 +583,23 @@ def handle_execute_command(core, command: str) -> Optional[str]:
 # ── /switch ──────────────────────────────────────────────────────────────
 
 def handle_switch_command(core, command: str) -> Optional[str]:
-    """Handle /switch command to switch model."""
+    """Handle /switch command to switch model.
+
+    Supports model aliases: opus, sonnet, haiku, reasoner, coder, etc.
+    """
     if not command.strip():
-        return "Usage: /switch <model_id>"
+        from agent.services.llm_provider import MODEL_ALIASES
+        alias_list = ", ".join(f"{k}→{v}" for k, v in sorted(MODEL_ALIASES.items()))
+        return f"Usage: /switch <model_id>\nAliases: {alias_list}"
 
     model_id = command.strip()
+    # Resolve alias for display
+    from agent.services.llm_provider import resolve_model_alias
+    resolved = resolve_model_alias(model_id)
     success = core.set_model(model_id)
     if success:
-        return f"✅ Switched model to {model_id}"
+        alias_note = f" (alias for {resolved})" if resolved != model_id else ""
+        return f"✅ Switched model to {resolved}{alias_note}"
     else:
         return f"❌ Failed to switch model to {model_id}"
 

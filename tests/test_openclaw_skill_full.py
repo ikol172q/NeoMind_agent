@@ -152,12 +152,13 @@ class TestOpenClawFinanceSkill:
     @pytest.mark.asyncio
     async def test_handle_stock_success(self, skill):
         """Test stock command success."""
-        skill._data_hub.get_stock_price = AsyncMock(return_value={
-            "price": 150.25,
-            "change": 2.50,
-            "change_pct": 1.69,
-            "source": "Yahoo Finance",
-        })
+        from agent.finance.data_hub import StockQuote, VerifiedDataPoint
+        skill._data_hub.get_quote = AsyncMock(return_value=StockQuote(
+            symbol="AAPL",
+            price=VerifiedDataPoint(value=150.25, source="Yahoo Finance"),
+            change=2.50,
+            change_pct=1.69,
+        ))
 
         result = await skill._handle_stock("AAPL", Mock())
 
@@ -176,7 +177,7 @@ class TestOpenClawFinanceSkill:
     @pytest.mark.asyncio
     async def test_handle_stock_lookup_error(self, skill):
         """Test stock command with lookup error."""
-        skill._data_hub.get_stock_price = AsyncMock(side_effect=Exception("API error"))
+        skill._data_hub.get_quote = AsyncMock(side_effect=Exception("API error"))
 
         result = await skill._handle_stock("INVALID", Mock())
         assert "⚠️" in result
@@ -190,11 +191,14 @@ class TestOpenClawFinanceSkill:
     @pytest.mark.asyncio
     async def test_handle_crypto_success(self, skill):
         """Test crypto command success."""
-        skill._data_hub.get_crypto_price = AsyncMock(return_value={
-            "price": 62450.50,
-            "change_24h": 2.34,
-            "source": "CoinGecko",
-        })
+        from agent.finance.data_hub import CryptoQuote, VerifiedDataPoint
+        skill._data_hub.get_crypto = AsyncMock(return_value=CryptoQuote(
+            coin_id="bitcoin",
+            symbol="BTC",
+            name="Bitcoin",
+            price=VerifiedDataPoint(value=62450.50, source="CoinGecko"),
+            change_24h_pct=2.34,
+        ))
 
         result = await skill._handle_crypto("BTC", Mock())
 
@@ -411,10 +415,12 @@ class TestOpenClawFinanceSkill:
             text="What about $AAPL and $MSFT?",
         )
 
-        skill._data_hub.get_stock_price = AsyncMock(return_value={
-            "price": 150.0,
-            "change": 0,
-        })
+        from agent.finance.data_hub import StockQuote, VerifiedDataPoint
+        skill._data_hub.get_quote = AsyncMock(return_value=StockQuote(
+            symbol="AAPL",
+            price=VerifiedDataPoint(value=150.0, source="Yahoo Finance"),
+            change=0,
+        ))
 
         result = await skill._handle_natural_query(msg.text, msg)
 
@@ -492,12 +498,13 @@ class TestOpenClawSkillIntegration:
     @pytest.mark.asyncio
     async def test_complete_command_flow(self, skill):
         """Test complete command handling flow."""
-        skill._data_hub.get_stock_price = AsyncMock(return_value={
-            "price": 150.0,
-            "change": 2.5,
-            "change_pct": 1.7,
-            "source": "Yahoo",
-        })
+        from agent.finance.data_hub import StockQuote, VerifiedDataPoint
+        skill._data_hub.get_quote = AsyncMock(return_value=StockQuote(
+            symbol="AAPL",
+            price=VerifiedDataPoint(value=150.0, source="Yahoo"),
+            change=2.5,
+            change_pct=1.7,
+        ))
 
         msg = IncomingMessage(
             channel="telegram",
@@ -515,7 +522,7 @@ class TestOpenClawSkillIntegration:
     @pytest.mark.asyncio
     async def test_command_error_handling(self, skill):
         """Test error handling in commands."""
-        skill._data_hub.get_stock_price = AsyncMock(side_effect=Exception("API Error"))
+        skill._data_hub.get_quote = AsyncMock(side_effect=Exception("API Error"))
 
         msg = IncomingMessage(
             channel="whatsapp",
