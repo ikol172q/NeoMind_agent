@@ -268,6 +268,10 @@ class NaturalLanguageInterpreter:
                             best_confidence = confidence
 
         for intent, patterns in self.patterns.items():
+            # In coding mode: skip web-search-routing intents. The bot uses
+            # Grep/Read/Bash for codebase search, never web search.
+            if mode == "coding" and intent in ("search", "code_search"):
+                continue
             for pattern, command_template, confidence in patterns:
                 match = re.search(pattern, text, re.IGNORECASE)
                 if match and confidence >= threshold:
