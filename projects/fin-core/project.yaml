@@ -1,0 +1,39 @@
+project_id: fin-core
+description: >
+  Fin persona core fleet — the user's primary investment analysis
+  team. A chat supervisor coordinates two fin workers (realtime +
+  research) and two coding workers (dev support for fin persona
+  modules like data_hub, technical_indicators, quant_engine, etc.).
+  Started via fleet.run.run_task("fin-core", "<task>") from within
+  any existing session.
+
+leader: mgr-1
+
+members:
+  - name: mgr-1
+    persona: chat
+    role: leader
+
+  # Realtime analysis worker — watches quotes, generates signals
+  - name: fin-rt
+    persona: fin
+    role: worker
+
+  # Research worker — news digest, RAG-assisted analysis, backtest
+  - name: fin-rsrch
+    persona: fin
+    role: worker
+
+  # Dev support workers — edit fin persona code when the leader
+  # delegates a refactor / bug fix / new indicator task
+  - name: dev-1
+    persona: coding
+    role: worker
+
+  - name: dev-2
+    persona: coding
+    role: worker
+
+settings:
+  stuck_timeout_minutes: 5
+  max_concurrent_tasks: 3
