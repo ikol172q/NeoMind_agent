@@ -125,11 +125,15 @@ class TriggerResult:
     error: Optional[str] = None
 
 
+VALID_PERSONAS = frozenset({"chat", "coding", "fin"})
+
+
 @dataclass
 class TeamMember:
     """A member of an agent team."""
     member_id: str
     role: TeamRole
+    persona: Optional[str] = None  # "chat" | "coding" | "fin" | None (legacy)
     joined_at: datetime = field(default_factory=datetime.now)
 
 
@@ -888,6 +892,7 @@ class TeamManager:
         description: str = "",
         members: Optional[List[str]] = None,
         roles: Optional[Dict[str, str]] = None,
+        personas: Optional[Dict[str, str]] = None,
     ) -> TeamResult:
         """
         Create a new agent team.
@@ -899,6 +904,8 @@ class TeamManager:
             roles: Optional mapping of ``member_id -> role_name`` for
                 initial members.  Members not present in *roles* default
                 to ``"worker"``.
+            personas: Optional mapping of ``member_id -> persona_name``
+                for initial members (``"chat"``, ``"coding"``, ``"fin"``).
 
         Returns:
             TeamResult with the created Team.
@@ -920,6 +927,7 @@ class TeamManager:
             )
 
         roles = roles or {}
+        personas = personas or {}
         team_members: Dict[str, TeamMember] = {}
 
         for mid in (members or []):
@@ -934,7 +942,17 @@ class TeamManager:
                             f"Must be one of: {valid}",
                     error="invalid_role",
                 )
-            team_members[mid] = TeamMember(member_id=mid, role=role)
+            persona = personas.get(mid)
+            if persona is not None and persona not in VALID_PERSONAS:
+                return TeamResult(
+                    success=False,
+                    message=f"Invalid persona '{persona}' for member '{mid}'. "
+                            f"Must be one of: {', '.join(sorted(VALID_PERSONAS))}",
+                    error="invalid_persona",
+                )
+            team_members[mid] = TeamMember(
+                member_id=mid, role=role, persona=persona,
+            )
 
         team = Team(
             name=name,
@@ -978,6 +996,7 @@ class TeamManager:
         team_name: str,
         member_id: str,
         role: str = "worker",
+        persona: Optional[str] = None,
     ) -> TeamResult:
         """
         Add a member to an existing team.
@@ -987,6 +1006,7 @@ class TeamManager:
             member_id: Agent/member identifier to add.
             role: Role string (``leader``, ``worker``, ``reviewer``,
                 ``observer``).
+            persona: Optional persona (``"chat"``, ``"coding"``, ``"fin"``).
 
         Returns:
             TeamResult with the updated Team.
@@ -1017,8 +1037,16 @@ class TeamManager:
                 error="invalid_role",
             )
 
+        if persona is not None and persona not in VALID_PERSONAS:
+            return TeamResult(
+                success=False,
+                message=f"Invalid persona '{persona}'. "
+                        f"Must be one of: {', '.join(sorted(VALID_PERSONAS))}",
+                error="invalid_persona",
+            )
+
         team.members[member_id] = TeamMember(
-            member_id=member_id, role=member_role
+            member_id=member_id, role=member_role, persona=persona,
         )
 
         return TeamResult(
