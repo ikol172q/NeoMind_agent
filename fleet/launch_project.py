@@ -42,6 +42,7 @@ class FleetLauncher:
         config: ProjectConfig,
         base_dir: Optional[str] = None,
         shared_memory: Optional[Any] = None,
+        event_sink: Optional[Any] = None,
     ):
         """
         Args:
@@ -51,10 +52,18 @@ class FleetLauncher:
                 workers' fail_fast entry check (Phase 3 integration).
                 When None, the fail_fast gate is skipped. Passing an
                 instance enables the KPI-driven fleet downgrade.
+            event_sink: Optional callable(member_name: str, event: dict)
+                used by worker_turn to publish observable events
+                (task_received, llm_call_start/end, task_completed,
+                task_failed). Used by fleet.session.FleetSession to
+                populate per-member ring buffers for the CLI focus
+                view. Persona-agnostic — launcher forwards without
+                inspecting.
         """
         self.config = config
         self._base_dir = base_dir
         self._shared_memory = shared_memory
+        self._event_sink = event_sink
         self._tasks: Dict[str, asyncio.Task] = {}
         self._running = False
         self._supervisor: Optional[ChatSupervisor] = None
@@ -229,6 +238,7 @@ class FleetLauncher:
                 task,
                 shared_memory=self._shared_memory,
                 project_id=self.config.project_id,
+                event_sink=self._event_sink,
             )
         except Exception as exc:
             logger.exception(
