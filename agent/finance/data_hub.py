@@ -15,7 +15,10 @@ Data sources:
 import os
 import time
 import asyncio
+import logging
 from dataclasses import dataclass, field
+
+logger = logging.getLogger(__name__)
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any
 from concurrent.futures import ThreadPoolExecutor
@@ -196,14 +199,34 @@ class FinanceDataHub:
         self.cache = DataCache()
         self._executor = ThreadPoolExecutor(max_workers=4)
 
-        # Initialize Finnhub client
+        # Finnhub client (primary US quote source)
         self.finnhub_client = None
         finnhub_key = os.getenv("FINNHUB_API_KEY")
-        if HAS_FINNHUB and finnhub_key:
+        if not HAS_FINNHUB:
+            logger.warning(
+                "finnhub-python package not installed; US quotes will skip Finnhub "
+                "and fall back to Alpha Vantage / yfinance."
+            )
+        elif not finnhub_key:
+            logger.warning(
+                "FINNHUB_API_KEY env var not set; Finnhub primary source disabled. "
+                "Set it to enable real-time quotes. Falling back to Alpha Vantage / yfinance."
+            )
+        else:
             try:
                 self.finnhub_client = finnhub.Client(api_key=finnhub_key)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Finnhub client init failed: %s", exc)
+                self.finnhub_client = None
+
+        # Alpha Vantage (secondary US quote source between Finnhub and yfinance).
+        # Free tier: 5 req/min, 500/day. Env var: ALPHAVANTAGE_API_KEY.
+        self.alphavantage_key = os.getenv("ALPHAVANTAGE_API_KEY")
+        if not self.alphavantage_key:
+            logger.info(
+                "ALPHAVANTAGE_API_KEY not set; Alpha Vantage fallback disabled. "
+                "This is optional — yfinance will still back up Finnhub."
+            )
 
     # ── Stock Quotes ──────────────────────────────────────────────────
 
@@ -226,7 +249,11 @@ class FinanceDataHub:
             if self.finnhub_client:
                 quote = await self._get_finnhub_quote(symbol)
 
-            # Fallback to yfinance
+            # Fallback 1: Alpha Vantage (if key configured)
+            if not quote and self.alphavantage_key:
+                quote = await self._get_alphavantage_quote(symbol)
+
+            # Fallback 2: yfinance (no key needed, less reliable)
             if not quote and HAS_YFINANCE:
                 quote = await self._get_yfinance_quote(symbol, market)
 
@@ -274,6 +301,94 @@ class FinanceDataHub:
             )
         except Exception:
             return None
+
+    async def _get_alphavantage_quote(self, symbol: str) -> Optional[StockQuote]:
+        """Fetch quote from Alpha Vantage GLOBAL_QUOTE endpoint (fallback).
+
+        Free tier: 5 req/min, 500/day. Returns None on any failure so the
+        caller can chain to the next source.
+        """
+        if not self.alphavantage_key:
+            return None
+
+        def _sync_fetch() -> Optional[Dict]:
+            url = "https://www.alphavantage.co/query"
+            params = {
+                "function": "GLOBAL_QUOTE",
+                "symbol": symbol,
+                "apikey": self.alphavantage_key,
+            }
+            # One retry on 429 (rate limited) with 12s backoff — AV free tier
+            # is 5/min, so 12s is a safe minimum.
+            for attempt in range(2):
+                try:
+                    resp = requests.get(url, params=params, timeout=10.0)
+                except requests.RequestException as exc:
+                    logger.debug("Alpha Vantage request error: %s", exc)
+                    return None
+                if resp.status_code == 429 and attempt == 0:
+                    time.sleep(12)
+                    continue
+                if resp.status_code != 200:
+                    logger.debug(
+                        "Alpha Vantage HTTP %s for %s", resp.status_code, symbol
+                    )
+                    return None
+                try:
+                    payload = resp.json()
+                except ValueError:
+                    return None
+                # AV returns {"Note": "..."} on throttle and {"Global Quote": {...}} on success
+                if "Note" in payload or "Information" in payload:
+                    logger.debug("Alpha Vantage throttle/info: %s", payload)
+                    return None
+                return payload.get("Global Quote")
+            return None
+
+        try:
+            loop = asyncio.get_event_loop()
+            gq = await loop.run_in_executor(self._executor, _sync_fetch)
+        except Exception as exc:
+            logger.debug("Alpha Vantage executor error: %s", exc)
+            return None
+
+        if not gq:
+            return None
+
+        def _num(key: str, default: float = 0.0) -> float:
+            raw = gq.get(key, "")
+            if isinstance(raw, str):
+                raw = raw.strip().rstrip("%")
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return default
+
+        price = _num("05. price")
+        if price <= 0:
+            return None
+        prev_close = _num("08. previous close")
+        change = _num("09. change")
+        change_pct = _num("10. change percent")
+
+        return StockQuote(
+            symbol=symbol.upper(),
+            price=VerifiedDataPoint(
+                value=price,
+                source="AlphaVantage",
+                freshness="15-min delayed",
+                unit="USD",
+            ),
+            change=change,
+            change_pct=change_pct,
+            volume=int(_num("06. volume")),
+            high=_num("03. high"),
+            low=_num("04. low"),
+            open=_num("02. open"),
+            prev_close=prev_close,
+            market="us",
+            currency="USD",
+        )
 
     async def _get_yfinance_quote(self, symbol: str, market: str = "us") -> Optional[StockQuote]:
         """Fetch quote from yfinance (fallback)."""

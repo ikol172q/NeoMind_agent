@@ -216,6 +216,83 @@ class FinanceResponseValidator:
         """
         self.strict = strict
 
+    def validate_agent_analysis(
+        self,
+        analysis,  # AgentAnalysis — imported lazily to avoid a hard dep
+        tool_results: Optional[List[Dict]] = None,
+    ) -> "ValidationResult":
+        """Structural validation for a parsed ``AgentAnalysis``.
+
+        Runs on top of Pydantic (which already enforces types + enums +
+        confidence bounds) to catch semantic issues Pydantic can't:
+
+          - ``buy`` or ``sell`` signals must cite at least one source.
+          - High-confidence signals (>=8) with zero sources are suspicious.
+          - The ``reason`` field is re-run through the free-text validator
+            (Rules 1 / 2 / 3) against ``tool_results`` to catch hallucinated
+            prices or approximate math inside the rationale.
+          - ``target_price`` with ``signal == 'hold'`` is flagged as
+            mixed-message but not blocked.
+
+        Args:
+            analysis: Parsed ``AgentAnalysis`` instance.
+            tool_results: Tool outputs from this turn (same shape as
+                ``validate()``).
+
+        Returns:
+            ``ValidationResult`` — ``passed=False`` if any structural
+            constraint fails, plus any free-text rule violations found in
+            ``analysis.reason``.
+        """
+        # Lazy import to avoid a required dep from validator -> schema
+        from .signal_schema import AgentAnalysis
+
+        if not isinstance(analysis, AgentAnalysis):
+            return ValidationResult(
+                passed=False,
+                blocked=True,
+                reason=(
+                    f"validate_agent_analysis requires an AgentAnalysis "
+                    f"instance, got {type(analysis).__name__}"
+                ),
+            )
+
+        # First: free-text rule sweep on the reason field
+        result = self.validate(analysis.reason, tool_results=tool_results)
+
+        # Structural checks layered on top
+        if analysis.signal in ("buy", "sell") and not analysis.sources:
+            result.passed = False
+            result.warnings.append(
+                f"signal={analysis.signal!r} but sources list is empty — "
+                f"actionable signals must cite data sources (Rule 3)."
+            )
+            if self.strict:
+                result.blocked = True
+                result.action = "add_sources"
+                result.reason = "non-hold signal with empty sources"
+
+        if analysis.confidence >= 8 and not analysis.sources:
+            result.warnings.append(
+                f"confidence={analysis.confidence} with zero sources — "
+                f"high conviction requires evidence."
+            )
+
+        if analysis.signal == "hold" and analysis.target_price is not None:
+            result.warnings.append(
+                f"signal='hold' paired with target_price={analysis.target_price} "
+                f"sends a mixed message; omit target on hold or switch signal."
+            )
+
+        # Non-hold parse_fallback reasons are an operational smell
+        if analysis.reason.startswith("[parse_fallback]"):
+            result.warnings.append(
+                "reason carries [parse_fallback] marker — upstream LLM output "
+                "failed strict+lenient parse layers. Investigate prompt drift."
+            )
+
+        return result
+
     def validate(
         self,
         response: str,
