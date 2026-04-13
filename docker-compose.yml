@@ -66,6 +66,13 @@ services:
       - TERM=xterm-256color
       - HOME=/data
       - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+      # ── LLM API keys: inherit from shell env (zshrc) — never written to .env ──
+      # docker compose reads these from the shell invoking it; if a key is unset
+      # in the shell env, it stays empty in the container (no override).
+      - DEEPSEEK_API_KEY
+      - ZAI_API_KEY
+      - GLM_API_KEY
+      - MOONSHOT_API_KEY
     volumes:
       - neomind-data:/data/neomind
       # Shared config dir (provider-state.json — bidirectional sync with xbar)
