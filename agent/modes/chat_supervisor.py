@@ -114,7 +114,19 @@ class ChatSupervisor:
         Returns:
             task_id
         """
-        task_id = self._task_queue.add_task(description, self.leader_name)
+        # Tag the task with the intended recipient so only that
+        # worker can claim it (Phase 5.11 routing fix — 2026-04-12).
+        # target_persona is resolved to a specific member name below,
+        # so we pass that name as intended_for when we land on one.
+        resolved_intended = target_member
+        if target_persona and not target_member:
+            for name, info in self._worker_status.items():
+                if info.get("persona") == target_persona and info["status"] == "idle":
+                    resolved_intended = name
+                    break
+        task_id = self._task_queue.add_task(
+            description, self.leader_name, intended_for=resolved_intended,
+        )
 
         if target_member:
             # Send directly to that member
