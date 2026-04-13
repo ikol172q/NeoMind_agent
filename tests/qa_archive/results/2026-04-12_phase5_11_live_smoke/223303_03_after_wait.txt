@@ -1,0 +1,59 @@
+╭─ Leader · fin-core
+│  This is the main sessio51s │ [mgr-1] @fin-rt @fin-rsrch @dev-1 @dev-2 
+│  agent layer supports @<agent> dispatch only — normal chat
+│  with the main persona happens in the regular CLI (Ctrl+D to
+│  exit this view). Fleet workers continue running underneath.
+│
+│  (no prior chat history to display)
+│
+╰─ Ctrl+→ focus next agent  •  Esc to leader  •  Ctrl+D exit view
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ › leader mode · type @agent_name <message> to dispatch · Ctrl+→ to focus an agent 
+parse_signal: both strict and lenient layers failed, using hold_fallback. lenient_error=No JSON object found in output                      
+parse_signal: both strict and lenient layers failed, using hold_fallback. lenient_error=No JSON object found in output                      

@@ -1,0 +1,60 @@
+ FLEET  fin-core │ uptime 54s │ [mgr-1] @fin-rt @fin-rsrch* @dev-1 @dev-2                                                                   
+╭─ @fin-rsrch   (fin · worker)  project=fin-core
+│
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  you: In one sentence, state a research hypothesis about NVDA. Start with 'FIN-RSRCH:'.
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  you: In one sentence, state a research hypothesis about NVDA. Start with 'FIN-RSRCH:'.
+│  ·: llm call started (deepseek-chat)
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  @fin-rsrch: DEV-2: A list is mutable (can be changed after creation), while a tuple is immutable (cannot be changed after creation).
+│  ·: llm call started (deepseek-chat)
+│  you: In one sentence, state a research hypothesis about NVDA. Start with 'FIN-RSRCH:'.
+│
+╰─ type and Enter to dispatch to @fin-rsrch  •  Ctrl+← / Ctrl+→ cycle  •  Esc → leader  •  Ctrl+D exit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ › sub-agent mode · type a message and press Enter to dispatch to @fin-rsrch 
+                                                                                                                                            
+ Ctrl+← / Ctrl+→ cycle focus   Esc → leader   Ctrl+D exit multi-agent view   /exit or /fleet stop to tear down                              
