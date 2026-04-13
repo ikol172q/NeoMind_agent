@@ -257,11 +257,25 @@ def test_validator_rejects_non_agent_analysis_input():
 
 
 def test_validator_strict_mode_blocks_buy_no_sources():
-    # Instantiate directly — get_finance_validator() is a cached singleton
-    # so the strict flag from a later call doesn't override an earlier one.
-    from agent.finance.response_validator import FinanceResponseValidator
-    v = FinanceResponseValidator(strict=True)
+    # Phase 1.5b: get_finance_validator now caches per strict= value,
+    # so strict=True returns a distinct instance from strict=False.
+    v = get_finance_validator(strict=True)
+    assert v.strict is True
     a = AgentAnalysis(signal="buy", confidence=8, reason="ok", sources=[])
     r = v.validate_agent_analysis(a)
     assert r.passed is False
     assert r.blocked is True
+
+
+def test_singleton_returns_distinct_instances_per_strict():
+    """Regression for the Phase 1 singleton bug: get_finance_validator()
+    used to cache a single instance on first call and silently ignore
+    later strict= args. Now caches per flag value."""
+    v_false = get_finance_validator(strict=False)
+    v_true = get_finance_validator(strict=True)
+    assert v_false is not v_true
+    assert v_false.strict is False
+    assert v_true.strict is True
+    # Second call with same flag returns the cached instance
+    assert get_finance_validator(strict=False) is v_false
+    assert get_finance_validator(strict=True) is v_true

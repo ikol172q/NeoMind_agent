@@ -553,14 +553,21 @@ class FinanceResponseValidator:
         return "\n".join(parts)
 
 
-# ── Convenience singleton ────────────────────────────────────────────
+# ── Convenience singleton (one cached instance per strict flag) ─────
 
-_validator: Optional[FinanceResponseValidator] = None
+_validator_cache: Dict[bool, FinanceResponseValidator] = {}
 
 
 def get_finance_validator(strict: bool = False) -> FinanceResponseValidator:
-    """Get or create the singleton validator."""
-    global _validator
-    if _validator is None:
-        _validator = FinanceResponseValidator(strict=strict)
-    return _validator
+    """Get or create a cached validator for the given ``strict`` flag.
+
+    Previous implementation cached a single instance on first call and
+    silently ignored later ``strict=`` arguments. That meant a caller
+    passing ``strict=True`` after anyone had already called
+    ``get_finance_validator()`` without args got a non-strict validator
+    with no warning. Phase 1.5b fix (2026-04-12): cache per flag value
+    so both modes coexist.
+    """
+    if strict not in _validator_cache:
+        _validator_cache[strict] = FinanceResponseValidator(strict=strict)
+    return _validator_cache[strict]
