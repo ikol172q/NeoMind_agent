@@ -158,8 +158,25 @@ class SharedTaskQueue:
         self._tasks_file = self._base / 'teams' / team_name / 'tasks.json'
         self._tasks_file.parent.mkdir(parents=True, exist_ok=True)
 
-    def add_task(self, description: str, created_by: str) -> str:
-        """Add a task to the shared queue. Returns task_id."""
+    def add_task(
+        self,
+        description: str,
+        created_by: str,
+        intended_for: Optional[str] = None,
+    ) -> str:
+        """Add a task to the shared queue. Returns task_id.
+
+        Args:
+            description: Free-form task description.
+            created_by: Name of the agent that submitted the task.
+            intended_for: Optional target member. When set, only a
+                worker whose name matches this value is allowed to
+                claim the task — other workers polling the queue
+                skip over it. This enables ``/fleet submit --to X``
+                and ``@X`` leader-view dispatch to actually land
+                on the intended agent instead of the first idle
+                worker. Phase 5.11 requirement (2026-04-12).
+        """
         tasks = self._load()
         task_id = f"task_{int(time.time())}_{len(tasks)}"
         tasks.append({
@@ -167,6 +184,7 @@ class SharedTaskQueue:
             'description': description,
             'status': 'available',  # available, claimed, completed, failed
             'created_by': created_by,
+            'intended_for': intended_for,
             'claimed_by': None,
             'created_at': time.time(),
             'claimed_at': None,
@@ -178,16 +196,26 @@ class SharedTaskQueue:
     def try_claim_next(self, agent_name: str) -> Optional[Dict]:
         """Atomically claim the next available task.
 
-        Returns the claimed task or None if no tasks available.
+        Skips tasks whose ``intended_for`` is set to a different
+        agent — they're reserved for that specific recipient. Tasks
+        with ``intended_for=None`` (or missing, for legacy on-disk
+        state) are up for grabs by any worker.
+
+        Returns the claimed task or None if nothing claimable is
+        available for this agent.
         """
         tasks = self._load()
         for task in tasks:
-            if task['status'] == 'available':
-                task['status'] = 'claimed'
-                task['claimed_by'] = agent_name
-                task['claimed_at'] = time.time()
-                self._save(tasks)
-                return task
+            if task['status'] != 'available':
+                continue
+            intended = task.get('intended_for')
+            if intended is not None and intended != agent_name:
+                continue
+            task['status'] = 'claimed'
+            task['claimed_by'] = agent_name
+            task['claimed_at'] = time.time()
+            self._save(tasks)
+            return task
         return None
 
     def complete_task(self, task_id: str, result: str = ""):
