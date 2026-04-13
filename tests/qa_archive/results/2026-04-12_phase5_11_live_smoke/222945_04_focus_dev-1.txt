@@ -1,0 +1,60 @@
+ FLEET  fin-core │ uptime 55s │ [mgr-1] @fin-rt @fin-rsrch @dev-1* @dev-2                                                                   
+╭─ @dev-1   (coding · worker)  project=fin-core
+│
+│  ·: llm call started (deepseek-reasoner)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  you: In one sentence, explain what a Python decorator is. Start with 'DEV-1:'.
+│  you: In one sentence, explain what a Python decorator is. Start with 'DEV-1:'.
+│  you: In one sentence, explain what a Python decorator is. Start with 'DEV-1:'.
+│
+╰─ type and Enter to dispatch to @dev-1  •  Ctrl+← / Ctrl+→ cycle  •  Esc → leader  •  Ctrl+D exit
+ 
+ 
+ 
+ 
+ 
+ 
+ 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ › sub-agent mode · type a message and press Enter to dispatch to @dev-1 
+                                                                                                                                            
+ Ctrl+← / Ctrl+→ cycle focus   Esc → leader   Ctrl+D exit multi-agent view   /exit or /fleet stop to tear down                              
