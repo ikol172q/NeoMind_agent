@@ -30,6 +30,7 @@ import asyncio
 import json
 import logging
 import re
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from agent_config import agent_config
@@ -40,12 +41,31 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "execute_task",
     "LlmCallable",
+    "EventSink",
     "WorkerTurnError",
 ]
 
 
 # Signature: (model, system_prompt, user_prompt) -> str
 LlmCallable = Callable[[str, str, str], Awaitable[str]]
+
+# Signature: (member_name, event_dict) -> None
+# event_dict must contain at least {"kind": str}; common keys include
+# "content", "model", "duration_s", "task_id", "layer_used", "error".
+EventSink = Callable[[str, Dict[str, Any]], None]
+
+
+def _emit(
+    sink: Optional[EventSink], member_name: str, kind: str, content: str = "",
+    **metadata: Any,
+) -> None:
+    """Safely publish an event — never crashes the caller."""
+    if sink is None:
+        return
+    try:
+        sink(member_name, {"kind": kind, "content": content, **metadata})
+    except Exception as exc:
+        logger.debug("event_sink raised (ignored): %s", exc)
 
 
 class WorkerTurnError(Exception):
@@ -158,6 +178,8 @@ async def _execute_fin(
     task: Dict[str, Any],
     llm_call: LlmCallable,
     project_id: Optional[str],
+    event_sink: Optional[EventSink] = None,
+    member_name: str = "",
 ) -> Dict[str, Any]:
     """Fin persona: parse signal, write analysis record, return summary."""
     from agent.finance.signal_schema import parse_signal
@@ -167,7 +189,15 @@ async def _execute_fin(
     model = agent_config.model
 
     user_prompt = task.get("description", "")
+    _emit(event_sink, member_name, "llm_call_start",
+          content=f"{model}", model=model, prompt_len=len(user_prompt))
+    t0 = time.monotonic()
     raw_response = await llm_call(model, system_prompt, user_prompt)
+    elapsed = time.monotonic() - t0
+    _emit(event_sink, member_name, "llm_call_end",
+          content=f"{elapsed:.2f}s, {len(raw_response)} chars",
+          duration_s=elapsed, response_len=len(raw_response),
+          preview=raw_response[:200])
 
     analysis, layer = parse_signal(raw_response)
 
@@ -197,6 +227,8 @@ async def _execute_fin(
 
 async def _execute_coding(
     task: Dict[str, Any], llm_call: LlmCallable,
+    event_sink: Optional[EventSink] = None,
+    member_name: str = "",
 ) -> Dict[str, Any]:
     """Coding persona: minimal LLM-only path for Phase 4. Full agentic
     loop integration (tool calls, Edit/Bash dispatch, iterative
@@ -206,7 +238,16 @@ async def _execute_coding(
     model = agent_config.model
     user_prompt = task.get("description", "")
 
+    _emit(event_sink, member_name, "llm_call_start",
+          content=f"{model}", model=model, prompt_len=len(user_prompt))
+    t0 = time.monotonic()
     response = await llm_call(model, system_prompt, user_prompt)
+    elapsed = time.monotonic() - t0
+    _emit(event_sink, member_name, "llm_call_end",
+          content=f"{elapsed:.2f}s, {len(response)} chars",
+          duration_s=elapsed, response_len=len(response),
+          preview=response[:200])
+
     return {
         "status": "completed",
         "result": response,
@@ -217,6 +258,8 @@ async def _execute_coding(
 
 async def _execute_chat(
     task: Dict[str, Any], llm_call: LlmCallable,
+    event_sink: Optional[EventSink] = None,
+    member_name: str = "",
 ) -> Dict[str, Any]:
     """Chat persona-as-worker: minimal text return. Main use of chat
     in fleet is as a leader (see ChatSupervisor), not a worker. This
@@ -225,7 +268,16 @@ async def _execute_chat(
     model = agent_config.model
     user_prompt = task.get("description", "")
 
+    _emit(event_sink, member_name, "llm_call_start",
+          content=f"{model}", model=model, prompt_len=len(user_prompt))
+    t0 = time.monotonic()
     response = await llm_call(model, system_prompt, user_prompt)
+    elapsed = time.monotonic() - t0
+    _emit(event_sink, member_name, "llm_call_end",
+          content=f"{elapsed:.2f}s, {len(response)} chars",
+          duration_s=elapsed, response_len=len(response),
+          preview=response[:200])
+
     return {
         "status": "completed",
         "result": response,
@@ -244,6 +296,7 @@ async def execute_task(
     llm_call: Optional[LlmCallable] = None,
     shared_memory: Optional[Any] = None,
     project_id: Optional[str] = None,
+    event_sink: Optional[EventSink] = None,
 ) -> Dict[str, Any]:
     """Execute one claimed task for the given fleet member.
 
@@ -279,6 +332,10 @@ async def execute_task(
     """
     call = llm_call or _default_llm_call
 
+    _emit(event_sink, member.name, "task_received",
+          content=task.get("description", "")[:200],
+          task_id=task.get("id"))
+
     # Fail-fast gate (Phase 3 integration — honors kpi_snapshot's
     # fail_fast feedback writes).
     fail_fast_hit = _check_fail_fast(shared_memory, project_id, max_age_hours=24.0)
@@ -287,6 +344,8 @@ async def execute_task(
             "worker %s: fail_fast active for project %s, bailing: %s",
             member.name, project_id, fail_fast_hit.get("content", "")[:80],
         )
+        _emit(event_sink, member.name, "task_failed",
+              content="fail_fast signal active", task_id=task.get("id"))
         return {
             "status": "failed",
             "result": (
@@ -300,20 +359,37 @@ async def execute_task(
     # Persona dispatch — the ONE legitimate persona branch in fleet code
     try:
         if member.persona == "fin":
-            return await _execute_fin(task, call, project_id)
+            result = await _execute_fin(
+                task, call, project_id,
+                event_sink=event_sink, member_name=member.name,
+            )
         elif member.persona == "coding":
-            return await _execute_coding(task, call)
+            result = await _execute_coding(
+                task, call, event_sink=event_sink, member_name=member.name,
+            )
         elif member.persona == "chat":
-            return await _execute_chat(task, call)
+            result = await _execute_chat(
+                task, call, event_sink=event_sink, member_name=member.name,
+            )
         else:
             raise WorkerTurnError(
                 f"unknown persona {member.persona!r} for member {member.name!r}"
             )
+        _emit(event_sink, member.name, "task_completed",
+              content=f"layer={result.get('layer_used', 'text')}, "
+                      f"artifacts={len(result.get('artifacts', []))}",
+              task_id=task.get("id"),
+              layer_used=result.get("layer_used"))
+        return result
     except Exception as exc:
         logger.exception(
             "execute_task failed for member %s (persona=%s)",
             member.name, member.persona,
         )
+        _emit(event_sink, member.name, "task_failed",
+              content=f"{type(exc).__name__}: {exc}",
+              task_id=task.get("id"),
+              error=str(exc))
         return {
             "status": "failed",
             "result": f"exception: {type(exc).__name__}: {exc}",
