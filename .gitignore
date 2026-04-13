@@ -61,7 +61,11 @@ env/
 run.sh
 
 # DeepSeek Agent specific
-.claude/
+# .claude/ — allow committing skills, ignore session-local state
+.claude/settings.local.json
+.claude/projects/
+.claude/cache/
+.claude/logs/
 .user/
 
 # Safety audit logs
