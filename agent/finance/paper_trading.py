@@ -10,6 +10,7 @@ Created: 2026-04-02 (Phase 3 - Finance 赚钱引擎)
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime
 from typing import List, Dict, Optional, Any
@@ -146,7 +147,8 @@ class PaperTradingEngine:
         initial_capital: float = 100000.0,
         commission_rate: float = DEFAULT_COMMISSION_RATE,
         slippage_rate: float = 0.0005,  # 0.05%
-        data_dir: Optional[Path] = None
+        data_dir: Optional[Path] = None,
+        risk_manager: Optional[Any] = None,
     ):
         """
         Initialize paper trading engine.
@@ -156,11 +158,26 @@ class PaperTradingEngine:
             commission_rate: Commission rate per trade
             slippage_rate: Simulated slippage rate
             data_dir: Directory for persistence
+            risk_manager: Optional ``RiskManager`` instance. When
+                provided, ``place_order`` consults
+                ``risk_manager.assess_trade(...)`` before filling and
+                rejects the order if ``assessment.allowed`` is False.
+                When None (default), the engine operates in legacy
+                advisory-only mode and no risk checks run. Opt-in
+                enforcement avoids breaking existing callers that
+                don't know about the new wiring.
+
+                Kill switch: set env var
+                ``NEOMIND_PAPER_TRADING_BYPASS_RISK=1`` to disable the
+                check even when a risk_manager is attached. Useful for
+                backtests that want to measure what *would* have
+                happened without risk rejections.
         """
         self.commission_rate = commission_rate
         self.slippage_rate = slippage_rate
         self.data_dir = data_dir or Path.home() / ".neomind" / "paper_trading"
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        self.risk_manager = risk_manager
 
         # Account state
         self.account = Account(
@@ -262,6 +279,39 @@ class PaperTradingEngine:
         )
 
         self.orders[order_id] = order
+
+        # Risk check (Phase 2 enforcement — only when a risk_manager is attached
+        # and the kill switch isn't set). Matches the existing rejection
+        # convention: set order.status = REJECTED + metadata['error'] + 'risk_*'
+        # instead of raising. Returns early so nothing is filled.
+        if (
+            self.risk_manager is not None
+            and os.environ.get("NEOMIND_PAPER_TRADING_BYPASS_RISK") != "1"
+        ):
+            # For limit/stop orders the intended fill price is the
+            # limit/stop level; for market orders we use the latest quote
+            # (or fall back to the order.price hint if the price cache
+            # is empty — risk should still run even if data is stale).
+            check_price = (
+                self._prices.get(symbol)
+                or price
+                or stop_price
+                or 0.0
+            )
+            assessment = self.risk_manager.assess_trade(
+                symbol=symbol,
+                side=side,
+                quantity=quantity,
+                price=check_price,
+                current_positions=self.account.positions,
+            )
+            if not assessment.allowed:
+                order.status = OrderStatus.REJECTED
+                joined = "; ".join(assessment.warnings) or "risk check failed"
+                order.metadata['error'] = f"risk_rejected: {joined}"
+                order.metadata['risk_level'] = assessment.risk_level.value
+                order.metadata['risk_warnings'] = list(assessment.warnings)
+                return order
 
         # Execute market orders immediately
         if order_type == OrderType.MARKET:
