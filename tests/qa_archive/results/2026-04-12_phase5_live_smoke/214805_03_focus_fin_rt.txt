@@ -1,0 +1,60 @@
+╭─ @fin-rt (fin · worker)  project=fin-core
+│  Isolated conversation view for this agent. Leader's main session is preserved underneath.
+│
+│  • [21:47:54] spawned: persona=fin role=worker
+│
+╰─ type to dispatch a task • Ctrl+← / Ctrl+→ switch agent • Ctrl+Home back to leader
+[@fin-rt fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,957/131k 3msg | [mgr-1] @fin-rt* @fin-rsrch @dev-1 @dev-2  Ctrl+O think  / cmds  Ctrl+D exit         
