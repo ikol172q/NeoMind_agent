@@ -79,7 +79,7 @@ def test_av_fetch_parses_global_quote(hub_with_av_key):
         "agent.finance.data_hub.requests.get",
         _mock_requests_get(_AV_SUCCESS_PAYLOAD),
     ):
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub_with_av_key._get_alphavantage_quote("AAPL")
         )
     assert quote is not None
@@ -98,7 +98,7 @@ def test_av_fetch_returns_none_on_http_error(hub_with_av_key):
         "agent.finance.data_hub.requests.get",
         _mock_requests_get(status=500),
     ):
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub_with_av_key._get_alphavantage_quote("AAPL")
         )
     assert quote is None
@@ -112,7 +112,7 @@ def test_av_fetch_returns_none_on_throttle_note(hub_with_av_key):
         "agent.finance.data_hub.requests.get",
         _mock_requests_get(throttled),
     ):
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub_with_av_key._get_alphavantage_quote("AAPL")
         )
     assert quote is None
@@ -124,7 +124,7 @@ def test_av_fetch_returns_none_on_network_exception(hub_with_av_key):
         "agent.finance.data_hub.requests.get",
         side_effect=requests.RequestException("connection refused"),
     ):
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub_with_av_key._get_alphavantage_quote("AAPL")
         )
     assert quote is None
@@ -135,7 +135,7 @@ def test_av_fetch_returns_none_when_no_key(monkeypatch):
     hub = FinanceDataHub()
     # Should short-circuit without making any HTTP call
     with patch("agent.finance.data_hub.requests.get") as mock_get:
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub._get_alphavantage_quote("AAPL")
         )
     assert quote is None
@@ -148,7 +148,7 @@ def test_av_fetch_returns_none_when_price_is_zero(hub_with_av_key):
         "agent.finance.data_hub.requests.get",
         _mock_requests_get(bad),
     ):
-        quote = asyncio.get_event_loop().run_until_complete(
+        quote = asyncio.run(
             hub_with_av_key._get_alphavantage_quote("AAPL")
         )
     assert quote is None
@@ -175,7 +175,7 @@ def test_get_quote_us_falls_through_to_alphavantage(monkeypatch):
              "agent.finance.data_hub.requests.get",
              _mock_requests_get(_AV_SUCCESS_PAYLOAD),
          ):
-        quote = asyncio.get_event_loop().run_until_complete(hub.get_quote("AAPL"))
+        quote = asyncio.run(hub.get_quote("AAPL"))
 
     assert quote is not None
     assert quote.price.source == "AlphaVantage"
@@ -200,7 +200,7 @@ def test_get_quote_us_falls_through_to_yfinance_when_av_key_missing(monkeypatch)
          patch.object(hub, "_get_yfinance_quote", side_effect=fake_yf), \
          patch("agent.finance.data_hub.HAS_YFINANCE", True), \
          patch("agent.finance.data_hub.requests.get") as mock_get:
-        quote = asyncio.get_event_loop().run_until_complete(hub.get_quote("AAPL"))
+        quote = asyncio.run(hub.get_quote("AAPL"))
 
     assert quote is not None
     assert yf_called == ["AAPL"]
