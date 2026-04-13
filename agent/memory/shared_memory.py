@@ -444,6 +444,69 @@ class SharedMemory:
         conn.commit()
         return cursor.lastrowid
 
+    def recall_feedback(
+        self,
+        feedback_type: Optional[str] = None,
+        project_id: Optional[str] = None,
+        max_age_hours: Optional[float] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """
+        Recall feedback with filters. Richer than get_recent_feedback —
+        supports type/project/age filtering and returns the Phase 4
+        cross-persona fields (source_instance, project_id).
+
+        Added in Phase 4.B (2026-04-12) to support the fleet worker's
+        fail_fast check on task entry.
+
+        Args:
+            feedback_type: Optional filter (e.g. "fail_fast", "correction").
+            project_id: Optional filter to limit results to one project.
+            max_age_hours: If provided, drop entries older than this many
+                hours (compared against ISO created_at timestamps).
+            limit: Max rows.
+
+        Returns:
+            List of feedback dicts newest first, each with id,
+            feedback_type, content, source_mode, source_instance,
+            project_id, created_at.
+        """
+        conn = self._get_conn()
+        conditions = []
+        params: list = []
+        if feedback_type:
+            conditions.append("feedback_type = ?")
+            params.append(feedback_type)
+        if project_id:
+            conditions.append("project_id = ?")
+            params.append(project_id)
+        if max_age_hours is not None and max_age_hours > 0:
+            from datetime import datetime, timedelta, timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=max_age_hours)
+            conditions.append("created_at >= ?")
+            params.append(cutoff.isoformat())
+
+        where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+        params.append(limit)
+        rows = conn.execute(
+            "SELECT id, feedback_type, content, source_mode, source_instance, "
+            f"project_id, created_at FROM feedback{where} "
+            "ORDER BY created_at DESC LIMIT ?",
+            params,
+        ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "feedback_type": row["feedback_type"],
+                "content": row["content"],
+                "source_mode": row["source_mode"],
+                "source_instance": row["source_instance"],
+                "project_id": row["project_id"],
+                "created_at": row["created_at"],
+            }
+            for row in rows
+        ]
+
     def get_recent_feedback(self, limit: int = 10) -> List[Dict[str, Any]]:
         """
         Get recent user feedback.
