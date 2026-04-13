@@ -194,7 +194,13 @@ def write_analysis(
         raise InvestmentPathError(f"Invalid symbol {symbol!r}")
 
     now = datetime.now()
-    filename = f"{now.strftime('%Y-%m-%d_%H%M%S')}_{symbol_upper}.json"
+    # Include microseconds so rapid successive writes of the same symbol
+    # (e.g. a fin worker batch-analyzing) don't collide on a 1-second
+    # filename. Format: YYYY-MM-DD_HHMMSS_microseconds_SYMBOL.json
+    filename = (
+        f"{now.strftime('%Y-%m-%d_%H%M%S')}_"
+        f"{now.microsecond:06d}_{symbol_upper}.json"
+    )
     target = _validate_destination(proj / "analyses" / filename, get_investment_root())
     target.parent.mkdir(parents=True, exist_ok=True)
     payload = {
