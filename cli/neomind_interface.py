@@ -303,18 +303,14 @@ class NeoMindInterface:
         # ── Phase 5: Fleet multi-agent monitor (2026-04-12) ─────────
         # In-session FleetSession wrapper; None when no fleet active.
         # Populated by /fleet start, cleared by /fleet stop. When set,
-        # the bottom toolbar renders tags, Ctrl+arrow key bindings
-        # cycle focus, and input routing checks whether focus is on a
-        # sub-agent before falling through to the main persona.
+        # the bottom toolbar renders tags and /fleet commands become
+        # available. Visual focus switching (the multi-agent tabbed
+        # view) is handled by a separate prompt_toolkit Application
+        # defined in cli/fleet_app.py, which takes over the terminal
+        # for the duration of /fleet start and returns control here
+        # on /fleet stop or Ctrl+D. This split keeps the PromptSession
+        # path (chat/coding/fin single session) completely untouched.
         self._fleet_session: Optional[Any] = None
-        # Tracks whether the terminal is currently in its alternate
-        # screen buffer. We enter the alt screen when the user focuses
-        # on a sub-agent so each agent has a visually isolated
-        # conversation view — the leader's main scrollback is
-        # preserved underneath and restored exactly on Ctrl+Home /
-        # /fleet focus leader. See _enter_fleet_alt_screen /
-        # _leave_fleet_alt_screen below.
-        self._fleet_in_alt_screen: bool = False
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
@@ -587,128 +583,6 @@ class NeoMindInterface:
         future = asyncio.run_coroutine_threadsafe(coro, cls._fleet_bg_loop)
         return future.result()
 
-    # ── Alt-screen plumbing for isolated sub-agent views ─────────────
-
-    def _enter_fleet_alt_screen(self) -> None:
-        """Switch the terminal into its alternate screen buffer.
-
-        Standard VT100 sequence ``\\x1b[?1049h`` — same one vim, less
-        and tmux use. The primary screen (with the leader's
-        conversation scrollback) is preserved underneath. The alt
-        screen starts blank, so printing the focused sub-agent's
-        view gives it a clean, visually-isolated canvas. Leaving the
-        alt screen with ``\\x1b[?1049l`` restores the primary screen
-        exactly as it was.
-        """
-        if self._fleet_in_alt_screen:
-            return
-        sys.stdout.write("\x1b[?1049h\x1b[H")
-        sys.stdout.flush()
-        self._fleet_in_alt_screen = True
-
-    def _leave_fleet_alt_screen(self) -> None:
-        """Restore the primary terminal screen (leader's scrollback)."""
-        if not self._fleet_in_alt_screen:
-            return
-        sys.stdout.write("\x1b[?1049l")
-        sys.stdout.flush()
-        self._fleet_in_alt_screen = False
-
-    def _clear_fleet_alt_screen(self) -> None:
-        """Wipe the alt screen contents without leaving it.
-
-        Used when switching focus between two sub-agents: we stay in
-        the alt screen (so the leader's primary scrollback stays
-        hidden/preserved) but blank the canvas so the old sub-agent's
-        view doesn't bleed into the new one.
-        """
-        if not self._fleet_in_alt_screen:
-            return
-        sys.stdout.write("\x1b[2J\x1b[H")
-        sys.stdout.flush()
-
-    def _render_focus_view(self) -> None:
-        """Render the currently-focused fleet view.
-
-        Uses terminal alternate-screen mode so each sub-agent gets a
-        visually isolated canvas. Switching back to the leader leaves
-        the alt screen, which restores the primary screen exactly —
-        the user's main conversation scrollback is preserved bit-for-
-        bit. Switching between two sub-agents clears the alt screen
-        but stays in it, so the primary scrollback stays hidden.
-        """
-        session = self._fleet_session
-        if session is None:
-            return
-        from fleet.session import LEADER_FOCUS
-
-        # Leader focus: leave alt screen (restores primary scrollback),
-        # then print a small transition marker so the user sees the
-        # switch happened even without any new content.
-        if session.is_focused_on_leader():
-            was_in_alt = self._fleet_in_alt_screen
-            self._leave_fleet_alt_screen()
-            if was_in_alt:
-                self._print(
-                    f"[dim]── back to [/dim][bold cyan]{session.project_id}[/bold cyan] "
-                    f"[dim](leader / main session) ──[/dim]"
-                )
-            else:
-                self._print(
-                    f"[dim]── focus → [/dim][bold cyan]{session.project_id}[/bold cyan] "
-                    f"[dim](leader / main session) ──[/dim]"
-                )
-            return
-
-        # Sub-agent focus: enter alt screen (or clear it if already
-        # inside) and render the focused view on a clean canvas.
-        name = session.focused_member_name()
-        member = session.get_member(name) if name else None
-        if not member:
-            return
-        if self._fleet_in_alt_screen:
-            self._clear_fleet_alt_screen()
-        else:
-            self._enter_fleet_alt_screen()
-
-        # Header — both Rich and fallback-safe
-        header = (
-            f"[bold magenta]╭─ @{member.name}[/bold magenta] "
-            f"[dim]({member.persona} · {member.role})  "
-            f"project={session.project_id}[/dim]"
-        )
-        self._print(header)
-        self._print(
-            "[dim]│  Isolated conversation view for this agent. "
-            "Leader's main session is preserved underneath.[/dim]"
-        )
-        self._print("[dim]│[/dim]")
-
-        events = session.recent_events(name, limit=20)
-        if not events:
-            self._print("[dim]│  (no events yet — type to send a task)[/dim]")
-        else:
-            for ev in events:
-                color = self._fleet_event_color(ev.kind)
-                self._print(
-                    f"[dim]│[/dim]  [{color}]•[/{color}] "
-                    f"[dim]{ev.render()[:150]}[/dim]"
-                )
-        self._print("[dim]│[/dim]")
-
-        # Show any past user inputs typed while focused on this member
-        recent_inputs = session.input_history(name)[-5:]
-        if recent_inputs:
-            self._print("[dim]│  recent commands you sent to this agent:[/dim]")
-            for cmd in recent_inputs:
-                self._print(f"[dim]│    › {cmd[:120]}[/dim]")
-            self._print("[dim]│[/dim]")
-
-        self._print(
-            "[dim]╰─ type to dispatch a task • Ctrl+← / Ctrl+→ switch agent "
-            "• Ctrl+Home back to leader[/dim]"
-        )
-
     @staticmethod
     def _fleet_event_color(kind: str) -> str:
         return {
@@ -830,10 +704,6 @@ class NeoMindInterface:
         if self._fleet_session is None:
             self._print("[yellow]No fleet running[/yellow]")
             return
-        # Leave alt screen FIRST so the "Fleet stopped" confirmation
-        # lands on the user's main scrollback (not on the about-to-
-        # be-discarded sub-agent canvas).
-        self._leave_fleet_alt_screen()
         try:
             self._fleet_async_run(self._fleet_session.stop())
         except Exception as exc:
@@ -923,57 +793,28 @@ class NeoMindInterface:
             self._print(f"[red]Dispatch failed:[/red] {exc}")
 
     def _compute_prompt_str(self) -> str:
-        """Compute the prompt string, adapted to fleet focus when
-        active. Leader/no-fleet: existing mode-based prompt. Sub-agent
-        focus: `[@member-name]> ` so the user can see at a glance who
-        they're talking to."""
-        if (
-            self._fleet_session is not None
-            and not self._fleet_session.is_focused_on_leader()
-        ):
-            name = self._fleet_session.focused_member_name()
-            member = self._fleet_session.get_member(name) if name else None
-            persona = member.persona if member else ""
-            return f"[@{name} {persona}] > "
+        """Compute the prompt string for PromptSession mode.
+
+        In this (single-session) mode the prompt always reflects
+        chat/coding/fin mode. Multi-agent focus routing lives in the
+        separate fleet_app.FleetApplication layer and has its own
+        prompt rendering.
+        """
         if self.chat.mode == "coding":
             return "> "
         if self.chat.mode == "fin":
             return "[fin] > "
         return f"[{self.chat.mode}] > "
 
-    def _fleet_dispatch_focused(self, text: str) -> None:
-        """Dispatch `text` as a task to the currently-focused sub-agent.
-        Called from the main loop when the user types input while
-        focused on a non-leader member.
-
-        Because we're in the agent's alt-screen view, the confirmation
-        and subsequent events should land on the same isolated canvas.
-        We print the confirmation directly (it's already inside the
-        alt screen). The user can press Ctrl+←/→ to cycle through and
-        come back to see updated events as the agent runs.
-        """
-        session = self._fleet_session
-        if session is None or session.is_focused_on_leader():
-            return
-        name = session.focused_member_name()
-        if not name:
-            return
-        # Record the input in the per-member history for recall
-        session.record_input(name, text)
-        try:
-            task_id = self._fleet_async_run(
-                session.submit_to_member(name, text)
-            )
-            self._print(
-                f"[dim]│[/dim]  [green]✓[/green] Task [dim]{task_id}[/dim] queued for "
-                f"[magenta]@{name}[/magenta]. "
-                f"[dim]Events appear below as the agent runs; "
-                f"press Ctrl+→ then Ctrl+← to refresh.[/dim]"
-            )
-        except Exception as exc:
-            self._print(f"[dim]│[/dim]  [red]Dispatch failed:[/red] {exc}")
-
     def _fleet_cmd_focus(self, target: str) -> None:
+        """Set the focused member on the FleetSession state.
+
+        In PromptSession mode this is just a state setter — the visual
+        focused view lives in the fleet_app.FleetApplication mode
+        (entered via /fleet start). Calling /fleet focus here preps
+        the state so when the user next enters the multi-agent view
+        it starts on the chosen target.
+        """
         if self._fleet_session is None:
             self._print("[yellow]No fleet running[/yellow]")
             return
@@ -981,10 +822,15 @@ class NeoMindInterface:
         target = target.strip()
         if not target or target == "leader" or target == "main":
             if self._fleet_session.set_focus(LEADER_FOCUS):
-                self._render_focus_view()
+                self._print(
+                    "[green]✓[/green] Focus set to leader (main session)"
+                )
             return
         if self._fleet_session.set_focus(target):
-            self._render_focus_view()
+            self._print(
+                f"[green]✓[/green] Focus set to [magenta]@{target}[/magenta] "
+                f"[dim](enter multi-agent view with /fleet show to see it)[/dim]"
+            )
         else:
             self._print(
                 f"[yellow]Cannot focus on[/yellow] {target!r} "
@@ -2363,33 +2209,12 @@ class NeoMindInterface:
             """Ctrl+E: open /expand to view thinking turns."""
             event.app.exit(result="/expand")
 
-        # ── Phase 5: Fleet multi-agent focus navigation ────────────
-        # Ctrl+→ / Ctrl+← cycle the focus through
-        # [leader, @member1, @member2, ...]. Ctrl+Home returns focus
-        # to the leader directly. All three exit the prompt with a
-        # sentinel result so the main loop can detect and redraw.
-        # No-ops when no fleet is active.
-        @bindings.add("c-right")
-        def _fleet_focus_next(event):
-            if self._fleet_session is None:
-                return
-            self._fleet_session.cycle_focus(+1)
-            event.app.exit(result="__fleet_refocus__")
-
-        @bindings.add("c-left")
-        def _fleet_focus_prev(event):
-            if self._fleet_session is None:
-                return
-            self._fleet_session.cycle_focus(-1)
-            event.app.exit(result="__fleet_refocus__")
-
-        @bindings.add("c-home")
-        def _fleet_focus_leader(event):
-            if self._fleet_session is None:
-                return
-            from fleet.session import LEADER_FOCUS
-            self._fleet_session.set_focus(LEADER_FOCUS)
-            event.app.exit(result="__fleet_refocus__")
+        # Fleet multi-agent focus navigation (Ctrl+←/→/Home) lives in
+        # the separate cli/fleet_app.py Application layer — not in
+        # PromptSession. Reason: prompt_toolkit's session.prompt()
+        # isn't the right primitive for a tabbed multi-view UI; the
+        # full Application + Layout path is. /fleet start enters that
+        # path; /fleet stop or Ctrl+D returns here.
 
         self._completer = SlashCommandCompleter(
             mode=self.chat.mode,
@@ -2432,19 +2257,10 @@ class NeoMindInterface:
 
         while self.running:
             try:
-                # Prompt string varies by mode AND by fleet focus
                 prompt_str = self._compute_prompt_str()
                 user_input = session.prompt(prompt_str)
 
                 if user_input is None:
-                    continue
-
-                # ── Phase 5: fleet focus sentinel ────────────────
-                # Ctrl+→/←/Home bindings exit the prompt with this
-                # sentinel; redraw the focus view and restart the
-                # prompt without dispatching any input.
-                if user_input == "__fleet_refocus__":
-                    self._render_focus_view()
                     continue
 
                 user_input = user_input.strip()
@@ -2457,48 +2273,6 @@ class NeoMindInterface:
                     cont = session.prompt("... ")
                     if cont is not None:
                         user_input += "\n" + cont
-
-                # ── Phase 5: focus-aware input routing ───────────
-                # When the fleet is running AND focus is on a sub-
-                # agent (not the leader), non-slash input is
-                # dispatched as a task to that sub-agent. Slash
-                # commands still fall through to _handle_local_command
-                # so /fleet stop, /fleet focus leader, etc. keep
-                # working while focused on a sub-agent.
-                if (
-                    self._fleet_session is not None
-                    and not self._fleet_session.is_focused_on_leader()
-                    and not user_input.startswith("/")
-                ):
-                    self._fleet_dispatch_focused(user_input)
-                    continue
-
-                # ── Phase 5: leader-view @mention inline dispatch ─
-                # When focused on the leader AND the input begins
-                # with @<member-name>, dispatch the remainder as a
-                # task to that member without requiring focus
-                # switching. Unknown mentions fall through as normal
-                # LLM input (no surprise blocking on typos).
-                if (
-                    self._fleet_session is not None
-                    and self._fleet_session.is_focused_on_leader()
-                    and not user_input.startswith("/")
-                ):
-                    mention = self._fleet_session.handle_leader_input(user_input)
-                    if mention is not None:
-                        target_member, rest = mention
-                        try:
-                            task_id = self._fleet_async_run(
-                                self._fleet_session.submit_to_member(target_member, rest)
-                            )
-                            self._print(
-                                f"[green]✓[/green] Dispatched [dim]{task_id}[/dim] "
-                                f"to [magenta]@{target_member}[/magenta]: "
-                                f"[dim]{rest[:80]}[/dim]"
-                            )
-                        except Exception as exc:
-                            self._print(f"[red]Mention dispatch failed:[/red] {exc}")
-                        continue
 
                 # Try local commands first
                 if user_input.startswith("/"):
