@@ -307,6 +307,14 @@ class NeoMindInterface:
         # cycle focus, and input routing checks whether focus is on a
         # sub-agent before falling through to the main persona.
         self._fleet_session: Optional[Any] = None
+        # Tracks whether the terminal is currently in its alternate
+        # screen buffer. We enter the alt screen when the user focuses
+        # on a sub-agent so each agent has a visually isolated
+        # conversation view — the leader's main scrollback is
+        # preserved underneath and restored exactly on Ctrl+Home /
+        # /fleet focus leader. See _enter_fleet_alt_screen /
+        # _leave_fleet_alt_screen below.
+        self._fleet_in_alt_screen: bool = False
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
@@ -514,56 +522,191 @@ class NeoMindInterface:
 
     # ── Fleet multi-agent monitor (Phase 5) ───────────────────────────────
 
-    def _fleet_async_run(self, coro):
-        """Run an async coroutine from synchronous CLI context.
+    # Background asyncio loop for fleet operations. Lazy-created on first
+    # /fleet start and kept alive until the interpreter exits (daemon
+    # thread). This is load-bearing for Phase 5: a synchronous REPL can't
+    # pump a long-lived asyncio fleet via the `get_event_loop().run_until_
+    # complete()` pattern — that pattern only drives the loop during the
+    # brief window of each call, so fleet workers would freeze between
+    # user inputs AND cross-call task references would fail with
+    # "future belongs to a different loop" errors (caught by Phase 5.10
+    # iTerm2 live smoke 2026-04-12). Using a dedicated thread + persistent
+    # loop fixes both problems in one move.
+    _fleet_bg_loop = None  # type: ignore
+    _fleet_bg_thread = None  # type: ignore
 
-        Mirrors the pattern used by the new command dispatcher above:
-        try the existing event loop, fall back to asyncio.run() when
-        no loop is running. Returns the coroutine's result or raises
-        on exception.
+    def _fleet_async_run(self, coro):
+        """Run an async coroutine on the dedicated background loop.
+
+        Submits the coroutine via asyncio.run_coroutine_threadsafe and
+        blocks the CLI thread until it completes (or raises). Short
+        operations (start, stop, submit, status) complete in
+        milliseconds. Long operations should not be run through this
+        helper — the fleet's own background workers run on the same
+        loop and make progress independently of the CLI thread.
         """
         import asyncio
-        try:
-            return asyncio.get_event_loop().run_until_complete(coro)
-        except RuntimeError:
-            return asyncio.run(coro)
+        import threading
+        import time
+
+        # Lazy-create the background loop + thread on first call
+        cls = type(self)
+        if cls._fleet_bg_loop is None:
+            loop_ready = threading.Event()
+
+            def _run_loop():
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                cls._fleet_bg_loop = loop
+                loop_ready.set()
+                try:
+                    loop.run_forever()
+                finally:
+                    # Cancel any remaining tasks on teardown
+                    try:
+                        pending = asyncio.all_tasks(loop)
+                        for t in pending:
+                            t.cancel()
+                        if pending:
+                            loop.run_until_complete(
+                                asyncio.gather(*pending, return_exceptions=True)
+                            )
+                    except Exception:
+                        pass
+                    loop.close()
+
+            cls._fleet_bg_thread = threading.Thread(
+                target=_run_loop, name="neomind-fleet-loop", daemon=True,
+            )
+            cls._fleet_bg_thread.start()
+            loop_ready.wait(timeout=5.0)
+            if cls._fleet_bg_loop is None:
+                raise RuntimeError("fleet background loop failed to start")
+
+        # Submit the coroutine to the background loop and wait for it
+        future = asyncio.run_coroutine_threadsafe(coro, cls._fleet_bg_loop)
+        return future.result()
+
+    # ── Alt-screen plumbing for isolated sub-agent views ─────────────
+
+    def _enter_fleet_alt_screen(self) -> None:
+        """Switch the terminal into its alternate screen buffer.
+
+        Standard VT100 sequence ``\\x1b[?1049h`` — same one vim, less
+        and tmux use. The primary screen (with the leader's
+        conversation scrollback) is preserved underneath. The alt
+        screen starts blank, so printing the focused sub-agent's
+        view gives it a clean, visually-isolated canvas. Leaving the
+        alt screen with ``\\x1b[?1049l`` restores the primary screen
+        exactly as it was.
+        """
+        if self._fleet_in_alt_screen:
+            return
+        sys.stdout.write("\x1b[?1049h\x1b[H")
+        sys.stdout.flush()
+        self._fleet_in_alt_screen = True
+
+    def _leave_fleet_alt_screen(self) -> None:
+        """Restore the primary terminal screen (leader's scrollback)."""
+        if not self._fleet_in_alt_screen:
+            return
+        sys.stdout.write("\x1b[?1049l")
+        sys.stdout.flush()
+        self._fleet_in_alt_screen = False
+
+    def _clear_fleet_alt_screen(self) -> None:
+        """Wipe the alt screen contents without leaving it.
+
+        Used when switching focus between two sub-agents: we stay in
+        the alt screen (so the leader's primary scrollback stays
+        hidden/preserved) but blank the canvas so the old sub-agent's
+        view doesn't bleed into the new one.
+        """
+        if not self._fleet_in_alt_screen:
+            return
+        sys.stdout.write("\x1b[2J\x1b[H")
+        sys.stdout.flush()
 
     def _render_focus_view(self) -> None:
-        """Print a banner + recent events for the currently-focused fleet
-        member. Called on focus switch and after /fleet submit."""
+        """Render the currently-focused fleet view.
+
+        Uses terminal alternate-screen mode so each sub-agent gets a
+        visually isolated canvas. Switching back to the leader leaves
+        the alt screen, which restores the primary screen exactly —
+        the user's main conversation scrollback is preserved bit-for-
+        bit. Switching between two sub-agents clears the alt screen
+        but stays in it, so the primary scrollback stays hidden.
+        """
         session = self._fleet_session
         if session is None:
             return
         from fleet.session import LEADER_FOCUS
+
+        # Leader focus: leave alt screen (restores primary scrollback),
+        # then print a small transition marker so the user sees the
+        # switch happened even without any new content.
         if session.is_focused_on_leader():
-            self._print(
-                f"[dim]── focus → [/dim][bold cyan]{session.project_id}[/bold cyan] "
-                f"[dim](leader / main session)[/dim][dim] ──[/dim]"
-            )
+            was_in_alt = self._fleet_in_alt_screen
+            self._leave_fleet_alt_screen()
+            if was_in_alt:
+                self._print(
+                    f"[dim]── back to [/dim][bold cyan]{session.project_id}[/bold cyan] "
+                    f"[dim](leader / main session) ──[/dim]"
+                )
+            else:
+                self._print(
+                    f"[dim]── focus → [/dim][bold cyan]{session.project_id}[/bold cyan] "
+                    f"[dim](leader / main session) ──[/dim]"
+                )
             return
+
+        # Sub-agent focus: enter alt screen (or clear it if already
+        # inside) and render the focused view on a clean canvas.
         name = session.focused_member_name()
         member = session.get_member(name) if name else None
         if not member:
             return
+        if self._fleet_in_alt_screen:
+            self._clear_fleet_alt_screen()
+        else:
+            self._enter_fleet_alt_screen()
+
+        # Header — both Rich and fallback-safe
         header = (
-            f"[dim]── focus → [/dim][bold magenta]@{member.name}[/bold magenta] "
-            f"[dim]({member.persona} · {member.role})[/dim][dim] ──[/dim]"
+            f"[bold magenta]╭─ @{member.name}[/bold magenta] "
+            f"[dim]({member.persona} · {member.role})  "
+            f"project={session.project_id}[/dim]"
         )
         self._print(header)
-        events = session.recent_events(name, limit=15)
+        self._print(
+            "[dim]│  Isolated conversation view for this agent. "
+            "Leader's main session is preserved underneath.[/dim]"
+        )
+        self._print("[dim]│[/dim]")
+
+        events = session.recent_events(name, limit=20)
         if not events:
-            self._print("[dim]  (no events yet)[/dim]")
+            self._print("[dim]│  (no events yet — type to send a task)[/dim]")
         else:
             for ev in events:
                 color = self._fleet_event_color(ev.kind)
-                self._print(f"[dim]  {ev.render()[:150]}[/dim]".replace(
-                    f"[dim]  [", f"[dim]  ["
-                )) if False else self._print(
-                    f"  [{color}]•[/{color}] [dim]{ev.render()[:150]}[/dim]"
+                self._print(
+                    f"[dim]│[/dim]  [{color}]•[/{color}] "
+                    f"[dim]{ev.render()[:150]}[/dim]"
                 )
+        self._print("[dim]│[/dim]")
+
+        # Show any past user inputs typed while focused on this member
+        recent_inputs = session.input_history(name)[-5:]
+        if recent_inputs:
+            self._print("[dim]│  recent commands you sent to this agent:[/dim]")
+            for cmd in recent_inputs:
+                self._print(f"[dim]│    › {cmd[:120]}[/dim]")
+            self._print("[dim]│[/dim]")
+
         self._print(
-            "[dim]  ─── type to send a task to this agent, "
-            "or Ctrl+← / Ctrl+→ to switch, Ctrl+Home to return to leader ───[/dim]"
+            "[dim]╰─ type to dispatch a task • Ctrl+← / Ctrl+→ switch agent "
+            "• Ctrl+Home back to leader[/dim]"
         )
 
     @staticmethod
@@ -687,6 +830,10 @@ class NeoMindInterface:
         if self._fleet_session is None:
             self._print("[yellow]No fleet running[/yellow]")
             return
+        # Leave alt screen FIRST so the "Fleet stopped" confirmation
+        # lands on the user's main scrollback (not on the about-to-
+        # be-discarded sub-agent canvas).
+        self._leave_fleet_alt_screen()
         try:
             self._fleet_async_run(self._fleet_session.stop())
         except Exception as exc:
@@ -797,7 +944,14 @@ class NeoMindInterface:
     def _fleet_dispatch_focused(self, text: str) -> None:
         """Dispatch `text` as a task to the currently-focused sub-agent.
         Called from the main loop when the user types input while
-        focused on a non-leader member."""
+        focused on a non-leader member.
+
+        Because we're in the agent's alt-screen view, the confirmation
+        and subsequent events should land on the same isolated canvas.
+        We print the confirmation directly (it's already inside the
+        alt screen). The user can press Ctrl+←/→ to cycle through and
+        come back to see updated events as the agent runs.
+        """
         session = self._fleet_session
         if session is None or session.is_focused_on_leader():
             return
@@ -811,12 +965,13 @@ class NeoMindInterface:
                 session.submit_to_member(name, text)
             )
             self._print(
-                f"[green]✓[/green] Task [dim]{task_id}[/dim] queued for "
+                f"[dim]│[/dim]  [green]✓[/green] Task [dim]{task_id}[/dim] queued for "
                 f"[magenta]@{name}[/magenta]. "
-                f"[dim]Events will appear here as the agent runs.[/dim]"
+                f"[dim]Events appear below as the agent runs; "
+                f"press Ctrl+→ then Ctrl+← to refresh.[/dim]"
             )
         except Exception as exc:
-            self._print(f"[red]Dispatch failed:[/red] {exc}")
+            self._print(f"[dim]│[/dim]  [red]Dispatch failed:[/red] {exc}")
 
     def _fleet_cmd_focus(self, target: str) -> None:
         if self._fleet_session is None:
