@@ -1,0 +1,59 @@
+#!/bin/bash
+# NeoMind cross-mode pre-commit smoke
+#
+# Triggers: when staged changes touch shared code paths that affect multiple
+# modes (chat / fin / coding). Runs a fast boot smoke for each mode (~90s
+# total) to catch regressions before they reach main.
+#
+# Bypass for emergencies:  NEOMIND_SKIP_SMOKE=1 git commit ...
+#
+# Install (one-time per clone):  ./tools/hooks/install.sh
+
+set -e
+
+if [ -n "$NEOMIND_SKIP_SMOKE" ]; then
+    echo "[neomind-pre-commit] SKIP (NEOMIND_SKIP_SMOKE=1)"
+    exit 0
+fi
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+cd "$REPO_ROOT"
+
+# Shared code paths — change here if mode-cutting modules move
+SHARED_REGEX='^(agent/services/code_commands\.py|agent/services/nl_interpreter\.py|agent/core\.py|agent/agentic/agentic_loop\.py|agent/integration/telegram_bot\.py|agent/coding/tools\.py|agent/config/.*\.yaml|agent/config\.yaml)$'
+
+CHANGED=$(git diff --cached --name-only)
+if ! echo "$CHANGED" | grep -qE "$SHARED_REGEX"; then
+    # No shared paths touched — fast pass
+    exit 0
+fi
+
+echo "[neomind-pre-commit] Shared paths changed — running cross-mode boot smoke..."
+echo "[neomind-pre-commit] (bypass: NEOMIND_SKIP_SMOKE=1 git commit ...)"
+echo ""
+
+# Use timeout to bound worst-case (4 min hard cap)
+if command -v gtimeout >/dev/null 2>&1; then
+    TIMEOUT=gtimeout
+elif command -v timeout >/dev/null 2>&1; then
+    TIMEOUT=timeout
+else
+    TIMEOUT=""
+fi
+
+if [ -n "$TIMEOUT" ]; then
+    $TIMEOUT 240 .venv/bin/python tests/integration/cross_mode_boot_smoke.py
+else
+    .venv/bin/python tests/integration/cross_mode_boot_smoke.py
+fi
+RC=$?
+
+if [ $RC -ne 0 ]; then
+    echo ""
+    echo "❌ [neomind-pre-commit] Cross-mode smoke FAILED (exit $RC)"
+    echo "   Either fix the regression or set NEOMIND_SKIP_SMOKE=1 if intentional."
+    exit $RC
+fi
+
+echo "✅ [neomind-pre-commit] Cross-mode smoke passed"
+exit 0
