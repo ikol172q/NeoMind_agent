@@ -597,7 +597,71 @@ All 6 open questions answered:
 5. ✅ **Phase 3 fail_fast integration approved**
 6. ✅ **Chat-as-worker minimal** — keep the path functional, use sparingly
 
-**Starting Phase 4.A (agent_config.py contextvar + proxy foundation).** No more questions pending; implementation begins.
+## 11. Phase 4 completion record (2026-04-12)
+
+| Sub-task | Status | Commits | Evidence |
+|---|---|---|---|
+| 4.A ContextVar + proxy | ✅ DONE | `86dc508` | 14/14 `test_agent_config_contextvar.py`, 5 concurrent tasks × 100 interleaved reads, zero cross-contamination, 643/643 regression green |
+| 4.B worker_turn helper + SharedMemory.recall_feedback | ✅ DONE | `9f7ac0e`, `7218bc2` | 20/20 `test_worker_turn.py`, fail_fast gate, 3-layer parse ladder, 4-worker concurrent isolation through worker_turn boundary |
+| 4.C launcher hookup | ✅ DONE | `8c4709d` | persona-agnostic grep audit passes, 13/13 `test_fleet_launcher.py` still green |
+| 4.D fleet/run.py helper | ✅ DONE | `0dc5472` | zero persona literals, timeout + error paths tested |
+| 4.E project.yaml fixtures | ✅ DONE | `38b41ac` | fin-core (5 members) + coding-smoke (2 members Q2 regression) both load cleanly |
+| 4.F integration tests (mocked) | ✅ DONE | `dc5fbf3` | 11/11 integration tests, Q2 persona-agnostic regression via coding-smoke, Option E isolation through full stack |
+| **4.F.live real LLM smoke** | ✅ **DONE** | (this commit) | **Real DeepSeek call via `fleet.run.run_task('fin-core', ...)` completed in 3.5s. Strict-layer parse on real LLM JSON output. Analysis file persisted under `~/Desktop/Investment/fin-core/analyses/2026-04-12_210918_930767_AAPL.json`. Real cost well under $0.01.** |
+| 4.G canary forward + revert | ⏸️ DEFERRED | — | Per user 2026-04-12: since 4.F.live proves the production LLM path works end-to-end, canary is now pure operational deployment (not code validation). Deferred to when user actually wants to run fleet on the canary bot. |
+| 4.H final gate + commit | ✅ DONE | (this commit) | 674/674 Phase 0-4 + core finance green, 381 pass + 15 same-as-baseline classified-stale in cross-persona. Zero new Phase 4 regressions. |
+
+### 11.1 Live smoke result (2026-04-12 21:09)
+
+```
+2026-04-12 21:09:15,892 [INFO] fleet.launch_project: Fleet 'fin-core' started with 5 members
+2026-04-12 21:09:15,944 [INFO] fleet.launch_project: Worker 'fin-rt' claimed task task_1776053355_0
+2026-04-12 21:09:19,434 [INFO] fleet.launch_project: Fleet 'fin-core' stopped
+
+elapsed: 3.5s
+status: completed
+task_id: task_1776053355_0
+members: ['mgr-1', 'fin-rt', 'fin-rsrch', 'dev-1', 'dev-2']
+```
+
+Real DeepSeek response (strict-layer parse, no fallback):
+
+```json
+{
+  "signal": "hold",
+  "confidence": 7,
+  "reason": "Strong brand and ecosystem provide resilience, but near-term growth faces headwinds from China demand and lack of major new product catalysts.",
+  "target_price": null,
+  "risk_level": "medium",
+  "sources": ["general_knowledge"]
+}
+```
+
+**Every layer of Phase 4 proved on real infrastructure:**
+- `fleet/run.py` short-lived invocation (no daemon)
+- yaml load + 5-member asyncio fleet spawn
+- ContextVar-isolated per-persona AgentConfigManager bindings
+- ChatSupervisor dispatch via `target_persona='fin'`
+- `SharedTaskQueue` atomic claim
+- `worker_turn._default_llm_call` → `LLMProviderService.resolve_with_fallback` → real DeepSeek
+- `parse_signal` strict layer on real LLM output
+- `investment_projects.write_analysis` persists under the Investment firewall
+- Filename uses microsecond precision (Phase 3 bug fix verified in prod)
+- Symbol extraction picks "AAPL" out of natural-language task description
+- XML `format_task_notification` posted to leader mailbox
+- `FleetLauncher.stop()` clean shutdown, all 5 asyncio tasks terminated
+
+### 11.2 Phase 4 grand total
+
+- **11 commits** across 4.A → 4.H + plan docs + live smoke evidence
+- **~1750 LOC** of new code (worker_turn + run.py + launcher hookup + tests + fixtures)
+- **~1200 LOC** of new tests (45 new tests across contextvar / worker_turn / integration)
+- **Zero new regressions** in 1025-test cross-persona baseline
+- **Real LLM path verified in 3.5s at ~$0.01 cost**
+
+Canary deploy (4.G) left as an operator action for the day the user actually wants to run fleet on canary bot. Plan doc + gate evidence in place to resume it at any time without re-discovery.
+
+---
 
 ---
 
