@@ -622,6 +622,9 @@ class NeoMindInterface:
         if sub == "start":
             self._fleet_cmd_start(sub_args)
             return True
+        if sub == "show":
+            self._fleet_cmd_show()
+            return True
         if sub == "stop":
             self._fleet_cmd_stop()
             return True
@@ -653,13 +656,24 @@ class NeoMindInterface:
         self._print("  [cyan]/fleet list[/cyan]                 — list members")
         self._print("  [cyan]/fleet stop[/cyan]                 — graceful shutdown")
         self._print("")
-        self._print("[dim]When fleet is running:[/dim]")
+        self._print("[dim]Once started, /fleet start enters the multi-agent view —[/dim]")
         self._print("[dim]  • [bold]Ctrl+→[/bold] / [bold]Ctrl+←[/bold]: cycle focus through tags[/dim]")
-        self._print("[dim]  • [bold]Ctrl+Home[/bold]: return focus to leader (main session)[/dim]")
-        self._print("[dim]  • Typing input while focused on a sub-agent dispatches it as a task to that agent[/dim]")
-        self._print("[dim]  • In the leader view, prefix input with [bold]@agent-name[/bold] to dispatch inline[/dim]")
+        self._print("[dim]  • [bold]Esc[/bold]: jump back to leader view[/dim]")
+        self._print("[dim]  • [bold]Ctrl+D[/bold]: leave the multi-agent view (fleet keeps running)[/dim]")
+        self._print("[dim]  • Typing while focused on an agent dispatches text as a task to it[/dim]")
+        self._print("[dim]  • In leader view, prefix input with [bold]@agent-name[/bold] to dispatch inline[/dim]")
 
     def _fleet_cmd_start(self, project_id: str) -> None:
+        """Start a fleet and immediately enter the multi-agent view.
+
+        This call blocks until the user exits the Application (Ctrl+D,
+        /exit, or /fleet stop). When the Application returns, control
+        returns to the PromptSession loop. If the user exited with
+        Ctrl+D or /exit the fleet is LEFT RUNNING in the background
+        and ``self._fleet_session`` is kept live — the user can re-
+        enter the multi-agent view with /fleet show. If the user
+        exited with /fleet stop the session is torn down.
+        """
         if not project_id:
             self._print("[yellow]Usage:[/yellow] /fleet start <project_id>")
             return
@@ -668,7 +682,7 @@ class NeoMindInterface:
                 f"[yellow]Fleet already running:[/yellow] "
                 f"{self._fleet_session.project_id}"
             )
-            self._print("[dim]Use /fleet stop first[/dim]")
+            self._print("[dim]Use /fleet show to re-enter the multi-agent view, or /fleet stop first[/dim]")
             return
 
         project_id = project_id.strip()
@@ -683,22 +697,78 @@ class NeoMindInterface:
             from fleet.session import FleetSession
             config = load_project_config(str(yaml_path))
             session = FleetSession(config)
-            self._fleet_async_run(session.start())
         except Exception as exc:
-            self._print(f"[red]Failed to start fleet:[/red] {exc}")
+            self._print(f"[red]Failed to load fleet config:[/red] {exc}")
             return
 
+        # Launch the multi-agent Application. It will call
+        # session.start() itself before entering the UI.
         self._fleet_session = session
-        non_leader = session.member_names()
-        self._print(
-            f"[green]✓[/green] Fleet [bold]{session.project_id}[/bold] started "
-            f"with {len(non_leader)} worker(s): "
-            + " ".join(f"[magenta]@{n}[/magenta]" for n in non_leader)
-        )
-        self._print(
-            "[dim]Ctrl+→ / Ctrl+← to switch focus, Ctrl+Home to return to leader, "
-            "/fleet submit <task>, /fleet stop to shut down[/dim]"
-        )
+        exit_reason = self._run_fleet_application(session)
+
+        # Handle exit mode:
+        #   - "user_stop" / "/fleet stop" → tear down session
+        #   - "ctrl_d" / "user_exit"      → keep session running in bg
+        if exit_reason in ("user_stop",):
+            try:
+                self._fleet_async_run(session.stop())
+            except Exception as exc:
+                self._print(f"[dim]Stop encountered: {exc}[/dim]")
+            self._fleet_session = None
+            self._print("[green]✓[/green] Fleet stopped")
+        else:
+            self._print(
+                f"[dim]Returned to main session. Fleet [bold]{session.project_id}[/bold] "
+                f"still running — /fleet show to re-enter, /fleet stop to tear down.[/dim]"
+            )
+
+    def _fleet_cmd_show(self) -> None:
+        """Re-enter the multi-agent view for an already-running fleet."""
+        if self._fleet_session is None:
+            self._print(
+                "[yellow]No fleet running[/yellow] — start one with /fleet start <project>"
+            )
+            return
+        exit_reason = self._run_fleet_application(self._fleet_session)
+        if exit_reason == "user_stop":
+            try:
+                self._fleet_async_run(self._fleet_session.stop())
+            except Exception as exc:
+                self._print(f"[dim]Stop encountered: {exc}[/dim]")
+            self._fleet_session = None
+            self._print("[green]✓[/green] Fleet stopped")
+        else:
+            self._print(
+                "[dim]Returned to main session. Fleet still running in background.[/dim]"
+            )
+
+    def _run_fleet_application(self, session) -> str:
+        """Run the FleetApplication until exit. Returns the exit reason
+        string. Wraps the async entry point in a fresh asyncio.run so
+        the Application + fleet workers share one event loop that
+        lives only for the duration of the multi-agent view.
+
+        This is the clean alternative to the Phase 5.10 bg-thread hack:
+        the Application owns the loop while the user is in multi-agent
+        mode, so fleet worker tasks scheduled via create_task run on
+        the same loop the UI uses — no cross-thread asyncio coupling
+        and no task-claim starvation.
+        """
+        import asyncio
+        from cli.fleet_app import run_fleet_application
+
+        try:
+            return asyncio.run(
+                run_fleet_application(
+                    session,
+                    leader_chat=self.chat,
+                    start_session=not session.running,
+                    stop_session_on_exit=False,
+                )
+            )
+        except Exception as exc:
+            self._print(f"[red]Fleet application error:[/red] {exc}")
+            return "error"
 
     def _fleet_cmd_stop(self) -> None:
         if self._fleet_session is None:
