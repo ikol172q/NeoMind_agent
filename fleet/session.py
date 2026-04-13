@@ -41,6 +41,7 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 from agent.agentic.swarm import format_task_notification
 from fleet.launch_project import FleetLauncher
 from fleet.project_schema import MemberConfig, ProjectConfig, load_project_config
+from fleet.transcripts import AgentTranscript, AgentTurn
 
 logger = logging.getLogger(__name__)
 
@@ -137,10 +138,31 @@ class FleetSession:
         self._base_dir = base_dir
         self._shared_memory = shared_memory
 
-        # Event ring buffers — one per member, capped to avoid memory growth
+        # Event ring buffers — one per member, capped to avoid memory
+        # growth. These hold SHORT status labels for quick-glance
+        # rendering (e.g. "llm_call_end: 2.1s"). NOT the conversation
+        # itself — see self._transcripts below for the real content.
         self._event_buffers: Dict[str, Deque[FleetEvent]] = {
             m.name: deque(maxlen=_EVENT_BUFFER_CAP)
             for m in config.members
+        }
+
+        # Persistent per-agent conversation log. Each non-leader
+        # member gets its own AgentTranscript backed by a JSONL file
+        # at ~/.neomind/teams/<project>/transcripts/<member>.jsonl.
+        # This is what the multi-agent tabbed view renders as the
+        # message pane contents — user turns (prompts we dispatched
+        # to this member), assistant turns (LLM responses), system
+        # turns (lifecycle notes). Lazy-loaded from disk on first
+        # access so construction is free.
+        self._transcripts: Dict[str, AgentTranscript] = {
+            m.name: AgentTranscript(
+                project_id=config.project_id,
+                agent_name=m.name,
+                base_dir=base_dir,
+            )
+            for m in config.members
+            if m.role != "leader"
         }
 
         # Per-member input history (strings the user typed while focused
@@ -272,22 +294,84 @@ class FleetSession:
 
     def _record_event(self, member: str, event_data: Dict[str, Any]) -> None:
         """Callback passed to FleetLauncher as event_sink. Workers call
-        it via worker_turn when interesting things happen. Synchronous
-        and fast — appends to an in-memory deque."""
+        it via worker_turn when interesting things happen.
+
+        Two things happen on every event:
+
+          1. Append a short status label to the ring buffer (for the
+             status bar / quick-glance view).
+          2. For events that carry real conversation content (namely
+             ``llm_call_end`` with a preview, or ``task_failed`` with
+             an error), also append a proper turn to the agent's
+             AgentTranscript so the tabbed view has real content to
+             render when the user focuses on this member.
+        """
         if member not in self._event_buffers:
             logger.debug("event for unknown member %s, dropping", member)
             return
-        event = FleetEvent(
+        kind = str(event_data.get("kind", "event"))
+        content = str(event_data.get("content", ""))[:500]
+        metadata = {
+            k: v for k, v in event_data.items()
+            if k not in ("kind", "content")
+        }
+        self._event_buffers[member].append(FleetEvent(
             ts=time.time(),
             member=member,
-            kind=str(event_data.get("kind", "event")),
-            content=str(event_data.get("content", ""))[:500],
-            metadata={
-                k: v for k, v in event_data.items()
-                if k not in ("kind", "content")
-            },
-        )
-        self._event_buffers[member].append(event)
+            kind=kind,
+            content=content,
+            metadata=metadata,
+        ))
+
+        # Promote content-carrying events into real transcript turns.
+        transcript = self._transcripts.get(member)
+        if transcript is None:
+            return
+        try:
+            if kind == "llm_call_end":
+                # The full response is in metadata['preview'] (first
+                # 200 chars from worker_turn). For Phase 5.11.B we
+                # store that preview as the assistant turn — future
+                # phases can extend to store the full body.
+                preview = str(metadata.get("preview", ""))
+                transcript.append_turn(AgentTurn(
+                    role="assistant",
+                    content=preview,
+                    metadata={
+                        "duration_s": metadata.get("duration_s"),
+                        "response_len": metadata.get("response_len"),
+                        "model": metadata.get("model"),
+                    },
+                ))
+                transcript.mark_accessed()
+            elif kind == "task_failed":
+                transcript.append_turn(AgentTurn(
+                    role="system",
+                    content=f"task failed: {content}",
+                    metadata={
+                        "task_id": metadata.get("task_id"),
+                        "error": metadata.get("error"),
+                    },
+                ))
+                transcript.mark_accessed()
+            elif kind == "spawned":
+                transcript.append_turn(AgentTurn(
+                    role="system",
+                    content=f"agent spawned ({content})",
+                ))
+            elif kind == "llm_call_start":
+                transcript.append_turn(AgentTurn(
+                    role="meta",
+                    content=f"llm call started ({content})",
+                    metadata={"model": metadata.get("model")},
+                ))
+            # task_received is appended by submit_to_member directly
+            # so we skip it here to avoid double-counting.
+        except Exception as exc:
+            logger.debug(
+                "transcript append failed for %s (kind=%s): %s",
+                member, kind, exc,
+            )
 
     def record_user_event(
         self, member: str, kind: str, content: str,
@@ -305,6 +389,20 @@ class FleetSession:
             kind=kind,
             content=content,
         ))
+
+    def get_transcript(self, member_name: str) -> Optional[AgentTranscript]:
+        """Return the AgentTranscript for a member, or None if unknown
+        or if the member is the leader (leaders use the main CLI's
+        own chat history, not a fleet transcript).
+
+        Lazy-loads from disk on first access.
+        """
+        t = self._transcripts.get(member_name)
+        if t is None:
+            return None
+        t.ensure_loaded()
+        t.mark_accessed()
+        return t
 
     def recent_events(
         self, member: str, limit: int = 15,
@@ -351,7 +449,7 @@ class FleetSession:
             description=task_description,
             target_member=member_name,
         )
-        # Also record in the ring buffer so the focus view shows it
+        # Record in ring buffer for quick-glance
         self._event_buffers[member_name].append(FleetEvent(
             ts=time.time(),
             member=member_name,
@@ -359,6 +457,22 @@ class FleetSession:
             content=task_description[:200],
             metadata={"task_id": task_id},
         ))
+        # Record the user prompt as a real turn in the transcript so
+        # the tabbed view shows it before the assistant response lands
+        transcript = self._transcripts.get(member_name)
+        if transcript is not None:
+            try:
+                transcript.append_turn(AgentTurn(
+                    role="user",
+                    content=task_description,
+                    metadata={"task_id": task_id},
+                ))
+                transcript.mark_accessed()
+            except Exception as exc:
+                logger.debug(
+                    "transcript user-turn append failed for %s: %s",
+                    member_name, exc,
+                )
         return task_id
 
     async def submit_to_persona(
