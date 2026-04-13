@@ -24,6 +24,9 @@ from dataclasses import dataclass, field
 logger = logging.getLogger(__name__)
 
 
+VALID_PERSONAS = frozenset({"chat", "coding", "fin"})
+
+
 @dataclass
 class TeammateIdentity:
     """Identity of a team member."""
@@ -32,6 +35,7 @@ class TeammateIdentity:
     team_name: str
     color: str = "default"
     is_leader: bool = False
+    persona: Optional[str] = None  # "chat" | "coding" | "fin" | None (legacy)
 
 
 @dataclass
@@ -240,11 +244,24 @@ class TeamManager:
     def __init__(self, base_dir: str = None):
         self._base = Path(base_dir or os.path.expanduser('~/.neomind'))
 
-    def create_team(self, team_name: str, leader_name: str) -> Dict[str, Any]:
+    def create_team(self, team_name: str, leader_name: str,
+                    leader_persona: Optional[str] = None) -> Dict[str, Any]:
         """Create a new team with a leader.
 
-        Raises ValueError if the team already exists.
+        Args:
+            team_name: Unique team name.
+            leader_name: Name of the team leader.
+            leader_persona: Optional persona for the leader ("chat", "coding", "fin").
+
+        Raises:
+            ValueError: If the team already exists or persona is invalid.
         """
+        if leader_persona is not None and leader_persona not in VALID_PERSONAS:
+            raise ValueError(
+                f"Invalid persona '{leader_persona}'. "
+                f"Must be one of: {', '.join(sorted(VALID_PERSONAS))}"
+            )
+
         team_dir = self._base / 'teams' / team_name
         team_file = team_dir / 'team.json'
 
@@ -258,15 +275,36 @@ class TeamManager:
             'name': team_name,
             'leader': leader_name,
             'members': [
-                {'name': leader_name, 'color': TEAM_COLORS[0], 'is_leader': True}
+                {
+                    'name': leader_name,
+                    'color': TEAM_COLORS[0],
+                    'is_leader': True,
+                    'persona': leader_persona,
+                }
             ],
             'created_at': time.time(),
         }
         team_file.write_text(json.dumps(team_data, indent=2))
         return team_data
 
-    def add_member(self, team_name: str, member_name: str) -> TeammateIdentity:
-        """Add a member to a team."""
+    def add_member(self, team_name: str, member_name: str,
+                   persona: Optional[str] = None) -> TeammateIdentity:
+        """Add a member to a team.
+
+        Args:
+            team_name: Name of the team.
+            member_name: Name of the new member.
+            persona: Optional persona ("chat", "coding", "fin").
+
+        Raises:
+            ValueError: If the team doesn't exist or persona is invalid.
+        """
+        if persona is not None and persona not in VALID_PERSONAS:
+            raise ValueError(
+                f"Invalid persona '{persona}'. "
+                f"Must be one of: {', '.join(sorted(VALID_PERSONAS))}"
+            )
+
         team_file = self._base / 'teams' / team_name / 'team.json'
         if not team_file.exists():
             raise ValueError(f"Team '{team_name}' does not exist")
@@ -278,6 +316,7 @@ class TeamManager:
             'name': member_name,
             'color': TEAM_COLORS[color_idx],
             'is_leader': False,
+            'persona': persona,
         }
         team_data['members'].append(member)
         team_file.write_text(json.dumps(team_data, indent=2))
@@ -287,6 +326,7 @@ class TeamManager:
             agent_name=member_name,
             team_name=team_name,
             color=TEAM_COLORS[color_idx],
+            persona=persona,
         )
 
     def remove_member(self, team_name: str, member_name: str):
