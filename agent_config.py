@@ -1,4 +1,5 @@
 import os
+from contextvars import ContextVar, Token
 from pathlib import Path
 from typing import Any, Optional, List
 import yaml
@@ -460,5 +461,142 @@ class AgentConfigManager:
     # save_config is defined above in "Runtime Config Modification" section
 
 
-# Global instance — single point of access
-agent_config = AgentConfigManager()
+# ─────────────────────────────────────────────────────────────────────
+# Per-task config isolation (Phase 4, Option E: ContextVar + proxy)
+# ─────────────────────────────────────────────────────────────────────
+#
+# The module symbol `agent_config` used to be a single process-wide
+# AgentConfigManager instance. Every caller that does
+#     from agent_config import agent_config
+# would read and write the same shared state. That was fine for the
+# single-session CLI + Telegram bot, but it was incompatible with
+# running a fleet of concurrent sub-agents where each member needs its
+# own persona-specific config view.
+#
+# This section replaces the singleton with a ContextVar-backed proxy
+# inspired by nirholas (`src/utils/agentContext.ts`) — JavaScript's
+# AsyncLocalStorage pattern ported to Python. Key properties:
+#
+#   • asyncio.create_task() automatically copies the current context
+#     into each new task, so every fleet worker starts with its own
+#     independent snapshot.
+#   • ContextVar.set() inside a task only mutates that task's copy —
+#     sibling tasks running concurrently via asyncio.gather see their
+#     own values with zero cross-contamination.
+#   • Reads fall back to a process-wide default AgentConfigManager
+#     when no worker has called set_current_config(), so legacy
+#     callers (CLI, Telegram bot) behave exactly as before.
+#   • The `_AgentConfigProxy` object forwards every attribute access
+#     to whichever AgentConfigManager is currently bound in the
+#     caller's task context. `@property` getters and setters on the
+#     underlying class keep working because the proxy's __getattr__ /
+#     __setattr__ go through the normal `getattr(obj, name)` path.
+#
+# Files that import `agent_config` (seven of them, verified 2026-04-12
+# via grep) need zero changes. Phase 4 grep audit also confirms no
+# isinstance(..., AgentConfigManager) checks exist, so the proxy's
+# lack of class identity with AgentConfigManager is safe.
+#
+# Fleet workers call `set_current_config(AgentConfigManager(mode=persona))`
+# at the top of their asyncio task body. From that point on, every
+# read of `agent_config.<anything>` inside that task — including deep
+# into agent/core.py, agent/modes/finance.py, etc. — returns the
+# per-worker view.
+
+_default_manager: "AgentConfigManager" = AgentConfigManager()
+
+_current_config: ContextVar["AgentConfigManager"] = ContextVar(
+    "neomind_current_agent_config",
+    default=_default_manager,
+)
+
+
+def get_current_config() -> "AgentConfigManager":
+    """Return the AgentConfigManager currently bound in this async task.
+
+    Falls back to the process-wide default if no worker has set a
+    per-task override. This is the single source of truth for "which
+    config should this caller see".
+    """
+    return _current_config.get()
+
+
+def set_current_config(cfg: "AgentConfigManager") -> Token:
+    """Bind ``cfg`` as the current AgentConfigManager for this async task.
+
+    Because asyncio.create_task() captures a context snapshot per task,
+    this set() only affects the caller's task and any child tasks it
+    spawns. Sibling tasks are unaffected. The returned Token can be
+    passed to ``reset_current_config`` to undo the binding, but in most
+    fleet scenarios it's simpler to let the task end — Python will
+    discard the task's context copy automatically.
+
+    Args:
+        cfg: The AgentConfigManager instance to bind as "current".
+
+    Returns:
+        Token that can be used to reset the binding back to its
+        previous value. Ignore it if the task will end naturally.
+    """
+    return _current_config.set(cfg)
+
+
+def reset_current_config(token: Token) -> None:
+    """Reset the current-task config binding to what it was before the
+    matching ``set_current_config`` call."""
+    _current_config.reset(token)
+
+
+class _AgentConfigProxy:
+    """Transparent forwarder to the current-context AgentConfigManager.
+
+    Every attribute access goes through ``_current_config.get()``,
+    which returns whichever instance is bound to the caller's asyncio
+    task. Legacy callers that do ``from agent_config import agent_config``
+    and then access ``agent_config.model`` / ``.system_prompt`` / etc.
+    see the default instance when no worker has set an override, and
+    see the worker's per-persona instance when running inside a fleet
+    worker task.
+
+    Deliberately NOT an ``AgentConfigManager`` subclass — the proxy is
+    only an attribute forwarder. A grep of the NeoMind codebase
+    (2026-04-12, Phase 4 pre-flight) confirmed nothing does
+    ``isinstance(agent_config, AgentConfigManager)``, so the proxy's
+    lack of class identity is invisible to every current caller.
+
+    Not safe to pickle/deepcopy. If a future caller needs that,
+    implement ``__reduce__`` to forward to the underlying instance.
+    """
+
+    __slots__ = ()  # no instance state — all state lives in the contextvar
+
+    def __getattr__(self, name: str) -> Any:
+        # __getattr__ is only called when normal lookup fails. Since
+        # the proxy has no instance attributes, every attribute access
+        # lands here and gets forwarded to the current config.
+        return getattr(_current_config.get(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        # Forward writes so that `agent_config.system_prompt = "..."`
+        # invokes the property setter on the current task's instance,
+        # not on the proxy.
+        setattr(_current_config.get(), name, value)
+
+    def __dir__(self):
+        # Expose the underlying manager's attributes for debug tools
+        # (autocomplete, dir(), etc.). Union with the proxy's own
+        # methods so __class__ etc. are still visible.
+        manager = _current_config.get()
+        return sorted(set(dir(manager)) | set(type(self).__dict__))
+
+    def __repr__(self) -> str:
+        try:
+            return f"<AgentConfigProxy → {_current_config.get()!r}>"
+        except LookupError:
+            return "<AgentConfigProxy → (no context)>"
+
+
+# Global symbol — every existing caller keeps importing `agent_config`
+# and gets the proxy. The proxy transparently dispatches to whichever
+# AgentConfigManager is current in the caller's asyncio task context.
+agent_config = _AgentConfigProxy()
