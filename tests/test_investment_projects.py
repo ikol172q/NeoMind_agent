@@ -213,6 +213,26 @@ def test_write_analysis_lands_in_analyses_dir(tmp_root):
     assert path.parent == (tmp_root / "proj" / "analyses")
 
 
+def test_write_analysis_rapid_same_symbol_no_collision(tmp_root):
+    """Regression for a Phase 0 bug: filename used seconds-resolution
+    timestamp, so rapid successive writes of the same symbol overwrote
+    each other. After the fix (microseconds in filename), 20 rapid
+    writes must produce 20 distinct files."""
+    register_project("proj", "x")
+    N = 20
+    paths = set()
+    for i in range(N):
+        p = write_analysis("proj", "AAPL", {"signal": "buy", "tag": i})
+        paths.add(str(p))
+    assert len(paths) == N, (
+        f"filename collision: {N} writes produced only {len(paths)} files"
+    )
+    # Every file must still exist on disk
+    analyses_dir = tmp_root / "proj" / "analyses"
+    written_files = list(analyses_dir.glob("*.json"))
+    assert len(written_files) == N
+
+
 # ── log_journal ──────────────────────────────────────────────────────────
 
 def test_log_journal_appends_with_hr_separator(tmp_root):
