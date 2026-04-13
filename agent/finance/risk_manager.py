@@ -9,12 +9,17 @@ Created: 2026-04-02 (Phase 3 - Finance 赚钱引擎)
 
 from __future__ import annotations
 
+import logging
+import threading
+import time
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Any
 from dataclasses import dataclass, field
 from enum import Enum
 
 from .paper_trading import OrderSide, Position
+
+logger = logging.getLogger(__name__)
 
 
 class RiskLevel(Enum):
@@ -57,6 +62,171 @@ class PositionSizing:
     stop_loss_price: Optional[float] = None
 
 
+# ── Circuit Breaker (Phase 2, Round 6 fusion plan) ─────────────────
+
+
+class CircuitBreakerState(Enum):
+    """Three-state circuit breaker for protecting risk-check dependencies.
+
+    CLOSED      → normal operation, failures are counted
+    OPEN        → short-circuit: reject all calls until cooldown elapses
+    HALF_OPEN   → probe mode: allow a few calls; on success restore, on
+                  failure flip back to OPEN
+    """
+    CLOSED = "closed"
+    OPEN = "open"
+    HALF_OPEN = "half_open"
+
+
+@dataclass
+class CircuitBreakerConfig:
+    """Tunable thresholds for a circuit breaker instance."""
+    failure_threshold: int = 5       # consecutive failures to trip CLOSED→OPEN
+    cooldown_seconds: float = 60.0   # time before OPEN→HALF_OPEN probe
+    success_threshold: int = 3       # successes in HALF_OPEN to return to CLOSED
+
+
+class CircuitBreaker:
+    """Thread-safe circuit breaker.
+
+    Intended to wrap any dependency whose repeated failures should stop
+    further attempts for a cooldown window (Alpha Vantage rate limiting,
+    Finnhub outages, stale quote cascades, etc.). Risk checks that rely
+    on external data can ask ``breaker.allow()`` before making a call and
+    record the outcome via ``record_success()`` / ``record_failure()``.
+
+    All public methods acquire an internal Lock. Nothing inside the
+    methods performs I/O, so holding the lock is cheap. Callers MUST NOT
+    hold other locks when calling into the breaker (no nested locking).
+
+    Usage::
+
+        cb = CircuitBreaker(name="finnhub", config=CircuitBreakerConfig(5, 60, 3))
+        if not cb.allow():
+            return None   # fail fast, don't even try
+        try:
+            quote = fetch_finnhub(symbol)
+            cb.record_success()
+            return quote
+        except Exception:
+            cb.record_failure()
+            raise
+    """
+
+    def __init__(self, name: str = "default",
+                 config: Optional[CircuitBreakerConfig] = None):
+        self.name = name
+        self.config = config or CircuitBreakerConfig()
+        self._state = CircuitBreakerState.CLOSED
+        self._consecutive_failures = 0
+        self._consecutive_successes = 0  # only incremented while HALF_OPEN
+        self._opened_at: Optional[float] = None
+        self._lock = threading.Lock()
+
+    # --- state inspection ----------------------------------------------
+
+    @property
+    def state(self) -> CircuitBreakerState:
+        """Current state. Triggers automatic OPEN→HALF_OPEN transition
+        if cooldown has elapsed."""
+        with self._lock:
+            self._maybe_transition_to_half_open_locked()
+            return self._state
+
+    def _maybe_transition_to_half_open_locked(self) -> None:
+        """Must be called with ``self._lock`` held."""
+        if self._state == CircuitBreakerState.OPEN and self._opened_at is not None:
+            if time.monotonic() - self._opened_at >= self.config.cooldown_seconds:
+                self._state = CircuitBreakerState.HALF_OPEN
+                self._consecutive_successes = 0
+                logger.info(
+                    "CircuitBreaker[%s]: OPEN → HALF_OPEN (cooldown elapsed)",
+                    self.name,
+                )
+
+    # --- gate + outcome ------------------------------------------------
+
+    def allow(self) -> bool:
+        """Return True if the caller may attempt the protected call.
+
+        In OPEN state this returns False until cooldown elapses.
+        In HALF_OPEN and CLOSED states this returns True.
+        """
+        with self._lock:
+            self._maybe_transition_to_half_open_locked()
+            return self._state != CircuitBreakerState.OPEN
+
+    def record_success(self) -> None:
+        """Report that a protected call succeeded."""
+        with self._lock:
+            self._consecutive_failures = 0
+            if self._state == CircuitBreakerState.HALF_OPEN:
+                self._consecutive_successes += 1
+                if self._consecutive_successes >= self.config.success_threshold:
+                    self._state = CircuitBreakerState.CLOSED
+                    self._consecutive_successes = 0
+                    self._opened_at = None
+                    logger.info(
+                        "CircuitBreaker[%s]: HALF_OPEN → CLOSED "
+                        "(%d consecutive successes)",
+                        self.name,
+                        self.config.success_threshold,
+                    )
+
+    def record_failure(self) -> None:
+        """Report that a protected call failed."""
+        with self._lock:
+            self._consecutive_failures += 1
+            self._consecutive_successes = 0
+            if self._state == CircuitBreakerState.HALF_OPEN:
+                # Immediate re-open on any HALF_OPEN probe failure
+                self._state = CircuitBreakerState.OPEN
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "CircuitBreaker[%s]: HALF_OPEN → OPEN "
+                    "(probe failed, cooldown %.1fs)",
+                    self.name,
+                    self.config.cooldown_seconds,
+                )
+            elif (
+                self._state == CircuitBreakerState.CLOSED
+                and self._consecutive_failures >= self.config.failure_threshold
+            ):
+                self._state = CircuitBreakerState.OPEN
+                self._opened_at = time.monotonic()
+                logger.warning(
+                    "CircuitBreaker[%s]: CLOSED → OPEN "
+                    "(%d consecutive failures, cooldown %.1fs)",
+                    self.name,
+                    self._consecutive_failures,
+                    self.config.cooldown_seconds,
+                )
+
+    def reset(self) -> None:
+        """Force back to CLOSED. Use sparingly (tests, manual recovery)."""
+        with self._lock:
+            self._state = CircuitBreakerState.CLOSED
+            self._consecutive_failures = 0
+            self._consecutive_successes = 0
+            self._opened_at = None
+
+    def snapshot(self) -> Dict[str, Any]:
+        """Return a thread-safe snapshot of internal state for reporting."""
+        with self._lock:
+            return {
+                "name": self.name,
+                "state": self._state.value,
+                "consecutive_failures": self._consecutive_failures,
+                "consecutive_successes": self._consecutive_successes,
+                "opened_at_monotonic": self._opened_at,
+                "config": {
+                    "failure_threshold": self.config.failure_threshold,
+                    "cooldown_seconds": self.config.cooldown_seconds,
+                    "success_threshold": self.config.success_threshold,
+                },
+            }
+
+
 class RiskManager:
     """
     Risk manager for trading operations.
@@ -85,7 +255,9 @@ class RiskManager:
     def __init__(
         self,
         limits: Optional[RiskLimits] = None,
-        account_value: float = 100000.0
+        account_value: float = 100000.0,
+        kelly_fraction: float = 0.25,
+        circuit_breaker: Optional[CircuitBreaker] = None,
     ):
         """
         Initialize risk manager.
@@ -93,9 +265,26 @@ class RiskManager:
         Args:
             limits: Risk limits configuration
             account_value: Current account value
+            kelly_fraction: Fraction of full Kelly to use for sizing.
+                Default 0.25 (quarter-Kelly) per the Phase 2 fusion plan
+                (Round 6 risk deepening): full Kelly is mathematically
+                optimal but has huge realized-volatility cost; quarter
+                Kelly captures most of the edge with ~1/16 of the
+                drawdown risk.
+            circuit_breaker: Optional ``CircuitBreaker`` instance that
+                gates external-data-dependent risk checks. If the
+                breaker is OPEN, ``assess_trade`` short-circuits to
+                ``allowed=False`` without evaluating any rules. When
+                None (default) risk checks always run.
         """
+        if not 0.0 < kelly_fraction <= 1.0:
+            raise ValueError(
+                f"kelly_fraction must be in (0, 1], got {kelly_fraction}"
+            )
         self.limits = limits or RiskLimits()
         self.account_value = account_value
+        self.kelly_fraction = kelly_fraction
+        self.circuit_breaker = circuit_breaker
 
         # Track daily PnL
         self._daily_pnl: Dict[str, float] = {}
@@ -202,12 +391,15 @@ class RiskManager:
         avg_win = sum(wins) / len(wins)
         avg_loss = sum(losses) / len(losses)
 
-        # Kelly fraction
+        # Kelly fraction (full Kelly formula)
         b = avg_win / avg_loss  # Win/loss ratio
         kelly = (win_rate * b - (1 - win_rate)) / b
 
-        # Use half-Kelly for safety
-        kelly = max(0, min(kelly * 0.5, self.limits.max_position_size_pct))
+        # Apply Fractional Kelly (default 0.25 per Phase 2 / Round 6).
+        # Also cap at the max_position_size_pct limit.
+        kelly = max(
+            0, min(kelly * self.kelly_fraction, self.limits.max_position_size_pct)
+        )
 
         position_value = self.account_value * kelly
         shares = int(position_value / current_price)
@@ -274,6 +466,23 @@ class RiskManager:
         warnings = []
         allowed = True
         risk_level = RiskLevel.LOW
+
+        # Short-circuit if the dependency circuit breaker is open.
+        # This protects against cascades when upstream data (prices,
+        # drawdown tracking, PnL ingestion) has been failing — better
+        # to reject trades than to let stale or missing data drive
+        # risk decisions.
+        if self.circuit_breaker is not None and not self.circuit_breaker.allow():
+            return RiskAssessment(
+                allowed=False,
+                risk_level=RiskLevel.CRITICAL,
+                position_size=quantity * price,
+                warnings=[
+                    f"Circuit breaker '{self.circuit_breaker.name}' is OPEN — "
+                    f"risk checks suspended until cooldown elapses"
+                ],
+                metadata={"circuit_breaker_state": self.circuit_breaker.state.value},
+            )
 
         trade_value = quantity * price
         pct_of_portfolio = trade_value / self.account_value if self.account_value > 0 else 0
@@ -395,6 +604,9 @@ __all__ = [
     'RiskAssessment',
     'RiskLevel',
     'PositionSizing',
+    'CircuitBreaker',
+    'CircuitBreakerConfig',
+    'CircuitBreakerState',
 ]
 
 
