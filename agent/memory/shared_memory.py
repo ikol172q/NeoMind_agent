@@ -143,10 +143,29 @@ class SharedMemory:
             except sqlite3.OperationalError:
                 pass  # Table already exists
         conn.commit()
+        self._migrate_schema()
+
+    def _migrate_schema(self):
+        """Add source_instance and project_id columns (Phase 4 migration).
+
+        Idempotent: safe to run multiple times. Existing rows get NULL.
+        """
+        conn = self._get_conn()
+        tables = ["preferences", "facts", "patterns", "feedback"]
+        new_cols = ["source_instance", "project_id"]
+        for table in tables:
+            for col in new_cols:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+        conn.commit()
 
     # ── Preferences ──────────────────────────────────────────────────────
 
-    def set_preference(self, key: str, value: str, source_mode: str) -> None:
+    def set_preference(self, key: str, value: str, source_mode: str,
+                       source_instance: Optional[str] = None,
+                       project_id: Optional[str] = None) -> None:
         """
         Store or update a user preference.
 
@@ -154,15 +173,17 @@ class SharedMemory:
             key: Preference key (e.g., 'timezone', 'language', 'name')
             value: Preference value
             source_mode: Which mode learned this (e.g., 'chat', 'coding', 'fin')
+            source_instance: Which agent instance wrote this (e.g., 'coder-1')
+            project_id: Which project context (e.g., 'build-trading-bot')
 
         Example:
             memory.set_preference('language', 'zh', 'chat')
-            memory.set_preference('timezone', 'Asia/Shanghai', 'chat')
+            memory.set_preference('timezone', 'Asia/Shanghai', 'chat', source_instance='mgr-1')
         """
         conn = self._get_conn()
         conn.execute(
-            "INSERT OR REPLACE INTO preferences (key, value, source_mode, updated_at) VALUES (?, ?, ?, ?)",
-            (key, value, source_mode, self._now())
+            "INSERT OR REPLACE INTO preferences (key, value, source_mode, updated_at, source_instance, project_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (key, value, source_mode, self._now(), source_instance, project_id)
         )
         conn.commit()
 
@@ -208,7 +229,9 @@ class SharedMemory:
 
     # ── Facts ────────────────────────────────────────────────────────────
 
-    def remember_fact(self, category: str, fact: str, source_mode: str) -> int:
+    def remember_fact(self, category: str, fact: str, source_mode: str,
+                      source_instance: Optional[str] = None,
+                      project_id: Optional[str] = None) -> int:
         """
         Remember a fact about the user.
 
@@ -216,52 +239,69 @@ class SharedMemory:
             category: Fact category (e.g., 'work', 'education', 'interests')
             fact: The fact itself (e.g., 'SDE at Google', 'BS in CS from MIT')
             source_mode: Which mode learned this
+            source_instance: Which agent instance wrote this
+            project_id: Which project context
 
         Returns:
             ID of the stored fact
 
         Example:
             id = memory.remember_fact('work', 'SDE at Google', 'chat')
-            id = memory.remember_fact('education', 'BS Computer Science', 'chat')
+            id = memory.remember_fact('education', 'BS CS', 'chat', source_instance='mgr-1')
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO facts (category, fact, source_mode, created_at) VALUES (?, ?, ?, ?)",
-            (category, fact, source_mode, self._now())
+            "INSERT INTO facts (category, fact, source_mode, created_at, source_instance, project_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (category, fact, source_mode, self._now(), source_instance, project_id)
         )
         conn.commit()
         return cursor.lastrowid
 
-    def recall_facts(self, category: Optional[str] = None, limit: int = 20) -> List[Dict[str, Any]]:
+    def recall_facts(self, category: Optional[str] = None, limit: int = 20,
+                     include_personas: Optional[List[str]] = None,
+                     project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Recall facts about the user.
 
         Args:
             category: Optional category filter
             limit: Max number of facts to return
+            include_personas: If provided, only return facts from these source_modes
+            project_id: If provided, only return facts from this project
 
         Returns:
             List of facts with metadata
-            [
-                {'id': 1, 'category': 'work', 'fact': 'SDE at Google', 'source_mode': 'chat', 'created_at': '...'},
-                ...
-            ]
 
         Example:
             work_facts = memory.recall_facts('work')
-            all_facts = memory.recall_facts()
+            coding_facts = memory.recall_facts(include_personas=['coding', 'fin'])
         """
         conn = self._get_conn()
+        conditions = []
+        params: list = []
+
         if category:
-            rows = conn.execute(
-                "SELECT id, category, fact, source_mode, created_at FROM facts WHERE category = ? ORDER BY created_at DESC LIMIT ?",
-                (category, limit)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT id, category, fact, source_mode, created_at FROM facts ORDER BY created_at DESC LIMIT ?",
-                (limit,)
-            ).fetchall()
+            conditions.append("category = ?")
+            params.append(category)
+
+        if include_personas:
+            placeholders = ",".join("?" for _ in include_personas)
+            conditions.append(f"source_mode IN ({placeholders})")
+            params.extend(include_personas)
+
+        if project_id:
+            conditions.append("project_id = ?")
+            params.append(project_id)
+
+        where = ""
+        if conditions:
+            where = " WHERE " + " AND ".join(conditions)
+
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT id, category, fact, source_mode, created_at, source_instance, project_id FROM facts{where} ORDER BY created_at DESC LIMIT ?",
+            params
+        ).fetchall()
 
         return [
             {
@@ -270,13 +310,17 @@ class SharedMemory:
                 "fact": row["fact"],
                 "source_mode": row["source_mode"],
                 "created_at": row["created_at"],
+                "source_instance": row["source_instance"],
+                "project_id": row["project_id"],
             }
             for row in rows
         ]
 
     # ── Patterns ─────────────────────────────────────────────────────────
 
-    def record_pattern(self, pattern_type: str, pattern_value: str, source_mode: str) -> None:
+    def record_pattern(self, pattern_type: str, pattern_value: str, source_mode: str,
+                       source_instance: Optional[str] = None,
+                       project_id: Optional[str] = None) -> None:
         """
         Record a behavioral pattern.
 
@@ -284,11 +328,12 @@ class SharedMemory:
             pattern_type: Type of pattern (e.g., 'frequent_stock', 'coding_language', 'tool')
             pattern_value: The pattern value (e.g., 'AAPL', 'Python', 'vim')
             source_mode: Which mode observed this
+            source_instance: Which agent instance observed this
+            project_id: Which project context
 
         Example:
             memory.record_pattern('frequent_stock', 'AAPL', 'fin')
-            memory.record_pattern('coding_language', 'Python', 'coding')
-            memory.record_pattern('tool', 'docker', 'coding')
+            memory.record_pattern('coding_language', 'Python', 'coding', source_instance='coder-1')
         """
         conn = self._get_conn()
         # Try to increment count if pattern exists
@@ -300,42 +345,57 @@ class SharedMemory:
         # If no rows updated, insert new
         if cursor.rowcount == 0:
             conn.execute(
-                "INSERT INTO patterns (pattern_type, pattern_value, count, source_mode, updated_at) VALUES (?, ?, ?, ?, ?)",
-                (pattern_type, pattern_value, 1, source_mode, self._now())
+                "INSERT INTO patterns (pattern_type, pattern_value, count, source_mode, updated_at, source_instance, project_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (pattern_type, pattern_value, 1, source_mode, self._now(), source_instance, project_id)
             )
 
         conn.commit()
 
-    def get_patterns(self, pattern_type: Optional[str] = None, limit: int = 50) -> List[Dict[str, Any]]:
+    def get_patterns(self, pattern_type: Optional[str] = None, limit: int = 50,
+                     include_personas: Optional[List[str]] = None,
+                     project_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Get recorded patterns, sorted by frequency.
 
         Args:
             pattern_type: Optional type filter
             limit: Max number of patterns
+            include_personas: If provided, only return patterns from these source_modes
+            project_id: If provided, only return patterns from this project
 
         Returns:
             List of patterns sorted by count (descending)
-            [
-                {'pattern_type': 'frequent_stock', 'pattern_value': 'AAPL', 'count': 5, 'source_mode': 'fin', 'updated_at': '...'},
-                ...
-            ]
 
         Example:
             stocks = memory.get_patterns('frequent_stock')
-            all_patterns = memory.get_patterns()
+            fin_patterns = memory.get_patterns(include_personas=['fin'])
         """
         conn = self._get_conn()
+        conditions = []
+        params: list = []
+
         if pattern_type:
-            rows = conn.execute(
-                "SELECT pattern_type, pattern_value, count, source_mode, updated_at FROM patterns WHERE pattern_type = ? ORDER BY count DESC LIMIT ?",
-                (pattern_type, limit)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT pattern_type, pattern_value, count, source_mode, updated_at FROM patterns ORDER BY count DESC LIMIT ?",
-                (limit,)
-            ).fetchall()
+            conditions.append("pattern_type = ?")
+            params.append(pattern_type)
+
+        if include_personas:
+            placeholders = ",".join("?" for _ in include_personas)
+            conditions.append(f"source_mode IN ({placeholders})")
+            params.extend(include_personas)
+
+        if project_id:
+            conditions.append("project_id = ?")
+            params.append(project_id)
+
+        where = ""
+        if conditions:
+            where = " WHERE " + " AND ".join(conditions)
+
+        params.append(limit)
+        rows = conn.execute(
+            f"SELECT pattern_type, pattern_value, count, source_mode, updated_at, source_instance, project_id FROM patterns{where} ORDER BY count DESC LIMIT ?",
+            params
+        ).fetchall()
 
         return [
             {
@@ -344,6 +404,8 @@ class SharedMemory:
                 "count": row["count"],
                 "source_mode": row["source_mode"],
                 "updated_at": row["updated_at"],
+                "source_instance": row["source_instance"],
+                "project_id": row["project_id"],
             }
             for row in rows
         ]
@@ -354,7 +416,9 @@ class SharedMemory:
 
     # ── Feedback ─────────────────────────────────────────────────────────
 
-    def record_feedback(self, feedback_type: str, content: str, source_mode: str) -> int:
+    def record_feedback(self, feedback_type: str, content: str, source_mode: str,
+                        source_instance: Optional[str] = None,
+                        project_id: Optional[str] = None) -> int:
         """
         Record user feedback.
 
@@ -362,19 +426,20 @@ class SharedMemory:
             feedback_type: Type of feedback ('correction', 'praise', 'complaint')
             content: The feedback content
             source_mode: Which mode received this
+            source_instance: Which agent instance received this
+            project_id: Which project context
 
         Returns:
             ID of the stored feedback
 
         Example:
             memory.record_feedback('correction', 'AAPL is not APPL', 'chat')
-            memory.record_feedback('praise', 'Great analysis!', 'fin')
-            memory.record_feedback('complaint', 'Too verbose', 'coding')
+            memory.record_feedback('praise', 'Great analysis!', 'fin', source_instance='quant-1')
         """
         conn = self._get_conn()
         cursor = conn.execute(
-            "INSERT INTO feedback (feedback_type, content, source_mode, created_at) VALUES (?, ?, ?, ?)",
-            (feedback_type, content, source_mode, self._now())
+            "INSERT INTO feedback (feedback_type, content, source_mode, created_at, source_instance, project_id) VALUES (?, ?, ?, ?, ?, ?)",
+            (feedback_type, content, source_mode, self._now(), source_instance, project_id)
         )
         conn.commit()
         return cursor.lastrowid
@@ -503,6 +568,82 @@ class SharedMemory:
                     if used + len(line) < budget:
                         parts.append(line)
                         used += len(line)
+
+        return "\n".join(parts) if parts else ""
+
+    # ── Cross-persona context ──────────────────────────────────────────
+
+    def get_cross_persona_context(self, current_mode: str,
+                                   project_id: Optional[str] = None,
+                                   max_tokens: int = 300) -> str:
+        """Generate LLM context showing cross-persona knowledge with source attribution.
+
+        Returns content wrapped in source envelopes:
+            <from persona="coding" instance="coder-1">
+            User prefers Python 3.12, uses pytest for testing.
+            </from>
+
+        Content from current_mode is NOT wrapped (native knowledge).
+        Only cross-persona content gets envelopes.
+
+        Args:
+            current_mode: The requesting persona's mode
+            project_id: Optional project filter
+            max_tokens: Approximate token budget
+
+        Returns:
+            Formatted context string with source envelopes
+        """
+        chars_per_token = 4
+        budget = max_tokens * chars_per_token
+        used = 0
+        parts: List[str] = []
+
+        conn = self._get_conn()
+
+        # Collect facts grouped by source_mode
+        query = "SELECT category, fact, source_mode, source_instance FROM facts"
+        params: list = []
+        if project_id:
+            query += " WHERE project_id = ?"
+            params.append(project_id)
+        query += " ORDER BY created_at DESC LIMIT 50"
+
+        rows = conn.execute(query, params).fetchall()
+
+        # Group by (source_mode, source_instance)
+        groups: Dict[tuple, List[str]] = {}
+        for row in rows:
+            key = (row["source_mode"] or "unknown", row["source_instance"])
+            if key not in groups:
+                groups[key] = []
+            groups[key].append(f"{row['category']}: {row['fact']}")
+
+        # Native knowledge (from current_mode) — no envelope
+        for key, facts in groups.items():
+            mode, instance = key
+            if mode == current_mode:
+                for fact in facts[:3]:
+                    if used + len(fact) < budget:
+                        parts.append(fact)
+                        used += len(fact)
+
+        # Cross-persona knowledge — with envelopes
+        for key, facts in groups.items():
+            mode, instance = key
+            if mode != current_mode:
+                inst_attr = f' instance="{instance}"' if instance else ""
+                envelope_open = f'<from persona="{mode}"{inst_attr}>'
+                envelope_close = "</from>"
+                inner_lines = []
+                for fact in facts[:3]:
+                    if used + len(fact) + len(envelope_open) + len(envelope_close) < budget:
+                        inner_lines.append(fact)
+                        used += len(fact)
+                if inner_lines:
+                    parts.append(envelope_open)
+                    parts.extend(inner_lines)
+                    parts.append(envelope_close)
 
         return "\n".join(parts) if parts else ""
 
