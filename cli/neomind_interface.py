@@ -300,6 +300,14 @@ class NeoMindInterface:
         self._new_command_dispatcher = getattr(chat, '_command_dispatcher', None)
         self._new_command_registry = getattr(chat, '_command_registry', None)
 
+        # ── Phase 5: Fleet multi-agent monitor (2026-04-12) ─────────
+        # In-session FleetSession wrapper; None when no fleet active.
+        # Populated by /fleet start, cleared by /fleet stop. When set,
+        # the bottom toolbar renders tags, Ctrl+arrow key bindings
+        # cycle focus, and input routing checks whether focus is on a
+        # sub-agent before falling through to the main persona.
+        self._fleet_session: Optional[Any] = None
+
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
         model_name = self.chat.model
@@ -391,6 +399,62 @@ class NeoMindInterface:
             print("  / commands | Ctrl+O think | Ctrl+D exit\n")
 
     # ── Status bar (prompt_toolkit bottom_toolbar) ────────────────────────
+    def _fleet_toolbar_segment(self) -> str:
+        """Return a prompt_toolkit HTML fragment representing the fleet
+        tag list, or empty string when no fleet is active.
+
+        Format when active:
+          " | [mgr-1] @fin-rt* @fin-rsrch @dev-1 @dev-2"
+
+        The * marker indicates which tag currently has focus. The
+        [mgr-1] bracketed tag at the start is the leader slot, which
+        focus returns to via Ctrl+Home or Escape.
+        """
+        from html import escape as _esc
+
+        session = self._fleet_session
+        if session is None:
+            return ""
+        from fleet.session import LEADER_FOCUS
+        parts = [" | "]
+        # Leader slot rendering — bracketed to differentiate from tags
+        leader_name = None
+        for m in session.config.members:
+            if m.role == "leader":
+                leader_name = m.name
+                break
+        leader_label = leader_name or "leader"
+        if session.focus == LEADER_FOCUS:
+            parts.append(
+                f"<ansicyan><b>[{_esc(leader_label)}]</b></ansicyan>"
+            )
+        else:
+            parts.append(f"<ansiblack>[{_esc(leader_label)}]</ansiblack>")
+        # Non-leader member tags
+        for name in session.member_names():
+            focused = (session.focus == name)
+            # Color by last observed event kind: running = green, failed
+            # = red, otherwise default. Uses the last event in the
+            # ring buffer to avoid a dedicated state tracker.
+            color = "ansiwhite"
+            events = session.recent_events(name, limit=1)
+            if events:
+                last_kind = events[-1].kind
+                if last_kind == "task_failed":
+                    color = "ansired"
+                elif last_kind in ("task_completed",):
+                    color = "ansigreen"
+                elif last_kind in ("llm_call_start", "task_received"):
+                    color = "ansiyellow"
+            marker = "*" if focused else ""
+            if focused:
+                parts.append(
+                    f" <ansimagenta><b>@{_esc(name)}{marker}</b></ansimagenta>"
+                )
+            else:
+                parts.append(f" <{color}>@{_esc(name)}</{color}>")
+        return "".join(parts)
+
     def _bottom_toolbar(self):
         model = self.chat.model
         mode = self.chat.mode
@@ -418,6 +482,8 @@ class NeoMindInterface:
             pct_color = "ansigreen"
         max_label = f"{max_ctx // 1000}k"
 
+        fleet_seg = self._fleet_toolbar_segment()
+
         if mode == "coding":
             # Coding mode: show permission mode + cwd
             perm = agent_config.permission_mode
@@ -425,22 +491,349 @@ class NeoMindInterface:
             return HTML(
                 f" <b>{model}</b> | coding | {perm} | think:{think} "
                 f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
-                f"| {cwd} "
+                f"| {cwd}"
+                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
             )
         elif mode == "fin":
             # Finance mode: show source count + encrypted memory status
             return HTML(
                 f" <b>{model}</b> | <ansigreen>fin</ansigreen> | think:{think} "
-                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
+                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg"
+                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
             )
         else:
             # Chat mode: simpler bar
             return HTML(
                 f" <b>{model}</b> | chat | think:{think} "
-                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
+                f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg"
+                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+            )
+
+    # ── Fleet multi-agent monitor (Phase 5) ───────────────────────────────
+
+    def _fleet_async_run(self, coro):
+        """Run an async coroutine from synchronous CLI context.
+
+        Mirrors the pattern used by the new command dispatcher above:
+        try the existing event loop, fall back to asyncio.run() when
+        no loop is running. Returns the coroutine's result or raises
+        on exception.
+        """
+        import asyncio
+        try:
+            return asyncio.get_event_loop().run_until_complete(coro)
+        except RuntimeError:
+            return asyncio.run(coro)
+
+    def _render_focus_view(self) -> None:
+        """Print a banner + recent events for the currently-focused fleet
+        member. Called on focus switch and after /fleet submit."""
+        session = self._fleet_session
+        if session is None:
+            return
+        from fleet.session import LEADER_FOCUS
+        if session.is_focused_on_leader():
+            self._print(
+                f"[dim]── focus → [/dim][bold cyan]{session.project_id}[/bold cyan] "
+                f"[dim](leader / main session)[/dim][dim] ──[/dim]"
+            )
+            return
+        name = session.focused_member_name()
+        member = session.get_member(name) if name else None
+        if not member:
+            return
+        header = (
+            f"[dim]── focus → [/dim][bold magenta]@{member.name}[/bold magenta] "
+            f"[dim]({member.persona} · {member.role})[/dim][dim] ──[/dim]"
+        )
+        self._print(header)
+        events = session.recent_events(name, limit=15)
+        if not events:
+            self._print("[dim]  (no events yet)[/dim]")
+        else:
+            for ev in events:
+                color = self._fleet_event_color(ev.kind)
+                self._print(f"[dim]  {ev.render()[:150]}[/dim]".replace(
+                    f"[dim]  [", f"[dim]  ["
+                )) if False else self._print(
+                    f"  [{color}]•[/{color}] [dim]{ev.render()[:150]}[/dim]"
+                )
+        self._print(
+            "[dim]  ─── type to send a task to this agent, "
+            "or Ctrl+← / Ctrl+→ to switch, Ctrl+Home to return to leader ───[/dim]"
+        )
+
+    @staticmethod
+    def _fleet_event_color(kind: str) -> str:
+        return {
+            "spawned": "dim",
+            "task_received": "cyan",
+            "llm_call_start": "yellow",
+            "llm_call_end": "green",
+            "task_completed": "bold green",
+            "task_failed": "bold red",
+            "system": "dim",
+        }.get(kind, "white")
+
+    def _handle_fleet_command(self, args: str) -> bool:
+        """Handle /fleet subcommands. Always returns True — fleet
+        commands are local-handled, never delegated to the LLM.
+
+        Subcommands:
+          /fleet                      — show subcommand list
+          /fleet start <project_id>   — load projects/<id>/project.yaml
+                                        and spawn FleetSession
+          /fleet status               — show team snapshot
+          /fleet list                 — list members (same as status -v)
+          /fleet submit <task>        — submit to shared queue
+          /fleet submit --to <name> <task>
+          /fleet submit --persona <p> <task>
+          /fleet focus <name>|leader  — set focus without arrow keys
+          /fleet stop                 — graceful shutdown
+        """
+        parts = args.split(maxsplit=1) if args else []
+        sub = parts[0].lower() if parts else ""
+        sub_args = parts[1].strip() if len(parts) > 1 else ""
+
+        if not sub or sub == "help":
+            self._print_fleet_help()
+            return True
+
+        if sub == "start":
+            self._fleet_cmd_start(sub_args)
+            return True
+        if sub == "stop":
+            self._fleet_cmd_stop()
+            return True
+        if sub == "status":
+            self._fleet_cmd_status()
+            return True
+        if sub == "list":
+            self._fleet_cmd_list()
+            return True
+        if sub == "submit":
+            self._fleet_cmd_submit(sub_args)
+            return True
+        if sub == "focus":
+            self._fleet_cmd_focus(sub_args)
+            return True
+
+        self._print(f"[yellow]Unknown /fleet subcommand:[/yellow] {sub}")
+        self._print_fleet_help()
+        return True
+
+    def _print_fleet_help(self) -> None:
+        self._print("[bold]Fleet commands[/bold]")
+        self._print("  [cyan]/fleet start <project_id>[/cyan]  — spawn a fleet from projects/<id>/project.yaml")
+        self._print("  [cyan]/fleet submit <task>[/cyan]       — submit task to any idle worker")
+        self._print("  [cyan]/fleet submit --to <name> <task>[/cyan]    — target a specific member")
+        self._print("  [cyan]/fleet submit --persona <p> <task>[/cyan]  — target any idle member of a persona")
+        self._print("  [cyan]/fleet focus <name>|leader[/cyan]  — set focus (alternative to Ctrl+→/←)")
+        self._print("  [cyan]/fleet status[/cyan]               — team snapshot + task counts")
+        self._print("  [cyan]/fleet list[/cyan]                 — list members")
+        self._print("  [cyan]/fleet stop[/cyan]                 — graceful shutdown")
+        self._print("")
+        self._print("[dim]When fleet is running:[/dim]")
+        self._print("[dim]  • [bold]Ctrl+→[/bold] / [bold]Ctrl+←[/bold]: cycle focus through tags[/dim]")
+        self._print("[dim]  • [bold]Ctrl+Home[/bold]: return focus to leader (main session)[/dim]")
+        self._print("[dim]  • Typing input while focused on a sub-agent dispatches it as a task to that agent[/dim]")
+        self._print("[dim]  • In the leader view, prefix input with [bold]@agent-name[/bold] to dispatch inline[/dim]")
+
+    def _fleet_cmd_start(self, project_id: str) -> None:
+        if not project_id:
+            self._print("[yellow]Usage:[/yellow] /fleet start <project_id>")
+            return
+        if self._fleet_session is not None:
+            self._print(
+                f"[yellow]Fleet already running:[/yellow] "
+                f"{self._fleet_session.project_id}"
+            )
+            self._print("[dim]Use /fleet stop first[/dim]")
+            return
+
+        project_id = project_id.strip()
+        from pathlib import Path
+        yaml_path = Path(__file__).resolve().parent.parent / "projects" / project_id / "project.yaml"
+        if not yaml_path.exists():
+            self._print(f"[red]Project yaml not found:[/red] {yaml_path}")
+            return
+
+        try:
+            from fleet.project_schema import load_project_config
+            from fleet.session import FleetSession
+            config = load_project_config(str(yaml_path))
+            session = FleetSession(config)
+            self._fleet_async_run(session.start())
+        except Exception as exc:
+            self._print(f"[red]Failed to start fleet:[/red] {exc}")
+            return
+
+        self._fleet_session = session
+        non_leader = session.member_names()
+        self._print(
+            f"[green]✓[/green] Fleet [bold]{session.project_id}[/bold] started "
+            f"with {len(non_leader)} worker(s): "
+            + " ".join(f"[magenta]@{n}[/magenta]" for n in non_leader)
+        )
+        self._print(
+            "[dim]Ctrl+→ / Ctrl+← to switch focus, Ctrl+Home to return to leader, "
+            "/fleet submit <task>, /fleet stop to shut down[/dim]"
+        )
+
+    def _fleet_cmd_stop(self) -> None:
+        if self._fleet_session is None:
+            self._print("[yellow]No fleet running[/yellow]")
+            return
+        try:
+            self._fleet_async_run(self._fleet_session.stop())
+        except Exception as exc:
+            self._print(f"[red]Error during fleet stop:[/red] {exc}")
+        self._fleet_session = None
+        self._print("[green]✓[/green] Fleet stopped")
+
+    def _fleet_cmd_status(self) -> None:
+        if self._fleet_session is None:
+            self._print("[yellow]No fleet running[/yellow]")
+            return
+        snap = self._fleet_session.status_snapshot()
+        self._print(f"[bold]Fleet[/bold]: {snap['project_id']}  "
+                    f"[dim]uptime: {snap['uptime_s']:.0f}s[/dim]")
+        self._print(f"[bold]Focus[/bold]: {snap['focus']}")
+        if "supervisor" in snap:
+            sup = snap["supervisor"]
+            tasks = sup.get("tasks", {})
+            self._print(
+                f"[bold]Tasks[/bold]: available={tasks.get('available', 0)}  "
+                f"claimed={tasks.get('claimed', 0)}  "
+                f"completed={tasks.get('completed', 0)}  "
+                f"failed={tasks.get('failed', 0)}"
+            )
+        self._print("[bold]Members[/bold]:")
+        for m in snap["members"]:
+            self._print(
+                f"  [magenta]@{m['name']}[/magenta] "
+                f"[dim]({m['persona']}, {m['role']}, {m['events']} events)[/dim]"
+            )
+
+    def _fleet_cmd_list(self) -> None:
+        if self._fleet_session is None:
+            self._print("[yellow]No fleet running[/yellow]")
+            return
+        for m in self._fleet_session.config.members:
+            marker = "[bold cyan](leader)[/bold cyan]" if m.role == "leader" else ""
+            self._print(f"  [magenta]@{m.name}[/magenta] [dim]{m.persona}[/dim] {marker}")
+
+    def _fleet_cmd_submit(self, args: str) -> None:
+        if self._fleet_session is None:
+            self._print("[yellow]No fleet running[/yellow] — /fleet start first")
+            return
+        if not args:
+            self._print("[yellow]Usage:[/yellow] /fleet submit <task> | --to <name> <task> | --persona <p> <task>")
+            return
+
+        target_member: Optional[str] = None
+        target_persona: Optional[str] = None
+        task_desc: str = args
+
+        # Parse --to / --persona flags (simple left-to-right)
+        tokens = args.split(maxsplit=2)
+        if tokens and tokens[0] == "--to" and len(tokens) >= 3:
+            target_member = tokens[1]
+            task_desc = tokens[2]
+        elif tokens and tokens[0] == "--persona" and len(tokens) >= 3:
+            target_persona = tokens[1]
+            task_desc = tokens[2]
+
+        try:
+            if target_member:
+                task_id = self._fleet_async_run(
+                    self._fleet_session.submit_to_member(target_member, task_desc)
+                )
+                self._print(
+                    f"[green]✓[/green] Dispatched task [dim]{task_id}[/dim] "
+                    f"to [magenta]@{target_member}[/magenta]"
+                )
+            elif target_persona:
+                task_id = self._fleet_async_run(
+                    self._fleet_session.submit_to_persona(target_persona, task_desc)
+                )
+                self._print(
+                    f"[green]✓[/green] Dispatched task [dim]{task_id}[/dim] "
+                    f"to persona [cyan]{target_persona}[/cyan]"
+                )
+            else:
+                task_id = self._fleet_async_run(
+                    self._fleet_session.submit_to_queue(task_desc)
+                )
+                self._print(
+                    f"[green]✓[/green] Enqueued task [dim]{task_id}[/dim] "
+                    f"for any idle worker"
+                )
+        except Exception as exc:
+            self._print(f"[red]Dispatch failed:[/red] {exc}")
+
+    def _compute_prompt_str(self) -> str:
+        """Compute the prompt string, adapted to fleet focus when
+        active. Leader/no-fleet: existing mode-based prompt. Sub-agent
+        focus: `[@member-name]> ` so the user can see at a glance who
+        they're talking to."""
+        if (
+            self._fleet_session is not None
+            and not self._fleet_session.is_focused_on_leader()
+        ):
+            name = self._fleet_session.focused_member_name()
+            member = self._fleet_session.get_member(name) if name else None
+            persona = member.persona if member else ""
+            return f"[@{name} {persona}] > "
+        if self.chat.mode == "coding":
+            return "> "
+        if self.chat.mode == "fin":
+            return "[fin] > "
+        return f"[{self.chat.mode}] > "
+
+    def _fleet_dispatch_focused(self, text: str) -> None:
+        """Dispatch `text` as a task to the currently-focused sub-agent.
+        Called from the main loop when the user types input while
+        focused on a non-leader member."""
+        session = self._fleet_session
+        if session is None or session.is_focused_on_leader():
+            return
+        name = session.focused_member_name()
+        if not name:
+            return
+        # Record the input in the per-member history for recall
+        session.record_input(name, text)
+        try:
+            task_id = self._fleet_async_run(
+                session.submit_to_member(name, text)
+            )
+            self._print(
+                f"[green]✓[/green] Task [dim]{task_id}[/dim] queued for "
+                f"[magenta]@{name}[/magenta]. "
+                f"[dim]Events will appear here as the agent runs.[/dim]"
+            )
+        except Exception as exc:
+            self._print(f"[red]Dispatch failed:[/red] {exc}")
+
+    def _fleet_cmd_focus(self, target: str) -> None:
+        if self._fleet_session is None:
+            self._print("[yellow]No fleet running[/yellow]")
+            return
+        from fleet.session import LEADER_FOCUS
+        target = target.strip()
+        if not target or target == "leader" or target == "main":
+            if self._fleet_session.set_focus(LEADER_FOCUS):
+                self._render_focus_view()
+            return
+        if self._fleet_session.set_focus(target):
+            self._render_focus_view()
+        else:
+            self._print(
+                f"[yellow]Cannot focus on[/yellow] {target!r} "
+                f"[dim](unknown member or already focused)[/dim]"
             )
 
     # ── Command handling ──────────────────────────────────────────────────
@@ -525,9 +918,14 @@ class NeoMindInterface:
         cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
         args = parts[1].strip() if len(parts) > 1 else ""
 
+        # /fleet is always available regardless of mode — multi-agent
+        # monitor is a mode-agnostic capability.
+        if cmd == "fleet":
+            return self._handle_fleet_command(args)
+
         # Check if command is allowed in current mode
         allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "plugin", "plugins"):
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "plugin", "plugins", "fleet"):
             self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
             if self.chat.mode == "chat":
                 self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
@@ -1810,6 +2208,34 @@ class NeoMindInterface:
             """Ctrl+E: open /expand to view thinking turns."""
             event.app.exit(result="/expand")
 
+        # ── Phase 5: Fleet multi-agent focus navigation ────────────
+        # Ctrl+→ / Ctrl+← cycle the focus through
+        # [leader, @member1, @member2, ...]. Ctrl+Home returns focus
+        # to the leader directly. All three exit the prompt with a
+        # sentinel result so the main loop can detect and redraw.
+        # No-ops when no fleet is active.
+        @bindings.add("c-right")
+        def _fleet_focus_next(event):
+            if self._fleet_session is None:
+                return
+            self._fleet_session.cycle_focus(+1)
+            event.app.exit(result="__fleet_refocus__")
+
+        @bindings.add("c-left")
+        def _fleet_focus_prev(event):
+            if self._fleet_session is None:
+                return
+            self._fleet_session.cycle_focus(-1)
+            event.app.exit(result="__fleet_refocus__")
+
+        @bindings.add("c-home")
+        def _fleet_focus_leader(event):
+            if self._fleet_session is None:
+                return
+            from fleet.session import LEADER_FOCUS
+            self._fleet_session.set_focus(LEADER_FOCUS)
+            event.app.exit(result="__fleet_refocus__")
+
         self._completer = SlashCommandCompleter(
             mode=self.chat.mode,
             help_system=self.help_system,
@@ -1851,10 +2277,19 @@ class NeoMindInterface:
 
         while self.running:
             try:
-                prompt_str = "> " if self.chat.mode == "coding" else ("[fin] > " if self.chat.mode == "fin" else f"[{self.chat.mode}] > ")
+                # Prompt string varies by mode AND by fleet focus
+                prompt_str = self._compute_prompt_str()
                 user_input = session.prompt(prompt_str)
 
                 if user_input is None:
+                    continue
+
+                # ── Phase 5: fleet focus sentinel ────────────────
+                # Ctrl+→/←/Home bindings exit the prompt with this
+                # sentinel; redraw the focus view and restart the
+                # prompt without dispatching any input.
+                if user_input == "__fleet_refocus__":
+                    self._render_focus_view()
                     continue
 
                 user_input = user_input.strip()
@@ -1867,6 +2302,48 @@ class NeoMindInterface:
                     cont = session.prompt("... ")
                     if cont is not None:
                         user_input += "\n" + cont
+
+                # ── Phase 5: focus-aware input routing ───────────
+                # When the fleet is running AND focus is on a sub-
+                # agent (not the leader), non-slash input is
+                # dispatched as a task to that sub-agent. Slash
+                # commands still fall through to _handle_local_command
+                # so /fleet stop, /fleet focus leader, etc. keep
+                # working while focused on a sub-agent.
+                if (
+                    self._fleet_session is not None
+                    and not self._fleet_session.is_focused_on_leader()
+                    and not user_input.startswith("/")
+                ):
+                    self._fleet_dispatch_focused(user_input)
+                    continue
+
+                # ── Phase 5: leader-view @mention inline dispatch ─
+                # When focused on the leader AND the input begins
+                # with @<member-name>, dispatch the remainder as a
+                # task to that member without requiring focus
+                # switching. Unknown mentions fall through as normal
+                # LLM input (no surprise blocking on typos).
+                if (
+                    self._fleet_session is not None
+                    and self._fleet_session.is_focused_on_leader()
+                    and not user_input.startswith("/")
+                ):
+                    mention = self._fleet_session.handle_leader_input(user_input)
+                    if mention is not None:
+                        target_member, rest = mention
+                        try:
+                            task_id = self._fleet_async_run(
+                                self._fleet_session.submit_to_member(target_member, rest)
+                            )
+                            self._print(
+                                f"[green]✓[/green] Dispatched [dim]{task_id}[/dim] "
+                                f"to [magenta]@{target_member}[/magenta]: "
+                                f"[dim]{rest[:80]}[/dim]"
+                            )
+                        except Exception as exc:
+                            self._print(f"[red]Mention dispatch failed:[/red] {exc}")
+                        continue
 
                 # Try local commands first
                 if user_input.startswith("/"):
