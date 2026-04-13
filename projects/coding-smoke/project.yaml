@@ -1,0 +1,24 @@
+project_id: coding-smoke
+description: >
+  Persona-agnostic smoke fixture for Phase 4 fleet regression
+  (user Q2: "fleet 里面的 sub-agent 是随时可以独立各自运行的"; the
+  launcher must stay persona-agnostic — a coding-only fleet uses the
+  identical code path as fin-core). If any future Phase 4 change
+  accidentally introduces fin-specific logic in launch_project.py
+  or fleet/run.py, this fixture's integration test breaks before
+  anything reaches the canary bot.
+
+leader: coding-chair
+
+members:
+  - name: coding-chair
+    persona: chat
+    role: leader
+
+  - name: coder-1
+    persona: coding
+    role: worker
+
+settings:
+  stuck_timeout_minutes: 2
+  max_concurrent_tasks: 1
