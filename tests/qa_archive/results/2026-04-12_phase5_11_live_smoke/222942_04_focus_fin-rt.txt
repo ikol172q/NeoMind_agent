@@ -1,0 +1,60 @@
+ FLEET  fin-core │ uptime 52s │ [mgr-1] @fin-rt* @fin-rsrch @dev-1 @dev-2                                                                   
+╭─ @fin-rt   (fin · worker)  project=fin-core
+│
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  you: In one sentence, give a buy/hold/sell view on MSFT. Start with 'FIN-RT:'.
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  ·: llm call started (deepseek-chat)
+│  you: In one sentence, give a buy/hold/sell view on MSFT. Start with 'FIN-RT:'.
+│  ·: llm call started (deepseek-chat)
+│  sys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+│  @fin-rt: FIN-RSRCH: NVDA's stock price appreciation over the next 12 months will be primarily driven by the monetization of its AI softwa
+re and services ecosystem, rather than just hardware sales growth.
+│  you: In one sentence, give a buy/hold/sell view on MSFT. Start with 'FIN-RT:'.
+│
+╰─ type and Enter to dispatch to @fin-rt  •  Ctrl+← / Ctrl+→ cycle  •  Esc → leader  •  Ctrl+D exit
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ › sub-agent mode · type a message and press Enter to dispatch to @fin-rt 
+                                                                                                                                            
+ Ctrl+← / Ctrl+→ cycle focus   Esc → leader   Ctrl+D exit multi-agent view   /exit or /fleet stop to tear down                              

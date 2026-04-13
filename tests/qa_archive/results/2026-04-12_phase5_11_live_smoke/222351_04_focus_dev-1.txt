@@ -1,0 +1,59 @@
+Traceback (most recent call last):
+  File "/Users/paomian_kon55s │ [mgr-1] @fin-rt @fin-rsrch @dev-1* @dev-2 ine 367, in execute_task
+╭─ @dev-1   (coding · worker)  project=fin-core
+ 
+   ·: llm call started (deepseek-reasoner)
+  Fsys: task failed: HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+   you: In one sentence, explain what a Python decorator is. Start with 'DEV-1:'.
+ 
+╰─ type and Enter to dispatch to @dev-1  •  Ctrl+← / Ctrl+→ cycle  •  Esc → leader  •  Ctrl+D exit
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 116, in _sync_post
+ 
+  File "/Users/user/Desktop/NeoMind_agent/.venv/lib/python3.9/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+execute_task failed for member fin-rsrch (persona=fin)
+Traceback (most recent call last):
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 362, in execute_task
+    result = await _execute_fin(
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 195, in _execute_fin
+    raw_response = await llm_call(model, system_prompt, user_prompt)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 123, in _default_llm_call
+    return await loop.run_in_executor(None, _sync_post)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/concurrent/futures/thread.py", n
+    result = self.fn(*self.args, **self.kwargs)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 116, in _sync_post
+    resp.raise_for_status()
+  File "/Users/user/Desktop/NeoMind_agent/.venv/lib/python3.9/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+execute_task failed for member fin-rt (persona=fin)
+Traceback (most recent call last):
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 362, in execute_task
+    result = await _execute_fin(
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 195, in _execute_fin
+    raw_response = await llm_call(model, system_prompt, user_prompt)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 123, in _default_llm_call
+    return await loop.run_in_executor(None, _sync_post)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/concurrent/futures/thread.py", n
+    result = self.fn(*self.args, **self.kwargs)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 116, in _sync_post
+    resp.raise_for_status()
+  File "/Users/user/Desktop/NeoMind_agent/.venv/lib/python3.9/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+requests.exceptions.HTTPError: 401 Client Error: Unauthorized for url: https://api.deepseek.com/chat/completions
+execute_task failed for member dev-2 (persona=coding)
+Traceback (most recent call last):
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 367, in execute_task
+    result = await _execute_coding(
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 244, in _execute_coding
+    response = await llm_call(model, system_prompt, user_prompt)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 123, in _default_llm_call
+    return await loop.run_in_executor(None, _sync_post)
+  File "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/concurrent/futures/thread.py", n
+    result = self.fn(*self.args, **self.kwargs)
+  File "/Users/user/Desktop/NeoMind_agent/fleet/worker_turn.py", line 116, in _sync_post
+    resp.raise_for_status()
+  File "/Users/user/Desktop/NeoMind_agent/.venv/lib/python3.9/site-packages/requests/models.py", line 1026, in raise_for_status
+    raise HTTPError(http_error_msg, response=self)
+reqsub-agent mode · type a message and pr ss Enter to dispaech to @dev-1 
