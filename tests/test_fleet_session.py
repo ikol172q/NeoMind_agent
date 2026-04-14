@@ -695,3 +695,56 @@ def test_no_ctrl_arrow_bindings_in_key_bindings_source():
             f"system-conflict + aesthetic reasons; use plain arrows "
             f"(filtered by Condition) instead"
         )
+
+
+def test_unread_completion_badge_renders_in_toolbar():
+    """Phase 5.12 task #67: when a worker completes a task while the
+    user was focused on a different agent, the toolbar renders a
+    bright-green ● badge on that worker's tag so the user can see
+    at-a-glance that there is an unacknowledged reply waiting."""
+    from cli.neomind_interface import NeoMindInterface
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+        ("fin-rsrch", "fin", "worker"),
+    ])
+    session = FleetSession(cfg)
+    session.set_focus("fin-rt")
+
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
+        _fleet_unread_completion = {"fin-rsrch"}  # rsrch finished while user was on rt
+
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    # fin-rsrch should have the badge; fin-rt (currently focused) should NOT
+    assert "fin-rsrch" in line
+    assert 'fg="ansibrightgreen"' in line
+    assert "●" in line
+    # Badge must be attached to the rsrch tag, not the rt tag
+    rt_segment = line.split("@fin-rsrch")[0]
+    assert "●" not in rt_segment, (
+        "unread badge should only attach to the agent with the unread "
+        "completion, not the currently-focused one"
+    )
+
+
+def test_unread_completion_badge_absent_by_default():
+    """Guard: when no agent has an unread completion, the toolbar
+    contains no ● badge at all."""
+    from cli.neomind_interface import NeoMindInterface
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+    ])
+    session = FleetSession(cfg)
+
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
+        _fleet_unread_completion = set()
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    assert "●" not in line
+    assert "ansibrightgreen" not in line
