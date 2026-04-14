@@ -325,6 +325,12 @@ class NeoMindInterface:
         # the *new* focus target had previously (or empty string).
         # Keys: LEADER_FOCUS sentinel or member name.
         self._fleet_draft_buffers: dict = {}
+        # Phase 5.12 task #67: tracks which sub-agents have unread
+        # completed replies (task_completed events that arrived while
+        # the user was focused on a DIFFERENT target). Cleared for a
+        # member when the user next switches to it. The toolbar
+        # rendering uses this set to show a bright green "●" badge.
+        self._fleet_unread_completion: set = set()
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
@@ -482,7 +488,16 @@ class NeoMindInterface:
                 return f"<b><u>{txt}</u></b>"
             return f"<ansibrightblack>{txt}</ansibrightblack>"
 
+        unread = getattr(self, "_fleet_unread_completion", set())
+
         def _fmt_tag(name: str, idx: int) -> str:
+            # Phase 5.12 task #67: bright-green ● badge on any worker
+            # that completed a task while the user was focused
+            # elsewhere. Cleared when the user switches to this tag.
+            badge = (
+                '<style fg="ansibrightgreen"><b>●</b></style>'
+                if name in unread else ""
+            )
             txt = f"@{_esc(name)}"
             is_cursor = (idx == cursor_idx)
             is_active = (session.focus == name)
@@ -498,10 +513,10 @@ class NeoMindInterface:
                 # task_completed/llm_call_end → revert to neutral gray
                 # so the bar doesn't stay green forever.
             if is_cursor:
-                return f"{CURSOR_OPEN} {txt} {CURSOR_CLOSE}"
+                return f"{CURSOR_OPEN} {txt} {CURSOR_CLOSE}{badge}"
             if is_active:
-                return f"<b><u>{txt}</u></b>"
-            return f"<{fg}>{txt}</{fg}>"
+                return f"<b><u>{txt}</u></b>{badge}"
+            return f"<{fg}>{txt}</{fg}>{badge}"
 
         parts.append(_fmt_leader())
         for i, name in enumerate(session.member_names(), start=1):
@@ -811,6 +826,14 @@ class NeoMindInterface:
                             and e.kind in ("task_completed", "task_failed")
                             for e in evs
                         ):
+                            # Task done. If the user wasn't watching
+                            # when the reply streamed in, mark this
+                            # agent as having an unread completion so
+                            # the toolbar shows a ● badge.
+                            if not currently_focused:
+                                self._fleet_unread_completion.add(
+                                    member_name
+                                )
                             return
                 except Exception:
                     return
@@ -2331,9 +2354,52 @@ class NeoMindInterface:
             self.chat._skip_next_user_add = False
 
     # ── Render AI streaming response ──────────────────────────────────────
+    def _print_fleet_stream_header(self) -> None:
+        """Print a one-line fleet status header above the leader's
+        streaming reply so the user can still see which sub-agents
+        are busy / idle / done while the main persona is talking.
+
+        Rationale (Phase 5.12 task #65): during leader streaming,
+        prompt_toolkit's bottom_toolbar disappears because
+        session.prompt() has already returned and there is no running
+        Application to host the toolbar. Printing a plain header line
+        into the streamed scrollback is the cheapest way to preserve
+        fleet visibility without moving the whole REPL into a
+        long-lived Application (the expensive refactor)."""
+        session = self._fleet_session
+        if session is None:
+            return
+        from fleet.session import LEADER_FOCUS
+
+        parts = []
+        for name in session.member_names():
+            evs = session.recent_events(name, limit=1)
+            mark = "·"
+            if evs:
+                kind = evs[-1].kind
+                if kind in ("llm_call_start", "task_received"):
+                    mark = "⠋"  # busy
+                elif kind == "task_completed":
+                    mark = "✓"
+                elif kind == "task_failed":
+                    mark = "✗"
+            parts.append(f"{mark}@{name}")
+        status = "  ".join(parts)
+        self._print(
+            f"[dim]⬢ fleet:[/dim] [dim]{session.project_id}[/dim] "
+            f"[dim]·[/dim] {status}  "
+            f"[dim](leader replying…)[/dim]"
+        )
+
     def _stream_and_render(self, prompt: str):
         """Send prompt to agent core's stream_response with spinner UX."""
         self._interrupt = False
+
+        # Phase 5.12 task #65: preserve fleet visibility during leader
+        # streaming. The bottom_toolbar doesn't render between
+        # session.prompt() calls, so print a one-line header instead.
+        if self._fleet_session is not None:
+            self._print_fleet_stream_header()
 
         # Start a lightweight ANSI spinner (writes to stderr, avoids Rich proxy)
         stop = self._start_spinner("Thinking…")
@@ -2634,6 +2700,11 @@ class NeoMindInterface:
                         pending_draft = self._fleet_draft_buffers.pop(
                             new_focus, ""
                         )
+                        # Phase 5.12 task #67: clear the unread-badge
+                        # for the agent we just switched to. The user
+                        # has acknowledged the completion by navigating
+                        # here.
+                        self._fleet_unread_completion.discard(new_focus)
                     continue
 
                 user_input = user_input.strip()
