@@ -425,3 +425,43 @@ def test_default_llm_call_is_importable():
     We don't actually call it (that would hit the real API)."""
     from fleet.worker_turn import _default_llm_call
     assert asyncio.iscoroutinefunction(_default_llm_call)
+
+
+def test_fin_worker_casual_chat_skips_signal_parser(registered_project, caplog):
+    """Phase 5.12 task #69: a casual-chat task (no ticker symbol in
+    description) must NOT invoke parse_signal and must NOT produce
+    the 'both strict and lenient layers failed' warning log. The raw
+    LLM response is returned as plain text with layer_used='raw'."""
+    mock = _make_mock_llm(
+        "你好！我是 NeoMind 的 fin 助理，你的金融认知延伸。"
+    )
+    member = MemberConfig(name="fin-rt", persona="fin", role="worker")
+
+    import logging
+    caplog.set_level(logging.WARNING, logger="agent.finance.signal_schema")
+    caplog.set_level(logging.WARNING, logger="fleet.worker_turn")
+
+    async def go():
+        set_current_config(AgentConfigManager(mode="fin"))
+        return await execute_task(
+            member,
+            {"description": "hi, 你是谁呀"},  # no ticker
+            llm_call=mock,
+            project_id=registered_project,
+        )
+
+    result = asyncio.run(go())
+    assert result["status"] == "completed"
+    assert result["layer_used"] == "raw", (
+        "casual chat should take the raw-text path, not parse_signal"
+    )
+    assert result["result"] == (
+        "你好！我是 NeoMind 的 fin 助理，你的金融认知延伸。"
+    )
+    assert result["artifacts"] == []
+
+    # The parse_signal warning must NOT fire for casual chat
+    for rec in caplog.records:
+        assert "both strict and lenient layers failed" not in rec.message, (
+            "parse_signal fallback warning leaked for a non-signal task"
+        )
