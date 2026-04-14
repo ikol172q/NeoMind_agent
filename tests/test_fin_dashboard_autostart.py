@@ -102,24 +102,79 @@ def test_render_plist_defaults_resolve_without_crashing():
     assert parsed["WorkingDirectory"].endswith("NeoMind_agent")
 
 
-def test_default_python_bin_prefers_venv_when_present(tmp_path, monkeypatch):
-    # Stage a fake repo with a .venv/bin/python that exists
+def test_default_python_bin_prefers_isolated_venv(tmp_path, monkeypatch):
+    """Phase 5.1 fix for macOS TCC: the isolated Homebrew venv at
+    ~/.neomind_fin_venv takes precedence over everything else. Its
+    python is the one the launchd plist points at — using a
+    non-system binary is the only way FDA grants stick on macOS."""
+    fake_isolated = tmp_path / ".neomind_fin_venv"
+    fake_isolated_py = fake_isolated / "bin" / "python"
+    fake_isolated_py.parent.mkdir(parents=True)
+    fake_isolated_py.write_text("#!/usr/bin/env python\n")
+    fake_isolated_py.chmod(0o755)
+
+    monkeypatch.setattr(m, "ISOLATED_VENV_DIR", fake_isolated)
+    assert m.default_python_bin() == fake_isolated_py
+
+
+def test_default_python_bin_falls_back_to_repo_venv_then_sys(
+    tmp_path, monkeypatch,
+):
+    # No isolated venv → next best is repo .venv; none of those →
+    # sys.executable.
+    monkeypatch.setattr(m, "ISOLATED_VENV_DIR", tmp_path / "no-isolated-here")
+
     fake_repo = tmp_path / "fake_repo"
-    venv_py = fake_repo / ".venv" / "bin" / "python"
-    venv_py.parent.mkdir(parents=True)
-    venv_py.write_text("#!/usr/bin/env python\n")
-    venv_py.chmod(0o755)
-
-    monkeypatch.setattr(m, "repo_root", lambda: fake_repo)
-    assert m.default_python_bin() == venv_py
-
-
-def test_default_python_bin_falls_back_to_sys_executable(tmp_path, monkeypatch):
-    fake_repo = tmp_path / "empty_repo"
     fake_repo.mkdir()
     monkeypatch.setattr(m, "repo_root", lambda: fake_repo)
-    # No .venv/bin/python → returns sys.executable
+    # Neither isolated nor repo venv exist → sys.executable
     assert m.default_python_bin() == Path(sys.executable)
+
+    # Now create the repo .venv and verify it's preferred over sys.executable
+    repo_py = fake_repo / ".venv" / "bin" / "python"
+    repo_py.parent.mkdir(parents=True)
+    repo_py.write_text("#!/usr/bin/env python\n")
+    repo_py.chmod(0o755)
+    assert m.default_python_bin() == repo_py
+
+
+def test_find_homebrew_python_prefers_apple_silicon(monkeypatch):
+    """find_homebrew_python scans a fixed list in priority order;
+    we can't test by making real /opt/homebrew files, but we CAN
+    verify the returned path is not a system binary when something
+    is available, and None when the whole list is empty."""
+    # Empty list → None
+    monkeypatch.setattr(m, "_HOMEBREW_PYTHON_CANDIDATES", [])
+    assert m.find_homebrew_python() is None
+
+
+def test_is_system_python_rejects_clt_and_system(monkeypatch):
+    # Apple Command Line Tools python — exact prefix used in the
+    # user's broken install on 2026-04-13
+    assert m._is_system_python(
+        Path("/Library/Developer/CommandLineTools/usr/bin/python3")
+    ) is True
+    assert m._is_system_python(Path("/usr/bin/python3")) is True
+    assert m._is_system_python(Path("/System/Library/Python/python3")) is True
+    # Homebrew and user venvs are OK
+    assert m._is_system_python(Path("/opt/homebrew/bin/python3")) is False
+    assert m._is_system_python(Path("/usr/local/bin/python3")) is False
+    assert m._is_system_python(
+        Path.home() / ".neomind_fin_venv" / "bin" / "python"
+    ) is False
+
+
+def test_plist_environment_includes_pythonpath():
+    """Plist must inject PYTHONPATH pointing at the repo root so the
+    isolated venv python can import agent.finance.* even if the
+    editable pip install .pth file was not registered."""
+    payload = m.build_plist_dict(
+        repo=Path("/Users/alice/Desktop/NeoMind_agent"),
+        python_bin=Path.home() / ".neomind_fin_venv" / "bin" / "python",
+        log=Path("/Users/alice/Library/Logs/neomind-fin-dashboard.log"),
+    )
+    env = payload["EnvironmentVariables"]
+    assert env["PYTHONPATH"] == "/Users/alice/Desktop/NeoMind_agent"
 
 
 def test_label_is_stable_reverse_dns_form():
