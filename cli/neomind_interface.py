@@ -302,15 +302,29 @@ class NeoMindInterface:
 
         # ── Phase 5: Fleet multi-agent monitor (2026-04-12) ─────────
         # In-session FleetSession wrapper; None when no fleet active.
-        # Populated by /fleet start, cleared by /fleet stop. When set,
-        # the bottom toolbar renders tags and /fleet commands become
-        # available. Visual focus switching (the multi-agent tabbed
-        # view) is handled by a separate prompt_toolkit Application
-        # defined in cli/fleet_app.py, which takes over the terminal
-        # for the duration of /fleet start and returns control here
-        # on /fleet stop or Ctrl+D. This split keeps the PromptSession
-        # path (chat/coding/fin single session) completely untouched.
+        # Populated by /fleet start, cleared by /fleet stop. The UX is
+        # entirely inline within the existing PromptSession — no full-
+        # screen Application, no alt-screen takeover, no Ctrl+arrow
+        # shortcuts (user directive 2026-04-12). Visual focus switching
+        # happens via a two-line bottom toolbar (mode info + tag row)
+        # and conditional arrow-key bindings that only activate when
+        # the input buffer is empty AND a fleet is running, so the
+        # default prompt_toolkit behavior (history recall, cursor
+        # movement) is preserved otherwise.
         self._fleet_session: Optional[Any] = None
+        # When True, arrow keys in the input field navigate the fleet
+        # tag row at the bottom instead of their default behavior.
+        # Toggled by pressing Up from an empty buffer, cleared by
+        # pressing Enter/Escape on a tag.
+        self._fleet_tag_nav_active: bool = False
+        # Index into [LEADER_FOCUS, *member_names()] while in tag nav.
+        self._fleet_tag_cursor: int = 0
+        # Per-focus input buffer drafts: when the user switches focus
+        # with half-typed text in the input, we stash it here keyed by
+        # the *previous* focus target and restore whatever draft that
+        # the *new* focus target had previously (or empty string).
+        # Keys: LEADER_FOCUS sentinel or member name.
+        self._fleet_draft_buffers: dict = {}
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
@@ -403,16 +417,25 @@ class NeoMindInterface:
             print("  / commands | Ctrl+O think | Ctrl+D exit\n")
 
     # ── Status bar (prompt_toolkit bottom_toolbar) ────────────────────────
-    def _fleet_toolbar_segment(self) -> str:
-        """Return a prompt_toolkit HTML fragment representing the fleet
-        tag list, or empty string when no fleet is active.
+    def _fleet_toolbar_line(self) -> str:
+        """Return a standalone HTML line for the fleet tag row, or
+        empty string when no fleet is active.
 
-        Format when active:
-          " | [mgr-1] @fin-rt* @fin-rsrch @dev-1 @dev-2"
+        Rendered as a second line below the main status line. Contains
+        the leader slot followed by one tag per non-leader member:
 
-        The * marker indicates which tag currently has focus. The
-        [mgr-1] bracketed tag at the start is the leader slot, which
-        focus returns to via Ctrl+Home or Escape.
+            [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2
+
+        Visual state reflects THREE orthogonal things:
+          1. ``session.focus`` — which target is currently active (bold
+             magenta for sub-agent, bold cyan for leader).
+          2. ``self._fleet_tag_nav_active`` + ``self._fleet_tag_cursor``
+             — if the user has pressed Up from an empty buffer and is
+             navigating the tag row, the tag at the cursor gets a
+             reverse-video highlight (like vim's visual selection).
+          3. Last event kind per member — color-coded background for
+             running / completed / failed states so the user can see
+             at-a-glance which agents are busy.
         """
         from html import escape as _esc
 
@@ -420,43 +443,84 @@ class NeoMindInterface:
         if session is None:
             return ""
         from fleet.session import LEADER_FOCUS
-        parts = [" | "]
-        # Leader slot rendering — bracketed to differentiate from tags
+
+        # Build the sequence the tag cursor navigates over.
+        seq = [LEADER_FOCUS] + session.member_names()
+        cursor_idx = self._fleet_tag_cursor if self._fleet_tag_nav_active else -1
+        # Clamp cursor to valid range
+        if cursor_idx >= len(seq):
+            cursor_idx = len(seq) - 1
+
         leader_name = None
         for m in session.config.members:
             if m.role == "leader":
                 leader_name = m.name
                 break
         leader_label = leader_name or "leader"
-        if session.focus == LEADER_FOCUS:
-            parts.append(
-                f"<ansicyan><b>[{_esc(leader_label)}]</b></ansicyan>"
-            )
-        else:
-            parts.append(f"<ansiblack>[{_esc(leader_label)}]</ansiblack>")
-        # Non-leader member tags
-        for name in session.member_names():
-            focused = (session.focus == name)
-            # Color by last observed event kind: running = green, failed
-            # = red, otherwise default. Uses the last event in the
-            # ring buffer to avoid a dedicated state tracker.
-            color = "ansiwhite"
+
+        parts = [" "]
+
+        # Minimal palette:
+        #   - cursor (tag-nav selection): yellow background, black fg
+        #   - active (currently-focused target): bold white, underlined
+        #   - running (llm call in flight): dim yellow foreground only
+        #   - failed: dim red foreground only
+        #   - idle: dim gray
+        # No background colors except the cursor itself — that's the
+        # whole point of the bar, so it should be the only thing with
+        # a background.
+        CURSOR_OPEN = '<style bg="ansiyellow" fg="ansiblack"><b>'
+        CURSOR_CLOSE = '</b></style>'
+
+        def _fmt_leader() -> str:
+            txt = f"[{_esc(leader_label)}]"
+            is_cursor = (seq[0] == LEADER_FOCUS and cursor_idx == 0)
+            is_active = (session.focus == LEADER_FOCUS)
+            if is_cursor:
+                return f"{CURSOR_OPEN} {txt} {CURSOR_CLOSE}"
+            if is_active:
+                return f"<b><u>{txt}</u></b>"
+            return f"<ansibrightblack>{txt}</ansibrightblack>"
+
+        def _fmt_tag(name: str, idx: int) -> str:
+            txt = f"@{_esc(name)}"
+            is_cursor = (idx == cursor_idx)
+            is_active = (session.focus == name)
+            # Status-based foreground only (no backgrounds)
+            fg = "ansibrightblack"
             events = session.recent_events(name, limit=1)
             if events:
                 last_kind = events[-1].kind
                 if last_kind == "task_failed":
-                    color = "ansired"
-                elif last_kind in ("task_completed",):
-                    color = "ansigreen"
+                    fg = "ansired"
                 elif last_kind in ("llm_call_start", "task_received"):
-                    color = "ansiyellow"
-            marker = "*" if focused else ""
-            if focused:
-                parts.append(
-                    f" <ansimagenta><b>@{_esc(name)}{marker}</b></ansimagenta>"
-                )
-            else:
-                parts.append(f" <{color}>@{_esc(name)}</{color}>")
+                    fg = "ansiyellow"
+                # task_completed/llm_call_end → revert to neutral gray
+                # so the bar doesn't stay green forever.
+            if is_cursor:
+                return f"{CURSOR_OPEN} {txt} {CURSOR_CLOSE}"
+            if is_active:
+                return f"<b><u>{txt}</u></b>"
+            return f"<{fg}>{txt}</{fg}>"
+
+        parts.append(_fmt_leader())
+        for i, name in enumerate(session.member_names(), start=1):
+            parts.append("  ")
+            parts.append(_fmt_tag(name, i))
+
+        # Contextual hint tail
+        if self._fleet_tag_nav_active:
+            parts.append(
+                "   <ansibrightblack>"
+                "← → move   Enter select   Esc cancel"
+                "</ansibrightblack>"
+            )
+        else:
+            parts.append(
+                "   <ansibrightblack>"
+                "↓ to navigate tags"
+                "</ansibrightblack>"
+            )
         return "".join(parts)
 
     def _bottom_toolbar(self):
@@ -486,7 +550,10 @@ class NeoMindInterface:
             pct_color = "ansigreen"
         max_label = f"{max_ctx // 1000}k"
 
-        fleet_seg = self._fleet_toolbar_segment()
+        fleet_line = self._fleet_toolbar_line()
+        # Two-row bottom toolbar: main status on line 1, fleet tags on
+        # line 2 (only when fleet is running). One row when no fleet.
+        fleet_suffix = f"\n{fleet_line}" if fleet_line else ""
 
         if mode == "coding":
             # Coding mode: show permission mode + cwd
@@ -496,24 +563,24 @@ class NeoMindInterface:
                 f" <b>{model}</b> | coding | {perm} | think:{think} "
                 f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg "
                 f"| {cwd}"
-                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+                f"{fleet_suffix}"
             )
         elif mode == "fin":
             # Finance mode: show source count + encrypted memory status
             return HTML(
                 f" <b>{model}</b> | <ansigreen>fin</ansigreen> | think:{think} "
                 f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg"
-                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+                f"{fleet_suffix}"
             )
         else:
             # Chat mode: simpler bar
             return HTML(
                 f" <b>{model}</b> | chat | think:{think} "
                 f"| <{pct_color}>{pct:.0f}% {tokens:,}/{max_label}</{pct_color}> {msg_count}msg"
-                f"{fleet_seg}"
                 f"  <i>Ctrl+O</i> think  <i>/</i> cmds  <i>Ctrl+D</i> exit"
+                f"{fleet_suffix}"
             )
 
     # ── Fleet multi-agent monitor (Phase 5) ───────────────────────────────
@@ -583,6 +650,174 @@ class NeoMindInterface:
         future = asyncio.run_coroutine_threadsafe(coro, cls._fleet_bg_loop)
         return future.result()
 
+    def _print_fleet_focus_banner(self) -> None:
+        """Print a focus-change banner plus the last N turns of the
+        newly-focused target into the terminal scrollback.
+
+        Called from the main loop after a tag-navigation Enter selects
+        a new focus target. The goal is to give the user a quick
+        "here's where you are, here's what's been said" view without
+        taking over the screen — the banner lands in normal terminal
+        scrollback so the user can scroll up to see it later.
+        """
+        session = self._fleet_session
+        if session is None:
+            return
+        from fleet.session import LEADER_FOCUS
+
+        # Clear the terminal (screen + scrollback) so the user only
+        # sees the focused agent's conversation, not the accumulated
+        # transcripts of every other agent they visited.
+        # \x1b[2J  — clear visible screen
+        # \x1b[3J  — clear scrollback buffer (xterm + iTerm2)
+        # \x1b[H   — home cursor
+        import sys as _sys
+        _sys.stdout.write("\x1b[2J\x1b[3J\x1b[H")
+        _sys.stdout.flush()
+
+        if session.is_focused_on_leader():
+            self._print(
+                f"[bold cyan]── ↩ leader[/bold cyan] "
+                f"[dim](main {self.chat.mode} session, project={session.project_id})[/dim]"
+            )
+            history = getattr(self.chat, "conversation_history", None) or []
+            visible = [
+                h for h in history
+                if isinstance(h, dict) and h.get("role") in ("user", "assistant")
+            ][-8:]
+            if not visible:
+                self._print(
+                    "[dim]  (no conversation yet — type below to talk to "
+                    "the main persona, or [bold]@agent-name[/bold] to "
+                    "dispatch a sub-agent)[/dim]"
+                )
+            else:
+                for h in visible:
+                    role = h.get("role")
+                    body = str(h.get("content") or "")[:400]
+                    if role == "user":
+                        self._print(f"[white bold]  you:[/white bold] {body}")
+                    else:
+                        self._print(f"[cyan bold]  leader:[/cyan bold] {body}")
+            self._print(
+                "[dim]  ─── type below to talk to the main persona, "
+                "[bold]↓[/bold] to navigate tags[/dim]"
+            )
+            return
+
+        name = session.focused_member_name()
+        member = session.get_member(name) if name else None
+        if not member:
+            return
+
+        transcript = session.get_transcript(name)
+        self._print(
+            f"[bold magenta]── ➜ @{name}[/bold magenta] "
+            f"[dim]({member.persona} · {member.role}, "
+            f"project={session.project_id})[/dim]"
+        )
+
+        if transcript is None or transcript.turn_count() == 0:
+            self._print(
+                "[dim]  (no conversation yet — type a message below to "
+                "send this agent its first task)[/dim]"
+            )
+        else:
+            recent = transcript.turns[-8:]
+            for turn in recent:
+                if turn.role == "user":
+                    label = "[white bold]  you:[/white bold]"
+                elif turn.role == "assistant":
+                    label = f"[green bold]  @{name}:[/green bold]"
+                elif turn.role == "system":
+                    label = "[dim italic]  [sys][/dim italic]"
+                elif turn.role == "meta":
+                    continue  # skip internal meta turns
+                else:
+                    label = f"[dim]  [{turn.role}][/dim]"
+                body = turn.content[:400]
+                if turn.role in ("user", "assistant"):
+                    self._print(f"{label} {body}")
+                else:
+                    self._print(f"{label} [dim]{body}[/dim]")
+        self._print(
+            "[dim]  ─── type below to send a new task to this agent, "
+            "[bold]↓[/bold] to navigate tags again[/dim]"
+        )
+
+    def _wait_and_print_agent_reply(
+        self, member_name: str, task_id: str, timeout: float = 120.0,
+    ) -> None:
+        """Spawn a background daemon thread that polls the member's
+        transcript for new assistant / thinking turns tied to
+        ``task_id`` and prints them above the active prompt via
+        ``patch_stdout``. Returns immediately so the user can keep
+        navigating / typing / switching focus while the sub-agent
+        thinks. Multiple agents can stream concurrently — their
+        replies will interleave above the prompt as they arrive."""
+        import threading
+        import time as _time
+
+        session = self._fleet_session
+        if session is None:
+            return
+        transcript = session.get_transcript(member_name)
+        if transcript is None:
+            return
+        baseline = transcript.turn_count()
+
+        # Only show the "thinking" hint if the user is currently
+        # focused on THIS agent. If they dispatched and then switched
+        # away, the hint would leak into the other agent's view.
+        if session.focus == member_name:
+            self._print(
+                f"[dim]  ⠋ @{member_name} thinking…[/dim]"
+            )
+
+        def _worker():
+            nonlocal baseline
+            deadline = _time.monotonic() + timeout
+            while _time.monotonic() < deadline:
+                _time.sleep(0.4)
+                try:
+                    count = transcript.turn_count()
+                    if count > baseline:
+                        new = transcript.turns[baseline:count]
+                        # Only stream live if the user is STILL focused
+                        # on this agent. Otherwise the turns remain in
+                        # the transcript and will be replayed when the
+                        # user navigates back to this agent.
+                        currently_focused = (
+                            self._fleet_session is not None
+                            and self._fleet_session.focus == member_name
+                        )
+                        if currently_focused:
+                            for turn in new:
+                                if turn.role == "assistant":
+                                    self._print(
+                                        f"[green bold]  @{member_name}:"
+                                        f"[/green bold] {turn.content}"
+                                    )
+                                elif turn.role == "thinking":
+                                    self._print(
+                                        f"[dim italic]  @{member_name} "
+                                        f"(think): {turn.content[:400]}"
+                                        f"[/dim italic]"
+                                    )
+                        baseline = count
+                        evs = session.recent_events(member_name, limit=8)
+                        if any(
+                            e.metadata.get("task_id") == task_id
+                            and e.kind in ("task_completed", "task_failed")
+                            for e in evs
+                        ):
+                            return
+                except Exception:
+                    return
+
+        t = threading.Thread(target=_worker, daemon=True)
+        t.start()
+
     @staticmethod
     def _fleet_event_color(kind: str) -> str:
         return {
@@ -622,9 +857,6 @@ class NeoMindInterface:
         if sub == "start":
             self._fleet_cmd_start(sub_args)
             return True
-        if sub == "show":
-            self._fleet_cmd_show()
-            return True
         if sub == "stop":
             self._fleet_cmd_stop()
             return True
@@ -656,23 +888,21 @@ class NeoMindInterface:
         self._print("  [cyan]/fleet list[/cyan]                 — list members")
         self._print("  [cyan]/fleet stop[/cyan]                 — graceful shutdown")
         self._print("")
-        self._print("[dim]Once started, /fleet start enters the multi-agent view —[/dim]")
-        self._print("[dim]  • [bold]Ctrl+→[/bold] / [bold]Ctrl+←[/bold]: cycle focus through tags[/dim]")
-        self._print("[dim]  • [bold]Esc[/bold]: jump back to leader view[/dim]")
-        self._print("[dim]  • [bold]Ctrl+D[/bold]: leave the multi-agent view (fleet keeps running)[/dim]")
-        self._print("[dim]  • Typing while focused on an agent dispatches text as a task to it[/dim]")
+        self._print("[dim]Once a fleet is running:[/dim]")
+        self._print("[dim]  • The bottom toolbar shows a second line with agent tags[/dim]")
+        self._print("[dim]  • Press [bold]Down[/bold] from an empty input to move the cursor onto the tag row[/dim]")
+        self._print("[dim]  • [bold]← →[/bold] move between tags, [bold]Enter[/bold] selects (enters that agent), [bold]Esc[/bold] cancels[/dim]")
+        self._print("[dim]  • While an agent is focused, typing + Enter dispatches the message as a task[/dim]")
         self._print("[dim]  • In leader view, prefix input with [bold]@agent-name[/bold] to dispatch inline[/dim]")
 
     def _fleet_cmd_start(self, project_id: str) -> None:
-        """Start a fleet and immediately enter the multi-agent view.
+        """Start a fleet in the background and stay in the current CLI.
 
-        This call blocks until the user exits the Application (Ctrl+D,
-        /exit, or /fleet stop). When the Application returns, control
-        returns to the PromptSession loop. If the user exited with
-        Ctrl+D or /exit the fleet is LEFT RUNNING in the background
-        and ``self._fleet_session`` is kept live — the user can re-
-        enter the multi-agent view with /fleet show. If the user
-        exited with /fleet stop the session is torn down.
+        The fleet runs inline via the existing PromptSession — no
+        full-screen takeover, no alt-screen, no Ctrl+arrow shortcuts.
+        After start, the bottom toolbar shows tags for every sub-agent
+        and the user can navigate them with plain arrow keys (Up from
+        an empty buffer enters tag-nav, Left/Right/Enter select).
         """
         if not project_id:
             self._print("[yellow]Usage:[/yellow] /fleet start <project_id>")
@@ -682,7 +912,7 @@ class NeoMindInterface:
                 f"[yellow]Fleet already running:[/yellow] "
                 f"{self._fleet_session.project_id}"
             )
-            self._print("[dim]Use /fleet show to re-enter the multi-agent view, or /fleet stop first[/dim]")
+            self._print("[dim]Use /fleet stop first[/dim]")
             return
 
         project_id = project_id.strip()
@@ -697,78 +927,27 @@ class NeoMindInterface:
             from fleet.session import FleetSession
             config = load_project_config(str(yaml_path))
             session = FleetSession(config)
+            self._fleet_async_run(session.start())
         except Exception as exc:
-            self._print(f"[red]Failed to load fleet config:[/red] {exc}")
+            self._print(f"[red]Failed to start fleet:[/red] {exc}")
             return
 
-        # Launch the multi-agent Application. It will call
-        # session.start() itself before entering the UI.
         self._fleet_session = session
-        exit_reason = self._run_fleet_application(session)
-
-        # Handle exit mode:
-        #   - "user_stop" / "/fleet stop" → tear down session
-        #   - "ctrl_d" / "user_exit"      → keep session running in bg
-        if exit_reason in ("user_stop",):
-            try:
-                self._fleet_async_run(session.stop())
-            except Exception as exc:
-                self._print(f"[dim]Stop encountered: {exc}[/dim]")
-            self._fleet_session = None
-            self._print("[green]✓[/green] Fleet stopped")
-        else:
-            self._print(
-                f"[dim]Returned to main session. Fleet [bold]{session.project_id}[/bold] "
-                f"still running — /fleet show to re-enter, /fleet stop to tear down.[/dim]"
-            )
-
-    def _fleet_cmd_show(self) -> None:
-        """Re-enter the multi-agent view for an already-running fleet."""
-        if self._fleet_session is None:
-            self._print(
-                "[yellow]No fleet running[/yellow] — start one with /fleet start <project>"
-            )
-            return
-        exit_reason = self._run_fleet_application(self._fleet_session)
-        if exit_reason == "user_stop":
-            try:
-                self._fleet_async_run(self._fleet_session.stop())
-            except Exception as exc:
-                self._print(f"[dim]Stop encountered: {exc}[/dim]")
-            self._fleet_session = None
-            self._print("[green]✓[/green] Fleet stopped")
-        else:
-            self._print(
-                "[dim]Returned to main session. Fleet still running in background.[/dim]"
-            )
-
-    def _run_fleet_application(self, session) -> str:
-        """Run the FleetApplication until exit. Returns the exit reason
-        string. Wraps the async entry point in a fresh asyncio.run so
-        the Application + fleet workers share one event loop that
-        lives only for the duration of the multi-agent view.
-
-        This is the clean alternative to the Phase 5.10 bg-thread hack:
-        the Application owns the loop while the user is in multi-agent
-        mode, so fleet worker tasks scheduled via create_task run on
-        the same loop the UI uses — no cross-thread asyncio coupling
-        and no task-claim starvation.
-        """
-        import asyncio
-        from cli.fleet_app import run_fleet_application
-
-        try:
-            return asyncio.run(
-                run_fleet_application(
-                    session,
-                    leader_chat=self.chat,
-                    start_session=not session.running,
-                    stop_session_on_exit=False,
-                )
-            )
-        except Exception as exc:
-            self._print(f"[red]Fleet application error:[/red] {exc}")
-            return "error"
+        self._fleet_tag_nav_active = False
+        self._fleet_tag_cursor = 0
+        non_leader = session.member_names()
+        self._print(
+            f"[green]✓[/green] Fleet [bold]{session.project_id}[/bold] started "
+            f"with {len(non_leader)} worker(s): "
+            + " ".join(f"[magenta]@{n}[/magenta]" for n in non_leader)
+        )
+        self._print(
+            "[dim]Press [bold]Down[/bold] from an empty input to navigate agent tags; "
+            "[bold]← →[/bold] move, [bold]Enter[/bold] to select, [bold]Esc[/bold] to cancel. "
+            "While an agent is focused, typing sends a task to it. "
+            "Prefix with [bold]@agent[/bold] to dispatch inline from the leader view. "
+            "[bold]/fleet stop[/bold] to tear down.[/dim]"
+        )
 
     def _fleet_cmd_stop(self) -> None:
         if self._fleet_session is None:
@@ -863,13 +1042,21 @@ class NeoMindInterface:
             self._print(f"[red]Dispatch failed:[/red] {exc}")
 
     def _compute_prompt_str(self) -> str:
-        """Compute the prompt string for PromptSession mode.
+        """Compute the prompt string.
 
-        In this (single-session) mode the prompt always reflects
-        chat/coding/fin mode. Multi-agent focus routing lives in the
-        separate fleet_app.FleetApplication layer and has its own
-        prompt rendering.
+        When a fleet is running AND focus is on a sub-agent, the
+        prompt reflects that so the user knows where their typed
+        input will be routed (e.g. ``[@fin-rt fin] > ``). Otherwise
+        the prompt reflects the main chat/coding/fin mode as before.
         """
+        if (
+            self._fleet_session is not None
+            and not self._fleet_session.is_focused_on_leader()
+        ):
+            name = self._fleet_session.focused_member_name()
+            member = self._fleet_session.get_member(name) if name else None
+            persona = member.persona if member else ""
+            return f"[@{name} {persona}] > "
         if self.chat.mode == "coding":
             return "> "
         if self.chat.mode == "fin":
@@ -2279,12 +2466,103 @@ class NeoMindInterface:
             """Ctrl+E: open /expand to view thinking turns."""
             event.app.exit(result="/expand")
 
-        # Fleet multi-agent focus navigation (Ctrl+←/→/Home) lives in
-        # the separate cli/fleet_app.py Application layer — not in
-        # PromptSession. Reason: prompt_toolkit's session.prompt()
-        # isn't the right primitive for a tabbed multi-view UI; the
-        # full Application + Layout path is. /fleet start enters that
-        # path; /fleet stop or Ctrl+D returns here.
+        # ── Phase 5.12: Fleet tag row navigation (plain arrow keys) ──
+        #
+        # These bindings only fire when a fleet is active AND the
+        # conditions in their filters match, so they NEVER steal
+        # default arrow-key behavior (history recall, cursor movement)
+        # from users who don't have a fleet running. Inside the filters
+        # I read self._fleet_session, self._fleet_tag_nav_active,
+        # etc. directly — prompt_toolkit re-evaluates Conditions on
+        # every key press.
+        from prompt_toolkit.filters import Condition
+
+        def _fleet_active():
+            return self._fleet_session is not None
+
+        def _tag_nav():
+            return self._fleet_session is not None and self._fleet_tag_nav_active
+
+        def _buffer_empty(event_or_app=None):
+            # Evaluated via Condition — has access to the current app
+            # through prompt_toolkit's implicit context. We use a
+            # simple approach: read app.current_buffer via get_app.
+            from prompt_toolkit.application.current import get_app
+            try:
+                return get_app().current_buffer.text == ""
+            except Exception:
+                return False
+
+        _fleet_active_cond = Condition(_fleet_active)
+        _tag_nav_cond = Condition(_tag_nav)
+        # Down enters tag-nav whenever a fleet is active and we aren't
+        # already in nav mode — regardless of whether the input has
+        # text. Any half-typed draft is stashed per-focus and restored
+        # when the user comes back to that target.
+        _can_enter_tag_nav = Condition(
+            lambda: _fleet_active() and not _tag_nav()
+        )
+
+        @bindings.add("down", filter=_can_enter_tag_nav)
+        def _enter_tag_nav(event):
+            """Pressing Down while a fleet is running enters
+            tag-navigation mode. Down is the natural direction because
+            the fleet tag row renders BELOW the input field in the
+            bottom toolbar. If the user had half-typed text in the
+            buffer, stash it under the current focus so it's restored
+            when they come back here."""
+            # Stash current draft for the focus we're leaving
+            current_focus = self._fleet_session.focus
+            current_text = event.app.current_buffer.text
+            if current_text:
+                self._fleet_draft_buffers[current_focus] = current_text
+            else:
+                self._fleet_draft_buffers.pop(current_focus, None)
+            self._fleet_tag_nav_active = True
+            from fleet.session import LEADER_FOCUS
+            seq = [LEADER_FOCUS] + self._fleet_session.member_names()
+            try:
+                self._fleet_tag_cursor = seq.index(self._fleet_session.focus)
+            except ValueError:
+                self._fleet_tag_cursor = 0
+            event.app.invalidate()
+
+        @bindings.add("left", filter=_tag_nav_cond)
+        def _tag_nav_left(event):
+            from fleet.session import LEADER_FOCUS
+            seq = [LEADER_FOCUS] + self._fleet_session.member_names()
+            self._fleet_tag_cursor = (self._fleet_tag_cursor - 1) % len(seq)
+            event.app.invalidate()
+
+        @bindings.add("right", filter=_tag_nav_cond)
+        def _tag_nav_right(event):
+            from fleet.session import LEADER_FOCUS
+            seq = [LEADER_FOCUS] + self._fleet_session.member_names()
+            self._fleet_tag_cursor = (self._fleet_tag_cursor + 1) % len(seq)
+            event.app.invalidate()
+
+        @bindings.add("enter", filter=_tag_nav_cond)
+        def _tag_nav_confirm(event):
+            """Confirm the selected tag, exit the prompt with a
+            sentinel so the main loop can print a focus banner."""
+            from fleet.session import LEADER_FOCUS
+            seq = [LEADER_FOCUS] + self._fleet_session.member_names()
+            target = seq[self._fleet_tag_cursor]
+            self._fleet_session.set_focus(target)
+            self._fleet_tag_nav_active = False
+            event.app.exit(result="__fleet_tag_selected__")
+
+        @bindings.add("escape", filter=_tag_nav_cond)
+        def _tag_nav_cancel(event):
+            self._fleet_tag_nav_active = False
+            event.app.invalidate()
+
+        @bindings.add("up", filter=_tag_nav_cond)
+        def _tag_nav_up_cancel(event):
+            """Up arrow returns focus from the tag row back to the
+            input field (natural inverse of Down-to-enter)."""
+            self._fleet_tag_nav_active = False
+            event.app.invalidate()
 
         self._completer = SlashCommandCompleter(
             mode=self.chat.mode,
@@ -2325,12 +2603,37 @@ class NeoMindInterface:
             self._run_fallback()
             return
 
+        # patch_stdout lets background daemon threads (e.g. sub-agent
+        # reply poller spawned by _wait_and_print_agent_reply) safely
+        # print above the active prompt line while the user types.
+        pending_draft = ""
+        self._stdout_patch = patch_stdout(raw=True)
+        self._stdout_patch.__enter__()
         while self.running:
             try:
                 prompt_str = self._compute_prompt_str()
-                user_input = session.prompt(prompt_str)
+                user_input = session.prompt(prompt_str, default=pending_draft)
+                pending_draft = ""
 
                 if user_input is None:
+                    continue
+
+                # ── Phase 5.12: tag-nav select sentinel ────────────
+                # When the user presses Enter while the fleet tag row
+                # is focused, one of the KeyBindings calls
+                # event.app.exit(result="__fleet_tag_selected__").
+                # session.prompt returns that sentinel; the focus was
+                # already updated on FleetSession inside the binding.
+                # Print the banner and re-prompt without dispatching.
+                if user_input == "__fleet_tag_selected__":
+                    self._print_fleet_focus_banner()
+                    # Restore whatever draft was previously stashed for
+                    # the NEW focus target (or empty if none).
+                    if self._fleet_session is not None:
+                        new_focus = self._fleet_session.focus
+                        pending_draft = self._fleet_draft_buffers.pop(
+                            new_focus, ""
+                        )
                     continue
 
                 user_input = user_input.strip()
@@ -2343,6 +2646,68 @@ class NeoMindInterface:
                     cont = session.prompt("... ")
                     if cont is not None:
                         user_input += "\n" + cont
+
+                # ── Phase 5.12: focus-aware input routing ─────────
+                # When a fleet is running AND focus is on a sub-
+                # agent, non-slash input is dispatched as a task to
+                # that sub-agent via submit_to_member. Slash commands
+                # always fall through to _handle_local_command so
+                # /fleet stop etc. keep working in sub-agent mode.
+                if (
+                    self._fleet_session is not None
+                    and not self._fleet_session.is_focused_on_leader()
+                    and not user_input.startswith("/")
+                ):
+                    name = self._fleet_session.focused_member_name()
+                    if name:
+                        self._print(f"[white bold]  you:[/white bold] {user_input}")
+                        try:
+                            task_id = self._fleet_async_run(
+                                self._fleet_session.submit_to_member(
+                                    name, user_input,
+                                )
+                            )
+                            self._wait_and_print_agent_reply(name, task_id)
+                        except Exception as exc:
+                            self._print(
+                                f"[red]Dispatch failed:[/red] {exc}"
+                            )
+                    continue
+
+                # ── Phase 5.12: leader-view @mention inline dispatch ─
+                # When focus is on leader AND input begins with
+                # @<member-name>, dispatch the rest as a task to that
+                # member without requiring the user to navigate the
+                # tag row. Unknown mentions fall through to normal
+                # LLM handling so typos don't block the user.
+                if (
+                    self._fleet_session is not None
+                    and self._fleet_session.is_focused_on_leader()
+                    and not user_input.startswith("/")
+                ):
+                    mention = self._fleet_session.handle_leader_input(
+                        user_input,
+                    )
+                    if mention is not None:
+                        target_name, rest = mention
+                        try:
+                            self._print(
+                                f"[white bold]  you → @{target_name}:"
+                                f"[/white bold] {rest}"
+                            )
+                            task_id = self._fleet_async_run(
+                                self._fleet_session.submit_to_member(
+                                    target_name, rest,
+                                )
+                            )
+                            self._wait_and_print_agent_reply(
+                                target_name, task_id,
+                            )
+                        except Exception as exc:
+                            self._print(
+                                f"[red]Mention dispatch failed:[/red] {exc}"
+                            )
+                        continue
 
                 # Try local commands first
                 if user_input.startswith("/"):
@@ -2371,6 +2736,14 @@ class NeoMindInterface:
             except Exception as e:
                 self._print(f"[red]Error: {e}[/red]")
                 continue
+
+        # Close patch_stdout context
+        try:
+            if getattr(self, "_stdout_patch", None) is not None:
+                self._stdout_patch.__exit__(None, None, None)
+                self._stdout_patch = None
+        except Exception:
+            pass
 
         # Write session journal to vault before saving
         try:
