@@ -127,3 +127,69 @@ def test_label_is_stable_reverse_dns_form():
     # doesn't collide with third-party agents in ~/Library/LaunchAgents.
     assert m.LABEL == "com.neomind.fin-dashboard"
     assert m.LABEL.count(".") >= 2
+
+
+# ── TCC (Transparency, Consent, Control) detection ──────────────────
+
+
+def test_is_tcc_protected_path_desktop(monkeypatch, tmp_path):
+    # Fake a home dir containing Desktop/NeoMind_agent
+    fake_home = tmp_path / "alice"
+    (fake_home / "Desktop" / "NeoMind_agent").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    repo = fake_home / "Desktop" / "NeoMind_agent"
+    assert m._is_tcc_protected_path(repo) is True
+
+
+def test_is_tcc_protected_path_documents_and_downloads(monkeypatch, tmp_path):
+    fake_home = tmp_path / "alice"
+    (fake_home / "Documents" / "proj").mkdir(parents=True)
+    (fake_home / "Downloads" / "stuff").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    assert m._is_tcc_protected_path(fake_home / "Documents" / "proj") is True
+    assert m._is_tcc_protected_path(fake_home / "Downloads" / "stuff") is True
+
+
+def test_is_tcc_protected_path_safe_locations(monkeypatch, tmp_path):
+    fake_home = tmp_path / "alice"
+    (fake_home / "code" / "neomind").mkdir(parents=True)
+    (fake_home / ".local" / "share" / "x").mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: fake_home)
+    # ~/code and ~/.local are NOT TCC-protected → safe for launchd
+    assert m._is_tcc_protected_path(fake_home / "code" / "neomind") is False
+    assert m._is_tcc_protected_path(
+        fake_home / ".local" / "share" / "x"
+    ) is False
+
+
+def test_scan_log_for_tcc_error_detects_operation_not_permitted(tmp_path):
+    log = tmp_path / "dashboard.log"
+    log.write_text(
+        "Traceback (most recent call last):\n"
+        "  File 'site.py', line 522, in venv\n"
+        "PermissionError: [Errno 1] Operation not permitted: "
+        "'/Users/alice/Desktop/NeoMind_agent/.venv/pyvenv.cfg'\n"
+    )
+    # since_ts older than the file → should find it
+    assert m._scan_log_for_tcc_error(log, 0.0) is True
+
+
+def test_scan_log_for_tcc_error_ignores_stale_log(tmp_path):
+    log = tmp_path / "dashboard.log"
+    log.write_text("PermissionError: Operation not permitted: /foo\n")
+    import time
+    # since_ts in the future → should NOT count this log
+    assert m._scan_log_for_tcc_error(log, time.time() + 60) is False
+
+
+def test_scan_log_for_tcc_error_missing_log(tmp_path):
+    assert m._scan_log_for_tcc_error(tmp_path / "nonexistent.log", 0.0) is False
+
+
+def test_scan_log_for_tcc_error_clean_log(tmp_path):
+    log = tmp_path / "dashboard.log"
+    log.write_text(
+        "INFO:     127.0.0.1:54842 - GET /api/health HTTP/1.1 200 OK\n"
+        "INFO:     Application startup complete.\n"
+    )
+    assert m._scan_log_for_tcc_error(log, 0.0) is False
