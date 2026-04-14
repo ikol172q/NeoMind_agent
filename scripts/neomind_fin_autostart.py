@@ -31,11 +31,29 @@ import plistlib
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Tuple
 
 LABEL = "com.neomind.fin-dashboard"
 DEFAULT_URL = "http://127.0.0.1:8001"
+
+# macOS directories gated by TCC (Transparency, Consent, Control).
+# Processes spawned by launchd do NOT inherit the user's interactive
+# Terminal/Finder grant for these locations — they get silent EPERM
+# unless the binary has been explicitly granted Full Disk Access.
+# Symptom: `Operation not permitted` on reading .venv/pyvenv.cfg or
+# any repo file when the repo lives inside one of these dirs.
+_TCC_PROTECTED_DIRS = ("Desktop", "Documents", "Downloads")
+
+
+def _is_tcc_protected_path(path: Path) -> bool:
+    home = Path.home().resolve()
+    try:
+        rel = path.resolve().relative_to(home)
+    except ValueError:
+        return False
+    return len(rel.parts) > 0 and rel.parts[0] in _TCC_PROTECTED_DIRS
 
 
 def repo_root() -> Path:
@@ -146,6 +164,56 @@ def _port_listening(port: int = 8001) -> bool:
     return bool(out.strip())
 
 
+def _scan_log_for_tcc_error(log: Path, since_ts: float) -> bool:
+    """Return True if the log has a 'Operation not permitted' error
+    on the .venv or any repo file that appeared after ``since_ts``.
+    Used to detect macOS TCC denial after launchd first loads the job.
+    """
+    if not log.exists():
+        return False
+    try:
+        if log.stat().st_mtime < since_ts:
+            return False
+        tail = log.read_text(encoding="utf-8", errors="replace")[-4000:]
+    except OSError:
+        return False
+    return (
+        "Operation not permitted" in tail
+        or "PermissionError" in tail
+    )
+
+
+def _print_tcc_help(repo: Path, py: Path) -> None:
+    protected = _is_tcc_protected_path(repo)
+    print()
+    print("─" * 70)
+    print("ERROR: the dashboard process was denied filesystem access.")
+    print("─" * 70)
+    if protected:
+        print(
+            f"Your repo lives inside a macOS TCC-protected folder:\n"
+            f"  {repo}"
+        )
+        print(
+            "\nmacOS silently blocks launchd-spawned processes from reading\n"
+            "~/Desktop, ~/Documents, and ~/Downloads unless the binary has\n"
+            "been explicitly granted Full Disk Access."
+        )
+    print()
+    print("Fix (one-time, ~30 seconds):")
+    print("  1. Open System Settings → Privacy & Security → Full Disk Access")
+    print("  2. Click the '+' button, press ⌘⇧G, paste this path, click Open:")
+    print(f"       {py}")
+    print("  3. Toggle it ON (add if not already listed)")
+    print("  4. Re-run: python scripts/neomind_fin_autostart.py install")
+    print()
+    print("Shortcut — open the right pane directly:")
+    print("  python scripts/neomind_fin_autostart.py grant-fda")
+    print()
+    print("Alternative: move the repo out of ~/Desktop (e.g. to ~/code/)")
+    print("─" * 70)
+
+
 def cmd_install(args: argparse.Namespace) -> int:
     repo = repo_root()
     py = default_python_bin()
@@ -168,6 +236,20 @@ def cmd_install(args: argparse.Namespace) -> int:
         print(f"  repo:   {repo}", file=sys.stderr)
         return 2
 
+    # Warn early if repo is in a TCC-protected location — the install
+    # will probably still try, but we surface the risk up front.
+    if _is_tcc_protected_path(repo):
+        print(
+            f"⚠  repo is inside a TCC-protected folder ({repo.parts[-2]}/…)"
+        )
+        print(
+            "   macOS may block launchd from reading it until you grant"
+        )
+        print(
+            f"   Full Disk Access to {py}"
+        )
+        print()
+
     launch_agents_dir().mkdir(parents=True, exist_ok=True)
     log.parent.mkdir(parents=True, exist_ok=True)
 
@@ -181,6 +263,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     plist.write_bytes(plist_bytes)
     print(f"wrote {plist}")
 
+    load_ts = time.time()
     load = _run(["launchctl", "load", str(plist)], check=False)
     if load.returncode != 0:
         print("launchctl load failed:", file=sys.stderr)
@@ -189,6 +272,35 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     print(f"loaded  {LABEL}")
     print(f"log     {log}")
+
+    # Poll for up to 4s: either the port starts listening (success) or
+    # launchd crash-loops the job and the log shows a TCC permission
+    # error. We detect the latter so we can give the user clear help
+    # instead of leaving them to discover the failure themselves.
+    deadline = time.monotonic() + 4.0
+    listening = False
+    tcc_denied = False
+    while time.monotonic() < deadline:
+        time.sleep(0.4)
+        if _port_listening():
+            listening = True
+            break
+        if _scan_log_for_tcc_error(log, load_ts):
+            tcc_denied = True
+            break
+
+    if tcc_denied:
+        # Unload the broken job so it doesn't keep crash-looping
+        _run(["launchctl", "unload", str(plist)], check=False)
+        _print_tcc_help(repo, py)
+        return 4
+
+    if not listening:
+        print()
+        print("⚠  dashboard did not start listening on 8001 within 4s")
+        print(f"   check the log: tail {log}")
+        return 5
+
     print()
     print(f"◇ neomind fin dashboard is now running at {DEFAULT_URL}")
     print("   it will restart automatically at every login")
@@ -199,6 +311,31 @@ def cmd_install(args: argparse.Namespace) -> int:
     # Open the dashboard in the default browser (non-fatal if absent).
     if not args.no_open and shutil.which("open"):
         _run(["open", DEFAULT_URL], check=False)
+    return 0
+
+
+def cmd_grant_fda(args: argparse.Namespace) -> int:
+    """Open System Settings → Privacy & Security → Full Disk Access
+    directly, and print the exact python binary path to grant."""
+    py = default_python_bin()
+    print(f"python binary to grant Full Disk Access: {py}")
+    print()
+    print("In the pane that opens:")
+    print("  1. Click the '+' button (may need to unlock first)")
+    print("  2. Press ⌘⇧G, paste the path above, click Open")
+    print("  3. Toggle it ON")
+    print("  4. Re-run: python scripts/neomind_fin_autostart.py install")
+    print()
+    if shutil.which("open"):
+        # The URL scheme for the FDA pane. Works on macOS 13+.
+        _run(
+            [
+                "open",
+                "x-apple.systempreferences:com.apple.preference.security"
+                "?Privacy_AllFiles",
+            ],
+            check=False,
+        )
     return 0
 
 
@@ -260,6 +397,12 @@ def main(argv: List[str] | None = None) -> int:
 
     p_render = sub.add_parser("render", help="print rendered plist to stdout")
     p_render.set_defaults(func=cmd_render)
+
+    p_fda = sub.add_parser(
+        "grant-fda",
+        help="open System Settings → Full Disk Access with the right binary",
+    )
+    p_fda.set_defaults(func=cmd_grant_fda)
 
     args = parser.parse_args(argv)
     return args.func(args)
