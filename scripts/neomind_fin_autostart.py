@@ -38,6 +38,34 @@ from typing import Dict, List, Optional, Tuple
 LABEL = "com.neomind.fin-dashboard"
 DEFAULT_URL = "http://127.0.0.1:8001"
 
+# Isolated venv used by launchd. Lives OUTSIDE ~/Desktop so its own
+# site-packages are readable by non-FDA processes, and built with a
+# non-Apple-signed python (Homebrew) so FDA grants actually apply
+# to the binary. The repo source on Desktop still requires FDA on the
+# launcher python; see _HOMEBREW_PYTHON_CANDIDATES below.
+ISOLATED_VENV_DIR = Path.home() / ".neomind_fin_venv"
+
+# Apple-signed python binaries CANNOT be granted Full Disk Access
+# (macOS rejects the grant on system binaries). The isolated venv
+# must be built from one of these non-system candidates.
+_HOMEBREW_PYTHON_CANDIDATES = [
+    "/opt/homebrew/bin/python3",                       # Apple Silicon
+    "/opt/homebrew/opt/python@3.12/bin/python3.12",
+    "/opt/homebrew/opt/python@3.11/bin/python3.11",
+    "/usr/local/bin/python3",                          # Intel Homebrew
+    "/Library/Frameworks/Python.framework/Versions/3.12/bin/python3",  # python.org
+    "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
+]
+
+# System binaries that WILL be rejected for FDA grants — used to warn
+# early if ``sys.executable`` resolves here.
+_SYSTEM_PYTHON_PREFIXES = (
+    "/Library/Developer/CommandLineTools/",
+    "/Applications/Xcode.app/",
+    "/usr/bin/",
+    "/System/",
+)
+
 # macOS directories gated by TCC (Transparency, Consent, Control).
 # Processes spawned by launchd do NOT inherit the user's interactive
 # Terminal/Finder grant for these locations — they get silent EPERM
@@ -62,12 +90,106 @@ def repo_root() -> Path:
 
 
 def default_python_bin() -> Path:
-    """Absolute path to the repo's venv python. Falls back to
-    ``sys.executable`` if ``.venv/`` doesn't exist yet."""
+    """Absolute path to the launcher python used by the plist.
+
+    Returns the isolated venv's python if it already exists (the
+    expected state after ``bootstrap_isolated_venv`` has run). Falls
+    back to the repo's ``.venv/bin/python`` and finally
+    ``sys.executable`` — both of which may fail the TCC grant check
+    if they resolve to an Apple-signed system binary.
+    """
+    isolated = ISOLATED_VENV_DIR / "bin" / "python"
+    if isolated.exists():
+        return isolated
     venv_py = repo_root() / ".venv" / "bin" / "python"
     if venv_py.exists():
         return venv_py
     return Path(sys.executable)
+
+
+def find_homebrew_python() -> Optional[Path]:
+    """Return the first non-system python on disk, or None. We scan a
+    hard-coded list instead of $PATH so a user who just
+    ``brew install python`` will be found even if their shell rc hasn't
+    been reloaded."""
+    for candidate in _HOMEBREW_PYTHON_CANDIDATES:
+        p = Path(candidate)
+        if p.exists() and os.access(p, os.X_OK):
+            # Resolve symlinks so we return the concrete binary
+            return p.resolve()
+    return None
+
+
+def _is_system_python(py: Path) -> bool:
+    """True if ``py`` resolves under an Apple-signed system location
+    where TCC refuses to honor user FDA grants."""
+    try:
+        real = str(py.resolve())
+    except OSError:
+        real = str(py)
+    return real.startswith(_SYSTEM_PYTHON_PREFIXES)
+
+
+def bootstrap_isolated_venv(
+    base_python: Optional[Path] = None,
+    *,
+    force: bool = False,
+    verbose: bool = True,
+) -> Path:
+    """Create (or reuse) the ~/.neomind_fin_venv virtualenv, built
+    with a non-system python, and pip-install the repo in editable
+    mode so ``import agent.finance.dashboard_server`` works.
+
+    Returns the absolute path to the venv's python binary.
+
+    Raises ``RuntimeError`` if no non-system python is available and
+    ``base_python`` was not supplied.
+    """
+    if base_python is None:
+        base_python = find_homebrew_python()
+    if base_python is None:
+        raise RuntimeError(
+            "no non-system python found. Install one via "
+            "`brew install python` and re-run this command."
+        )
+
+    venv_py = ISOLATED_VENV_DIR / "bin" / "python"
+    if venv_py.exists() and not force:
+        if verbose:
+            print(f"(reusing existing {ISOLATED_VENV_DIR})")
+    else:
+        if verbose:
+            print(f"creating isolated venv at {ISOLATED_VENV_DIR}")
+            print(f"  base python: {base_python}")
+        if ISOLATED_VENV_DIR.exists() and force:
+            shutil.rmtree(ISOLATED_VENV_DIR)
+        _run(
+            [str(base_python), "-m", "venv", str(ISOLATED_VENV_DIR)],
+            check=True,
+        )
+
+    # Always (re)install the repo + FastAPI deps — fast no-op when
+    # already installed, and picks up new optional deps if added.
+    if verbose:
+        print("installing repo (editable) + fastapi + uvicorn...")
+    pip = ISOLATED_VENV_DIR / "bin" / "pip"
+    _run(
+        [
+            str(pip), "install", "--quiet", "--upgrade", "pip",
+        ],
+        check=False,
+    )
+    _run(
+        [
+            str(pip), "install", "--quiet",
+            "-e", str(repo_root()),
+            "fastapi", "uvicorn",
+        ],
+        check=True,
+    )
+    if verbose:
+        print("isolated venv ready")
+    return venv_py
 
 
 def launch_agents_dir() -> Path:
@@ -104,8 +226,12 @@ def build_plist_dict(
         ],
         "WorkingDirectory": str(repo),
         "EnvironmentVariables": {
-            "PATH": "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin",
+            "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin",
             "PYTHONUNBUFFERED": "1",
+            # PYTHONPATH so the isolated venv's python can import
+            # agent.finance.* even if the editable pip install .pth
+            # file is missing for any reason. Belt-and-braces.
+            "PYTHONPATH": str(repo),
         },
         # RunAtLoad: launch immediately when `launchctl load` runs AND
         # every time the user logs in thereafter.
@@ -216,38 +342,76 @@ def _print_tcc_help(repo: Path, py: Path) -> None:
 
 def cmd_install(args: argparse.Namespace) -> int:
     repo = repo_root()
-    py = default_python_bin()
     log = log_path()
 
-    # Make sure the module is importable before we wire a launchd job
-    # that will just error in a loop if it's broken.
+    # Bootstrap (or reuse) the isolated Homebrew-python venv at
+    # ~/.neomind_fin_venv. This is the launcher binary the plist
+    # will point at. Built from a non-system python so FDA grants
+    # actually stick — Apple-signed system pythons silently reject
+    # the grant.
+    try:
+        py = bootstrap_isolated_venv()
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        print(
+            "\nThe fin dashboard launchd job needs a non-Apple-signed\n"
+            "python because macOS refuses Full Disk Access grants on\n"
+            "system binaries. Install Homebrew python once:\n"
+            "    brew install python\n"
+            "then re-run:\n"
+            "    python scripts/neomind_fin_autostart.py install",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Sanity check — the isolated venv's python should never resolve
+    # to a system binary, but assert it so a broken Homebrew install
+    # doesn't produce a plist that will fail silently.
+    if _is_system_python(py):
+        print(
+            f"ERROR: {py} resolves to an Apple-signed system binary",
+            file=sys.stderr,
+        )
+        print(
+            "macOS will reject FDA grants on it. Rebuild with:\n"
+            "  python scripts/neomind_fin_autostart.py bootstrap --force",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Import probe against the isolated venv's python
     probe = _run(
-        [str(py), "-c", "import agent.finance.dashboard_server"],
+        [
+            str(py),
+            "-c",
+            "from agent.finance.dashboard_server import create_app; "
+            "create_app()",
+        ],
         check=False,
     )
     if probe.returncode != 0:
         print(
             "ERROR: agent.finance.dashboard_server failed to import "
-            "with the selected python.",
+            "under the isolated venv.",
             file=sys.stderr,
         )
         print(probe.stderr, file=sys.stderr)
-        print(f"  python: {py}", file=sys.stderr)
-        print(f"  repo:   {repo}", file=sys.stderr)
         return 2
 
-    # Warn early if repo is in a TCC-protected location — the install
-    # will probably still try, but we surface the risk up front.
+    # Warn if repo lives in a TCC-protected folder — the isolated venv
+    # python still needs FDA to read the source files from Desktop,
+    # even though its own site-packages live safely under ~/.
     if _is_tcc_protected_path(repo):
         print(
             f"⚠  repo is inside a TCC-protected folder ({repo.parts[-2]}/…)"
         )
         print(
-            "   macOS may block launchd from reading it until you grant"
+            f"   the launcher binary must have Full Disk Access so it"
         )
         print(
-            f"   Full Disk Access to {py}"
+            f"   can read your source files:"
         )
+        print(f"     {py}")
         print()
 
     launch_agents_dir().mkdir(parents=True, exist_ok=True)
@@ -403,6 +567,21 @@ def main(argv: List[str] | None = None) -> int:
         help="open System Settings → Full Disk Access with the right binary",
     )
     p_fda.set_defaults(func=cmd_grant_fda)
+
+    p_boot = sub.add_parser(
+        "bootstrap",
+        help="create ~/.neomind_fin_venv (Homebrew python + repo editable)",
+    )
+    p_boot.add_argument(
+        "--force", action="store_true",
+        help="delete any existing venv and rebuild from scratch",
+    )
+    p_boot.set_defaults(
+        func=lambda args: (
+            print(f"isolated venv python: {bootstrap_isolated_venv(force=args.force)}")
+            or 0
+        )
+    )
 
     args = parser.parse_args(argv)
     return args.func(args)
