@@ -472,21 +472,25 @@ def test_fleet_event_color_mapping():
     assert NeoMindInterface._fleet_event_color("unknown_kind") == "white"
 
 
-def test_fleet_toolbar_segment_empty_when_no_session():
-    """No FleetSession → toolbar segment is empty string, keeping the
+def test_fleet_toolbar_line_empty_when_no_session():
+    """No FleetSession → toolbar line is empty string, keeping the
     bottom bar identical to legacy single-session behavior."""
     from cli.neomind_interface import NeoMindInterface
 
     class Stub:
         _fleet_session = None
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
 
-    seg = NeoMindInterface._fleet_toolbar_segment(Stub())
-    assert seg == ""
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    assert line == ""
 
 
-def test_fleet_toolbar_segment_renders_tags_with_focus_marker():
-    """When focused on a sub-agent, that tag is rendered with the *
-    marker and magenta bold; other tags are plain."""
+def test_fleet_toolbar_line_renders_tags_with_focus_marker():
+    """Phase 5.12: when focus is on a sub-agent, that tag renders in
+    bold magenta (session.focus highlight). The leader slot is
+    bracketed. When tag-nav mode is not active, no reverse-video
+    cursor is shown."""
     from cli.neomind_interface import NeoMindInterface
 
     cfg = _make_config([
@@ -499,9 +503,195 @@ def test_fleet_toolbar_segment_renders_tags_with_focus_marker():
 
     class Stub:
         _fleet_session = session
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
 
-    seg = NeoMindInterface._fleet_toolbar_segment(Stub())
-    assert "fin-rt*" in seg  # focused marker
-    assert "@fin-rt" in seg
-    assert "@dev-1" in seg
-    assert "[chair]" in seg  # leader slot bracket label
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    assert "@fin-rt" in line
+    assert "@dev-1" in line
+    assert "[chair]" in line  # leader slot bracket label
+    # Focused tag is bold + underlined
+    assert "<b><u>@fin-rt</u></b>" in line
+    # Navigation hint at end (tag-nav not active)
+    assert "navigate" in line
+
+
+def test_fleet_toolbar_line_tag_nav_cursor_highlight():
+    """When tag-nav is active, the cursor position is reverse-video
+    highlighted, independent of which tag is currently the session
+    focus."""
+    from cli.neomind_interface import NeoMindInterface
+
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+        ("dev-1", "coding", "worker"),
+    ])
+    session = FleetSession(cfg)
+    # focus = leader, but cursor moved to @dev-1 (index 2)
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = True
+        _fleet_tag_cursor = 2  # points at @dev-1
+
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    # The dev-1 tag should be wrapped in bg="ansiyellow" for cursor highlight
+    assert 'bg="ansiyellow"' in line
+    assert "dev-1" in line
+    # Navigation hint reflects tag-nav mode
+    assert "Enter" in line or "Esc" in line
+
+
+# ── Phase 5.12 regression guards — added after full UX audit ────────
+
+def test_cursor_highlight_uses_explicit_bg_not_reverse():
+    """Phase 5.12: the tag-nav cursor highlight must use an explicit
+    `bg="ansiyellow"` + `fg="ansiblack"` style, NOT `<reverse>`.
+
+    Why this guard exists: an earlier implementation used `<reverse>`,
+    which double-cancels against prompt_toolkit's already-reversed
+    bottom_toolbar style. The cursor rendered as green / gray / invisible
+    depending on the tag's current event color. The user rejected that
+    flaky rendering ("有时候绿色，有时候灰色有时候看不清"). The explicit
+    bg+fg style renders consistently regardless of context.
+    """
+    from cli.neomind_interface import NeoMindInterface
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+    ])
+    session = FleetSession(cfg)
+
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = True
+        _fleet_tag_cursor = 1
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    assert "<reverse>" not in line, (
+        "cursor highlight regressed to <reverse>; must use explicit "
+        "bg/fg style so it renders consistently"
+    )
+    assert 'bg="ansiyellow"' in line
+    assert 'fg="ansiblack"' in line
+
+
+def test_toolbar_has_no_background_rainbow():
+    """Phase 5.12: status-based tag colors must use FOREGROUND only
+    (ansired/ansiyellow/ansibrightblack). No `bg=` backgrounds except
+    the tag-nav cursor itself. User complaint that triggered this:
+    "颜色过多，分不清哪里是哪里" — the previous event-based background
+    coloring (red/yellow/green/magenta backgrounds) was visually noisy.
+    """
+    from cli.neomind_interface import NeoMindInterface
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+        ("dev-1", "coding", "worker"),
+    ])
+    session = FleetSession(cfg)
+    # NOT in tag-nav mode — only status colors should apply
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    # No bg= attributes when tag-nav is off (no cursor to highlight)
+    assert "bg=" not in line, (
+        "toolbar uses background colors in non-nav state; the user "
+        "rejected the background-color rainbow — use fg only"
+    )
+
+
+def test_compute_prompt_str_reflects_mode_switch():
+    """Phase 5.12: after /mode coding, the prompt prefix must become
+    `> ` (no `[fin]`). Regression guard for the mode-switch discussion
+    where the user saw stale `[fin] > ` in scrollback and thought the
+    switch had silently failed.
+    """
+    from cli.neomind_interface import NeoMindInterface
+    from agent.core import NeoMindAgent
+
+    agent = NeoMindAgent()
+    agent.switch_mode("fin", persist=False)
+    iface = NeoMindInterface(agent)
+    assert iface._compute_prompt_str() == "[fin] > "
+
+    agent.switch_mode("coding", persist=False)
+    assert iface._compute_prompt_str() == "> "
+
+    agent.switch_mode("chat", persist=False)
+    assert iface._compute_prompt_str() == "[chat] > "
+
+
+def test_compute_prompt_str_sub_agent_focus_prefix():
+    """Phase 5.12: when a fleet is running AND focus is on a worker,
+    the prompt must be `[@<name> <persona>] > ` so the user knows
+    exactly where their typed input will land.
+    """
+    from cli.neomind_interface import NeoMindInterface
+    from agent.core import NeoMindAgent
+
+    agent = NeoMindAgent()
+    iface = NeoMindInterface(agent)
+
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+        ("dev-1", "coding", "worker"),
+    ])
+    session = FleetSession(cfg)
+    iface._fleet_session = session
+
+    session.set_focus("fin-rt")
+    assert iface._compute_prompt_str() == "[@fin-rt fin] > "
+
+    session.set_focus("dev-1")
+    assert iface._compute_prompt_str() == "[@dev-1 coding] > "
+
+    # Back to leader — prompt reflects main agent mode
+    from fleet.session import LEADER_FOCUS
+    session.set_focus(LEADER_FOCUS)
+    agent.switch_mode("fin", persist=False)
+    assert iface._compute_prompt_str() == "[fin] > "
+
+
+def test_toolbar_hint_says_down_not_up():
+    """Phase 5.12: the navigation hint text must direct the user to
+    press Down (not Up), because the fleet tag row sits BELOW the
+    input — pressing Down to reach it is the natural direction.
+    """
+    from cli.neomind_interface import NeoMindInterface
+    cfg = _make_config([
+        ("chair", "chat", "leader"),
+        ("fin-rt", "fin", "worker"),
+    ])
+    session = FleetSession(cfg)
+
+    class Stub:
+        _fleet_session = session
+        _fleet_tag_nav_active = False
+        _fleet_tag_cursor = 0
+    line = NeoMindInterface._fleet_toolbar_line(Stub())
+    assert "↓" in line, "hint should show ↓ (Down) as tag-nav entry"
+    assert "↑ to navigate" not in line, (
+        "stale Up hint — the user rejected Up because tags are BELOW"
+    )
+
+
+def test_no_ctrl_arrow_bindings_in_key_bindings_source():
+    """Phase 5.12: user explicitly rejected Ctrl+arrow shortcuts
+    ("和系统有冲突而且很难看"). Guard the neomind_interface source so
+    no one accidentally re-adds `c-left` / `c-right` / `c-up` / `c-down`
+    key bindings for fleet tag navigation.
+    """
+    from pathlib import Path
+    src = Path(__file__).resolve().parent.parent / "cli" / "neomind_interface.py"
+    text = src.read_text(encoding="utf-8")
+
+    for banned in ('"c-left"', '"c-right"', '"c-up"', '"c-down"'):
+        assert banned not in text, (
+            f"Ctrl+arrow binding regressed: {banned} found in "
+            f"neomind_interface.py — user rejected Ctrl+arrow for "
+            f"system-conflict + aesthetic reasons; use plain arrows "
+            f"(filtered by Condition) instead"
+        )
