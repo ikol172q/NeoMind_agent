@@ -199,29 +199,45 @@ async def _execute_fin(
           duration_s=elapsed, response_len=len(raw_response),
           preview=raw_response[:200])
 
-    analysis, layer = parse_signal(raw_response)
-
-    artifacts: list = []
+    # Phase 5.12 task #69: only treat the LLM output as a structured
+    # signal when the task is clearly an analysis request (has a
+    # ticker symbol). For casual conversational dispatch (e.g. "hi",
+    # "你是谁") we return the raw reply as a plain text result —
+    # forcing parse_signal on every turn was producing a constant
+    # "both strict and lenient layers failed, using hold_fallback"
+    # log spam AND feeding phantom hold_fallback signals to the UI.
     symbol = _extract_symbol(task)
-    if project_id and symbol:
-        try:
-            from agent.finance import investment_projects
+    artifacts: list = []
 
-            path = investment_projects.write_analysis(
-                project_id, symbol, analysis.model_dump()
-            )
-            artifacts.append(str(path))
-        except Exception as exc:
-            logger.warning(
-                "fin worker: write_analysis failed for %s/%s: %s",
-                project_id, symbol, exc,
-            )
+    if symbol:
+        # Real signal request — parse, persist, return structured result
+        analysis, layer = parse_signal(raw_response)
+        if project_id:
+            try:
+                from agent.finance import investment_projects
+                path = investment_projects.write_analysis(
+                    project_id, symbol, analysis.model_dump()
+                )
+                artifacts.append(str(path))
+            except Exception as exc:
+                logger.warning(
+                    "fin worker: write_analysis failed for %s/%s: %s",
+                    project_id, symbol, exc,
+                )
+        return {
+            "status": "completed",
+            "result": json.dumps(analysis.model_dump(), ensure_ascii=False),
+            "layer_used": layer,
+            "artifacts": artifacts,
+        }
 
+    # Casual / non-signal conversation — return raw LLM text, don't
+    # invoke the signal parser at all.
     return {
         "status": "completed",
-        "result": json.dumps(analysis.model_dump(), ensure_ascii=False),
-        "layer_used": layer,
-        "artifacts": artifacts,
+        "result": raw_response,
+        "layer_used": "raw",
+        "artifacts": [],
     }
 
 
