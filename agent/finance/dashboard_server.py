@@ -59,6 +59,7 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from agent.finance import investment_projects
+from agent.finance import technical_indicators as ti
 from agent.finance.signal_schema import AgentAnalysis
 from agent.finance.paper_trading import (
     OrderSide,
@@ -90,6 +91,7 @@ _INDEX_HTML = """\
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>neomind · fin dashboard</title>
+<script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 <style>
 :root {
   --bg: #0b0d12;
@@ -186,9 +188,48 @@ td.sig-hold { color: var(--yellow); font-weight: 600; }
       <input id="symbol-input" placeholder="AAPL" autocomplete="off"
         style="width: 160px; text-transform: uppercase;">
       <button id="quote-btn">get quote</button>
+      <button id="chart-btn">load chart</button>
       <button id="analyze-btn">analyze</button>
     </div>
     <div id="quote-out" class="empty">no quote yet</div>
+  </section>
+
+  <section>
+    <h2>chart</h2>
+    <div class="row" style="margin-bottom: 10px;">
+      <select id="chart-period">
+        <option value="1mo">1M</option>
+        <option value="3mo" selected>3M</option>
+        <option value="6mo">6M</option>
+        <option value="1y">1Y</option>
+        <option value="2y">2Y</option>
+        <option value="5y">5Y</option>
+      </select>
+      <select id="chart-interval">
+        <option value="1d" selected>daily</option>
+        <option value="1wk">weekly</option>
+        <option value="1mo">monthly</option>
+      </select>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="ind-sma20" checked> SMA20
+      </label>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="ind-ema20" checked> EMA20
+      </label>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="ind-bb" checked> BB
+      </label>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="ind-rsi" checked> RSI
+      </label>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="ind-macd" checked> MACD
+      </label>
+    </div>
+    <div id="price-chart" style="width: 100%; height: 320px; background: #0e1219; border: 1px solid var(--border); border-radius: 4px;"></div>
+    <div id="rsi-chart" style="width: 100%; height: 100px; background: #0e1219; border: 1px solid var(--border); border-radius: 4px; margin-top: 6px;"></div>
+    <div id="macd-chart" style="width: 100%; height: 110px; background: #0e1219; border: 1px solid var(--border); border-radius: 4px; margin-top: 6px;"></div>
+    <div id="chart-status" class="empty" style="margin-top: 6px;">(enter a symbol above and click "get quote" or "load chart")</div>
   </section>
 
   <section>
@@ -495,7 +536,171 @@ async function doReset() {
   } catch (e) { show("reset: " + e.message, true); }
 }
 
+// ── Chart + indicators wiring ───────────────────────────
+
+let priceChart = null, priceCandles = null;
+let priceSma20 = null, priceEma20 = null;
+let priceBbUpper = null, priceBbMiddle = null, priceBbLower = null;
+let rsiChart = null, rsiLine = null;
+let macdChart = null, macdLine = null, macdSignal = null, macdHist = null;
+
+function _chartOpts() {
+  if (typeof LightweightCharts === "undefined") return null;
+  return {
+    layout: { background: { color: "#0e1219" }, textColor: "#d8dde6" },
+    grid: {
+      vertLines: { color: "#1a1f2c" },
+      horzLines: { color: "#1a1f2c" },
+    },
+    rightPriceScale: { borderColor: "#1f2631" },
+    timeScale: { borderColor: "#1f2631", timeVisible: true },
+    crosshair: { mode: 1 },
+    handleScroll: true,
+    handleScale: true,
+  };
+}
+
+function _ensureCharts() {
+  if (typeof LightweightCharts === "undefined") {
+    $("chart-status").textContent = "(lightweight-charts CDN blocked — chart disabled)";
+    return false;
+  }
+  const opts = _chartOpts();
+  if (!priceChart) {
+    priceChart = LightweightCharts.createChart($("price-chart"), opts);
+    priceCandles = priceChart.addCandlestickSeries({
+      upColor: "#6fd07a", downColor: "#e57373",
+      borderVisible: false,
+      wickUpColor: "#6fd07a", wickDownColor: "#e57373",
+    });
+  }
+  if (!rsiChart) {
+    rsiChart = LightweightCharts.createChart($("rsi-chart"), { ...opts, rightPriceScale: { borderColor: "#1f2631", autoScale: false, minValue: 0, maxValue: 100 }});
+    rsiLine = rsiChart.addLineSeries({ color: "#4dd0e1", lineWidth: 1.5 });
+    // 30 / 70 reference lines
+    rsiChart.addLineSeries({ color: "#7c8598", lineWidth: 1, lineStyle: 2 });
+    rsiChart.addLineSeries({ color: "#7c8598", lineWidth: 1, lineStyle: 2 });
+  }
+  if (!macdChart) {
+    macdChart = LightweightCharts.createChart($("macd-chart"), opts);
+    macdHist = macdChart.addHistogramSeries({ color: "#4dd0e1" });
+    macdLine = macdChart.addLineSeries({ color: "#f3c969", lineWidth: 1.5 });
+    macdSignal = macdChart.addLineSeries({ color: "#e57373", lineWidth: 1.5 });
+  }
+  return true;
+}
+
+function _toTime(isoStr) {
+  // lightweight-charts accepts { year, month, day } for daily bars
+  // or a unix timestamp in seconds. Use UTC date to avoid tz slippage.
+  const d = new Date(isoStr);
+  return {
+    year: d.getUTCFullYear(),
+    month: d.getUTCMonth() + 1,
+    day: d.getUTCDate(),
+  };
+}
+
+function _seriesFromIndicator(bars, values) {
+  const out = [];
+  for (let i = 0; i < bars.length; i++) {
+    if (values[i] != null) {
+      out.push({ time: _toTime(bars[i].date), value: values[i] });
+    }
+  }
+  return out;
+}
+
+async function loadChart() {
+  const sym = $("symbol-input").value.trim().toUpperCase();
+  if (!sym) return show("enter a symbol", true);
+  if (!_ensureCharts()) return;
+
+  const period = $("chart-period").value;
+  const interval = $("chart-interval").value;
+  const wanted = [];
+  if ($("ind-sma20").checked) wanted.push("sma20");
+  if ($("ind-ema20").checked) wanted.push("ema20");
+  if ($("ind-bb").checked) wanted.push("bb");
+  if ($("ind-rsi").checked) wanted.push("rsi");
+  if ($("ind-macd").checked) wanted.push("macd");
+
+  $("chart-status").textContent = "loading…";
+  try {
+    const r = await api(
+      `/api/chart/${encodeURIComponent(sym)}?period=${period}&interval=${interval}&indicators=${wanted.join(",")}`
+    );
+    const bars = r.bars;
+    if (!bars.length) {
+      $("chart-status").textContent = "no data";
+      return;
+    }
+    // Candles
+    priceCandles.setData(bars.map(b => ({
+      time: _toTime(b.date),
+      open: b.open, high: b.high, low: b.low, close: b.close,
+    })));
+
+    // Overlay indicators on the price chart
+    for (const [ref, key, color] of [
+      ["priceSma20", "sma20", "#f3c969"],
+      ["priceEma20", "ema20", "#4dd0e1"],
+    ]) {
+      if (r.indicators[key]) {
+        if (!window[ref]) {
+          window[ref] = priceChart.addLineSeries({ color, lineWidth: 1.3 });
+        }
+        window[ref].setData(_seriesFromIndicator(bars, r.indicators[key]));
+      } else if (window[ref]) {
+        window[ref].setData([]);
+      }
+    }
+    if (r.indicators.bb) {
+      if (!priceBbUpper) {
+        priceBbUpper = priceChart.addLineSeries({ color: "#7c8598", lineWidth: 1, lineStyle: 2 });
+        priceBbLower = priceChart.addLineSeries({ color: "#7c8598", lineWidth: 1, lineStyle: 2 });
+      }
+      priceBbUpper.setData(_seriesFromIndicator(bars, r.indicators.bb.upper));
+      priceBbLower.setData(_seriesFromIndicator(bars, r.indicators.bb.lower));
+    }
+
+    // RSI pane
+    if (r.indicators.rsi) {
+      rsiLine.setData(_seriesFromIndicator(bars, r.indicators.rsi));
+    } else {
+      rsiLine.setData([]);
+    }
+
+    // MACD pane
+    if (r.indicators.macd) {
+      macdLine.setData(_seriesFromIndicator(bars, r.indicators.macd.line));
+      macdSignal.setData(_seriesFromIndicator(bars, r.indicators.macd.signal));
+      macdHist.setData(
+        bars.map((b, i) => {
+          const h = r.indicators.macd.histogram[i];
+          if (h == null) return null;
+          return {
+            time: _toTime(b.date),
+            value: h,
+            color: h >= 0 ? "#6fd07a" : "#e57373",
+          };
+        }).filter(Boolean)
+      );
+    } else {
+      macdLine.setData([]); macdSignal.setData([]); macdHist.setData([]);
+    }
+
+    priceChart.timeScale().fitContent();
+    rsiChart.timeScale().fitContent();
+    macdChart.timeScale().fitContent();
+    $("chart-status").textContent = `${sym} · ${period} · ${interval} · ${bars.length} bars`;
+  } catch (e) {
+    $("chart-status").textContent = "error: " + e.message;
+  }
+}
+
 $("quote-btn").onclick = doQuote;
+$("chart-btn").onclick = loadChart;
 $("analyze-btn").onclick = doAnalyze;
 $("refresh-projects").onclick = refreshProjects;
 $("refresh-paper").onclick = doPaperRefresh;
@@ -652,8 +857,8 @@ def create_app(
     def _get_hub():
         nonlocal data_hub
         if data_hub is None:
-            from agent.finance.data_hub import DataHub
-            data_hub = DataHub()
+            from agent.finance.data_hub import FinanceDataHub
+            data_hub = FinanceDataHub()
         return data_hub
 
     # Per-project paper trading engines, lazily constructed and cached
@@ -954,6 +1159,103 @@ def create_app(
             "project_id": project_id,
             "updated": updated,
             "failures": failures,
+        }
+
+    # ── Chart + technical indicators (Phase 5.7) ─────────────────
+
+    _ALLOWED_PERIODS = {
+        "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "ytd", "max",
+    }
+    _ALLOWED_INTERVALS = {
+        "1m", "5m", "15m", "30m", "60m", "1h", "1d", "1wk", "1mo",
+    }
+    _ALLOWED_INDICATORS = {
+        "sma20", "sma50", "ema20", "ema50",
+        "rsi", "macd", "bb", "atr",
+    }
+
+    @app.get("/api/chart/{symbol}")
+    async def chart(
+        symbol: str,
+        period: str = Query("3mo"),
+        interval: str = Query("1d"),
+        indicators: str = Query(
+            "sma20,ema20,rsi,macd,bb",
+            description="comma-separated subset of "
+                        "sma20,sma50,ema20,ema50,rsi,macd,bb,atr",
+        ),
+        market: str = "us",
+    ) -> Dict[str, Any]:
+        sym = symbol.upper().strip()
+        if not _SYMBOL_RE.match(sym):
+            raise HTTPException(400, f"invalid symbol {symbol!r}")
+        if period not in _ALLOWED_PERIODS:
+            raise HTTPException(
+                400,
+                f"invalid period {period!r}; allowed: "
+                f"{sorted(_ALLOWED_PERIODS)}",
+            )
+        if interval not in _ALLOWED_INTERVALS:
+            raise HTTPException(
+                400,
+                f"invalid interval {interval!r}; allowed: "
+                f"{sorted(_ALLOWED_INTERVALS)}",
+            )
+
+        wanted = {
+            s.strip() for s in indicators.split(",") if s.strip()
+        }
+        bad = wanted - _ALLOWED_INDICATORS
+        if bad:
+            raise HTTPException(
+                400, f"unknown indicators: {sorted(bad)}"
+            )
+
+        hub = _get_hub()
+        try:
+            bars = await hub.get_history(sym, period=period, interval=interval)
+        except Exception as exc:
+            logger.warning("chart history fetch failed: %s", exc)
+            raise HTTPException(502, f"upstream history failed: {exc}")
+        if not bars:
+            raise HTTPException(
+                404, f"no historical data for {sym} ({period}/{interval})"
+            )
+
+        closes = [b["close"] for b in bars]
+        highs = [b["high"] for b in bars]
+        lows = [b["low"] for b in bars]
+
+        computed: Dict[str, Any] = {}
+        if "sma20" in wanted:
+            computed["sma20"] = ti.sma(closes, 20)
+        if "sma50" in wanted:
+            computed["sma50"] = ti.sma(closes, 50)
+        if "ema20" in wanted:
+            computed["ema20"] = ti.ema(closes, 20)
+        if "ema50" in wanted:
+            computed["ema50"] = ti.ema(closes, 50)
+        if "rsi" in wanted:
+            computed["rsi"] = ti.rsi(closes, 14)
+        if "macd" in wanted:
+            line, signal, hist = ti.macd(closes)
+            computed["macd"] = {
+                "line": line, "signal": signal, "histogram": hist,
+            }
+        if "bb" in wanted:
+            upper, mid, lower = ti.bollinger_bands(closes, 20, 2.0)
+            computed["bb"] = {
+                "upper": upper, "middle": mid, "lower": lower,
+            }
+        if "atr" in wanted:
+            computed["atr"] = ti.atr(highs, lows, closes, 14)
+
+        return {
+            "symbol": sym,
+            "period": period,
+            "interval": interval,
+            "bars": bars,
+            "indicators": computed,
         }
 
     @app.post("/api/paper/reset")

@@ -71,14 +71,42 @@ class _MockDataHub:
     """Drop-in replacement for agent.finance.data_hub.DataHub in tests."""
 
     def __init__(self, symbol_to_quote: Optional[dict] = None,
-                 fail_for: Optional[set] = None):
+                 fail_for: Optional[set] = None,
+                 symbol_to_history: Optional[dict] = None):
         self.symbol_to_quote = symbol_to_quote or {}
         self.fail_for = fail_for or set()
+        self.symbol_to_history = symbol_to_history or {}
 
     async def get_quote(self, symbol: str, market: str = "us"):
         if symbol in self.fail_for:
             raise RuntimeError(f"mock upstream failure for {symbol}")
         return self.symbol_to_quote.get(symbol)
+
+    async def get_history(self, symbol: str, period: str = "3mo",
+                          interval: str = "1d"):
+        if symbol in self.fail_for:
+            raise RuntimeError(f"mock upstream failure for {symbol}")
+        return self.symbol_to_history.get(symbol)
+
+
+def _synthetic_bars(n: int = 60, start_price: float = 100.0) -> list:
+    """Generate n daily OHLCV bars with a simple sine-wave pattern so
+    indicators (SMA/EMA/RSI/MACD/BB/ATR) produce meaningful values."""
+    import math
+    bars = []
+    base = start_price
+    for i in range(n):
+        # Sine wave with amplitude 5 and some drift
+        close = base + 5 * math.sin(i / 6.0) + i * 0.1
+        high = close + 1.5
+        low = close - 1.2
+        open_ = close - 0.5
+        bars.append({
+            "date": f"2026-02-{(i % 28) + 1:02d}T00:00:00",
+            "open": open_, "high": high, "low": low, "close": close,
+            "volume": 1_000_000 + i * 10_000,
+        })
+    return bars
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────
@@ -100,7 +128,10 @@ def registered_project(tmp_investment_root):
 
 @pytest.fixture
 def mock_hub():
-    return _MockDataHub(symbol_to_quote={
+    return _MockDataHub(symbol_to_history={
+        "AAPL": _synthetic_bars(60),
+        "MSFT": _synthetic_bars(60, start_price=400.0),
+    }, symbol_to_quote={
         "AAPL": _MockQuote(
             symbol="AAPL",
             price=_MockPrice(value=192.55, source="mock-finnhub"),
@@ -467,3 +498,86 @@ def test_paper_account_404_on_unregistered_project(paper_client):
     client, _engine, _pid = paper_client
     res = client.get("/api/paper/account?project_id=never-registered")
     assert res.status_code == 404
+
+
+# ── Phase 5.7 — chart + technical indicators ─────────────────────
+
+
+def test_chart_returns_bars_and_default_indicators(client):
+    res = client.get("/api/chart/AAPL?period=3mo&interval=1d")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["symbol"] == "AAPL"
+    assert body["period"] == "3mo"
+    assert body["interval"] == "1d"
+    assert len(body["bars"]) == 60
+    # Default indicator set: sma20, ema20, rsi, macd, bb
+    assert "sma20" in body["indicators"]
+    assert "ema20" in body["indicators"]
+    assert "rsi" in body["indicators"]
+    assert "macd" in body["indicators"]
+    assert "bb" in body["indicators"]
+    # MACD structure is nested
+    assert set(body["indicators"]["macd"]) == {"line", "signal", "histogram"}
+    # BB structure is nested
+    assert set(body["indicators"]["bb"]) == {"upper", "middle", "lower"}
+
+
+def test_chart_honours_explicit_indicator_set(client):
+    res = client.get(
+        "/api/chart/AAPL?period=3mo&interval=1d&indicators=sma50,ema50,atr"
+    )
+    body = res.json()
+    assert set(body["indicators"]) == {"sma50", "ema50", "atr"}
+    # atr is a flat list aligned with bars
+    assert len(body["indicators"]["atr"]) == len(body["bars"])
+
+
+def test_chart_computes_rsi_within_0_100_range(client):
+    res = client.get("/api/chart/AAPL?period=3mo&interval=1d&indicators=rsi")
+    rsi = res.json()["indicators"]["rsi"]
+    # Skip None values (warmup period) and verify the rest are in [0, 100]
+    for v in rsi:
+        if v is not None:
+            assert 0.0 <= v <= 100.0
+
+
+def test_chart_400_on_invalid_period(client):
+    res = client.get("/api/chart/AAPL?period=bogus")
+    assert res.status_code == 400
+
+
+def test_chart_400_on_invalid_interval(client):
+    res = client.get("/api/chart/AAPL?period=3mo&interval=5s")
+    assert res.status_code == 400
+
+
+def test_chart_400_on_unknown_indicator(client):
+    res = client.get(
+        "/api/chart/AAPL?period=3mo&indicators=rsi,bogus_ind"
+    )
+    assert res.status_code == 400
+    assert "bogus_ind" in res.json()["detail"]
+
+
+def test_chart_400_on_invalid_symbol(client):
+    res = client.get("/api/chart/bad%20sym?period=3mo")
+    assert res.status_code == 400
+
+
+def test_chart_404_when_no_history_data(client):
+    res = client.get("/api/chart/NOPE?period=3mo")
+    assert res.status_code == 404
+
+
+def test_chart_502_when_upstream_raises(client):
+    res = client.get("/api/chart/BROKEN?period=3mo")
+    assert res.status_code == 502
+
+
+def test_index_html_includes_lightweight_charts_cdn(client):
+    body = client.get("/").text
+    assert "lightweight-charts" in body
+    assert "price-chart" in body
+    assert "rsi-chart" in body
+    assert "macd-chart" in body
