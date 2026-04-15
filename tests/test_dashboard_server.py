@@ -295,3 +295,175 @@ def test_history_400_on_invalid_project_id(client):
 def test_history_404_on_unregistered_project(client, tmp_investment_root):
     res = client.get("/api/history?project_id=never-registered")
     assert res.status_code == 404
+
+
+# ── Phase 5.6 — paper trading endpoints ──────────────────────────
+
+
+@pytest.fixture
+def tmp_paper_engine(registered_project, tmp_investment_root):
+    """Fresh PaperTradingEngine whose data_dir is under the tmp
+    investment root, so each test gets an isolated account."""
+    from agent.finance.paper_trading import PaperTradingEngine
+    data_dir = tmp_investment_root / registered_project / "paper_trading"
+    data_dir.mkdir(parents=True)
+    return PaperTradingEngine(initial_capital=100_000.0, data_dir=data_dir)
+
+
+@pytest.fixture
+def paper_client(mock_hub, registered_project, tmp_paper_engine):
+    """Dashboard client wired to the shared tmp_paper_engine so test
+    assertions can cross-check state between HTTP calls and the
+    engine instance directly."""
+    def factory(project_id: str):
+        assert project_id == registered_project
+        return tmp_paper_engine
+    app = create_app(data_hub=mock_hub, paper_engine_factory=factory)
+    return TestClient(app), tmp_paper_engine, registered_project
+
+
+def test_paper_account_starts_empty(paper_client):
+    client, _engine, pid = paper_client
+    res = client.get(f"/api/paper/account?project_id={pid}")
+    assert res.status_code == 200
+    body = res.json()
+    assert body["initial_capital"] == 100_000.0
+    assert body["cash"] == 100_000.0
+    assert body["equity"] == 100_000.0
+    assert body["total_trades"] == 0
+    assert body["positions"] == 0
+
+
+def test_paper_positions_empty_initially(paper_client):
+    client, _engine, pid = paper_client
+    res = client.get(f"/api/paper/positions?project_id={pid}")
+    assert res.status_code == 200
+    assert res.json()["positions"] == []
+
+
+def test_paper_place_market_buy_then_account_reflects_position(paper_client):
+    client, engine, pid = paper_client
+    res = client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=AAPL&side=buy&quantity=10&order_type=market"
+    )
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["order"]["status"] == "filled"
+    assert body["order"]["symbol"] == "AAPL"
+    assert body["order"]["filled_quantity"] == 10
+
+    # Positions endpoint now reflects the fill
+    pos_res = client.get(f"/api/paper/positions?project_id={pid}")
+    positions = pos_res.json()["positions"]
+    assert len(positions) == 1
+    assert positions[0]["symbol"] == "AAPL"
+    assert positions[0]["quantity"] == 10
+
+    # Account endpoint shows reduced cash. Note: paper_trading's
+    # `total_trades` counter only increments on SELL that closes a
+    # position (it counts round-trips, not individual fills), so a
+    # standalone BUY leaves it at 0.
+    acct = client.get(f"/api/paper/account?project_id={pid}").json()
+    assert acct["cash"] < 100_000.0  # 10 * ~$192 mock price + commission
+    assert acct["positions"] == 1
+
+
+def test_paper_place_order_rejects_invalid_symbol(paper_client):
+    client, _engine, pid = paper_client
+    res = client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=bad%20sym&side=buy&quantity=1&order_type=market"
+    )
+    assert res.status_code == 400
+
+
+def test_paper_place_order_rejects_invalid_side(paper_client):
+    client, _engine, pid = paper_client
+    res = client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=AAPL&side=nope&quantity=1&order_type=market"
+    )
+    assert res.status_code == 400
+
+
+def test_paper_place_order_502_when_no_quote_available(paper_client):
+    client, _engine, pid = paper_client
+    # BROKEN is in the mock_hub's fail_for set
+    res = client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=BROKEN&side=buy&quantity=1&order_type=market"
+    )
+    assert res.status_code == 502
+
+
+def test_paper_refresh_updates_positions_prices(paper_client):
+    client, engine, pid = paper_client
+    # Establish a position first
+    client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=AAPL&side=buy&quantity=5&order_type=market"
+    )
+    # Now call refresh — should re-fetch AAPL quote via mock hub
+    res = client.post(f"/api/paper/refresh?project_id={pid}")
+    assert res.status_code == 200
+    body = res.json()
+    updated_symbols = [u["symbol"] for u in body["updated"]]
+    assert "AAPL" in updated_symbols
+
+
+def test_paper_trades_returns_recent_fills(paper_client):
+    client, _engine, pid = paper_client
+    client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=AAPL&side=buy&quantity=3&order_type=market"
+    )
+    client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=MSFT&side=buy&quantity=2&order_type=market"
+    )
+    res = client.get(f"/api/paper/trades?project_id={pid}&limit=10")
+    trades = res.json()["trades"]
+    assert len(trades) == 2
+    symbols = {t["symbol"] for t in trades}
+    assert symbols == {"AAPL", "MSFT"}
+
+
+def test_paper_reset_requires_confirm(paper_client):
+    client, _engine, pid = paper_client
+    res = client.post(f"/api/paper/reset?project_id={pid}")
+    assert res.status_code == 400
+    assert "confirm" in res.json()["detail"].lower()
+
+
+def test_paper_reset_clears_account(paper_client):
+    client, _engine, pid = paper_client
+    client.post(
+        f"/api/paper/order?project_id={pid}"
+        f"&symbol=AAPL&side=buy&quantity=4&order_type=market"
+    )
+    # Confirm the position opened (cash dropped, positions count = 1)
+    pre = client.get(f"/api/paper/account?project_id={pid}").json()
+    assert pre["cash"] < 100_000.0
+    assert pre["positions"] == 1
+
+    # Now reset with confirm
+    res = client.post(f"/api/paper/reset?project_id={pid}&confirm=yes")
+    assert res.status_code == 200
+    # Account back to clean
+    a = client.get(f"/api/paper/account?project_id={pid}").json()
+    assert a["cash"] == 100_000.0
+    assert a["positions"] == 0
+    assert client.get(f"/api/paper/positions?project_id={pid}").json()["positions"] == []
+
+
+def test_paper_account_400_on_invalid_project_id(paper_client):
+    client, _engine, _pid = paper_client
+    res = client.get("/api/paper/account?project_id=../etc")
+    assert res.status_code == 400
+
+
+def test_paper_account_404_on_unregistered_project(paper_client):
+    client, _engine, _pid = paper_client
+    res = client.get("/api/paper/account?project_id=never-registered")
+    assert res.status_code == 404
