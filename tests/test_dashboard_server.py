@@ -581,3 +581,155 @@ def test_index_html_includes_lightweight_charts_cdn(client):
     assert "price-chart" in body
     assert "rsi-chart" in body
     assert "macd-chart" in body
+
+
+# ── Phase 5.8 — fleet-dispatched async analyze ───────────────────
+
+
+class _MockFleetBackend:
+    """Drop-in for FleetBackend that returns deterministic task_ids
+    and lets tests flip a task between pending/completed/failed."""
+
+    def __init__(self):
+        self._tasks: dict = {}
+        self._next_id = 0
+        self.session = object()  # non-None sentinel
+
+    def session_or_none(self):
+        return self.session
+
+    async def ensure_started(self):
+        return self.session
+
+    async def dispatch_analysis(self, symbol: str, project_id: str) -> str:
+        self._next_id += 1
+        tid = f"mock-task-{self._next_id:04d}"
+        self._tasks[tid] = {
+            "task_id": tid,
+            "symbol": symbol,
+            "project_id": project_id,
+            "member": "fin-rt",
+            "created_at": "2026-04-14T00:00:00+00:00",
+            "status": "pending",
+        }
+        return tid
+
+    def get_task_status(self, task_id: str) -> dict:
+        from fastapi import HTTPException
+        if task_id not in self._tasks:
+            raise HTTPException(404, f"unknown task_id {task_id!r}")
+        return dict(self._tasks[task_id])
+
+    def complete(self, task_id: str, signal_dict: dict) -> None:
+        self._tasks[task_id].update({
+            "status": "completed",
+            "signal": signal_dict,
+            "reply": "mock reply",
+        })
+
+    def fail(self, task_id: str, error: str) -> None:
+        self._tasks[task_id].update({
+            "status": "failed",
+            "error": error,
+        })
+
+    async def shutdown(self):
+        pass
+
+
+@pytest.fixture
+def fleet_client(mock_hub, registered_project):
+    backend = _MockFleetBackend()
+    app = create_app(data_hub=mock_hub, fleet_backend=backend)
+    return TestClient(app), backend, registered_project
+
+
+def test_analyze_use_fleet_returns_task_id(fleet_client):
+    client, backend, pid = fleet_client
+    res = client.post(f"/api/analyze/AAPL?project_id={pid}&use_fleet=true")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["use_fleet"] is True
+    assert body["status"] == "pending"
+    assert body["task_id"].startswith("mock-task-")
+    assert body["symbol"] == "AAPL"
+
+
+def test_task_status_endpoint_returns_pending_then_completed(fleet_client):
+    client, backend, pid = fleet_client
+    # Dispatch
+    dispatch = client.post(
+        f"/api/analyze/MSFT?project_id={pid}&use_fleet=true"
+    ).json()
+    tid = dispatch["task_id"]
+
+    # Poll 1 — still pending
+    r1 = client.get(f"/api/tasks/{tid}")
+    assert r1.status_code == 200
+    assert r1.json()["status"] == "pending"
+
+    # Mark completed via the mock backend
+    backend.complete(tid, {
+        "signal": "buy", "confidence": 7, "reason": "mock",
+        "risk_level": "medium", "sources": ["mock"],
+    })
+
+    # Poll 2 — completed with signal
+    r2 = client.get(f"/api/tasks/{tid}").json()
+    assert r2["status"] == "completed"
+    assert r2["signal"]["signal"] == "buy"
+    assert r2["signal"]["confidence"] == 7
+
+
+def test_task_status_returns_failed_with_error(fleet_client):
+    client, backend, pid = fleet_client
+    tid = client.post(
+        f"/api/analyze/AAPL?project_id={pid}&use_fleet=true"
+    ).json()["task_id"]
+
+    backend.fail(tid, "LLM upstream timeout")
+    r = client.get(f"/api/tasks/{tid}").json()
+    assert r["status"] == "failed"
+    assert "timeout" in r["error"]
+
+
+def test_task_status_404_on_unknown_task_id(fleet_client):
+    client, _backend, _pid = fleet_client
+    res = client.get("/api/tasks/never-dispatched-xyz")
+    assert res.status_code == 404
+
+
+def test_analyze_sync_path_unchanged_when_use_fleet_false(
+    fleet_client,
+):
+    """Backward compat: use_fleet=false (the default) still hits the
+    synchronous DataHub + write_analysis path and returns the
+    artifact + signal fields, NOT a task_id."""
+    client, _backend, pid = fleet_client
+    res = client.post(f"/api/analyze/AAPL?project_id={pid}")
+    assert res.status_code == 200
+    body = res.json()
+    assert "task_id" not in body
+    assert "artifact" in body
+    assert body["signal"]["signal"] == "hold"  # MVP stub
+
+
+def test_analyze_use_fleet_still_validates_project_id(fleet_client):
+    client, _backend, _pid = fleet_client
+    res = client.post("/api/analyze/AAPL?project_id=../etc&use_fleet=true")
+    assert res.status_code == 400
+
+
+def test_analyze_use_fleet_still_validates_symbol(fleet_client):
+    client, _backend, pid = fleet_client
+    res = client.post(
+        f"/api/analyze/bad%20sym?project_id={pid}&use_fleet=true"
+    )
+    assert res.status_code == 400
+
+
+def test_index_html_has_use_fleet_checkbox(client):
+    body = client.get("/").text
+    assert "use-fleet" in body
+    assert "fleet (real LLM)" in body
+    assert "pollTask" in body

@@ -68,6 +68,9 @@ from agent.finance.paper_trading import (
     PaperTradingEngine,
 )
 
+# Fleet imports are intentionally lazy inside FleetBackend.ensure_started
+# so the dashboard boots fast even when no one asks for fleet dispatch.
+
 logger = logging.getLogger(__name__)
 
 # Safety: anything going into a URL path segment or query param as a
@@ -80,6 +83,174 @@ _PROJECT_ID_RE = re.compile(r"^[a-z0-9_\-]{2,40}$")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8001
+DEFAULT_FLEET_PROJECT_YAML = "projects/fin-core/project.yaml"
+
+
+class FleetBackend:
+    """Lazy singleton fleet-session holder for /api/analyze?use_fleet=1.
+
+    The dashboard doesn't start a fleet on boot — that would pull in
+    the full LLM service dep graph and slow every launchd restart.
+    Instead, the FIRST request that asks for ``use_fleet=true``
+    triggers ``ensure_started()``, which loads
+    ``projects/fin-core/project.yaml`` and spawns a FleetSession on
+    the uvicorn event loop. Subsequent requests reuse the live
+    session.
+
+    ``submit_to_member("fin-rt", ...)`` returns a task_id immediately.
+    Results land asynchronously in the fin-rt AgentTranscript on
+    disk; the GET /api/tasks/{task_id} endpoint resolves status +
+    reply by walking the transcript for user+assistant turn pairs
+    whose metadata contains the requested task_id.
+    """
+
+    def __init__(
+        self,
+        project_yaml: Optional[Path] = None,
+        member: str = "fin-rt",
+    ) -> None:
+        self.project_yaml = project_yaml
+        self.member = member
+        self._session = None  # type: ignore[assignment]
+        self._lock = asyncio.Lock()
+        self._known_tasks: Dict[str, Dict[str, Any]] = {}
+
+    def session_or_none(self):
+        return self._session
+
+    async def ensure_started(self):
+        """Lazy init — safe to call from concurrent requests."""
+        if self._session is not None:
+            return self._session
+        async with self._lock:
+            if self._session is not None:
+                return self._session
+            try:
+                from fleet.project_schema import load_project_config
+                from fleet.session import FleetSession
+            except Exception as exc:
+                raise HTTPException(
+                    503,
+                    f"fleet module unavailable: {exc}",
+                )
+
+            yaml_path = self.project_yaml or (
+                Path(__file__).resolve().parent.parent.parent
+                / DEFAULT_FLEET_PROJECT_YAML
+            )
+            if not yaml_path.exists():
+                raise HTTPException(
+                    503,
+                    f"fleet project yaml not found: {yaml_path}",
+                )
+
+            try:
+                cfg = load_project_config(str(yaml_path))
+                session = FleetSession(cfg)
+                await session.start()
+            except Exception as exc:
+                logger.exception("fleet start failed")
+                raise HTTPException(
+                    503, f"fleet start failed: {exc}"
+                )
+
+            self._session = session
+            logger.info(
+                "dashboard fleet started: project=%s member=%s",
+                cfg.project_id, self.member,
+            )
+            return self._session
+
+    async def dispatch_analysis(
+        self, symbol: str, project_id: str,
+    ) -> str:
+        """Send a fin-rt analysis task and return its task_id."""
+        session = await self.ensure_started()
+        task_desc = (
+            f"Analyze {symbol} and return a buy/hold/sell signal with "
+            f"confidence (1-10), reason, risk_level. Project: "
+            f"{project_id}. Return JSON matching the AgentAnalysis "
+            f"schema (signal, confidence, reason, target_price, "
+            f"risk_level, sources)."
+        )
+        try:
+            task_id = await session.submit_to_member(self.member, task_desc)
+        except Exception as exc:
+            raise HTTPException(
+                502, f"fleet dispatch failed: {exc}"
+            )
+        self._known_tasks[task_id] = {
+            "task_id": task_id,
+            "symbol": symbol,
+            "project_id": project_id,
+            "member": self.member,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        }
+        return task_id
+
+    def get_task_status(self, task_id: str) -> Dict[str, Any]:
+        """Resolve task_id → current status + result by walking the
+        member's transcript for the matching user/assistant turn pair.
+        """
+        if task_id not in self._known_tasks:
+            raise HTTPException(404, f"unknown task_id {task_id!r}")
+        cached = dict(self._known_tasks[task_id])
+
+        session = self._session
+        if session is None:
+            return cached
+
+        transcript = session.get_transcript(cached["member"])
+        if transcript is None:
+            return cached
+
+        # Walk the transcript for the matching user turn and the next
+        # assistant turn. The user turn metadata carries the task_id.
+        turns = transcript.turns
+        found_user_idx = None
+        for i, t in enumerate(turns):
+            if t.role == "user" and (t.metadata or {}).get("task_id") == task_id:
+                found_user_idx = i
+                break
+        if found_user_idx is None:
+            return cached
+
+        for t in turns[found_user_idx + 1:]:
+            if t.role == "assistant":
+                cached["status"] = "completed"
+                cached["reply"] = t.content
+                # Try to parse the reply as an AgentAnalysis signal for
+                # structured rendering. Falls back to raw text.
+                try:
+                    from agent.finance.signal_schema import parse_signal
+                    analysis, layer = parse_signal(t.content)
+                    cached["signal"] = analysis.model_dump()
+                    cached["layer_used"] = layer
+                except Exception as exc:
+                    logger.debug("signal parse failed for %s: %s", task_id, exc)
+                self._known_tasks[task_id] = cached
+                return cached
+
+        # Check for task_failed event in the session's event buffer
+        events = session.recent_events(cached["member"], limit=50)
+        for ev in events:
+            if (ev.metadata or {}).get("task_id") == task_id:
+                if ev.kind == "task_failed":
+                    cached["status"] = "failed"
+                    cached["error"] = ev.content
+                    return cached
+
+        # Still pending
+        return cached
+
+    async def shutdown(self) -> None:
+        if self._session is not None:
+            try:
+                await self._session.stop()
+            except Exception as exc:
+                logger.warning("fleet shutdown failed: %s", exc)
+            self._session = None
 
 
 # ── HTML payload (inlined so no static file wrangling) ─────────────
@@ -190,6 +361,9 @@ td.sig-hold { color: var(--yellow); font-weight: 600; }
       <button id="quote-btn">get quote</button>
       <button id="chart-btn">load chart</button>
       <button id="analyze-btn">analyze</button>
+      <label style="color: var(--dim); font-size: 12px;">
+        <input type="checkbox" id="use-fleet"> fleet (real LLM)
+      </label>
     </div>
     <div id="quote-out" class="empty">no quote yet</div>
   </section>
@@ -360,14 +534,46 @@ async function doAnalyze() {
   const pid = $("project-select").value;
   if (!sym) return show("enter a symbol", true);
   if (!pid) return show("select a project first", true);
+  const useFleet = $("use-fleet").checked;
+  const url = "/api/analyze/" + encodeURIComponent(sym) +
+    "?project_id=" + encodeURIComponent(pid) +
+    (useFleet ? "&use_fleet=true" : "");
   try {
-    const r = await api(
-      "/api/analyze/" + encodeURIComponent(sym) + "?project_id=" + encodeURIComponent(pid),
-      { method: "POST" }
-    );
-    show("wrote analysis → " + (r.artifact || "ok"));
-    refreshHistory();
+    const r = await api(url, { method: "POST" });
+    if (useFleet) {
+      show("dispatched to fin-rt · task " + r.task_id.slice(0, 8) + "…");
+      pollTask(r.task_id);
+    } else {
+      show("wrote analysis → " + (r.artifact || "ok"));
+      refreshHistory();
+    }
   } catch (e) { show("analyze: " + e.message, true); }
+}
+
+async function pollTask(taskId) {
+  // Show a pending row in the history pane so the user sees it
+  const out = $("history-out");
+  const poll = async () => {
+    try {
+      const r = await api("/api/tasks/" + encodeURIComponent(taskId));
+      if (r.status === "completed") {
+        const sig = r.signal || {};
+        show("✓ " + r.symbol + " · " + (sig.signal || "?").toUpperCase() +
+             " · conf " + (sig.confidence ?? "?"));
+        refreshHistory();
+        return;
+      }
+      if (r.status === "failed") {
+        show("✗ " + r.symbol + " · " + (r.error || "failed"), true);
+        return;
+      }
+      // still pending — keep polling
+      setTimeout(poll, 1500);
+    } catch (e) {
+      show("task poll: " + e.message, true);
+    }
+  };
+  setTimeout(poll, 1000);
 }
 
 async function refreshHistory() {
@@ -841,6 +1047,7 @@ def create_app(
     data_hub: Optional[Any] = None,
     version: str = "phase5-mvp",
     paper_engine_factory: Optional[Any] = None,
+    fleet_backend: Optional[FleetBackend] = None,
 ) -> FastAPI:
     """Build a FastAPI app with all dashboard routes registered.
 
@@ -879,6 +1086,16 @@ def create_app(
         return eng
 
     engine_factory = paper_engine_factory or _default_paper_factory
+
+    # Optional fleet backend for async analyze. None means fleet
+    # dispatch is disabled and /api/analyze?use_fleet=true returns 503.
+    # Tests inject a mock; production uses the default which lazily
+    # loads projects/fin-core/project.yaml on first call.
+    fleet = fleet_backend if fleet_backend is not None else FleetBackend()
+
+    @app.on_event("shutdown")
+    async def _fleet_shutdown() -> None:
+        await fleet.shutdown()
 
     def _get_engine(project_id: str) -> PaperTradingEngine:
         if not _PROJECT_ID_RE.match(project_id):
@@ -935,6 +1152,11 @@ def create_app(
         symbol: str,
         project_id: str = Query(..., description="registered project id"),
         market: str = "us",
+        use_fleet: bool = Query(
+            False,
+            description="dispatch to fleet fin-rt worker for real "
+                        "LLM analysis (async, returns task_id)",
+        ),
     ) -> Dict[str, Any]:
         sym = symbol.upper().strip()
         if not _SYMBOL_RE.match(sym):
@@ -945,6 +1167,17 @@ def create_app(
             raise HTTPException(
                 404, f"project {project_id!r} is not registered"
             )
+
+        # Async fleet path: dispatch to fin-rt worker, return task_id
+        if use_fleet:
+            task_id = await fleet.dispatch_analysis(sym, project_id)
+            return {
+                "project_id": project_id,
+                "symbol": sym,
+                "task_id": task_id,
+                "status": "pending",
+                "use_fleet": True,
+            }
 
         hub = _get_hub()
         try:
@@ -1160,6 +1393,11 @@ def create_app(
             "updated": updated,
             "failures": failures,
         }
+
+    @app.get("/api/tasks/{task_id}")
+    def task_status(task_id: str) -> Dict[str, Any]:
+        """Poll status of a fleet-dispatched analyze task."""
+        return fleet.get_task_status(task_id)
 
     # ── Chart + technical indicators (Phase 5.7) ─────────────────
 
