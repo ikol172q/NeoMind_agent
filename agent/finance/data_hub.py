@@ -273,6 +273,73 @@ class FinanceDataHub:
 
         return quote
 
+    async def get_history(
+        self,
+        symbol: str,
+        period: str = "3mo",
+        interval: str = "1d",
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Fetch historical OHLCV bars via yfinance.
+
+        Returns a list of dicts: ``[{"date", "open", "high", "low",
+        "close", "volume"}, ...]`` sorted oldest → newest, or None on
+        any failure.
+
+        Args:
+            symbol: ticker (US or international — ``.SS`` for A-share,
+                ``.HK`` for Hong Kong)
+            period: yfinance period string — ``1d``, ``5d``, ``1mo``,
+                ``3mo``, ``6mo``, ``1y``, ``2y``, ``5y``, ``10y``,
+                ``ytd``, ``max``
+            interval: yfinance interval — ``1m``, ``2m``, ``5m``,
+                ``15m``, ``30m``, ``60m``, ``90m``, ``1h``, ``1d``,
+                ``5d``, ``1wk``, ``1mo``, ``3mo``
+
+        Cached under ``history_<symbol>_<period>_<interval>`` for 300s.
+        """
+        if not HAS_YFINANCE:
+            return None
+
+        cache_key = f"history_{symbol}_{period}_{interval}"
+        cached = self.cache.get(cache_key, ttl=300)
+        if cached is not None:
+            return cached
+
+        def _sync_fetch():
+            try:
+                ticker = yf.Ticker(symbol)
+                df = ticker.history(period=period, interval=interval)
+                if df is None or df.empty:
+                    return None
+                bars: List[Dict[str, Any]] = []
+                for ts, row in df.iterrows():
+                    # yfinance timestamps are localized to the market
+                    # timezone; strip tz for a clean ISO string.
+                    iso = ts.isoformat() if hasattr(ts, "isoformat") else str(ts)
+                    bars.append({
+                        "date": iso,
+                        "open": float(row["Open"]),
+                        "high": float(row["High"]),
+                        "low": float(row["Low"]),
+                        "close": float(row["Close"]),
+                        "volume": int(row["Volume"]) if row["Volume"] == row["Volume"] else 0,
+                    })
+                return bars
+            except Exception as exc:
+                logger.debug("yfinance history fetch failed for %s: %s", symbol, exc)
+                return None
+
+        try:
+            loop = asyncio.get_event_loop()
+            bars = await loop.run_in_executor(self._executor, _sync_fetch)
+        except Exception as exc:
+            logger.debug("get_history executor error for %s: %s", symbol, exc)
+            return None
+
+        if bars:
+            self.cache.set(cache_key, bars)
+        return bars
+
     async def _get_finnhub_quote(self, symbol: str) -> Optional[StockQuote]:
         """Fetch quote from Finnhub."""
         try:
