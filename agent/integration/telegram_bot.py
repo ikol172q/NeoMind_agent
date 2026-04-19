@@ -4631,25 +4631,36 @@ class NeoMindTelegramBot:
             except asyncio.TimeoutError:
                 await msg.reply_text("⚠️ 工具执行超时（5分钟），已终止")
         elif response_text and used_provider:
-            # Check for "dangling intent": LLM said it would do something but didn't
-            # output a tool call. Auto-nudge it to actually execute.
+            # Check for "dangling intent": LLM said it will IMMEDIATELY do
+            # something but didn't output a tool call. Auto-nudge it to
+            # actually execute.
             stripped = response_text.strip()
+            # Imminent-action keywords — these signal the LLM is ABOUT to
+            # perform a specific action RIGHT NOW. Generic capability
+            # statements ("我可以帮你 X", "我能 Y", "我会 Z") are NOT
+            # imminent — they describe ability, not a scheduled action.
+            # Removing "帮你" and "为你" because they match:
+            #   "你好！我可以帮你搜索信息" — a greeting, not a dangling intent
+            # which previously caused the bot to send a follow-up "继续"
+            # nudge and reply twice to a single greeting.
             _intent_keywords = (
-                '让我', '我来', '我去', '我会', '我将', '我应该',
-                '检查', '查看', '查找', '查询', '搜索', '上网',
-                '创建', '执行', '读取', '打开', '分析', '获取',
-                '帮你', '为你',
+                '让我', '我来', '我去', '马上', '立刻', '现在就',
+                '接下来我', '我这就', '我现在',
             )
-            # Detect dangling intent: LLM says it will act but emits no tool_call.
-            # Two patterns:
-            #   1. Ends with colon/ellipsis (explicit "I'll do X:")
-            #   2. Contains intent keyword + action verb but ends with period
-            #      (e.g. "你说得对，我应该直接用搜索工具查最新信息。")
-            _action_verbs = ('搜索', '查', '检查', '执行', '读取', '创建', '打开', '获取', '分析', '用')
+            _action_verbs = ('搜索', '查', '检查', '执行', '读取', '创建', '打开', '获取', '分析')
             has_intent_kw = any(kw in stripped for kw in _intent_keywords)
             ends_with_intent = stripped.endswith(('：', ':', '…', '...'))
             has_action_verb = any(v in stripped for v in _action_verbs)
-            dangling = has_intent_kw and (ends_with_intent or (has_action_verb and not '<tool_call>' in response_text))
+            # Guard against misfires on short conversational messages —
+            # a greeting that happens to mention "搜索" as an ability
+            # should never trigger nudging. Require the response to be
+            # substantial OR end with a colon/ellipsis.
+            long_enough = len(stripped) > 120 or ends_with_intent
+            dangling = (
+                has_intent_kw
+                and long_enough
+                and (ends_with_intent or (has_action_verb and '<tool_call>' not in response_text))
+            )
             if dangling:
                 print(f"[agentic] Detected dangling intent (no tool_call), nudging LLM", flush=True)
                 import aiohttp as _aiohttp
