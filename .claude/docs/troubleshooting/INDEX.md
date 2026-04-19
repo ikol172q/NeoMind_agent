@@ -26,3 +26,7 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 - [2026-04-12-iteration-spiral.md](2026-04-12-iteration-spiral.md) — After 3 failed fix attempts, dispatch a diagnostic agent (not another fix); stop patch-spraying
 - [2026-04-12-subagent-prompt-sizing.md](2026-04-12-subagent-prompt-sizing.md) — Fixer prompts must be self-contained, surgical, <200 word report target
 - [2026-04-12-cross-mode-smoke-skipped.md](2026-04-12-cross-mode-smoke-skipped.md) — Changes to shared paths require cross-mode boot smoke (automated via pre-commit hook)
+
+## 2026-04-19 — fin dashboard fusion session
+
+- [2026-04-19-headless-browser-memory-leak.md](2026-04-19-headless-browser-memory-leak.md) — Always `trap`/`finally` to kill spawned Chrome + rm user-data-dir; check `memory_pressure` before spawning; one background poll at a time
