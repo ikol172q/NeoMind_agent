@@ -98,12 +98,20 @@ async def _default_llm_call(
         {"role": "system", "content": system_prompt or ""},
         {"role": "user", "content": user_prompt},
     ]
+    # max_tokens = 8192 rather than 2048: DeepSeek-R1 (and other
+    # reasoning models) COUNT their hidden chain-of-thought against
+    # max_tokens. With a 2048 budget, a non-trivial question burns
+    # 1500-1800 tokens on reasoning and truncates the visible reply
+    # to ~150-300 chars. Symptom: dashboard chat answers end at
+    # "1. 概念解释与框架：" mid-sentence. 8192 is DeepSeek's own
+    # recommendation for reasoner models. Non-reasoning chat models
+    # simply won't use the headroom — billed per actual output.
     payload = {
         "model": model,
         "messages": messages,
         "stream": False,
         "temperature": 0.3,
-        "max_tokens": 2048,
+        "max_tokens": 8192,
     }
     headers = {
         "Content-Type": "application/json",
@@ -194,10 +202,16 @@ async def _execute_fin(
     t0 = time.monotonic()
     raw_response = await llm_call(model, system_prompt, user_prompt)
     elapsed = time.monotonic() - t0
+    # `preview` is for short event-buffer display (200-char summary);
+    # `full_content` carries the complete response so session.py can
+    # store the real assistant turn in the transcript. Before
+    # full_content existed, session.py used preview as the assistant
+    # content → every answer got truncated at 200 chars.
     _emit(event_sink, member_name, "llm_call_end",
           content=f"{elapsed:.2f}s, {len(raw_response)} chars",
           duration_s=elapsed, response_len=len(raw_response),
-          preview=raw_response[:200])
+          preview=raw_response[:200],
+          full_content=raw_response)
 
     # Phase 5.12 task #69: only treat the LLM output as a structured
     # signal when the task is clearly an analysis request (has a

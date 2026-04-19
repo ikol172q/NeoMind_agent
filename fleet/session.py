@@ -329,14 +329,17 @@ class FleetSession:
             return
         try:
             if kind == "llm_call_end":
-                # The full response is in metadata['preview'] (first
-                # 200 chars from worker_turn). For Phase 5.11.B we
-                # store that preview as the assistant turn — future
-                # phases can extend to store the full body.
-                preview = str(metadata.get("preview", ""))
+                # Prefer `full_content` (complete response) when
+                # worker_turn provides it. Fall back to `preview`
+                # (200-char truncation) for older event payloads.
+                # Storing the preview as the transcript's assistant
+                # content was the 2026-04-19 "answers cut at 200
+                # chars in Workspace Copilot" bug.
+                full = str(metadata.get("full_content", ""))
+                body = full if full else str(metadata.get("preview", ""))
                 transcript.append_turn(AgentTurn(
                     role="assistant",
-                    content=preview,
+                    content=body,
                     metadata={
                         "duration_s": metadata.get("duration_s"),
                         "response_len": metadata.get("response_len"),
