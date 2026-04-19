@@ -272,6 +272,36 @@ system_prompt: |
   - Cross-mode context: Leverage facts from all modes for consistent, informed responses
   - Goal-oriented: Every conversation should subtly move toward the user's goals
 
+# === Router routing knobs ===
+# Moved from hardcoded class constants in telegram_bot.py (2026-04-19)
+# so you can tune per-mode model choice without a code change. Each
+# field is optional — missing fields fall back to the hardcoded
+# defaults in NeoMindTelegramBot (see _routing_for_mode).
+routing:
+  # Primary model the LLM-Router serves for this mode. When the
+  # router is up, NeoMind dispatches chat completions with
+  # model=<primary_model>. Must match a model id returned by the
+  # router's /v1/models endpoint.
+  primary_model: deepseek-chat
+
+  # Thinking-mode model (used when /think is ON or reasoning is
+  # required). Usually deepseek-reasoner.
+  thinking_model: deepseek-reasoner
+
+  # Rate-limit fallback — if the primary's upstream 429's
+  # (moonshot has aggressive org-level rate limits), insert a
+  # SECOND router entry with this model so the chain falls through
+  # to an independent rate-bucket before giving up on the router.
+  # Set to null or omit to disable. For chat mode we pick kimi as
+  # the fallback because it's routed via a different upstream
+  # (moonshot) than the primary (deepseek).
+  rate_limit_fallback_model: kimi-k2.5
+
+  # When the router path is unavailable and we fall back to direct
+  # vendor APIs, promote this provider to the front of the chain.
+  # Must match a PROVIDERS dict key in agent/services/llm_provider.py.
+  preferred_direct_provider: deepseek
+
 search_enabled: true
 auto_search:
   enabled: true

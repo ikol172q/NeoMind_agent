@@ -1,3 +1,13 @@
+# === Router routing knobs === (see chat.yaml for field docs)
+# Fin mode prefers Kimi as primary because its long-context + reasoning
+# chops are good for market analysis. DeepSeek is the rate-limit
+# fallback (different org-bucket than Moonshot).
+routing:
+  primary_model: kimi-k2.5
+  thinking_model: deepseek-reasoner
+  rate_limit_fallback_model: deepseek-chat
+  preferred_direct_provider: moonshot
+
 auto_search:
   enabled: true
   triggers:

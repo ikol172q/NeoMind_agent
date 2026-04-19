@@ -6,6 +6,15 @@ mode: coding
 model: deepseek-reasoner
 fallback_model: null
 
+# === Router routing knobs === (see chat.yaml for field docs)
+# Coding defaults to deepseek-chat for tool-call reliability; Kimi is
+# the rate-limit fallback for independent bucket.
+routing:
+  primary_model: deepseek-chat
+  thinking_model: deepseek-reasoner
+  rate_limit_fallback_model: kimi-k2.5
+  preferred_direct_provider: deepseek
+
 system_prompt: |
   You are NeoMind (新思) — 技术认知延伸，Coding Engine。
 

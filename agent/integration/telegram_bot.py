@@ -3679,26 +3679,79 @@ class NeoMindTelegramBot:
         """
         return self._store.get_recent_history(chat_id, limit=20)
 
-    # ── Per-mode preferred provider mapping ──────────────────────
-    # Maps agent mode → provider name that should be tried first.
-    # If the preferred provider is in the chain, it gets promoted to index 0.
+    # ── Per-mode routing hardcoded DEFAULTS ──────────────────────
+    # These are the FALLBACK values used when the mode YAML file has
+    # no `routing:` block, or when the YAML can't be loaded. In normal
+    # operation the source of truth is agent/config/{mode}.yaml ::
+    # routing.{primary_model, thinking_model, rate_limit_fallback_model,
+    # preferred_direct_provider} — see _routing_for_mode().
     _MODE_PREFERRED_PROVIDER = {
         "fin": "moonshot",      # Kimi K2.5 for financial reasoning
         "coding": "deepseek",   # DeepSeek for coding
         "chat": "deepseek",     # DeepSeek for general chat
     }
 
-    # ── Per-mode default model for the local LLM Router ──────────
-    # When LLM_ROUTER_API_KEY is set, all LLM traffic goes through the
-    # local router (host.docker.internal:8000/v1) and the router resolves
-    # the model id to the upstream provider. These are the defaults used
-    # when no per-chat override or persisted mode_model is present.
     _ROUTER_DEFAULT_MODELS = {
         "fin": "kimi-k2.5",
         "coding": "deepseek-chat",
         "chat": "deepseek-chat",
     }
     _ROUTER_THINKING_MODEL = "deepseek-reasoner"
+
+    # Per-mode rate-limit fallback model — inserted as a SECOND router
+    # entry in the chain so when the primary's upstream 429's we can
+    # fall through to a different vendor (e.g. fin primary=kimi via
+    # moonshot, fallback=deepseek-chat via deepseek — independent
+    # rate-bucket). None means "no rate-limit fallback for this mode".
+    _ROUTER_RATE_LIMIT_FALLBACK = {
+        "fin": "deepseek-chat",
+        "coding": "kimi-k2.5",
+        "chat": "kimi-k2.5",
+    }
+
+    def _routing_for_mode(self, mode: str) -> dict:
+        """Read per-mode routing config from agent/config/<mode>.yaml.
+
+        Returns a dict with keys: primary_model, thinking_model,
+        rate_limit_fallback_model, preferred_direct_provider. Missing
+        fields fall back to the hardcoded class-level defaults so a
+        fresh install (no YAML routing block) still works identically
+        to before this refactor.
+        """
+        try:
+            from agent_config import AgentConfigManager
+            cfg = AgentConfigManager(mode=mode)
+            return {
+                "primary_model": cfg.get(
+                    "routing.primary_model",
+                    self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5"),
+                ),
+                "thinking_model": cfg.get(
+                    "routing.thinking_model",
+                    self._ROUTER_THINKING_MODEL,
+                ),
+                "rate_limit_fallback_model": cfg.get(
+                    "routing.rate_limit_fallback_model",
+                    self._ROUTER_RATE_LIMIT_FALLBACK.get(mode),
+                ),
+                "preferred_direct_provider": cfg.get(
+                    "routing.preferred_direct_provider",
+                    self._MODE_PREFERRED_PROVIDER.get(mode),
+                ),
+            }
+        except Exception as exc:
+            logger.debug(
+                "_routing_for_mode(%s): config load failed (%s), "
+                "using hardcoded defaults", mode, exc,
+            )
+            return {
+                "primary_model": self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5"),
+                "thinking_model": self._ROUTER_THINKING_MODEL,
+                "rate_limit_fallback_model":
+                    self._ROUTER_RATE_LIMIT_FALLBACK.get(mode),
+                "preferred_direct_provider":
+                    self._MODE_PREFERRED_PROVIDER.get(mode),
+            }
 
     def _router_env(self) -> Tuple[str, str]:
         """Return (base_url, api_key) for the local LLM router, or ("","") if unset."""
@@ -3719,8 +3772,9 @@ class NeoMindTelegramBot:
 
         # Model resolution priority:
         #   1. Persisted mode_models in provider-state.json (if real, not "?")
-        #   2. _ROUTER_DEFAULT_MODELS for this mode
-        #   3. kimi-k2.5 as final fallback
+        #   2. agent/config/<mode>.yaml :: routing.primary_model /
+        #      routing.thinking_model  (new — was hardcoded before 2026-04-19)
+        #   3. Class-level hardcoded defaults as the last-resort floor
         model = None
         try:
             cfg = self._state_mgr.get_bot_config("neomind")
@@ -3731,9 +3785,10 @@ class NeoMindTelegramBot:
         except Exception:
             pass
         if not model:
+            routing = self._routing_for_mode(mode)
             model = (
-                self._ROUTER_THINKING_MODEL if thinking
-                else self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                routing["thinking_model"] if thinking
+                else routing["primary_model"]
             )
 
         return {
@@ -3956,18 +4011,17 @@ class NeoMindTelegramBot:
         router_provider = self._build_router_provider(mode=mode, thinking=thinking)
         if router_provider:
             chain = [router_provider] + chain
-            # Per-mode upstream fallback: when the primary upstream (kimi-k2.5
-            # for fin) hits an upstream org-rate-limit (HTTP 429), the router
-            # alone can't help because it proxies to the same moonshot org.
-            # Add a second router entry with a different model routed to a
-            # different upstream (deepseek-chat → deepseek) so the provider
-            # loop falls through to an independent rate-bucket.
-            _FALLBACK_MODEL = {
-                "fin": "deepseek-chat" if not thinking else None,
-                "coding": "kimi-k2.5" if not thinking else None,
-                "chat": "kimi-k2.5" if not thinking else None,
-            }
-            fb_model = _FALLBACK_MODEL.get(mode)
+            # Per-mode upstream fallback: when the primary upstream's org
+            # rate-limits (HTTP 429), the router alone can't help because
+            # it proxies to the same origin. Insert a SECOND router entry
+            # with a different model routed to a different upstream so
+            # the provider loop falls through to an independent
+            # rate-bucket. Only applies to non-thinking chains.
+            routing = self._routing_for_mode(mode)
+            fb_model = (
+                None if thinking
+                else routing.get("rate_limit_fallback_model")
+            )
             if fb_model and fb_model != router_provider["model"]:
                 router_base, router_key = self._router_env()
                 chain.insert(1, {
@@ -3979,7 +4033,7 @@ class NeoMindTelegramBot:
 
         # Re-order the remainder based on per-chat mode preference (keeps
         # the router at index 0; affects only the direct-upstream fallbacks).
-        preferred = self._MODE_PREFERRED_PROVIDER.get(mode)
+        preferred = self._routing_for_mode(mode).get("preferred_direct_provider")
         if preferred and len(chain) > 2:
             head, tail = chain[:1], chain[1:]
             preferred_items = [p for p in tail if p["name"] == preferred]
@@ -4005,15 +4059,19 @@ class NeoMindTelegramBot:
             has_router = bool(router_base and router_key)
 
             mode_models = {}
-            for mode, preferred_provider in self._MODE_PREFERRED_PROVIDER.items():
+            for mode in ("fin", "coding", "chat"):
+                routing = self._routing_for_mode(mode)
+                preferred_provider = routing.get("preferred_direct_provider") or \
+                    self._MODE_PREFERRED_PROVIDER.get(mode)
                 normal_model = None
                 think_model = None
                 provider_name = preferred_provider
 
                 if has_router:
-                    # Router is primary — use the mode's router default model
-                    normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
-                    think_model = self._ROUTER_THINKING_MODEL
+                    # Router is primary — per-mode YAML decides which
+                    # model the router dispatches this mode to.
+                    normal_model = routing["primary_model"]
+                    think_model = routing["thinking_model"]
                     provider_name = "router"
                 else:
                     # Fall back to direct provider chain
@@ -4032,12 +4090,12 @@ class NeoMindTelegramBot:
                         provider_name = chain[0]["name"]
                     if not think_model and think_chain:
                         think_model = think_chain[0]["model"]
-                    # Final defensive fallback: router defaults so we
-                    # still publish SOMETHING real rather than "?"
+                    # Final defensive fallback: per-mode routing config
+                    # so we still publish SOMETHING real rather than "?"
                     if not normal_model:
-                        normal_model = self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5")
+                        normal_model = routing["primary_model"]
                     if not think_model:
-                        think_model = self._ROUTER_THINKING_MODEL
+                        think_model = routing["thinking_model"]
 
                 mode_models[mode] = {
                     "provider": provider_name,
