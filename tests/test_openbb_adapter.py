@@ -210,11 +210,25 @@ def test_widgets_json_all_fields_present(client):
 
 
 def test_apps_json_valid(client):
+    """OpenBB Workspace requires apps.json to be a JSON ARRAY of app
+    objects, each with required ``name`` and ``tabs`` fields."""
     r = client.get("/openbb/apps.json")
     assert r.status_code == 200
     apps = r.json()
-    assert "neomind_research" in apps
-    assert "tabs" in apps["neomind_research"]
+    assert isinstance(apps, list), "apps.json must be an array"
+    assert len(apps) >= 1
+    for app in apps:
+        assert "name" in app, f"app missing 'name': {app}"
+        assert "tabs" in app, f"app missing 'tabs': {app}"
+        assert isinstance(app["tabs"], dict)
+        # Each tab must have id, name, layout[]
+        for tab_id, tab in app["tabs"].items():
+            assert "id" in tab
+            assert "name" in tab
+            assert isinstance(tab.get("layout"), list)
+    # Spot check one of the NeoMind apps
+    names = [a["name"] for a in apps]
+    assert any("NeoMind" in n for n in names)
 
 
 # ── CORS ─────────────────────────────────────────────────────────
