@@ -735,10 +735,35 @@ class NeoMindTelegramBot:
         chain = self._get_provider_chain(thinking=False, chat_id=cid)
         primary = chain[0]["name"] if chain else "none"
 
+        # Detect per-chat model override so the UI can explain WHY the
+        # displayed model differs from the mode's YAML default. Without
+        # this hint, user sees "mode=chat but model=kimi-k2.5" and
+        # thinks something is broken.
+        override = self._store.get_model_override(cid)
+        mode_routing = self._routing_for_mode(current_mode)
+        mode_default_model = mode_routing.get("primary_model", "")
+
         lines.append(f"🧩 模式: <b>{current_mode}</b> | 思考: {thinking}")
-        lines.append(f"🤖 模型: <code>{model}</code> via {primary}")
+
+        if override:
+            lines.append(
+                f"🤖 模型: <code>{model}</code> via {primary} "
+                f"<i>(手动覆盖 · /model reset 恢复)</i>"
+            )
+            if mode_default_model and mode_default_model != model:
+                lines.append(
+                    f"     <i>{current_mode} 模式默认: "
+                    f"<code>{mode_default_model}</code></i>"
+                )
+        else:
+            lines.append(f"🤖 模型: <code>{model}</code> via {primary}")
         if think_model != model:
-            lines.append(f"🧠 思考模型: <code>{think_model}</code>")
+            thinking_label = (
+                " <i>(mode 默认)</i>" if not override else ""
+            )
+            lines.append(
+                f"🧠 思考模型: <code>{think_model}</code>{thinking_label}"
+            )
 
         # Show full provider chain
         if len(chain) > 1:
@@ -880,8 +905,18 @@ class NeoMindTelegramBot:
         if not args:
             from agent.services.llm_provider import PROVIDERS, check_primary_healthy
 
+            # Header makes the override state explicit. When an override
+            # is in place, also name the mode default so user can see
+            # what would be used after /model reset — matches /status.
             if override:
-                header = f"当前模型: <code>{override}</code>（手动选择）"
+                mode_default = self._routing_for_mode(mode).get(
+                    "primary_model", ""
+                )
+                header = (
+                    f"当前模型: <code>{override}</code>（手动覆盖）\n"
+                    f"<i>{mode} 模式默认: <code>{mode_default}</code> "
+                    f"— /model reset 恢复</i>"
+                )
             else:
                 header = f"当前模型: <code>{active_model}</code>（{mode} 默认）"
 
