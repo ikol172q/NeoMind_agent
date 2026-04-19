@@ -82,7 +82,7 @@ MODEL_SPECS: Dict[str, Dict[str, int]] = {
         "default_max": 16384,
         "fixed_temperature": 1,  # Kimi K2.5 only accepts temperature=1
     },
-    # Qwen models (local via LiteLLM/Ollama)
+    # Qwen models (local via LLM-Router → MLX, or cloud Qwen via vendor)
     "qwen3.5": {
         "max_context": 131072,   # 128K
         "max_output": 8192,      # 8K

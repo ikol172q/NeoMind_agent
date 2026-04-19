@@ -38,7 +38,7 @@ DEFAULT_DB_PATH = _default_usage_db_path()
 
 # Cost per call estimates (rough, for display only)
 COST_PER_1K_TOKENS = {
-    "local": 0,              # Ollama = free
+    "local": 0,              # MLX local inference = free (was Ollama pre-2026-04)
     "deepseek-chat": 0.00014,      # $0.14/M input
     "deepseek-reasoner": 0.00055,   # $0.55/M input
     "glm-4.5-flash": 0.0001,

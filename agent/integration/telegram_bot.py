@@ -913,11 +913,16 @@ class NeoMindTelegramBot:
             lines = [f"🤖 {header}\n"]
 
             if primary_healthy:
-                # Clean path: only show the primary's live model list
+                # Clean path: show the primary's live model list.
+                # The model list reflects what the router can route to,
+                # which is independent of whether the user is currently
+                # in provider_mode=direct or =router. In direct mode
+                # the HTTP calls bypass the router at call-time, but
+                # the inventory of known models is still canonical at
+                # the router layer. So we do NOT gate on
+                # active_providers here.
                 for pname, pconf in PROVIDERS.items():
                     if pconf.get("role") != "primary":
-                        continue
-                    if pname not in active_providers:
                         continue
                     models_list = _fetch_live_models(pconf)
                     if not models_list:
@@ -2143,18 +2148,22 @@ class NeoMindTelegramBot:
             mode = config.get("provider_mode", "direct")
             await update.message.reply_text(
                 f"🔌 当前路由: <b>{mode}</b>\n\n"
-                f"<code>/provider litellm</code> — 切换到本地 Ollama\n"
-                f"<code>/provider direct</code> — 切换到直连 API\n\n"
+                f"<code>/provider router</code> — 切换到 LLM-Router (本地 MLX + 云端聚合)\n"
+                f"<code>/provider direct</code> — 切换到直连 vendor API\n\n"
                 f"<i>完整状态请用 /status</i>",
                 parse_mode=ParseMode.HTML,
             )
 
-        elif args in ("litellm", "local", "ollama"):
-            # Check if LITELLM_API_KEY is set
-            if not os.getenv("LITELLM_API_KEY", ""):
+        elif args in ("router", "litellm", "local", "mlx", "ollama"):
+            # "router" is the canonical name. "litellm" / "local" /
+            # "mlx" / "ollama" are accepted aliases for back-compat —
+            # users with old habits or stored chat bindings still get
+            # routed to the LLM-Router at :8000.
+            if not os.getenv("LLM_ROUTER_API_KEY", "") and not os.getenv("LITELLM_API_KEY", ""):
                 await update.message.reply_text(
-                    "⚠️ LITELLM_API_KEY 未设置，无法启用。\n"
-                    "在 .env 里加上 LITELLM_API_KEY=你的key"
+                    "⚠️ LLM_ROUTER_API_KEY 未设置，无法启用。\n"
+                    "在 .env 里加上 LLM_ROUTER_API_KEY=你的key\n"
+                    "(LITELLM_API_KEY 作为 legacy 兼容仍然接受)"
                 )
                 return
 
@@ -2174,10 +2183,21 @@ class NeoMindTelegramBot:
             chat_actual = self._resolve_litellm_model(chat_alias)
             think_actual = self._resolve_litellm_model(think_alias)
 
+            # Identify what the resolved chat_actual model is — if it
+            # looks like a local MLX repo id or legacy alias we label
+            # it as MLX-free; otherwise it's a cloud model routed via
+            # the router (the cost marker would be non-zero, but we
+            # don't have the per-model cost to hand here).
+            is_local = (
+                chat_actual.startswith("mlx-community/")
+                or chat_actual in ("local", "mlx")
+                or ":" in chat_actual  # legacy ollama-style alias
+            )
+            cost_label = "MLX, 免费" if is_local else "via router"
             await update.message.reply_text(
-                f"✅ LiteLLM 已启用\n"
+                f"✅ LLM-Router 已启用\n"
                 f"Chain: {' → '.join(models)}\n\n"
-                f"普通对话: {chat_actual} (Ollama, 免费)\n"
+                f"普通对话: {chat_actual} ({cost_label})\n"
                 f"Thinking: {think_actual}\n\n"
                 f"<i>此更改已同步到 xbar 菜单栏</i>",
                 parse_mode=ParseMode.HTML,
@@ -3668,7 +3688,7 @@ class NeoMindTelegramBot:
 
         The router is a local OpenAI-compatible proxy that takes a `model`
         field and forwards to the right upstream (DeepSeek, Moonshot, z.ai,
-        Ollama). Returns None if LLM_ROUTER_* env vars are not set.
+        local MLX). Returns None if LLM_ROUTER_* env vars are not set.
         """
         base, key = self._router_env()
         if not base or not key:
@@ -4014,9 +4034,12 @@ class NeoMindTelegramBot:
             print(f"[bot] Warning: failed to publish mode_models: {e}", flush=True)
 
     def _resolve_litellm_model(self, alias: str) -> str:
-        """Resolve a LiteLLM model alias (e.g. 'local') to the actual model
-        (e.g. 'ollama_chat/qwen3:14b') by querying the LiteLLM /model/info endpoint.
-        Falls back to the alias itself on any error.
+        """Resolve a router model alias (e.g. 'local') to the actual
+        model id (e.g. 'mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit')
+        by querying the LLM-Router /v1/models endpoint. The legacy
+        LiteLLM /model/info fallback still fires if someone points
+        LITELLM_BASE_URL at a litellm-proxy instance. Returns the
+        alias unchanged on any error.
         """
         try:
             import requests as req

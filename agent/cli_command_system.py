@@ -722,9 +722,10 @@ def _build_builtin_commands() -> List[Command]:
             for pname, pconf in PROVIDERS.items():
                 if pconf.get("role") != "primary":
                     continue
-                api_key = _os.getenv(pconf.get("env_key", ""), "")
-                if not api_key and pconf.get("env_key"):
-                    continue
+                # Don't gate on api_key env here — check_primary_healthy
+                # already confirmed the router is reachable. Model list
+                # is canonical from the router regardless of how the
+                # user's current chain is wired (direct vs via router).
                 models = _live_models(pconf)
                 if not models:
                     continue
