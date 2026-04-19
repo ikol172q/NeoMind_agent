@@ -119,16 +119,59 @@ async def _default_llm_call(
     }
     url = provider["base_url"]
 
+    # Zero-data-loss audit: every LLM call gets a req_id; the FULL
+    # messages[] array and FULL response body go to
+    # ~/Desktop/Investment/_audit/YYYY-MM-DD.jsonl. Failures go as
+    # `error` events. See agent/finance/agent_audit.py.
+    from agent.finance import agent_audit
+    req_id = agent_audit.new_req_id()
+    agent_audit.audit_request(
+        req_id=req_id,
+        endpoint="fleet.worker._default_llm_call",
+        agent_id="fleet-worker",
+        messages=messages,
+        model=model,
+        max_tokens=payload["max_tokens"],
+        temperature=payload["temperature"],
+    )
+    t0 = time.monotonic()
+
     def _sync_post() -> str:
         resp = requests.post(url, headers=headers, json=payload, timeout=60)
         resp.raise_for_status()
         data = resp.json()
         if not data.get("choices"):
             raise WorkerTurnError(f"unexpected LLM response shape: {data!r}")
-        return data["choices"][0]["message"]["content"]
+        choice = data["choices"][0]
+        msg = choice["message"]
+        duration_ms = int((time.monotonic() - t0) * 1000)
+        agent_audit.audit_response(
+            req_id=req_id,
+            endpoint="fleet.worker._default_llm_call",
+            agent_id="fleet-worker",
+            content=msg.get("content") or "",
+            reasoning_content=msg.get("reasoning_content"),
+            finish_reason=choice.get("finish_reason"),
+            usage=data.get("usage"),
+            duration_ms=duration_ms,
+        )
+        return msg["content"]
 
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, _sync_post)
+    try:
+        return await loop.run_in_executor(None, _sync_post)
+    except Exception as exc:
+        import traceback
+        agent_audit.audit_error(
+            req_id=req_id,
+            endpoint="fleet.worker._default_llm_call",
+            agent_id="fleet-worker",
+            error_type=type(exc).__name__,
+            error_msg=str(exc),
+            traceback_text=traceback.format_exc(),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+        raise
 
 
 # ── Fail-fast check on entry ───────────────────────────────────────────

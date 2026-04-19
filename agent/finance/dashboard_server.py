@@ -1745,6 +1745,12 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("cn_data router unavailable: %s", exc)
 
+    try:
+        from agent.finance.agent_audit import build_audit_router
+        app.include_router(build_audit_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("audit router unavailable: %s", exc)
+
     # ── OpenBB Workspace custom backend (Phase 2) ────────────────
     # Same NeoMind data + fleet agent exposed via OpenBB's standard
     # widget + Copilot HTTP contracts. Lets any OpenBB-compatible UI
