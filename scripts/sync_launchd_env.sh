@@ -15,7 +15,7 @@
 set -euo pipefail
 
 # Keys we care about. Add any new providers here.
-KEYS=(
+SHELL_KEYS=(
   DEEPSEEK_API_KEY
   ZAI_API_KEY
   GLM_API_KEY
@@ -24,10 +24,19 @@ KEYS=(
   OPENAI_API_KEY
 )
 
+# Keys that live in .env (not shell) — Miniflux, future feed creds, etc.
+# We read these straight from the repo .env so a missing shell env
+# doesn't skip them.
+ENV_FILE_KEYS=(
+  MINIFLUX_URL
+  MINIFLUX_USERNAME
+  MINIFLUX_PASSWORD
+)
+
 missing=()
 synced=()
 
-for var in "${KEYS[@]}"; do
+for var in "${SHELL_KEYS[@]}"; do
   val="${!var:-}"
   if [[ -z "$val" ]]; then
     missing+=("$var")
@@ -36,6 +45,19 @@ for var in "${KEYS[@]}"; do
   launchctl setenv "$var" "$val"
   synced+=("$var")
 done
+
+REPO_ENV="$(cd "$(dirname "$0")/.." && pwd)/.env"
+if [[ -f "$REPO_ENV" ]]; then
+  for var in "${ENV_FILE_KEYS[@]}"; do
+    val=$(grep -E "^${var}=" "$REPO_ENV" | tail -n1 | cut -d= -f2-)
+    if [[ -z "$val" ]]; then
+      missing+=("$var")
+      continue
+    fi
+    launchctl setenv "$var" "$val"
+    synced+=("$var")
+  done
+fi
 
 if ((${#synced[@]})); then
   echo "✓ synced into launchd session env:"
