@@ -704,7 +704,14 @@ def build_agent_router(fleet: Any) -> APIRouter:
                     "aware, Investment-root data firewall. Responds in "
                     "the user's language."
                 ),
-                "endpoints": {"query": "/openbb/query"},
+                # Relative to the agent base URL the user entered in
+                # Workspace (`http://127.0.0.1:8001/openbb`). Workspace
+                # does STRING concatenation of base+query, so an
+                # absolute-looking "/openbb/query" would actually be
+                # sent to /openbb/openbb/query and 404. Discovered
+                # 2026-04-19 via a double-prefix 404 in the launchd
+                # log right after adding the Copilot.
+                "endpoints": {"query": "/query"},
                 "features": {
                     "streaming": True,
                     "widget-dashboard-select": False,
