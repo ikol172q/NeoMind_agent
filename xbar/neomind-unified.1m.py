@@ -1,17 +1,37 @@
 #!/usr/bin/env python3
-# <xbar.title>NeoMind Unified</xbar.title>
-# <xbar.version>v2.0</xbar.version>
+# <xbar.title>NeoMind Unified (DEPRECATED)</xbar.title>
+# <xbar.version>v2.0 (deprecated 2026-04-19)</xbar.version>
 # <xbar.author>irene</xbar.author>
-# <xbar.desc>Unified LLM infrastructure monitor: Ollama + LiteLLM + NeoMind Bot + TokenSight</xbar.desc>
+# <xbar.desc>DEPRECATED — use ~/Desktop/LLM-Router/llm-router.1m.py instead</xbar.desc>
 # <xbar.dependencies>python3</xbar.dependencies>
 #
-# Merges: llm-gateway.1m.sh + neomind-provider.1m.sh + tokensight.1m.py
-#
-# Filename: neomind-unified.1m.py  (1m = refresh every 1 minute)
-# Install:
-#   ln -sf ~/Desktop/NeoMind_agent/xbar/neomind-unified.1m.py \
+# ▲ DEPRECATION NOTICE ▲
+# ----------------------
+# This plugin monitors Ollama (port 11434) and LiteLLM (port 4000),
+# both of which were decommissioned 2026-04-18:
+#   - Ollama replaced by local MLX server (port 8100, managed by
+#     Desktop/LLM-Router/scripts/mlx_autostart.py)
+#   - LiteLLM replaced by the custom Python router at Desktop/LLM-Router/
+#     (port 8000)
+# The canonical replacement plugin — with correct MLX + cloud auto-
+# discovery wiring — lives at Desktop/LLM-Router/llm-router.1m.py.
+# Install via:
+#   ln -sf ~/Desktop/LLM-Router/llm-router.1m.py \
 #          "$HOME/Library/Application Support/xbar/plugins/"
-#   chmod +x ~/Desktop/NeoMind_agent/xbar/neomind-unified.1m.py
+#
+# This file is kept temporarily for reference. It WILL NOT work as-is
+# (both ports it probes are closed). Safe to delete once
+# llm-router.1m.py is verified good.
+#
+# Historical notes:
+#   Merged: llm-gateway.1m.sh + neomind-provider.1m.sh + tokensight.1m.py
+
+import sys
+print("◇ NeoMind Unified (deprecated) | color=red size=11")
+print("---")
+print("This plugin is deprecated. | color=red")
+print("See: ~/Desktop/LLM-Router/llm-router.1m.py | color=#888")
+sys.exit(0)
 
 import json
 import os

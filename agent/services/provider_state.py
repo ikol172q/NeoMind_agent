@@ -489,8 +489,9 @@ class ProviderStateManager:
         lines.append(f"\nLiteLLM: {health} {litellm_info.get('base_url', '?')}")
 
         lines.append(
-            f"\n<code>/provider litellm</code> — 本地 Ollama\n"
-            f"<code>/provider direct</code> — 直连 API"
+            f"\n<code>/provider router</code> — LLM-Router (本地 MLX + 云端聚合)\n"
+            f"<code>/provider direct</code> — 直连 vendor API\n"
+            f"<i>'/provider litellm' 和 'ollama' 作为 legacy 别名仍然接受</i>"
         )
 
         return "\n".join(lines)

@@ -130,7 +130,8 @@ def cmd_get(args):
         if os.getenv("DEEPSEEK_API_KEY"): providers.append("DeepSeek")
         if os.getenv("ZAI_API_KEY"): providers.append("z.ai (GLM)")
         if os.getenv("MOONSHOT_API_KEY"): providers.append("Moonshot (Kimi)")
-        if os.getenv("LITELLM_API_KEY"): providers.append("LiteLLM (Ollama)")
+        if os.getenv("LLM_ROUTER_API_KEY") or os.getenv("LITELLM_API_KEY"):
+            providers.append("LLM-Router (MLX + cloud)")
         print(f"  {', '.join(providers) if providers else 'None (check .env)'}")
 
     # Show per-mode routing (from state, written by bot)
