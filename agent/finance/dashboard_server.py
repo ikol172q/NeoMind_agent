@@ -189,6 +189,33 @@ class FleetBackend:
         }
         return task_id
 
+    async def dispatch_chat(
+        self,
+        prompt: str,
+        project_id: str,
+        original_message: Optional[str] = None,
+    ) -> str:
+        """Send a free-form chat prompt to the fin-rt worker and
+        return its task_id. Shares the same task ring buffer as
+        ``dispatch_analysis`` so ``GET /api/tasks/{id}`` works for
+        both kinds of requests.
+        """
+        session = await self.ensure_started()
+        try:
+            task_id = await session.submit_to_member(self.member, prompt)
+        except Exception as exc:
+            raise HTTPException(502, f"fleet chat dispatch failed: {exc}")
+        self._known_tasks[task_id] = {
+            "task_id": task_id,
+            "kind": "chat",
+            "project_id": project_id,
+            "message": original_message if original_message is not None else prompt,
+            "member": self.member,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "status": "pending",
+        }
+        return task_id
+
     def get_task_status(self, task_id: str) -> Dict[str, Any]:
         """Resolve task_id → current status + result by walking the
         member's transcript for the matching user/assistant turn pair.
@@ -337,6 +364,67 @@ td.sig-hold { color: var(--yellow); font-weight: 600; }
 }
 .toast.show { opacity: 1; }
 .empty { color: var(--dim); font-style: italic; padding: 8px 0; }
+
+/* ── News list ── */
+.news-list { list-style: none; margin: 0; padding: 0; }
+.news-list li {
+  padding: 8px 10px; border-bottom: 1px solid var(--border);
+  display: flex; gap: 10px; align-items: baseline;
+}
+.news-list li:last-child { border-bottom: none; }
+.news-list a {
+  color: var(--text); text-decoration: none; font-size: 13px;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.news-list a:hover { color: var(--accent); }
+.news-list .feed { color: var(--dim); font-size: 11px; flex-shrink: 0; }
+.news-list .when { color: var(--dim); font-size: 11px; flex-shrink: 0; }
+
+/* ── Chat floater ── */
+#chat-floater {
+  position: fixed; right: 20px; bottom: 70px;
+  z-index: 999;
+}
+#chat-toggle {
+  padding: 10px 16px; border-radius: 20px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+#chat-panel {
+  position: absolute; bottom: 50px; right: 0;
+  width: 420px; height: 520px;
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 6px; box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+  display: flex; flex-direction: column;
+}
+#chat-panel header {
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  background: transparent;
+}
+#chat-panel header h3 {
+  margin: 0; font-size: 13px; color: var(--dim);
+  text-transform: uppercase; letter-spacing: 0.05em;
+}
+#chat-messages {
+  flex: 1; overflow-y: auto; padding: 10px 14px;
+  font-size: 13px; line-height: 1.5;
+}
+.chat-msg { margin-bottom: 10px; white-space: pre-wrap; word-break: break-word; }
+.chat-user { color: var(--text); }
+.chat-user::before { content: "› "; color: var(--accent); font-weight: 600; }
+.chat-assistant { color: var(--text); }
+.chat-assistant::before { content: "◆ "; color: var(--green); font-weight: 600; }
+.chat-status { color: var(--dim); font-style: italic; font-size: 12px; }
+.chat-error { color: var(--red); }
+.chat-error::before { content: "✗ "; }
+#chat-input-row {
+  padding: 10px 12px; border-top: 1px solid var(--border);
+  display: flex; gap: 8px;
+}
+#chat-input {
+  flex: 1; padding: 6px 10px;
+}
 </style>
 </head>
 <body>
@@ -351,6 +439,11 @@ td.sig-hold { color: var(--yellow); font-weight: 600; }
       <select id="project-select"></select>
       <button class="secondary" id="refresh-projects">↻</button>
     </div>
+  </section>
+
+  <section>
+    <h2>news <button class="secondary" id="refresh-news" style="float:right; margin-top:-4px;">↻</button></h2>
+    <div id="news-out" class="empty">loading…</div>
   </section>
 
   <section>
@@ -452,6 +545,24 @@ td.sig-hold { color: var(--yellow); font-weight: 600; }
     <div id="trades-out" class="empty">no trades yet</div>
   </section>
 </main>
+
+<div id="chat-floater">
+  <button id="chat-toggle">◈ chat fin</button>
+  <div id="chat-panel" style="display:none">
+    <header>
+      <h3>fin persona · deepseek-r1</h3>
+      <button class="secondary" id="chat-close" style="padding:3px 9px; font-size:11px;">close</button>
+    </header>
+    <div id="chat-messages">
+      <div class="chat-msg chat-status">select a project, then ask anything. audit log at ~/Desktop/Investment/&lt;project&gt;/chat_log/</div>
+    </div>
+    <div id="chat-input-row">
+      <input id="chat-input" placeholder="ask fin…" autocomplete="off" maxlength="4000">
+      <button id="chat-send">send</button>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 <script>
 const $ = id => document.getElementById(id);
@@ -905,6 +1016,114 @@ async function loadChart() {
   }
 }
 
+// ── News ──────────────────────────────────────────────
+function _fmtRelative(iso) {
+  if (!iso) return "";
+  const t = new Date(iso).getTime();
+  if (!Number.isFinite(t)) return "";
+  const secs = Math.round((Date.now() - t) / 1000);
+  if (secs < 60) return secs + "s ago";
+  if (secs < 3600) return Math.round(secs / 60) + "m ago";
+  if (secs < 86400) return Math.round(secs / 3600) + "h ago";
+  return Math.round(secs / 86400) + "d ago";
+}
+async function loadNews() {
+  const out = $("news-out");
+  out.className = "empty"; out.textContent = "loading…";
+  try {
+    const r = await api("/api/news?limit=15");
+    if (!r.entries || !r.entries.length) {
+      out.textContent = "no entries (subscribe to feeds in miniflux at http://127.0.0.1:8080)";
+      return;
+    }
+    out.className = "";
+    const items = r.entries.map(e => {
+      const safeTitle = (e.title || "(no title)").replace(/</g, "&lt;");
+      const safeUrl = (e.url || "#").replace(/"/g, "&quot;");
+      const safeFeed = (e.feed_title || "").replace(/</g, "&lt;");
+      return `<li>
+        <a href="${safeUrl}" target="_blank" rel="noopener noreferrer" title="${safeTitle}">${safeTitle}</a>
+        <span class="feed">${safeFeed}</span>
+        <span class="when">${_fmtRelative(e.published_at)}</span>
+      </li>`;
+    }).join("");
+    out.innerHTML = `<ul class="news-list">${items}</ul>`;
+  } catch (e) {
+    out.className = "empty";
+    out.textContent = "news unavailable: " + e.message;
+  }
+}
+
+// ── Chat floater ──────────────────────────────────────
+function toggleChat(force) {
+  const p = $("chat-panel");
+  const open = force !== undefined ? force :
+    (p.style.display === "none" || !p.style.display);
+  p.style.display = open ? "flex" : "none";
+  if (open) setTimeout(() => $("chat-input").focus(), 60);
+}
+function appendChat(role, content) {
+  const div = document.createElement("div");
+  div.className = "chat-msg chat-" + role;
+  div.textContent = content;
+  $("chat-messages").appendChild(div);
+  $("chat-messages").scrollTop = $("chat-messages").scrollHeight;
+  return div;
+}
+async function sendChat() {
+  const input = $("chat-input");
+  const msg = input.value.trim();
+  const pid = $("project-select").value;
+  if (!msg) return;
+  if (!pid) { appendChat("error", "select a project first"); return; }
+  appendChat("user", msg);
+  input.value = "";
+  const statusRow = appendChat("status", "⏳ dispatching to fin-rt…");
+  try {
+    const url = "/api/chat?project_id=" + encodeURIComponent(pid) +
+      "&message=" + encodeURIComponent(msg);
+    const r = await api(url, { method: "POST" });
+    statusRow.textContent = "⏳ fin-rt thinking (task " + r.task_id.slice(0, 8) + "…)";
+    pollChatTask(r.task_id, statusRow);
+  } catch (e) {
+    statusRow.remove();
+    appendChat("error", e.message);
+  }
+}
+async function pollChatTask(taskId, statusRow) {
+  const started = Date.now();
+  const poll = async () => {
+    try {
+      const r = await api("/api/tasks/" + encodeURIComponent(taskId));
+      if (r.status === "completed") {
+        if (statusRow) statusRow.remove();
+        const body = r.reply || (r.signal ? JSON.stringify(r.signal, null, 2) : "(empty reply)");
+        appendChat("assistant", body);
+        return;
+      }
+      if (r.status === "failed") {
+        if (statusRow) statusRow.remove();
+        appendChat("error", r.error || "fleet task failed");
+        return;
+      }
+      // pending — keep polling, but abort after 120s
+      if (Date.now() - started > 120000) {
+        if (statusRow) statusRow.textContent = "⚠ timed out after 2min — check fleet logs";
+        return;
+      }
+      if (statusRow) {
+        const secs = Math.round((Date.now() - started) / 1000);
+        statusRow.textContent = "⏳ fin-rt thinking (" + secs + "s)";
+      }
+      setTimeout(poll, 1500);
+    } catch (e) {
+      if (statusRow) statusRow.remove();
+      appendChat("error", "poll: " + e.message);
+    }
+  };
+  setTimeout(poll, 800);
+}
+
 $("quote-btn").onclick = doQuote;
 $("chart-btn").onclick = loadChart;
 $("analyze-btn").onclick = doAnalyze;
@@ -912,6 +1131,10 @@ $("refresh-projects").onclick = refreshProjects;
 $("refresh-paper").onclick = doPaperRefresh;
 $("reset-paper").onclick = doReset;
 $("place-order").onclick = doPlaceOrder;
+$("refresh-news").onclick = loadNews;
+$("chat-toggle").onclick = () => toggleChat();
+$("chat-close").onclick = () => toggleChat(false);
+$("chat-send").onclick = sendChat;
 $("project-select").onchange = () => { refreshHistory(); refreshPaperAll(); };
 $("symbol-input").addEventListener("keydown", e => {
   if (e.key === "Enter") doQuote();
@@ -919,10 +1142,15 @@ $("symbol-input").addEventListener("keydown", e => {
 $("order-symbol").addEventListener("keydown", e => {
   if (e.key === "Enter") doPlaceOrder();
 });
+$("chat-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
 
 refreshHealth();
 refreshProjects();
+loadNews();
 setInterval(refreshHealth, 15000);
+setInterval(loadNews, 120000);
 </script>
 </body>
 </html>
@@ -1495,6 +1723,21 @@ def create_app(
             "bars": bars,
             "indicators": computed,
         }
+
+    # ── News + Chat (Phase 1 fusion MVP) ─────────────────────────
+    # News proxies Miniflux; chat forwards to fleet fin-rt worker
+    # and reuses the same /api/tasks/{id} polling path.
+    try:
+        from agent.finance.news_hub import build_news_router
+        app.include_router(build_news_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("news router unavailable: %s", exc)
+
+    try:
+        from agent.finance.chat_stream import build_chat_router
+        app.include_router(build_chat_router(fleet))
+    except Exception as exc:  # pragma: no cover
+        logger.warning("chat router unavailable: %s", exc)
 
     @app.post("/api/paper/reset")
     def paper_reset(
