@@ -2219,60 +2219,94 @@ class NeoMindTelegramBot:
                 "neomind", "litellm", updated_by="telegram"
             )
             cid = update.message.chat_id
+            mode = self._store.get_mode(cid)
             new_chain = self._get_provider_chain(thinking=False, chat_id=cid)
-            models = [
-                f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
-                for p in new_chain
-            ]
+            # Render chain without the stale _resolve_litellm_model
+            # indirection — p["model"] is already the real model id
+            # (router primary, router-fallback, or direct-vendor).
+            models = [f"{p['name']}:{p['model']}" for p in new_chain]
 
-            # Resolve alias → actual model name via LiteLLM API
-            chat_alias = config.get('litellm_model', 'local')
-            think_alias = config.get('thinking_model', 'deepseek-reasoner')
-            chat_actual = self._resolve_litellm_model(chat_alias)
-            think_actual = self._resolve_litellm_model(think_alias)
+            # Effective chat model — SAME source as /status: honours
+            # per-chat override. This keeps /provider + /status from
+            # disagreeing about which model this chat will actually
+            # use next.
+            _, _, chat_actual = self._resolve_api(thinking=False, chat_id=cid)
+            _, _, think_actual = self._resolve_api(thinking=True, chat_id=cid)
+            override = self._store.get_model_override(cid)
+            routing = self._routing_for_mode(mode)
+            mode_default = routing.get("primary_model", chat_actual)
 
-            # Identify what the resolved chat_actual model is — if it
-            # looks like a local MLX repo id or legacy alias we label
-            # it as MLX-free; otherwise it's a cloud model routed via
-            # the router (the cost marker would be non-zero, but we
-            # don't have the per-model cost to hand here).
+            # Cost label heuristic: MLX-local repo ids are free, cloud
+            # models go through the router.
             is_local = (
                 chat_actual.startswith("mlx-community/")
-                or chat_actual in ("local", "mlx")
-                or ":" in chat_actual  # legacy ollama-style alias
+                or ":" in chat_actual
             )
-            cost_label = "MLX, 免费" if is_local else "via router"
+            cost_label = "MLX, 免费" if is_local else "cloud via router"
+
+            lines = [
+                "✅ LLM-Router 已启用",
+                f"Chain: {' → '.join(models)}",
+                "",
+                f"本对话 ({mode}): <code>{chat_actual}</code> ({cost_label})",
+            ]
+            if override:
+                lines.append(
+                    f"<i>  ↑ 手动覆盖 · /model reset 恢复到</i> "
+                    f"<code>{mode_default}</code>"
+                )
+            lines.extend([
+                f"Thinking: <code>{think_actual}</code>",
+                "",
+                "<i>此更改已同步到 xbar 菜单栏</i>",
+            ])
             await update.message.reply_text(
-                f"✅ LLM-Router 已启用\n"
-                f"Chain: {' → '.join(models)}\n\n"
-                f"普通对话: {chat_actual} ({cost_label})\n"
-                f"Thinking: {think_actual}\n\n"
-                f"<i>此更改已同步到 xbar 菜单栏</i>",
+                "\n".join(lines),
                 parse_mode=ParseMode.HTML,
             )
             self._publish_mode_models_to_state()  # sync to xbar
             if self._evidence_trail:
-                self._evidence_trail.log("provider", "switch_litellm", f"Switched to LiteLLM: {chat_actual}", mode=self._store.get_mode(update.message.chat_id))
+                self._evidence_trail.log(
+                    "provider", "switch_router",
+                    f"Switched to LLM-Router: {chat_actual}",
+                    mode=mode,
+                )
 
         elif args in ("direct", "off", "disable"):
             config = self._state_mgr.set_provider_mode(
                 "neomind", "direct", updated_by="telegram"
             )
             cid = update.message.chat_id
+            mode = self._store.get_mode(cid)
             new_chain = self._get_provider_chain(thinking=False, chat_id=cid)
-            models = [
-                f"{p['name']}:{self._resolve_litellm_model(p['model']) if p['name'] == 'litellm' else p['model']}"
-                for p in new_chain
+            models = [f"{p['name']}:{p['model']}" for p in new_chain]
+            _, _, chat_actual = self._resolve_api(thinking=False, chat_id=cid)
+            override = self._store.get_model_override(cid)
+            routing = self._routing_for_mode(mode)
+            mode_default = routing.get("primary_model", chat_actual)
+
+            lines = [
+                "✅ 已切换到直连 API",
+                f"Chain: {' → '.join(models)}",
+                "",
+                f"本对话 ({mode}): <code>{chat_actual}</code>",
             ]
+            if override:
+                lines.append(
+                    f"<i>  ↑ 手动覆盖 · /model reset 恢复到</i> "
+                    f"<code>{mode_default}</code>"
+                )
+            lines.extend(["", "<i>此更改已同步到 xbar 菜单栏</i>"])
             await update.message.reply_text(
-                f"✅ 已切换到直连 API\n"
-                f"Chain: {' → '.join(models)}\n\n"
-                f"<i>此更改已同步到 xbar 菜单栏</i>",
+                "\n".join(lines),
                 parse_mode=ParseMode.HTML,
             )
             self._publish_mode_models_to_state()  # sync to xbar
             if self._evidence_trail:
-                self._evidence_trail.log("provider", "switch_direct", f"Switched to direct API", mode=self._store.get_mode(update.message.chat_id))
+                self._evidence_trail.log(
+                    "provider", "switch_direct",
+                    "Switched to direct API", mode=mode,
+                )
 
         else:
             await update.message.reply_text(
