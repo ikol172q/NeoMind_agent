@@ -386,7 +386,9 @@ def test_agents_json(client):
     agent = meta["neomind_fin"]
     assert "name" in agent
     assert "endpoints" in agent
-    assert agent["endpoints"]["query"] == "/openbb/query"
+    # Relative to the agent base URL entered in Workspace (see
+    # openbb_adapter comment) — NOT absolute "/openbb/query".
+    assert agent["endpoints"]["query"] == "/query"
     assert agent["features"]["streaming"] is True
 
 
