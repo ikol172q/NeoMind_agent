@@ -110,6 +110,26 @@ class Mailbox:
         finally:
             self._release_lock()
 
+    def purge_stale_shutdowns(self) -> int:
+        """Drop any unread ``shutdown`` messages left over from a prior
+        process generation. Called by ``FleetLauncher.start()`` so a
+        fresh member never inherits a shutdown signal aimed at a
+        previous (now-dead) member. Returns number of messages purged.
+        """
+        self._acquire_lock()
+        try:
+            messages = self._load_messages()
+            cleaned = [
+                m for m in messages
+                if not (m.get("type") == "shutdown" and not m.get("read", False))
+            ]
+            purged = len(messages) - len(cleaned)
+            if purged > 0:
+                self._save_messages(cleaned)
+            return purged
+        finally:
+            self._release_lock()
+
     def _load_messages(self) -> List[Dict]:
         if self._inbox_file.exists():
             try:

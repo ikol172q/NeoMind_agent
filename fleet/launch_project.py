@@ -129,6 +129,19 @@ class FleetLauncher:
             self._mailboxes[m.name] = Mailbox(
                 self.config.project_id, m.name, base_dir=self._base_dir
             )
+            # Defensive: a previous dashboard process may have written
+            # "shutdown" messages to disk during its graceful exit but
+            # died before its members consumed them. Those leftovers
+            # would make this fresh generation of members exit
+            # instantly on their first mailbox poll. Purge them now so
+            # start() always begins with a clean slate.
+            purged = self._mailboxes[m.name].purge_stale_shutdowns()
+            if purged:
+                logger.info(
+                    "FleetLauncher.start: purged %d stale shutdown msg(s) "
+                    "from %s inbox",
+                    purged, m.name,
+                )
 
         # Set up supervisor for leader
         self._supervisor = ChatSupervisor(
