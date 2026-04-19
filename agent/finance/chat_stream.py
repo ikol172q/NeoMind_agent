@@ -115,13 +115,26 @@ def build_chat_prompt(message: str, project_id: str) -> str:
     """Wrap the raw user message with a small context preamble so the
     fin persona knows the project scope. Kept short so it doesn't
     dominate the prompt.
+
+    IMPORTANT: fleet fin-rt worker (`fleet/worker_turn.py:_execute_fin`)
+    is a ONE-SHOT LLM call with no tool executor. If we don't tell the
+    model to skip tool calls, it emits raw ``<tool_call>WebSearch...</tool_call>``
+    XML and that XML leaks straight into the UI as the "reply". Until
+    the fleet worker gains real tool execution, this chat mode must be
+    tool-free.
     """
     return (
         f"[fin-dashboard chat · project={project_id}]\n"
-        f"The user is asking a free-form question in the fin dashboard. "
-        f"Respond in the user's language, be concrete, and if they ask "
-        f"for a signal return JSON matching AgentAnalysis; otherwise a "
-        f"short paragraph is fine.\n\n"
+        f"You are chatting with the user in a lightweight dashboard "
+        f"panel. You do NOT have tool access in this mode — do not "
+        f"emit <tool_call> blocks, do not say 'let me search', do not "
+        f"promise to fetch data. Answer from your own knowledge in the "
+        f"user's language, be concrete, and if you genuinely cannot "
+        f"answer without fresh data, say so briefly and suggest what "
+        f"panel of the dashboard to use instead (e.g. the Quote or "
+        f"Chart section). If the user explicitly asks for a trade "
+        f"signal, return JSON matching AgentAnalysis (signal, "
+        f"confidence, reason, risk_level).\n\n"
         f"User: {message}"
     )
 
