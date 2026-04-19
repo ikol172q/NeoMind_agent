@@ -745,18 +745,27 @@ class NeoMindTelegramBot:
             fallbacks = ", ".join(f"{p['name']}:{p['model']}" for p in chain[1:])
             lines.append(f"🔗 备选: {fallbacks}")
 
-        # Provider wiring — prefer the LLM Router display when it's
-        # actually in use, otherwise fall back to litellm/direct status.
+        # Provider wiring — show the LLM-Router endpoint + its health
+        # status. The "litellm" state key is preserved for back-compat
+        # with older state files, but the user-visible label is "Router".
         router_base, router_key = self._router_env()
         if primary == "router" and router_base and router_key:
             lines.append(f"🔌 Router: 🟢 <code>{router_base}</code>")
         else:
             state = self._state_mgr._read_state()
-            litellm_info = state.get("litellm", {})
+            # State key is still "litellm" (back-compat); display says Router.
+            router_info = state.get("router") or state.get("litellm", {})
             config = self._state_mgr.get_bot_config("neomind")
             provider_mode = config.get("provider_mode", "direct")
-            health = "🟢" if litellm_info.get("health_ok") else "🔴"
-            lines.append(f"🔌 Provider: <b>{provider_mode}</b> | LiteLLM: {health}")
+            # Normalize legacy mode names in display
+            display_mode = {
+                "litellm": "router",
+                "ollama": "router",
+            }.get(provider_mode, provider_mode)
+            health = "🟢" if router_info.get("health_ok") else "🔴"
+            lines.append(
+                f"🔌 Provider: <b>{display_mode}</b> | LLM-Router: {health}"
+            )
 
         # ── Search ──
         search = self.components.get("search")
@@ -785,7 +794,8 @@ class NeoMindTelegramBot:
             lines.append(f"🤝 OpenClaw: @{self.config.openclaw_username}")
 
         lines.append(
-            f"\n<code>/provider litellm</code> | <code>direct</code> — 切换路由"
+            f"\n<code>/provider router</code> | <code>direct</code> — 切换路由"
+            f"\n<i>(legacy: /provider litellm/ollama 仍接受为 router 的别名)</i>"
         )
 
         await update.message.reply_text(
@@ -2135,8 +2145,11 @@ class NeoMindTelegramBot:
         """Handle /provider — show or switch LLM provider.
 
         /provider          — show current provider chain (reads from state file)
-        /provider litellm  — switch to LiteLLM (writes to state file)
-        /provider direct   — switch to direct API (writes to state file)
+        /provider router   — route all traffic through the LLM-Router
+                             (Desktop/LLM-Router, port 8000, fans out to
+                             MLX + DeepSeek + ZAI + Moonshot)
+        /provider direct   — bypass router, call vendor APIs directly
+        Legacy aliases accepted: litellm, local, mlx, ollama → router
 
         State file is shared with xbar — changes here are visible on macOS menu bar.
         """
@@ -2228,7 +2241,7 @@ class NeoMindTelegramBot:
 
         else:
             await update.message.reply_text(
-                "用法: <code>/provider litellm</code> | <code>/provider direct</code>",
+                "用法: <code>/provider router</code> | <code>/provider direct</code>",
                 parse_mode=ParseMode.HTML,
             )
 
@@ -3576,15 +3589,25 @@ class NeoMindTelegramBot:
                 '- 查新闻: <tool_call>{"tool": "WebSearch", "params": {"query": "Apple M4 Ultra latest news 2026"}}</tool_call>\n'
                 '- 查价格: <tool_call>{"tool": "WebSearch", "params": {"query": "Bitcoin price today"}}</tool_call>\n'
                 '- 查事件: <tool_call>{"tool": "WebSearch", "params": {"query": "OpenAI GPT-5 release date"}}</tool_call>\n\n'
-                "重要规则：\n"
-                "- 当用户要求查找实时信息、最新新闻、当前价格等，如果上下文中没有 [Web Search Results]，"
-                "你必须立刻在回复中输出 <tool_call> 标签来搜索。绝对不要只说\"让我搜索一下\"而不输出 <tool_call> 标签\n"
+                "**默认不搜索**。只在以下情况触发 WebSearch：\n"
+                "  a. 用户明确要求查找实时信息、最新新闻、当前价格\n"
+                "  b. 用户问的事实明显超出你训练数据的时间范围（2026 后的事件、当天的数据）\n"
+                "  c. 上下文中明显缺少关键信息、必须上网才能回答准确\n\n"
+                "**严禁搜索的情况**（直接用你已有知识回答）：\n"
+                "  ✗ 关于你自己的元问题（\"你是谁\"、\"你用什么模型\"、\"你能做什么\"、\"你是不是 GPT\"）\n"
+                "  ✗ 问候、寒暄、情感表达、确认类（\"好的\"、\"谢谢\"、\"明白了\"）\n"
+                "  ✗ 概念解释、定义、基础教学（\"什么是 ETF\"、\"Python 装饰器是什么\"）\n"
+                "  ✗ 数学题、逻辑题、翻译、写作、代码生成\n"
+                "  ✗ 用户已经在上下文里给了你答案的问题\n\n"
+                "  如果你不确定要不要搜，**就不搜** — 先直接用你的知识回答，用户觉得不够再明说。\n\n"
+                "搜索时必须遵守：\n"
+                "- 输出格式（严格）：\n"
+                '  <tool_call>{\"tool\": \"WebSearch\", \"params\": {\"query\": \"关键词\"}}</tool_call>\n'
                 "- 搜索关键词必须具体明确！包含品牌名、产品类别、年份等上下文。"
                 "错误示范: 'M4 Ultra'（太模糊）。正确示范: 'Apple M4 Ultra 芯片 发布日期 2026'\n"
-                "- 搜索最多 1-2 次。如果第一次搜索结果不相关，直接用你的知识回答，不要反复搜索\n"
-                "- 如果上下文中有 [Web Search Results]，优先使用搜索结果中的数据，而非训练数据\n"
+                "- 同一问题最多搜 1 次。若结果不相关，用已有知识回答并坦诚说\"最新数据没搜到，以下基于我的训练知识\"\n"
+                "- 上下文中已有 [Web Search Results] 时优先引用搜索结果\n"
                 "- 引用具体事实时标注来源（如 \"据 Reuters 报道\"）\n"
-                "- 如果搜索结果与你的知识冲突，以搜索结果为准并说明差异\n"
                 "- 绝不编造数据、价格、日期、百分比等数值信息\n"
             )
 
