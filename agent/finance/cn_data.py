@@ -72,6 +72,10 @@ _RATE_LIMIT_SEC = 1.0
 _rate_lock = threading.Lock()
 _last_call_ts: float = 0.0
 
+# Max retries per AkShare call after transient network errors.
+# Tests monkeypatch this to 0 for speed.
+_DEFAULT_RETRIES: int = 2
+
 
 class UpstreamError(RuntimeError):
     """Fail-closed marker: upstream returned nothing usable. The
@@ -136,35 +140,57 @@ def _throttled_call(
     cache_key: str,
     ttl: float,
     fn: Callable[[], Dict[str, Any]],
+    retries: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Single entry point for every AkShare call.
 
     Order: cache hit → return early · else acquire lock · wait for
-    rate-limit floor · call fn · cache · return. On fn error, do
-    NOT return stale cache — raise UpstreamError so the caller can
-    surface it.
+    rate-limit floor · call fn (with retry + backoff for transient
+    network errors) · cache · return. On fn error, do NOT return
+    stale cache — raise UpstreamError so the caller can surface it.
+
+    retries: how many extra attempts AFTER the first try, with
+    exponential backoff (2s, 4s, ...). Default 2 → up to 3 total
+    attempts. Set to 0 in tests for speed.
     """
     cached = _cache_get(cache_key)
     if cached is not None:
         return cached
 
+    if retries is None:
+        retries = _DEFAULT_RETRIES
+
     global _last_call_ts
     with _rate_lock:
-        now = time.time()
-        wait = _RATE_LIMIT_SEC - (now - _last_call_ts)
-        if wait > 0:
-            time.sleep(wait)
-        try:
-            out = fn()
-        except Exception as exc:
-            _last_call_ts = time.time()
-            raise UpstreamError(str(exc)) from exc
-        _last_call_ts = time.time()
+        last_exc: Optional[BaseException] = None
+        for attempt in range(retries + 1):
+            if attempt > 0:
+                time.sleep(2.0 * attempt)  # 2s, 4s, 6s backoff
+            now = time.time()
+            wait = _RATE_LIMIT_SEC - (now - _last_call_ts)
+            if wait > 0:
+                time.sleep(wait)
+            try:
+                out = fn()
+                _last_call_ts = time.time()
+                if not isinstance(out, dict):
+                    raise UpstreamError(
+                        f"unexpected fn return type: {type(out)}"
+                    )
+                _cache_put(cache_key, out, ttl)
+                return out
+            except UpstreamError:
+                # Parse-time errors are deterministic; retry won't help.
+                raise
+            except Exception as exc:
+                _last_call_ts = time.time()
+                last_exc = exc
+                logger.warning(
+                    "cn_data attempt %d/%d failed for %s: %s",
+                    attempt + 1, retries + 1, cache_key, exc,
+                )
 
-    if not isinstance(out, dict):
-        raise UpstreamError(f"unexpected fn return type: {type(out)}")
-    _cache_put(cache_key, out, ttl)
-    return out
+    raise UpstreamError(str(last_exc)) from last_exc
 
 
 # ── Quote ──────────────────────────────────────────────────────────
@@ -238,6 +264,187 @@ def get_cn_quote(code: str, _ak_call: Optional[Callable] = None) -> Dict[str, An
     )
 
 
+# ── History (K-line) ──────────────────────────────────────────────
+
+
+def _parse_hist_em(df: Any, code: str) -> Dict[str, Any]:
+    """Parse ``ak.stock_zh_a_hist`` (Eastmoney) OHLCV DataFrame into
+    NeoMind's bars format (compatible with the existing /api/chart
+    shape so the same UI can render it)."""
+    bars = []
+    for _, row in df.iterrows():
+        d = str(row["日期"])
+        bars.append({
+            "date": d + "T00:00:00",
+            "open": _float_or_none(row["开盘"]),
+            "high": _float_or_none(row["最高"]),
+            "low": _float_or_none(row["最低"]),
+            "close": _float_or_none(row["收盘"]),
+            "volume": int(_float_or_none(row["成交量"]) or 0),
+            "turnover": _float_or_none(row["成交额"]),
+            "change_pct": _float_or_none(row["涨跌幅"]),
+            "turnover_rate_pct": _float_or_none(row["换手率"]),
+        })
+    if not bars:
+        raise UpstreamError(f"no hist rows for {code!r}")
+    return {
+        "symbol": code,
+        "market": "cn",
+        "currency": "CNY",
+        "bars": bars,
+        "source": "akshare/stock_zh_a_hist",
+        "fetched_at": time.time(),
+    }
+
+
+def _parse_hist_sina(df: Any, code: str) -> Dict[str, Any]:
+    """Parse ``ak.stock_zh_a_daily`` (Sina) OHLCV.
+    Columns: date / open / high / low / close / volume / amount /
+    outstanding_share / turnover (fraction, 0.0077 = 0.77%).
+    Sina's ``volume`` is already in shares (not lots)."""
+    bars = []
+    for _, row in df.iterrows():
+        d = str(row["date"])[:10]
+        turnover_frac = _float_or_none(row.get("turnover"))
+        bars.append({
+            "date": d + "T00:00:00",
+            "open": _float_or_none(row["open"]),
+            "high": _float_or_none(row["high"]),
+            "low": _float_or_none(row["low"]),
+            "close": _float_or_none(row["close"]),
+            "volume": int(_float_or_none(row["volume"]) or 0),
+            "turnover": _float_or_none(row.get("amount")),
+            "turnover_rate_pct": (turnover_frac * 100) if turnover_frac is not None else None,
+        })
+    if not bars:
+        raise UpstreamError(f"no hist rows for {code!r}")
+    return {
+        "symbol": code,
+        "market": "cn",
+        "currency": "CNY",
+        "bars": bars,
+        "source": "akshare/stock_zh_a_daily_sina",
+        "fetched_at": time.time(),
+    }
+
+
+def _sina_prefix(code: str) -> str:
+    """Prefix A-share code for Sina endpoint: sh/sz/bj."""
+    if code.startswith(("6", "9")):
+        return f"sh{code}"
+    if code.startswith(("0", "3")):
+        return f"sz{code}"
+    if code.startswith(("4", "8")):
+        return f"bj{code}"
+    return f"sh{code}"  # default sensible
+
+
+def get_cn_history(
+    code: str,
+    days: int = 90,
+    adjust: str = "qfq",
+    _ak_call: Optional[Callable] = None,
+) -> Dict[str, Any]:
+    """Daily K-line for the last ``days`` calendar days. ``adjust``:
+    ``qfq`` forward-adjusted (default, best for technical analysis),
+    ``hfq`` backward, ``""`` raw.
+    """
+    import datetime as dt
+    code = str(code).strip()
+    if not _A_SHARE_RE.match(code):
+        raise ValueError(f"A-share code must be 6 digits, got {code!r}")
+    if adjust not in ("qfq", "hfq", ""):
+        raise ValueError(f"adjust must be qfq|hfq|'' got {adjust!r}")
+    days = max(1, min(int(days), 3650))
+
+    end = dt.date.today().strftime("%Y%m%d")
+    start = (dt.date.today() - dt.timedelta(days=days)).strftime("%Y%m%d")
+
+    def _real_call():
+        if _ak_call is not None:
+            df = _ak_call(code, start, end, adjust)
+            return _parse_hist_em(df, code)
+        import akshare as ak
+        # Try Sina first (more reliable; Eastmoney often rate-limits
+        # the K-line endpoint). Fall back to Eastmoney if Sina errors.
+        try:
+            df = ak.stock_zh_a_daily(
+                symbol=_sina_prefix(code),
+                start_date=start, end_date=end, adjust=adjust,
+            )
+            return _parse_hist_sina(df, code)
+        except Exception as exc_sina:
+            logger.warning(
+                "Sina hist failed for %s (%s); trying Eastmoney",
+                code, exc_sina,
+            )
+            df = ak.stock_zh_a_hist(
+                symbol=code, period="daily",
+                start_date=start, end_date=end, adjust=adjust,
+            )
+            return _parse_hist_em(df, code)
+
+    return _throttled_call(
+        cache_key=f"hist:{code}:{days}:{adjust}",
+        ttl=_TTL_QUOTE,  # daily bars update EOD, short TTL fine
+        fn=_real_call,
+    )
+
+
+# ── Fundamentals (basic info) ──────────────────────────────────────
+
+
+def _parse_info_em(df: Any, code: str) -> Dict[str, Any]:
+    """Parse ``ak.stock_individual_info_em`` into a flat dict.
+    Returned fields: 股票简称, 总市值, 流通市值, 总股本, 流通股,
+    行业, 上市时间. No PE/PB — use a separate endpoint for those."""
+    rows = {str(r["item"]): r["value"] for _, r in df.iterrows()}
+    name = str(rows.get("股票简称") or "").strip()
+    if not name:
+        raise UpstreamError(f"no 股票简称 for {code!r}")
+
+    def _int_or_none(v):
+        try:
+            return int(float(v))
+        except Exception:
+            return None
+
+    return {
+        "symbol": code,
+        "name": name,
+        "industry": str(rows.get("行业") or "").strip() or None,
+        "listed_date": str(rows.get("上市时间") or "").strip() or None,
+        "total_shares": _int_or_none(rows.get("总股本")),
+        "float_shares": _int_or_none(rows.get("流通股")),
+        "market_cap": _float_or_none(rows.get("总市值")),
+        "float_market_cap": _float_or_none(rows.get("流通市值")),
+        "last_price": _float_or_none(rows.get("最新")),
+        "source": "akshare/stock_individual_info_em",
+        "fetched_at": time.time(),
+    }
+
+
+def get_cn_info(code: str, _ak_call: Optional[Callable] = None) -> Dict[str, Any]:
+    """Basic fundamentals (市值 / 流通 / 行业 / 上市) for an A-share."""
+    code = str(code).strip()
+    if not _A_SHARE_RE.match(code):
+        raise ValueError(f"A-share code must be 6 digits, got {code!r}")
+
+    def _real_call():
+        if _ak_call is not None:
+            df = _ak_call(code)
+        else:
+            import akshare as ak
+            df = ak.stock_individual_info_em(symbol=code)
+        return _parse_info_em(df, code)
+
+    return _throttled_call(
+        cache_key=f"info:{code}",
+        ttl=3600,  # basic info rarely changes intraday
+        fn=_real_call,
+    )
+
+
 # ── Router ─────────────────────────────────────────────────────────
 
 
@@ -266,6 +473,30 @@ def build_cn_router(ak_call: Optional[Callable] = None) -> APIRouter:
             logger.exception("cn_quote unexpected error")
             raise HTTPException(500, f"internal error: {exc}")
         return JSONResponse(content=q)
+
+    @router.get("/api/cn/history/{code}")
+    def cn_history(
+        code: str,
+        days: int = 90,
+        adjust: str = "qfq",
+    ) -> JSONResponse:
+        try:
+            h = get_cn_history(code, days=days, adjust=adjust)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except UpstreamError as exc:
+            raise HTTPException(502, f"hist upstream failed: {exc}")
+        return JSONResponse(content=h)
+
+    @router.get("/api/cn/info/{code}")
+    def cn_info(code: str) -> JSONResponse:
+        try:
+            i = get_cn_info(code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except UpstreamError as exc:
+            raise HTTPException(502, f"info upstream failed: {exc}")
+        return JSONResponse(content=i)
 
     @router.get("/api/cn/cache/status")
     def cache_status() -> JSONResponse:

@@ -133,6 +133,45 @@ def _widgets_catalog() -> Dict[str, Any]:
                 },
             ],
         },
+        "neomind_cn_chart": {
+            "name": "NeoMind A股 K线",
+            "description": (
+                "A-share daily K-line (candlestick) with SMA20/EMA20/"
+                "RSI overlays, fetched from Eastmoney via AkShare. "
+                "Adjust: qfq (default) = 前复权, hfq = 后复权."
+            ),
+            "category": "NeoMind",
+            "subcategory": "A股",
+            "type": "chart",
+            "endpoint": "cn_chart",
+            "gridData": {"w": 30, "h": 12},
+            "raw": True,
+            "source": "AkShare / 东方财富",
+            "params": [
+                {"paramName": "code", "value": "600519", "label": "A股 代码",
+                 "type": "text", "description": "6 位代码"},
+                {"paramName": "days", "value": "180", "label": "Days",
+                 "type": "number",
+                 "description": "Calendar days back (≈ bars). 30~730 typical."},
+            ],
+        },
+        "neomind_cn_info": {
+            "name": "NeoMind A股 基本面",
+            "description": (
+                "A股 basic fundamentals: 股票简称 / 行业 / 总市值 / "
+                "流通市值 / 总股本 / 流通股 / 上市时间."
+            ),
+            "category": "NeoMind",
+            "subcategory": "A股",
+            "type": "metric",
+            "endpoint": "cn_info",
+            "gridData": {"w": 20, "h": 5},
+            "source": "AkShare / 东方财富",
+            "params": [
+                {"paramName": "code", "value": "600519", "label": "A股 代码",
+                 "type": "text", "description": "6 位代码"},
+            ],
+        },
         "neomind_chart": {
             "name": "NeoMind Chart + Indicators",
             "description": (
@@ -487,6 +526,67 @@ def build_data_router(
     @router.get("/apps.json")
     def apps() -> JSONResponse:
         return JSONResponse(content=_apps_catalog())
+
+    # ── Chart: CN A-share K-line ──
+    @router.get("/cn_chart")
+    def cn_chart(
+        code: str = Query("600519"),
+        days: int = Query(180, ge=7, le=1825),
+        adjust: str = Query("qfq"),
+    ) -> JSONResponse:
+        from agent.finance import cn_data
+        try:
+            h = cn_data.get_cn_history(code, days=days, adjust=adjust)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except cn_data.UpstreamError as exc:
+            return JSONResponse(content=_reshape_bars_to_plotly(
+                code, [], {}
+            ))
+        bars = h.get("bars") or []
+        closes = [b["close"] for b in bars]
+        indicators: Dict[str, Any] = {
+            "sma20": ti.sma(closes, 20),
+            "ema20": ti.ema(closes, 20),
+            "rsi": ti.rsi(closes, 14),
+        }
+        up, mid, lo = ti.bollinger_bands(closes, 20, 2.0)
+        indicators["bb"] = {"upper": up, "middle": mid, "lower": lo}
+        return JSONResponse(
+            content=_reshape_bars_to_plotly(code, bars, indicators)
+        )
+
+    # ── Metric: CN A-share info (fundamentals) ──
+    @router.get("/cn_info")
+    def cn_info(code: str = Query("600519")) -> JSONResponse:
+        from agent.finance import cn_data
+        try:
+            i = cn_data.get_cn_info(code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except cn_data.UpstreamError as exc:
+            return JSONResponse(content=[{
+                "label": "Status",
+                "value": f"upstream error: {str(exc)[:100]}",
+            }])
+        def _fmt_cap(v):
+            if v is None: return "—"
+            if v >= 1e12: return f"¥{v/1e12:.2f} 万亿"
+            if v >= 1e8: return f"¥{v/1e8:.1f} 亿"
+            return f"¥{v:,.0f}"
+        return JSONResponse(content=[
+            {"label": "简称", "value": i.get("name") or code},
+            {"label": "行业", "value": i.get("industry") or "—"},
+            {"label": "总市值", "value": _fmt_cap(i.get("market_cap"))},
+            {"label": "流通市值", "value": _fmt_cap(i.get("float_market_cap"))},
+            {"label": "总股本", "value": (
+                f"{i['total_shares']:,}" if i.get("total_shares") else "—"
+            )},
+            {"label": "流通股", "value": (
+                f"{i['float_shares']:,}" if i.get("float_shares") else "—"
+            )},
+            {"label": "上市", "value": i.get("listed_date") or "—"},
+        ])
 
     # ── Metric: CN A-share quote ──
     @router.get("/cn_quote")
