@@ -633,6 +633,12 @@ def build_agent_router(fleet: Any) -> APIRouter:
 
     @router.get("/agents.json")
     def agents_meta() -> JSONResponse:
+        # Schema mirrors the canonical vanilla agent examples at
+        # copilot-for-openbb/30-vanilla-agent-raw-widget-data/...
+        # Workspace does strict validation; "image" must be a real
+        # URL if present — omit entirely rather than pass an empty
+        # string (discovered 2026-04-19 via
+        # "Invalid agents schema from the server" error).
         return JSONResponse(content={
             "neomind_fin": {
                 "name": "NeoMind Fin Persona",
@@ -641,7 +647,6 @@ def build_agent_router(fleet: Any) -> APIRouter:
                     "aware, Investment-root data firewall. Responds in "
                     "the user's language."
                 ),
-                "image": "",
                 "endpoints": {"query": "/openbb/query"},
                 "features": {
                     "streaming": True,
