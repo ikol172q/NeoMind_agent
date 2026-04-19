@@ -670,14 +670,93 @@ def _build_builtin_commands() -> List[Command]:
         )
 
     def _cmd_model(args: str, agent=None, **kw) -> CommandResult:
-        """Switch or show current model."""
-        if not args.strip():
-            model = agent.model if agent else "unknown"
-            return CommandResult(text=f"Current model: {model}")
-        new_model = args.strip()
-        if agent:
-            agent.model = new_model
-        return CommandResult(text=f"Model switched to: {new_model}")
+        """Switch or show current model. With no args, lists available
+        models — pulled live from the LLM-Router (/v1/models) when
+        healthy, or expanded across direct-vendor fallbacks when not.
+        """
+        if args.strip():
+            new_model = args.strip()
+            if agent:
+                agent.model = new_model
+            return CommandResult(text=f"Model switched to: {new_model}")
+
+        current = agent.model if agent else "unknown"
+
+        try:
+            from agent.services.llm_provider import PROVIDERS, check_primary_healthy
+        except Exception:
+            return CommandResult(text=f"Current model: {current}")
+
+        import os as _os
+        try:
+            import requests as _rq  # type: ignore
+        except Exception:
+            _rq = None  # type: ignore
+
+        def _live_models(pconf):
+            static = pconf.get("fallback_models", [])
+            url = pconf.get("models_url")
+            if not url or _rq is None:
+                return static
+            try:
+                ek = pconf.get("env_key", "")
+                hdrs = {}
+                if ek:
+                    tok = _os.getenv(ek, "")
+                    if tok:
+                        hdrs["Authorization"] = f"Bearer {tok}"
+                r = _rq.get(url, headers=hdrs, timeout=3)
+                if r.ok:
+                    d = r.json()
+                    live = d.get("data") if isinstance(d, dict) else d
+                    if live:
+                        return live
+            except Exception:
+                pass
+            return static
+
+        primary_ok = check_primary_healthy(timeout=2.0)
+        lines = [f"Current model: {current}", ""]
+
+        if primary_ok:
+            for pname, pconf in PROVIDERS.items():
+                if pconf.get("role") != "primary":
+                    continue
+                api_key = _os.getenv(pconf.get("env_key", ""), "")
+                if not api_key and pconf.get("env_key"):
+                    continue
+                models = _live_models(pconf)
+                if not models:
+                    continue
+                lines.append("router (all traffic proxied here):")
+                for m in models:
+                    mid = m["id"]
+                    owned = m.get("owned_by", "")
+                    tail = "  ← current" if mid == current else ""
+                    lines.append(f"  {mid}  ({owned}){tail}")
+            lines.append(
+                "\nCloud + local MLX all go through LLM-Router. "
+                "Direct vendor fallback kicks in if router 5xx."
+            )
+        else:
+            lines.append("⚠ LLM-Router unreachable — direct vendor fallbacks:")
+            for pname, pconf in PROVIDERS.items():
+                if pconf.get("role") == "primary":
+                    continue
+                api_key = _os.getenv(pconf.get("env_key", ""), "")
+                if not api_key:
+                    continue
+                models = _live_models(pconf)
+                if not models:
+                    continue
+                lines.append(f"\n{pname} (direct):")
+                for m in models:
+                    mid = m["id"]
+                    tail = "  ← current" if mid == current else ""
+                    lines.append(f"  {mid}{tail}")
+
+        lines.append("\nSwitch: /model <id>")
+        return CommandResult(text="\n".join(lines))
 
     def _cmd_think(args: str, agent=None, **kw) -> CommandResult:
         """Toggle or set thinking mode. /think [on|off]"""

@@ -138,21 +138,60 @@ _TOKENSIGHT_ROUTES = {
 }
 
 # ── Provider registry ────────────────────────────────────────────
+# Resolve the local LLM router base URL from env. Preferred env var is
+# LLM_ROUTER_BASE_URL (what the rest of NeoMind uses); LITELLM_BASE_URL
+# is kept as a legacy fallback. Default is port 8000 — matches the
+# user's Desktop/LLM-Router. The old port 4000 (~/.llm-gateway, litellm
+# proxy) was decommissioned in 2026-04 when the setup moved to the
+# custom router + local MLX backend.
+_ROUTER_BASE = (
+    os.getenv("LLM_ROUTER_BASE_URL")
+    or os.getenv("LITELLM_BASE_URL")
+    or "http://localhost:8000/v1"
+).rstrip("/")
+
 PROVIDERS: Dict[str, Dict[str, Any]] = {
+    # "litellm" is a historical name — this entry actually proxies to
+    # the LLM-Router at Desktop/LLM-Router/ (port 8000), which in turn
+    # fans out to DeepSeek/ZAI/Moonshot cloud + local MLX (:8100).
+    # The name is preserved so existing chat-history / user preferences
+    # keyed by provider="litellm" keep working.
+    #
+    # Role: "primary" — this is the ONLY provider the user-facing model
+    # list (Telegram /model, CLI /model) should show when it's healthy.
+    # The vendor providers below (deepseek/zai/moonshot) are
+    # "fallback" role — they stay configured so HTTP calls still work
+    # if the router crashes, but they are HIDDEN from the /model UI
+    # while the router is up to avoid duplicate entries.
     "litellm": {
-        "base_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1/chat/completions"),
-        "models_url": os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1") + "/models",
-        "env_key": "LITELLM_API_KEY",
-        "model_prefixes": ["local", "qwen"],
+        "role": "primary",
+        "base_url": f"{_ROUTER_BASE}/chat/completions",
+        "models_url": f"{_ROUTER_BASE}/models",
+        "env_key": "LLM_ROUTER_API_KEY",
+        "model_prefixes": ["mlx-community/", "local"],
         "fallback_models": [
-            {"id": "local", "owned_by": "ollama/qwen3"},
-            {"id": "deepseek-chat", "owned_by": "deepseek-via-litellm"},
-            {"id": "deepseek-reasoner", "owned_by": "deepseek-via-litellm"},
-            {"id": "qwen3.5", "owned_by": "ollama/qwen"},
-            {"id": "qwen-plus", "owned_by": "ollama/qwen"},
+            # Local MLX (replaces Ollama) — Qwen3-30B-A3B MoE trio
+            {"id": "mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit",
+             "owned_by": "mlx-local"},
+            {"id": "mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit",
+             "owned_by": "mlx-local"},
+            {"id": "mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit",
+             "owned_by": "mlx-local"},
+            # Cloud via router
+            {"id": "deepseek-chat",     "owned_by": "deepseek-via-router"},
+            {"id": "deepseek-reasoner", "owned_by": "deepseek-via-router"},
+            {"id": "glm-5",             "owned_by": "zai-via-router"},
+            {"id": "glm-4.7",           "owned_by": "zai-via-router"},
+            {"id": "glm-4.7-flash",     "owned_by": "zai-via-router"},
+            {"id": "glm-4.7-flashx",    "owned_by": "zai-via-router"},
+            {"id": "kimi-k2.5",         "owned_by": "moonshot-via-router"},
         ],
     },
+    # Direct vendor providers — role: "fallback". Only surface in the
+    # /model UI when the primary (router) is unhealthy. Still used at
+    # HTTP-call time for resilience when the router is down.
     "deepseek": {
+        "role": "fallback",
         "base_url": "https://api.deepseek.com/chat/completions",
         "models_url": "https://api.deepseek.com/models",
         "env_key": "DEEPSEEK_API_KEY",
@@ -164,6 +203,7 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "zai": {
+        "role": "fallback",
         "base_url": "https://api.z.ai/api/paas/v4/chat/completions",
         "models_url": "https://api.z.ai/api/paas/v4/models",
         "env_key": "ZAI_API_KEY",
@@ -177,6 +217,7 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         ],
     },
     "moonshot": {
+        "role": "fallback",
         "base_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/chat/completions",
         "models_url": os.getenv("MOONSHOT_BASE_URL", "https://api.moonshot.ai/v1") + "/models",
         "env_key": "MOONSHOT_API_KEY",
@@ -187,6 +228,38 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         ],
     },
 }
+
+
+def check_primary_healthy(timeout: float = 2.0) -> bool:
+    """Return True if any primary-role provider responds to /v1/models
+    within ``timeout`` seconds. Used by UI code (Telegram /model, CLI
+    /model) to decide whether to show only primary's live list or to
+    expand the full chain including fallbacks.
+
+    HTTP failure, timeout, and missing ``requests`` module all yield
+    False — UI then falls through to the expanded-with-fallbacks view.
+    """
+    if requests is None:
+        return False
+    for pname, pconf in PROVIDERS.items():
+        if pconf.get("role") != "primary":
+            continue
+        models_url = pconf.get("models_url")
+        if not models_url:
+            continue
+        env_key = pconf.get("env_key", "")
+        headers = {}
+        if env_key:
+            api_key = os.getenv(env_key, "")
+            if api_key:
+                headers["Authorization"] = f"Bearer {api_key}"
+        try:
+            r = requests.get(models_url, headers=headers, timeout=timeout)
+            if r.ok:
+                return True
+        except Exception:
+            continue
+    return False
 
 
 def get_model_spec(model: str) -> Dict[str, int]:
