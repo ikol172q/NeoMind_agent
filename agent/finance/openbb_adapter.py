@@ -231,51 +231,66 @@ def _widgets_catalog() -> Dict[str, Any]:
     }
 
 
-def _apps_catalog() -> Dict[str, Any]:
-    """Optional: preset dashboard layouts. Keep minimal for v1."""
-    return {
-        "neomind_research": {
+def _apps_catalog() -> List[Dict[str, Any]]:
+    """Optional: preset dashboard layouts.
+
+    NOTE: OpenBB Workspace expects apps.json to be a JSON ARRAY, not
+    a dict keyed by app-id (unlike widgets.json which IS keyed).
+    Discovered 2026-04-19 via Workspace validation error
+    ``Unknown App: [name]: Required, [tabs]: Required`` — the key
+    strings were being iterated as "apps". Schema source of truth:
+    backends-for-openbb/getting-started/hello-world/apps.json.
+    """
+    return [
+        {
             "name": "NeoMind · Research",
+            "img": "",
+            "img_dark": "",
+            "img_light": "",
             "description": "Quote + chart + news + analysis history.",
-            "img": "",
-            "img_dark": "",
-            "img_light": "",
             "allowCustomization": True,
             "tabs": {
                 "main": {
                     "id": "main",
                     "name": "Main",
                     "layout": [
-                        {"i": "neomind_quote",   "x": 0,  "y": 0, "w": 15, "h": 5},
-                        {"i": "neomind_news",    "x": 15, "y": 0, "w": 25, "h": 15},
-                        {"i": "neomind_chart",   "x": 0,  "y": 5, "w": 40, "h": 12},
-                        {"i": "neomind_history", "x": 0,  "y": 17, "w": 40, "h": 15},
+                        {"i": "neomind_quote",
+                         "x": 0, "y": 0, "w": 15, "h": 5, "groups": []},
+                        {"i": "neomind_news",
+                         "x": 15, "y": 0, "w": 25, "h": 15, "groups": []},
+                        {"i": "neomind_chart",
+                         "x": 0, "y": 5, "w": 40, "h": 12, "groups": []},
+                        {"i": "neomind_history",
+                         "x": 0, "y": 17, "w": 40, "h": 15, "groups": []},
                     ],
                 },
             },
             "groups": [],
         },
-        "neomind_paper_trading": {
+        {
             "name": "NeoMind · Paper Trading",
-            "description": "Account + positions + trades.",
             "img": "",
             "img_dark": "",
             "img_light": "",
+            "description": "Account + positions + trades.",
             "allowCustomization": True,
             "tabs": {
                 "main": {
                     "id": "main",
                     "name": "Main",
                     "layout": [
-                        {"i": "neomind_paper_account",   "x": 0, "y": 0,  "w": 40, "h": 5},
-                        {"i": "neomind_paper_positions", "x": 0, "y": 5,  "w": 40, "h": 10},
-                        {"i": "neomind_paper_trades",    "x": 0, "y": 15, "w": 40, "h": 12},
+                        {"i": "neomind_paper_account",
+                         "x": 0, "y": 0, "w": 40, "h": 5, "groups": []},
+                        {"i": "neomind_paper_positions",
+                         "x": 0, "y": 5, "w": 40, "h": 10, "groups": []},
+                        {"i": "neomind_paper_trades",
+                         "x": 0, "y": 15, "w": 40, "h": 12, "groups": []},
                     ],
                 },
             },
             "groups": [],
         },
-    }
+    ]
 
 
 # ── Reshaping helpers ──────────────────────────────────────────────
