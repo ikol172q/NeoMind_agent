@@ -30,3 +30,4 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 ## 2026-04-19 — fin dashboard fusion session
 
 - [2026-04-19-headless-browser-memory-leak.md](2026-04-19-headless-browser-memory-leak.md) — Always `trap`/`finally` to kill spawned Chrome + rm user-data-dir; check `memory_pressure` before spawning; one background poll at a time
+- [2026-04-19-openbb-workspace-schema-gotchas.md](2026-04-19-openbb-workspace-schema-gotchas.md) — apps.json is an ARRAY; agents.json endpoints.query is RELATIVE; SSE must emit `event: copilotMessageChunk` + `{"delta": …}` — Workspace drops anything else silently
