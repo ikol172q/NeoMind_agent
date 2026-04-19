@@ -1739,6 +1739,30 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("chat router unavailable: %s", exc)
 
+    # ── OpenBB Workspace custom backend (Phase 2) ────────────────
+    # Same NeoMind data + fleet agent exposed via OpenBB's standard
+    # widget + Copilot HTTP contracts. Lets any OpenBB-compatible UI
+    # (Workspace free cloud, self-host, third-party) drive NeoMind
+    # without touching internals. See
+    # plans/2026-04-19_openbb_backend_integration.md.
+    try:
+        from agent.finance import openbb_adapter
+        openbb_adapter.add_cors(app)
+        app.include_router(
+            openbb_adapter.build_data_router(
+                get_hub=_get_hub,
+                get_engine=_get_engine,
+                list_recent_analyses=_list_recent_analyses,
+            ),
+            prefix="/openbb",
+        )
+        app.include_router(
+            openbb_adapter.build_agent_router(fleet),
+            prefix="/openbb",
+        )
+    except Exception as exc:  # pragma: no cover
+        logger.warning("openbb adapter unavailable: %s", exc)
+
     @app.post("/api/paper/reset")
     def paper_reset(
         project_id: str = Query(...),
