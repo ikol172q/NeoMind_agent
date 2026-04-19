@@ -110,6 +110,29 @@ def _widgets_catalog() -> Dict[str, Any]:
                 },
             ],
         },
+        "neomind_cn_quote": {
+            "name": "NeoMind A股 Quote",
+            "description": (
+                "A股 realtime quote via AkShare (Eastmoney bid-ask). "
+                "Includes 涨跌/涨幅/换手/涨停跌停. 6-digit codes: "
+                "600519 沪, 000001 深, 300750 创业板, 688981 科创板."
+            ),
+            "category": "NeoMind",
+            "subcategory": "A股",
+            "type": "metric",
+            "endpoint": "cn_quote",
+            "gridData": {"w": 20, "h": 5},
+            "source": "AkShare / 东方财富",
+            "params": [
+                {
+                    "paramName": "code",
+                    "value": "600519",
+                    "label": "A股 代码",
+                    "type": "text",
+                    "description": "6 位数字代码（如 600519 贵州茅台）。",
+                },
+            ],
+        },
         "neomind_chart": {
             "name": "NeoMind Chart + Indicators",
             "description": (
@@ -464,6 +487,40 @@ def build_data_router(
     @router.get("/apps.json")
     def apps() -> JSONResponse:
         return JSONResponse(content=_apps_catalog())
+
+    # ── Metric: CN A-share quote ──
+    @router.get("/cn_quote")
+    def cn_quote(code: str = Query("600519")) -> JSONResponse:
+        from agent.finance import cn_data
+        try:
+            q = cn_data.get_cn_quote(code)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        except cn_data.UpstreamError as exc:
+            return JSONResponse(content=[{
+                "label": "Status",
+                "value": f"AkShare upstream error: {str(exc)[:140]}",
+            }])
+        chg = q.get("change") or 0
+        chg_pct = q.get("change_pct") or 0
+        return JSONResponse(content=[
+            {"label": f"{q['symbol']} 最新",
+             "value": f"¥{q['price']:,.2f}"},
+            {"label": "涨跌",
+             "value": f"{chg:+.2f}",
+             "delta": f"{chg_pct:+.2f}"},
+            {"label": "成交量",
+             "value": (f"{q['volume']:,}" if q.get("volume") is not None else "—")},
+            {"label": "成交额",
+             "value": (f"¥{q['turnover']:,.0f}" if q.get("turnover") is not None else "—")},
+            {"label": "今开 / 昨收",
+             "value": f"¥{q.get('open', 0):.2f} / ¥{q.get('prev_close', 0):.2f}"},
+            {"label": "最高 / 最低",
+             "value": f"¥{q.get('high', 0):.2f} / ¥{q.get('low', 0):.2f}"},
+            {"label": "换手率",
+             "value": (f"{q['turnover_rate_pct']:.2f}%"
+                       if q.get("turnover_rate_pct") is not None else "—")},
+        ])
 
     # ── Metric: quote ──
     @router.get("/quote")
