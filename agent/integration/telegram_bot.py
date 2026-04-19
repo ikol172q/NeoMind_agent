@@ -868,7 +868,7 @@ class NeoMindTelegramBot:
 
         # ── No args: show current + list ──
         if not args:
-            from agent.services.llm_provider import PROVIDERS
+            from agent.services.llm_provider import PROVIDERS, check_primary_healthy
 
             if override:
                 header = f"当前模型: <code>{override}</code>（手动选择）"
@@ -878,28 +878,88 @@ class NeoMindTelegramBot:
             # Get actually active providers (have API keys)
             chain = self._get_provider_chain(thinking=False, chat_id=cid)
             active_providers = {p["name"] for p in chain}
-            # The first provider in chain is the one actually being used
             active_provider_name = chain[0]["name"] if chain else ""
+
+            # Router-as-single-source-of-truth: if any primary-role
+            # provider (= the LLM-Router at :8000) answers /v1/models,
+            # trust it as the full universe of callable models and
+            # hide direct-vendor fallback entries from the UI to
+            # eliminate duplicates. Fallback providers still work at
+            # HTTP-call time if the router later 5xx's — this hiding
+            # is purely cosmetic for the /model list.
+            primary_healthy = check_primary_healthy(timeout=2.0)
+
+            def _fetch_live_models(pconf):
+                """Live /v1/models for a provider. Falls back to the
+                static list on any failure."""
+                models_list = pconf.get("fallback_models", [])
+                models_url = pconf.get("models_url")
+                if not models_url:
+                    return models_list
+                try:
+                    import requests as _rq
+                    api_key = os.getenv(pconf.get("env_key", ""), "")
+                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                    resp = _rq.get(models_url, headers=headers, timeout=3)
+                    if resp.ok:
+                        data = resp.json()
+                        live = data.get("data") if isinstance(data, dict) else data
+                        if live:
+                            return live
+                except Exception:
+                    pass
+                return models_list
 
             lines = [f"🤖 {header}\n"]
 
-            for pname, pconf in PROVIDERS.items():
-                if pname not in active_providers:
-                    continue  # skip providers without API key
-                models_list = pconf.get("fallback_models", [])
-                if not models_list:
-                    continue
-                # 🟢 active provider, 🟡 available but idle
-                emoji = "🟢" if pname == active_provider_name else "🟡"
-                lines.append(f"\n{emoji} <b>{pname}</b>:")
-                for m in models_list:
-                    mid = m["id"]
-                    # Only mark "当前" on the exact model in the active provider
-                    if mid == active_model and pname == active_provider_name:
-                        marker = " ← 当前"
-                    else:
-                        marker = ""
-                    lines.append(f"  <code>{mid}</code>{marker}")
+            if primary_healthy:
+                # Clean path: only show the primary's live model list
+                for pname, pconf in PROVIDERS.items():
+                    if pconf.get("role") != "primary":
+                        continue
+                    if pname not in active_providers:
+                        continue
+                    models_list = _fetch_live_models(pconf)
+                    if not models_list:
+                        continue
+                    lines.append(f"\n🟢 <b>router</b> (all traffic proxied here):")
+                    for m in models_list:
+                        mid = m["id"]
+                        owned = m.get("owned_by", "")
+                        marker = " ← 当前" if mid == active_model else ""
+                        # Group by owned_by for readability (mlx-local, deepseek, zai, moonshot)
+                        lines.append(
+                            f"  <code>{mid}</code>  <i>({owned})</i>{marker}"
+                        )
+                lines.append(
+                    "\n<i>☁️ 云端 + 🍎 本地 MLX 全部经由 LLM-Router 出入。"
+                    "Router 离线时会自动回落直连 vendor API。</i>"
+                )
+            else:
+                # Router down / unreachable — fall through to the
+                # expanded view with fallback providers, so the user
+                # still sees callable models.
+                lines.append(
+                    "\n⚠️ <b>LLM-Router 无响应</b> — 使用直连 vendor fallback:"
+                )
+                for pname, pconf in PROVIDERS.items():
+                    if pname not in active_providers:
+                        continue
+                    if pconf.get("role") == "primary":
+                        continue  # already known to be down
+                    models_list = _fetch_live_models(pconf)
+                    if not models_list:
+                        continue
+                    emoji = "🟢" if pname == active_provider_name else "🟡"
+                    lines.append(f"\n{emoji} <b>{pname}</b> <i>(direct)</i>:")
+                    for m in models_list:
+                        mid = m["id"]
+                        marker = (
+                            " ← 当前"
+                            if mid == active_model and pname == active_provider_name
+                            else ""
+                        )
+                        lines.append(f"  <code>{mid}</code>{marker}")
 
             lines.append(f"\n切换: <code>/model &lt;id&gt;</code>")
             lines.append(f"恢复: <code>/model reset</code>")
