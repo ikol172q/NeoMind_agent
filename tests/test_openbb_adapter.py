@@ -409,6 +409,11 @@ def test_query_rejects_unregistered_project(client, registered_project):
 
 
 def test_query_sse_streams_to_completion(client, registered_project):
+    """End-to-end: POST /openbb/query yields SSE events in the
+    canonical OpenBB shape (event: copilotMessageChunk, data:
+    {"delta": ...}). The mock fleet returns "这是测试回复。" — verify
+    the deltas reassemble to that text, AND the event name is the
+    official one (without it, Workspace silently drops the stream)."""
     r = client.post(
         "/openbb/query",
         json={
@@ -418,19 +423,21 @@ def test_query_sse_streams_to_completion(client, registered_project):
     )
     assert r.status_code == 200
     body = r.text
-    # SSE-formatted: "event: message\ndata: {...}\n\n"
-    # Parse every data: line as JSON and collect content fields
-    contents = []
+    assert "event: copilotMessageChunk" in body, body[:500]
+
+    deltas = []
     for line in body.split("\n"):
         line = line.strip()
         if line.startswith("data: "):
             try:
-                contents.append(json.loads(line[len("data: "):]).get("content", ""))
+                payload = json.loads(line[len("data: "):])
+                if "delta" in payload:
+                    deltas.append(payload["delta"])
             except Exception:
                 pass
-    assert any("fin-rt working" in c for c in contents), contents
-    # Final completed reply — mock returns "这是测试回复。"
-    assert any("这是测试回复" in c for c in contents), contents
+    # Deltas reassemble to the full reply
+    full = "".join(deltas)
+    assert "这是测试回复" in full, full
 
 
 def test_query_message_too_long(client, registered_project):
