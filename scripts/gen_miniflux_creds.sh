@@ -31,8 +31,15 @@ if [[ -n "${existing_pass// }" ]]; then
   exit 0
 fi
 
-# Generate a 32-char URL-safe random password
-new_pass="$(LC_ALL=C tr -dc 'A-Za-z0-9_-' </dev/urandom | head -c 32)"
+# Generate a 32-char URL-safe random password.
+# Read a bounded chunk from /dev/urandom instead of streaming, so tr
+# doesn't hit SIGPIPE when head closes early (set -o pipefail would
+# exit 141 otherwise on macOS bash 3.2).
+new_pass="$(LC_ALL=C head -c 256 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9_-' | LC_ALL=C head -c 32)"
+if [[ ${#new_pass} -ne 32 ]]; then
+  # Fallback: openssl (always available on macOS)
+  new_pass="$(openssl rand -base64 48 | LC_ALL=C tr -d '=+/\n' | LC_ALL=C head -c 32)"
+fi
 new_user="${existing_user:-neomind}"
 
 # Strip any existing commented/blank placeholder lines
