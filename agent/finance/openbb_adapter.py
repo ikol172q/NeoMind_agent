@@ -859,39 +859,49 @@ def build_agent_router(fleet: Any) -> APIRouter:
             logger.exception("openbb agent dispatch failed")
             raise HTTPException(502, f"fleet dispatch failed: {exc}")
 
-        async def event_generator():
-            # Emit initial status so Copilot UI shows something
-            yield {
-                "event": "message",
-                "data": json.dumps({"content": f"⏳ fin-rt working (task {task_id[:8]}…)"}),
+        # ── SSE event helpers ──
+        # OpenBB Workspace's Copilot expects events with:
+        #   event: copilotMessageChunk
+        #   data:  {"delta": "<text>"}
+        # Any other event name or schema is silently ignored (the
+        # 2026-04-19 "chat silently fails" bug had event="message" /
+        # data={"content":"..."} which the UI dropped).
+        # Source of truth: openbb_ai.models.MessageChunkSSE and
+        # openbb_ai.message_chunk() helper.
+        def _chunk(text: str) -> Dict[str, Any]:
+            return {
+                "event": "copilotMessageChunk",
+                "data": json.dumps({"delta": text}),
             }
+
+        async def event_generator():
+            # Don't prepend a status line — it'd appear as literal text
+            # in the Copilot bubble. Just poll silently and stream the
+            # final reply as a single chunk (fleet fin-rt returns the
+            # whole reply at once today; fleet-level token streaming is
+            # future work).
             deadline = time.time() + 180
-            last_status = "pending"
             while time.time() < deadline:
                 try:
                     status = fleet.get_task_status(task_id)
                 except HTTPException:
-                    yield {"event": "message",
-                           "data": json.dumps({"content": "✗ task lookup failed"})}
+                    yield _chunk("✗ task lookup failed")
                     return
                 st = status.get("status")
                 if st == "completed":
                     reply = status.get("reply") or "(empty reply)"
-                    yield {"event": "message",
-                           "data": json.dumps({"content": reply})}
+                    # Split into ~80-char chunks so the UI gets a
+                    # progressive-typing feel rather than one big dump.
+                    for i in range(0, len(reply), 80):
+                        yield _chunk(reply[i:i + 80])
+                        await asyncio.sleep(0.02)
                     return
                 if st == "failed":
                     err = status.get("error") or "task failed"
-                    yield {"event": "message",
-                           "data": json.dumps({"content": f"✗ {err}"})}
+                    yield _chunk(f"✗ {err}")
                     return
-                if st != last_status:
-                    last_status = st
-                    yield {"event": "status",
-                           "data": json.dumps({"content": st})}
                 await asyncio.sleep(1.5)
-            yield {"event": "message",
-                   "data": json.dumps({"content": "⚠ timed out after 180s"})}
+            yield _chunk("⚠ timed out after 180s")
 
         return EventSourceResponse(event_generator())
 
