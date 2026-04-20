@@ -1,33 +1,6 @@
-import { useState, useRef, useEffect } from 'react'
-import Plotly from 'plotly.js-dist-min'
+import { useState } from 'react'
 import { useChart } from '@/lib/api'
-
-// Minimal Plotly React wrapper. react-plotly.js has CJS/ESM
-// interop issues under Vite+TS (its default export resolves to an
-// object, not a component). Rolling our own 20-line wrapper
-// avoids the dependency entirely and gives us the lifecycle
-// hooks we need.
-interface PlotProps {
-  data: Array<Record<string, unknown>>
-  layout: Record<string, unknown>
-  config?: Record<string, unknown>
-  style?: React.CSSProperties
-}
-
-function Plot({ data, layout, config, style }: PlotProps) {
-  const ref = useRef<HTMLDivElement>(null)
-  useEffect(() => {
-    if (!ref.current) return
-    Plotly.react(ref.current, data, layout, config ?? { displayModeBar: false, responsive: true })
-  }, [data, layout, config])
-  useEffect(() => {
-    const el = ref.current
-    return () => {
-      if (el) Plotly.purge(el)
-    }
-  }, [])
-  return <div ref={ref} style={{ width: '100%', height: '100%', ...style }} />
-}
+import { Plot } from '@/components/ui/Plot'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'

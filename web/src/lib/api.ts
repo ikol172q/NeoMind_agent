@@ -363,6 +363,47 @@ export function streamChat(
   return ac
 }
 
+// ── Relative strength ───────────────────────────────────
+export interface RSEntry {
+  symbol: string
+  price: number
+  return_3m: number | null
+  return_6m: number | null
+  return_ytd: number | null
+}
+
+export function useRS(market: 'US' = 'US', limit = 100) {
+  return useQuery({
+    queryKey: ['rs', market, limit],
+    queryFn: () => fetchJSON<{ market: string; count: number; entries: RSEntry[] }>(
+      `/api/rs?market=${market}&limit=${limit}`,
+    ),
+    staleTime: 10 * 60_000,
+  })
+}
+
+// ── Sectors (heatmap) ───────────────────────────────────
+export interface SectorEntry {
+  name: string
+  symbol: string
+  price: number
+  change_pct: number
+  size: number
+  leader?: string
+  leader_pct?: number
+}
+
+export function useSectors(market: 'US' | 'CN') {
+  return useQuery({
+    queryKey: ['sectors', market],
+    queryFn: () => fetchJSON<{ market: string; count: number; sectors: SectorEntry[]; fetched_at_epoch: number }>(
+      `/api/sectors?market=${market}`,
+    ),
+    staleTime: 45_000,
+    refetchInterval: 60_000,
+  })
+}
+
 // ── Watchlist ───────────────────────────────────────────
 export interface WatchEntry {
   symbol: string
