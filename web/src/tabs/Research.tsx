@@ -16,13 +16,14 @@ import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
 import { FundExplorerWidget } from '@/components/widgets/FundExplorerWidget'
 import { SentimentGaugeWidget } from '@/components/widgets/SentimentGaugeWidget'
 import { ResearchBriefWidget } from '@/components/widgets/ResearchBriefWidget'
+import { CorrelationWidget } from '@/components/widgets/CorrelationWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v12 promotes the agent narrative hero to the very top — "today's
-// read" before any raw widget. News moves down one row; everything
-// else follows. Pattern: Robinhood Cortex Digests / Bloomberg ASKB.
-const LS_KEY = 'neomind.research.layout.v12'
+// v13 adds the correlation heatmap (Phase 6). Lives in the
+// analytics band alongside earnings/RS because all three answer
+// "what's related to what in my book".
+const LS_KEY = 'neomind.research.layout.v13'
 
 const DEFAULT_LAYOUT: Layout[] = [
   // Hero strip — agent-authored narrative at the very top
@@ -36,9 +37,10 @@ const DEFAULT_LAYOUT: Layout[] = [
   { i: 'cn_quote',  x: 5,  y: 22, w: 4,  h: 5 },
   { i: 'portfolio', x: 9,  y: 17, w: 3,  h: 10 },
   // Analytics band
-  { i: 'earnings',  x: 0,  y: 27, w: 6,  h: 9 },
-  { i: 'rs_grid',   x: 6,  y: 27, w: 6,  h: 9 },
-  { i: 'sectors',   x: 0,  y: 36, w: 12, h: 9 },
+  { i: 'earnings',    x: 0,  y: 27, w: 6,  h: 9 },
+  { i: 'rs_grid',     x: 6,  y: 27, w: 6,  h: 9 },
+  { i: 'correlation', x: 0,  y: 36, w: 6,  h: 9 },
+  { i: 'sectors',     x: 6,  y: 36, w: 6,  h: 9 },
   // Detail band
   { i: 'chart',      x: 0,  y: 45, w: 6, h: 10 },
   { i: 'multi_chart',x: 6,  y: 45, w: 6, h: 10 },
@@ -99,6 +101,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="portfolio"><div className="drag-handle h-full cursor-move"><PortfolioHeatmapWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="correlation"><div className="drag-handle h-full cursor-move"><CorrelationWidget projectId={projectId} /></div></div>
       <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>

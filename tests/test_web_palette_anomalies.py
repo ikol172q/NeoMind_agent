@@ -119,10 +119,17 @@ def test_palette_filter_and_enter_routes_to_chat(page: Page):
     page.fill('[data-testid="command-palette-input"]', "brief")
     page.wait_for_selector('[data-testid="command-palette-item-brief"]', timeout=5000)
     page.keyboard.press("Enter")
-    # Now on chat tab with /brief pre-filled
+    # Now on chat tab with /brief pre-filled. Wait for the value to
+    # commit — ChatPanel's pendingPrompt effect runs after tab mount,
+    # so a plain wait_for_selector on the input races the state flush.
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
-    val = page.input_value('[data-testid="chat-input"]')
-    assert val == "/brief", f"expected /brief, got {val!r}"
+    page.wait_for_function(
+        """() => {
+            const el = document.querySelector('[data-testid="chat-input"]')
+            return el && el.value === '/brief'
+        }""",
+        timeout=8000,
+    )
 
 
 def test_palette_top_nav_button_opens(page: Page):
