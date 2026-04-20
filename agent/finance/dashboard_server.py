@@ -1342,9 +1342,61 @@ def create_app(
         except Exception as exc:
             logger.warning("paper_trading save_state failed: %s", exc)
 
-    @app.get("/", response_class=HTMLResponse)
-    def index() -> HTMLResponse:
-        return HTMLResponse(content=_INDEX_HTML, status_code=200)
+    # ── Serve React SPA (web/dist/) when available ──
+    # The new frontend is a Vite-built React SPA. In dev the user
+    # runs `npm run dev` on :5173 (Vite handles HMR and proxies back
+    # to :8001). In prod we serve the static build from web/dist/.
+    # Fallback: if no build exists, serve the legacy inline HTML so
+    # the server is still functional before first `npm run build`.
+    _WEB_DIST = Path(__file__).resolve().parent.parent.parent / "web" / "dist"
+
+    if _WEB_DIST.exists() and (_WEB_DIST / "index.html").exists():
+        from fastapi.staticfiles import StaticFiles
+
+        # Serve Vite's hashed assets at /assets/*
+        app.mount(
+            "/assets",
+            StaticFiles(directory=str(_WEB_DIST / "assets")),
+            name="spa_assets",
+        )
+
+        @app.get("/", response_class=HTMLResponse)
+        def index() -> HTMLResponse:
+            return HTMLResponse(
+                content=(_WEB_DIST / "index.html").read_text(encoding="utf-8"),
+                status_code=200,
+            )
+
+        # Any other static files in web/dist/ root (favicon, icons, etc.)
+        # Covered manually because we don't want to shadow /api /openbb etc.
+        _STATIC_ROOT_FILES = (
+            "favicon.ico", "favicon.svg", "robots.txt",
+            "manifest.json", "apple-touch-icon.png",
+        )
+        for _fname in _STATIC_ROOT_FILES:
+            _path = _WEB_DIST / _fname
+            if _path.exists():
+                @app.get(f"/{_fname}", include_in_schema=False)
+                def _serve_static(_p: Path = _path):
+                    return HTMLResponse(
+                        content=_p.read_bytes().decode("utf-8", errors="replace"),
+                        status_code=200,
+                    )
+
+        @app.get("/legacy", response_class=HTMLResponse)
+        def legacy_index() -> HTMLResponse:
+            """Old inline HTML dashboard — kept as fallback during
+            React migration. Access via /legacy."""
+            return HTMLResponse(content=_INDEX_HTML, status_code=200)
+    else:
+        # No React build yet → legacy HTML at /, and /legacy aliases it.
+        @app.get("/", response_class=HTMLResponse)
+        def index() -> HTMLResponse:
+            return HTMLResponse(content=_INDEX_HTML, status_code=200)
+
+        @app.get("/legacy", response_class=HTMLResponse)
+        def legacy_alias() -> HTMLResponse:
+            return HTMLResponse(content=_INDEX_HTML, status_code=200)
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:

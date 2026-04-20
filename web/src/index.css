@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  --color-bg:       #0b0d12;
+  --color-panel:    #141822;
+  --color-border:   #1f2631;
+  --color-text:     #d8dde6;
+  --color-dim:      #7c8598;
+  --color-accent:   #4dd0e1;
+  --color-green:    #6fd07a;
+  --color-red:      #e57373;
+  --color-yellow:   #f3c969;
+  --color-blue:     #8ab4f8;
+
+  --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-mono);
+  font-size: 13px;
+  -webkit-font-smoothing: antialiased;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+button, input, select, textarea {
+  font-family: inherit;
+  color: inherit;
+}
+
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 5px; }
+::-webkit-scrollbar-thumb:hover { background: var(--color-dim); }
+
+.react-grid-item.react-grid-placeholder {
+  background: var(--color-accent) !important;
+  opacity: 0.15;
+  border-radius: 6px;
+}
