@@ -282,24 +282,27 @@ routing:
   # router is up, NeoMind dispatches chat completions with
   # model=<primary_model>. Must match a model id returned by the
   # router's /v1/models endpoint.
-  primary_model: deepseek-chat
+  # Chat mode uses the local MLX 30B-A3B MoE (Qwen3) as primary —
+  # free, fast (~80-100 tok/s on M4 Max via MoE sparse activation),
+  # strong Chinese. Fallback chains kick in if MLX server is down.
+  primary_model: mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
 
   # Thinking-mode model (used when /think is ON or reasoning is
-  # required). Usually deepseek-reasoner.
-  thinking_model: deepseek-reasoner
+  # required). MLX Thinking variant shares architecture with the
+  # primary so switch cost between them is low. Falls back to
+  # deepseek-reasoner via the router chain if MLX is down.
+  thinking_model: mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit
 
-  # Rate-limit fallback — if the primary's upstream 429's
-  # (moonshot has aggressive org-level rate limits), insert a
-  # SECOND router entry with this model so the chain falls through
-  # to an independent rate-bucket before giving up on the router.
-  # Set to null or omit to disable. For chat mode we pick kimi as
-  # the fallback because it's routed via a different upstream
-  # (moonshot) than the primary (deepseek).
-  rate_limit_fallback_model: kimi-k2.5
+  # Rate-limit fallback — MLX is local so it doesn't rate-limit,
+  # but if MLX server is down the router will return 5xx. Second
+  # chain entry points at a cloud model on a different upstream
+  # so the fallback has an independent rate-bucket.
+  rate_limit_fallback_model: deepseek-chat
 
   # When the router path is unavailable and we fall back to direct
   # vendor APIs, promote this provider to the front of the chain.
-  # Must match a PROVIDERS dict key in agent/services/llm_provider.py.
+  # MLX has no direct-vendor counterpart, so deepseek is the next
+  # best bet for chat-style interaction.
   preferred_direct_provider: deepseek
 
 search_enabled: true
