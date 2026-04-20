@@ -478,6 +478,35 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Factor grades (Phase 3: 3-tier drill) ───────────────
+export interface FactorAxis {
+  grade: string   // "A+" | "A" | "B" | "C" | "D" | "F" | "—"
+  raw: number | null
+  note: string
+}
+
+export interface FactorGrades {
+  symbol: string
+  overall_grade: string
+  axes: {
+    momentum: FactorAxis
+    value: FactorAxis
+    quality: FactorAxis
+    growth: FactorAxis
+    revisions: FactorAxis
+  }
+  fetched_at_epoch: number
+}
+
+export function useFactors(symbol: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['factors', symbol],
+    queryFn: () => fetchJSON<FactorGrades>(`/api/factors/${encodeURIComponent(symbol!)}`),
+    enabled: enabled && !!symbol,
+    staleTime: 9 * 60_000,
+  })
+}
+
 // ── Per-symbol insight for hover tooltips (Phase 2) ─────
 export interface SymbolInsight {
   symbol: string
