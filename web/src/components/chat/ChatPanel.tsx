@@ -27,6 +27,12 @@ interface Msg {
 interface Props {
   projectId: string
   onJumpToAudit?: (reqId: string) => void
+  /** One-shot prompt handed in from another tab (e.g. watchlist
+   *  "ask agent" button). We pre-fill the input then call
+   *  onConsumePendingPrompt so the parent clears it — otherwise
+   *  switching away and back would replay the same prompt. */
+  pendingPrompt?: string | null
+  onConsumePendingPrompt?: () => void
 }
 
 /**
@@ -64,7 +70,12 @@ function loadCache(pid: string): { sessionId: string | null; msgs: Msg[] } {
   return { sessionId: null, msgs: [] }
 }
 
-export function ChatPanel({ projectId, onJumpToAudit }: Props) {
+export function ChatPanel({
+  projectId,
+  onJumpToAudit,
+  pendingPrompt,
+  onConsumePendingPrompt,
+}: Props) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingSession, setLoadingSession] = useState(false)
@@ -109,6 +120,19 @@ export function ChatPanel({ projectId, onJumpToAudit }: Props) {
   }, [msgs])
 
   useEffect(() => () => abortRef.current?.abort(), [])
+
+  // ── Pending prompt hand-off from other tabs ──
+  // When the user clicks "ask agent" on a watchlist row, App.tsx
+  // sets a pendingPrompt + switches to Chat. We pre-fill the input,
+  // focus it, and tell the parent to clear the queued prompt so
+  // leaving + re-entering the tab doesn't replay it.
+  useEffect(() => {
+    if (!pendingPrompt) return
+    setInput(pendingPrompt)
+    // Focus after the DOM commits so the cursor lands in the box.
+    queueMicrotask(() => inputRef.current?.focus())
+    onConsumePendingPrompt?.()
+  }, [pendingPrompt, onConsumePendingPrompt])
 
   function addMsg(m: Omit<Msg, 'id' | 'ts'>): string {
     const id = `${Date.now()}-${Math.random()}`
