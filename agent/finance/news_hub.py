@@ -107,10 +107,15 @@ def fetch_entries(
     symbols: Optional[List[str]] = None,
     order: str = "published_at",
     direction: str = "desc",
+    category_id: Optional[int] = None,
 ) -> List[NewsEntry]:
     """Pull recent entries from Miniflux. Raises HTTPException on
     config / network errors — callers (the FastAPI route) propagate
     to the client as-is.
+
+    When ``category_id`` is set, uses Miniflux's per-category entries
+    endpoint instead of the global feed, so we get only that
+    category's items (e.g. 美股, A股, Tech, Macro).
     """
     cfg = _get_config()
     limit = max(1, min(int(limit), _MAX_LIMIT))
@@ -119,7 +124,10 @@ def fetch_entries(
         "order": order,
         "direction": direction,
     })
-    req_url = f"{cfg['url']}/v1/entries?{query}"
+    if category_id is not None:
+        req_url = f"{cfg['url']}/v1/categories/{int(category_id)}/entries?{query}"
+    else:
+        req_url = f"{cfg['url']}/v1/entries?{query}"
     req = urllib.request.Request(
         req_url,
         headers={
@@ -174,18 +182,74 @@ def build_news_router() -> APIRouter:
             description="comma-separated list of tickers to filter "
                         "titles against (case-insensitive substring)",
         ),
+        category_id: Optional[int] = Query(
+            None,
+            description="Miniflux category id. When set, only entries "
+                        "in that category are returned.",
+        ),
     ) -> Dict[str, Any]:
         sym_list: Optional[List[str]] = None
         if symbols:
             sym_list = [
                 s for s in symbols.split(",") if s.strip()
             ][:20]
-        entries = fetch_entries(limit=limit, symbols=sym_list)
+        entries = fetch_entries(limit=limit, symbols=sym_list, category_id=category_id)
         return {
             "count": len(entries),
             "entries": [asdict(e) for e in entries],
             "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "category_id": category_id,
         }
+
+    @router.get("/api/news/categories")
+    def list_categories() -> Dict[str, Any]:
+        """Return Miniflux categories enriched with feed count, sorted
+        by feed count desc so the most-populated category leads. Empty
+        categories are dropped — they add tabs the user can't use.
+        The UI overlays a synthetic 'All' tab that uses no filter."""
+        cfg = _get_config()
+        auth = _basic_auth_header(cfg["user"], cfg["pw"])
+
+        def _get(path: str) -> Any:
+            req = urllib.request.Request(
+                f"{cfg['url']}{path}",
+                headers={"Authorization": auth, "Accept": "application/json"},
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+                    return _json.loads(resp.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                raise HTTPException(502, f"miniflux {path} {exc.code}: {exc.reason}")
+            except urllib.error.URLError as exc:
+                raise HTTPException(
+                    503,
+                    f"miniflux unreachable at {cfg['url']} ({exc.reason})",
+                )
+
+        cats = _get("/v1/categories")
+        feeds = _get("/v1/feeds")
+        counts: Dict[int, int] = {}
+        for f in feeds:
+            cid = (f.get("category") or {}).get("id")
+            if cid:
+                counts[int(cid)] = counts.get(int(cid), 0) + 1
+
+        out = []
+        for c in cats:
+            try:
+                cid = int(c.get("id") or 0)
+            except Exception:
+                continue
+            feed_count = counts.get(cid, 0)
+            if feed_count == 0:
+                continue
+            out.append({
+                "id": cid,
+                "title": str(c.get("title") or ""),
+                "feed_count": feed_count,
+            })
+        out.sort(key=lambda x: (-x["feed_count"], x["title"]))
+        return {"categories": out}
 
     @router.get("/api/news/health")
     def news_health() -> Dict[str, Any]:

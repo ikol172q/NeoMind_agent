@@ -130,14 +130,29 @@ export interface NewsEntry {
   snippet: string
 }
 
-export function useNews(params: { symbols?: string; limit?: number } = {}) {
+export function useNews(params: { symbols?: string; limit?: number; categoryId?: number | null } = {}) {
   const qs = new URLSearchParams()
   if (params.symbols) qs.set('symbols', params.symbols)
+  if (params.categoryId != null) qs.set('category_id', String(params.categoryId))
   qs.set('limit', String(params.limit ?? 20))
   return useQuery({
-    queryKey: ['news', params.symbols ?? '', params.limit ?? 20],
+    queryKey: ['news', params.symbols ?? '', params.limit ?? 20, params.categoryId ?? 'all'],
     queryFn: () => fetchJSON<{ count: number; entries: NewsEntry[] }>(`/api/news?${qs}`),
     refetchInterval: 120_000,
+  })
+}
+
+export interface NewsCategory {
+  id: number
+  title: string
+  feed_count: number
+}
+
+export function useNewsCategories() {
+  return useQuery({
+    queryKey: ['news_categories'],
+    queryFn: () => fetchJSON<{ categories: NewsCategory[] }>('/api/news/categories'),
+    staleTime: 300_000,
   })
 }
 
