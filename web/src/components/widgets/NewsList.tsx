@@ -1,9 +1,16 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNews, useNewsCategories } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { cn, fmtRelativeTime } from '@/lib/utils'
 import { RefreshCw, ExternalLink } from 'lucide-react'
+
+// When the active tab matches one of these titles (case-insensitive),
+// a "source site" shortcut shows in the tab bar so the user can jump
+// straight to the original aggregator. Extend as categories grow.
+const CATEGORY_SHORTCUTS: Record<string, { href: string; label: string }> = {
+  hn: { href: 'https://news.ycombinator.com', label: 'news.ycombinator.com' },
+}
 
 /**
  * News widget with category tabs (US / Tech / Global / A-Shares /
@@ -22,6 +29,13 @@ export function NewsList() {
 
   const n = useNews({ limit: 30, categoryId: activeCat })
 
+  const activeShortcut = useMemo(() => {
+    if (activeCat == null) return null
+    const c = cats.data?.categories?.find(x => x.id === activeCat)
+    if (!c) return null
+    return CATEGORY_SHORTCUTS[c.title.toLowerCase()] ?? null
+  }, [activeCat, cats.data])
+
   return (
     <Card className="h-full flex flex-col">
       <CardHeader
@@ -35,7 +49,7 @@ export function NewsList() {
       />
       {/* Tab bar */}
       <div
-        className="flex gap-1 px-3 py-1.5 border-b border-[var(--color-border)] overflow-x-auto"
+        className="flex gap-1 px-3 py-1.5 border-b border-[var(--color-border)] overflow-x-auto items-center"
         data-testid="news-tabs"
       >
         <TabButton
@@ -54,6 +68,26 @@ export function NewsList() {
             testId={`news-tab-${c.title.toLowerCase().replace(/[^a-z0-9]/g, '-')}`}
           />
         ))}
+        {activeShortcut && (
+          <>
+            <div className="flex-1" />
+            <a
+              data-testid="news-source-shortcut"
+              href={activeShortcut.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(ev) => {
+                ev.preventDefault()
+                window.open(activeShortcut.href, '_blank', 'noopener,noreferrer')
+              }}
+              className="inline-flex items-center gap-1 text-[10px] text-[var(--color-accent)] hover:brightness-110 px-2 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-border)]/40 transition whitespace-nowrap"
+              title={`open ${activeShortcut.href}`}
+            >
+              {activeShortcut.label}
+              <ExternalLink size={10} />
+            </a>
+          </>
+        )}
       </div>
       <CardBody className="flex-1 overflow-y-auto p-0" data-testid="news-entries">
         {n.isLoading && <div className="p-3 text-[var(--color-dim)] text-xs">loading…</div>}

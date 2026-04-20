@@ -56,7 +56,15 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
   const layout = loadLayout()
 
   return (
-    <ResponsiveGridLayout
+    // Own scroll container — App's <main> is overflow-hidden (Chat/
+    // Audit/Paper fill-to-viewport tabs need that), but Research's
+    // grid expands vertically past the fold. Without this wrapper
+    // the user would be stuck on the hero row forever.
+    <div
+      data-testid="research-scroll"
+      className="h-full overflow-y-auto overflow-x-hidden"
+    >
+      <ResponsiveGridLayout
       className="layout"
       layouts={{ lg: layout, md: layout, sm: layout, xs: layout }}
       breakpoints={{ lg: 1200, md: 996, sm: 768, xs: 0 }}
@@ -84,6 +92,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
       <div key="history"><div className="drag-handle h-full cursor-move"><HistoryTable projectId={projectId} /></div></div>
-    </ResponsiveGridLayout>
+      </ResponsiveGridLayout>
+    </div>
   )
 }
