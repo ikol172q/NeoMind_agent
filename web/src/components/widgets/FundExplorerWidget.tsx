@@ -7,7 +7,7 @@ import { fmtNum } from '@/lib/utils'
 import { RefreshCw, MessageSquare } from 'lucide-react'
 
 interface Props {
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 // Asset-class keys from yfinance → human labels
@@ -62,7 +62,7 @@ export function FundExplorerWidget({ onJumpToChat }: Props) {
       `YTD ${pct(d.ytd_return_pct)}, 3Y ${pct(d.three_year_return_pct)}, 5Y ${pct(d.five_year_return_pct)}. ` +
       `Should I hold this long-term given current valuation and rate regime? ` +
       `2 points for, 2 against, then one alternative to consider. <200 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { symbol: d.symbol })
   }
 
   // Normalise asset class values so the stacked bar fills width.

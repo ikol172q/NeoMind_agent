@@ -384,6 +384,181 @@ def _fetch_market_sentiment() -> Optional[Dict[str, Any]]:
 
 # ── Endpoints ────────────────────────────────────────────
 
+def synth_symbol_data(project_id: str, symbol: str, fresh: bool = False) -> Dict[str, Any]:
+    """Programmatic entry point — same payload as GET /api/synthesis/symbol
+    but callable from Python (chat_streaming.py uses this for context
+    injection)."""
+    sym = symbol.upper()
+    if not _SYMBOL_RE.match(sym):
+        raise HTTPException(400, f"invalid symbol {symbol!r}")
+    if project_id not in investment_projects.list_projects():
+        raise HTTPException(404, f"project {project_id!r} is not registered")
+
+    cache_key = f"sym::{project_id}::{sym}"
+    if not fresh:
+        cached = _cached(cache_key)
+        if cached is not None:
+            return cached
+
+    market = _detect_market(sym)
+    payload: Dict[str, Any] = {
+        "symbol": sym,
+        "market": market,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "quote": _fetch_quote(sym, market),
+        "position": _fetch_position(project_id, sym),
+        "watchlist": _fetch_watch_entry(project_id, sym, market),
+        "technical": _fetch_technical(sym, market),
+        "earnings": _fetch_earnings(sym) if market == "US" else None,
+        "rs": _fetch_rs(sym) if market == "US" else None,
+        "sector": _fetch_sector(sym, market),
+        "news": _fetch_news(sym),
+        "market_sentiment": _fetch_market_sentiment() if market == "US" else None,
+    }
+    _put(cache_key, payload)
+    return payload
+
+
+def synth_project_data(project_id: str, fresh: bool = False) -> Dict[str, Any]:
+    """Programmatic entry point for project synthesis."""
+    if project_id not in investment_projects.list_projects():
+        raise HTTPException(404, f"project {project_id!r} is not registered")
+
+    cache_key = f"proj::{project_id}"
+    if not fresh:
+        cached = _cached(cache_key)
+        if cached is not None:
+            return cached
+    return _build_project_synth(project_id, cache_key)
+
+
+def _build_project_synth(project_id: str, cache_key: str) -> Dict[str, Any]:
+    # Watchlist
+    watchlist: List[Dict[str, Any]] = []
+    try:
+        path = investment_projects.get_project_dir(project_id) / "watchlist.json"
+        if path.exists():
+            data = json.loads(path.read_text(encoding="utf-8"))
+            watchlist = data.get("entries", [])
+    except Exception as exc:
+        logger.debug("synth: watchlist read failed: %s", exc)
+
+    # Paper state (read state.json directly — avoids the engine
+    # accessor that lives inside dashboard_server's closure).
+    positions: List[Dict[str, Any]] = []
+    account: Optional[Dict[str, Any]] = None
+    st = _paper_state(project_id)
+    if st is not None:
+        for p in st.get("positions", []):
+            pnl, pct = _pnl_for_position(p)
+            positions.append({
+                "symbol": p.get("symbol"),
+                "quantity": p.get("quantity"),
+                "entry_price": p.get("entry_price"),
+                "current_price": p.get("current_price"),
+                "unrealized_pnl": pnl,
+                "unrealized_pnl_pct": pct,
+            })
+        acct = st.get("account", {}) or {}
+        cash = float(acct.get("cash") or 0)
+        realized = float(acct.get("realized_pnl") or 0)
+        total_unrealized = sum(p["unrealized_pnl"] for p in positions)
+        mv = sum(
+            float(p.get("current_price") or 0) * float(p.get("quantity") or 0)
+            for p in st.get("positions", [])
+        )
+        equity = cash + mv
+        initial = float(acct.get("initial_capital") or 100000.0)
+        total_pnl = realized + total_unrealized
+        account = {
+            "equity": round(equity, 2),
+            "cash": round(cash, 2),
+            "total_pnl": round(total_pnl, 2),
+            "total_pnl_pct": round((total_pnl / initial * 100.0) if initial else 0.0, 4),
+            "positions": len(positions),
+            "realized_pnl": round(realized, 2),
+            "unrealized_pnl": round(total_unrealized, 2),
+        }
+
+    # Upcoming earnings — union of watchlist US + position US symbols
+    earn_syms = {w["symbol"] for w in watchlist if str(w.get("market", "")).upper() == "US"}
+    earn_syms.update(p["symbol"] for p in positions)
+    upcoming: List[Dict[str, Any]] = []
+    if earn_syms:
+        try:
+            from agent.finance import earnings
+            recs = earnings.fetch_symbols(sorted(earn_syms))
+            for r in recs:
+                du = r.get("days_until")
+                if du is None or du < -2 or du > 30:
+                    continue
+                upcoming.append({
+                    "symbol": r.get("symbol"),
+                    "next_earnings_date": r.get("next_earnings_date"),
+                    "days_until": du,
+                    "avg_abs_move_pct": r.get("avg_abs_move_pct"),
+                    "atm_iv_pct": r.get("atm_iv_pct"),
+                })
+            upcoming.sort(key=lambda r: r["days_until"])
+        except Exception as exc:
+            logger.debug("synth: project earnings failed: %s", exc)
+
+    # Sector movers
+    sector_movers: Optional[Dict[str, Any]] = None
+    try:
+        from agent.finance import sectors
+        sec_payload = sectors._cached("US")
+        if sec_payload is None:
+            secs = sectors._fetch_us_sectors()
+            sec_payload = {"sectors": secs}
+        secs = sec_payload.get("sectors") or []
+        sorted_secs = sorted(secs, key=lambda s: -s.get("change_pct", 0))
+        sector_movers = {
+            "top": [{"name": s["name"], "change_pct": s["change_pct"]} for s in sorted_secs[:3]],
+            "bottom": [{"name": s["name"], "change_pct": s["change_pct"]} for s in sorted_secs[-3:]],
+        }
+    except Exception as exc:
+        logger.debug("synth: sectors failed: %s", exc)
+
+    # Market sentiment
+    sentiment_payload = _fetch_market_sentiment()
+
+    # News filtered to watched+held symbols
+    relevant_news: List[Dict[str, Any]] = []
+    try:
+        from agent.finance import news_hub
+        all_syms = sorted({
+            *earn_syms,
+            *(w["symbol"] for w in watchlist),
+            *(p["symbol"] for p in positions),
+        })
+        if all_syms:
+            entries = news_hub.fetch_entries(limit=50, symbols=all_syms)
+            for e in entries[:15]:
+                relevant_news.append({
+                    "title": e.title,
+                    "url": e.url,
+                    "feed_title": e.feed_title,
+                    "published_at": e.published_at,
+                })
+    except Exception as exc:
+        logger.debug("synth: project news failed: %s", exc)
+
+    payload: Dict[str, Any] = {
+        "project_id": project_id,
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "watchlist": watchlist,
+        "positions": positions,
+        "account": account,
+        "upcoming_earnings": upcoming,
+        "sector_movers": sector_movers,
+        "market_sentiment": sentiment_payload,
+        "relevant_news": relevant_news,
+    }
+    _put(cache_key, payload)
+    return payload
+
+
 def build_synthesis_router() -> APIRouter:
     router = APIRouter()
 
@@ -393,175 +568,13 @@ def build_synthesis_router() -> APIRouter:
         project_id: str = Query(..., description="project id for position / watchlist context"),
         fresh: bool = Query(False, description="bypass the 60s cache"),
     ) -> Dict[str, Any]:
-        sym = symbol.upper()
-        if not _SYMBOL_RE.match(sym):
-            raise HTTPException(400, f"invalid symbol {symbol!r}")
-        if project_id not in investment_projects.list_projects():
-            raise HTTPException(404, f"project {project_id!r} is not registered")
-
-        cache_key = f"sym::{project_id}::{sym}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
-
-        market = _detect_market(sym)
-
-        payload: Dict[str, Any] = {
-            "symbol": sym,
-            "market": market,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "quote": _fetch_quote(sym, market),
-            "position": _fetch_position(project_id, sym),
-            "watchlist": _fetch_watch_entry(project_id, sym, market),
-            "technical": _fetch_technical(sym, market),
-            "earnings": _fetch_earnings(sym) if market == "US" else None,
-            "rs": _fetch_rs(sym) if market == "US" else None,
-            "sector": _fetch_sector(sym, market),
-            "news": _fetch_news(sym),
-            "market_sentiment": _fetch_market_sentiment() if market == "US" else None,
-        }
-        _put(cache_key, payload)
-        return payload
+        return synth_symbol_data(project_id=project_id, symbol=symbol, fresh=fresh)
 
     @router.get("/api/synthesis/project")
     def synth_project(
         project_id: str = Query(...),
         fresh: bool = Query(False),
     ) -> Dict[str, Any]:
-        if project_id not in investment_projects.list_projects():
-            raise HTTPException(404, f"project {project_id!r} is not registered")
-
-        cache_key = f"proj::{project_id}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
-
-        # Watchlist
-        watchlist: List[Dict[str, Any]] = []
-        try:
-            path = investment_projects.get_project_dir(project_id) / "watchlist.json"
-            if path.exists():
-                data = json.loads(path.read_text(encoding="utf-8"))
-                watchlist = data.get("entries", [])
-        except Exception as exc:
-            logger.debug("synth: watchlist read failed: %s", exc)
-
-        # Paper state (read state.json directly — avoids the engine
-        # accessor that lives inside dashboard_server's closure).
-        positions: List[Dict[str, Any]] = []
-        account: Optional[Dict[str, Any]] = None
-        st = _paper_state(project_id)
-        if st is not None:
-            for p in st.get("positions", []):
-                pnl, pct = _pnl_for_position(p)
-                positions.append({
-                    "symbol": p.get("symbol"),
-                    "quantity": p.get("quantity"),
-                    "entry_price": p.get("entry_price"),
-                    "current_price": p.get("current_price"),
-                    "unrealized_pnl": pnl,
-                    "unrealized_pnl_pct": pct,
-                })
-            acct = st.get("account", {}) or {}
-            cash = float(acct.get("cash") or 0)
-            realized = float(acct.get("realized_pnl") or 0)
-            total_unrealized = sum(p["unrealized_pnl"] for p in positions)
-            # Equity = cash + market value of open positions
-            mv = sum(
-                float(p.get("current_price") or 0) * float(p.get("quantity") or 0)
-                for p in st.get("positions", [])
-            )
-            equity = cash + mv
-            initial = float(acct.get("initial_capital") or 100000.0)
-            total_pnl = realized + total_unrealized
-            account = {
-                "equity": round(equity, 2),
-                "cash": round(cash, 2),
-                "total_pnl": round(total_pnl, 2),
-                "total_pnl_pct": round((total_pnl / initial * 100.0) if initial else 0.0, 4),
-                "positions": len(positions),
-                "realized_pnl": round(realized, 2),
-                "unrealized_pnl": round(total_unrealized, 2),
-            }
-
-        # Upcoming earnings — union of watchlist US + position US symbols
-        earn_syms = {w["symbol"] for w in watchlist if str(w.get("market", "")).upper() == "US"}
-        earn_syms.update(p["symbol"] for p in positions)
-        upcoming: List[Dict[str, Any]] = []
-        if earn_syms:
-            try:
-                from agent.finance import earnings
-                recs = earnings.fetch_symbols(sorted(earn_syms))
-                for r in recs:
-                    du = r.get("days_until")
-                    if du is None or du < -2 or du > 30:
-                        continue
-                    upcoming.append({
-                        "symbol": r.get("symbol"),
-                        "next_earnings_date": r.get("next_earnings_date"),
-                        "days_until": du,
-                        "avg_abs_move_pct": r.get("avg_abs_move_pct"),
-                        "atm_iv_pct": r.get("atm_iv_pct"),
-                    })
-                upcoming.sort(key=lambda r: r["days_until"])
-            except Exception as exc:
-                logger.debug("synth: project earnings failed: %s", exc)
-
-        # Sectors — use existing US endpoint
-        sector_movers: Optional[Dict[str, Any]] = None
-        try:
-            from agent.finance import sectors
-            sec_payload = sectors._cached("US")
-            if sec_payload is None:
-                secs = sectors._fetch_us_sectors()
-                sec_payload = {"sectors": secs}
-            secs = sec_payload.get("sectors") or []
-            sorted_secs = sorted(secs, key=lambda s: -s.get("change_pct", 0))
-            sector_movers = {
-                "top": [{"name": s["name"], "change_pct": s["change_pct"]} for s in sorted_secs[:3]],
-                "bottom": [{"name": s["name"], "change_pct": s["change_pct"]} for s in sorted_secs[-3:]],
-            }
-        except Exception as exc:
-            logger.debug("synth: sectors failed: %s", exc)
-
-        # Market sentiment
-        sentiment_payload = _fetch_market_sentiment()
-
-        # News filtered to watched+held symbols
-        relevant_news: List[Dict[str, Any]] = []
-        try:
-            from agent.finance import news_hub
-            all_syms = sorted({
-                *earn_syms,
-                *(w["symbol"] for w in watchlist),
-                *(p["symbol"] for p in positions),
-            })
-            if all_syms:
-                entries = news_hub.fetch_entries(limit=50, symbols=all_syms)
-                for e in entries[:15]:
-                    relevant_news.append({
-                        "title": e.title,
-                        "url": e.url,
-                        "feed_title": e.feed_title,
-                        "published_at": e.published_at,
-                    })
-        except Exception as exc:
-            logger.debug("synth: project news failed: %s", exc)
-
-        payload: Dict[str, Any] = {
-            "project_id": project_id,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "watchlist": watchlist,
-            "positions": positions,
-            "account": account,
-            "upcoming_earnings": upcoming,
-            "sector_movers": sector_movers,
-            "market_sentiment": sentiment_payload,
-            "relevant_news": relevant_news,
-        }
-        _put(cache_key, payload)
-        return payload
+        return synth_project_data(project_id=project_id, fresh=fresh)
 
     return router

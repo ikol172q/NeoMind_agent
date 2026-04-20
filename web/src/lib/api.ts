@@ -330,13 +330,25 @@ export interface StreamCallbacks {
  * updates via onDelta; final req_id via onDone (for audit linking).
  * Returns an AbortController so the caller can cancel mid-stream.
  */
+export interface StreamContext {
+  /** When set, server fetches /api/synthesis/symbol/{sym} and injects
+   *  a DASHBOARD STATE block into the system prompt. */
+  symbol?: string
+  /** When true, server injects a project-wide synthesis snapshot
+   *  (used by /brief + /check slash commands). */
+  project?: boolean
+}
+
 export function streamChat(
   project_id: string,
   message: string,
   cb: StreamCallbacks,
+  ctx?: StreamContext,
 ): AbortController {
   const ac = new AbortController()
   const qs = new URLSearchParams({ project_id, message })
+  if (ctx?.symbol) qs.set('context_symbol', ctx.symbol)
+  if (ctx?.project) qs.set('context_project', 'true')
 
   ;(async () => {
     try {

@@ -7,7 +7,7 @@ import { RefreshCw, MessageSquare } from 'lucide-react'
 
 interface Props {
   projectId: string
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 /**
@@ -46,7 +46,7 @@ export function EarningsWidget({ projectId, onJumpToChat }: Props) {
     const prompt =
       `${e.symbol}: ${ctx}. Is the option market pricing in too much, too little, or about right? ` +
       `Give 3 concrete points, then one risk. <150 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { symbol: e.symbol })
   }
 
   return (
