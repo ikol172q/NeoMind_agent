@@ -4070,14 +4070,27 @@ class NeoMindTelegramBot:
         else:
             mode = "fin"  # default for Telegram bot
 
-        # ── LLM Router: if LLM_ROUTER_* is set, prepend a single router
-        # provider for the current mode. The router is an OpenAI-compatible
-        # local proxy (host.docker.internal:8000/v1) that resolves the
-        # `model` field to the right upstream. Traffic goes through it
-        # exclusively when configured, so the router provider is the
-        # primary and any direct-upstream entries from get_provider_chain
-        # become fallbacks.
-        router_provider = self._build_router_provider(mode=mode, thinking=thinking)
+        # Honour /provider direct — user explicitly asked to bypass the
+        # LLM-Router and call vendor APIs directly. Without this check
+        # the router was still prepended to the chain whenever
+        # LLM_ROUTER_API_KEY was set, making /provider direct a no-op.
+        # "litellm" / "ollama" are historical aliases for router.
+        provider_mode = "router"  # default
+        try:
+            bot_cfg = self._state_mgr.get_bot_config("neomind")
+            provider_mode = bot_cfg.get("provider_mode", "router")
+        except Exception:
+            pass
+        route_via_router = provider_mode not in ("direct", "off", "disable")
+
+        # ── LLM Router: if LLM_ROUTER_* is set AND provider_mode is not
+        # "direct", prepend a single router provider for the current
+        # mode. The router is an OpenAI-compatible local proxy that
+        # resolves the `model` field to the right upstream.
+        router_provider = (
+            self._build_router_provider(mode=mode, thinking=thinking)
+            if route_via_router else None
+        )
         if router_provider:
             chain = [router_provider] + chain
             # Per-mode upstream fallback: when the primary upstream's org
