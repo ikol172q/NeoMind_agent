@@ -466,6 +466,31 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Market sentiment gauge ──────────────────────────────
+export interface SentimentSubscore {
+  score: number | null
+  [key: string]: unknown
+}
+export interface SentimentData {
+  composite_score: number | null
+  label: string
+  components: {
+    vix: SentimentSubscore & { raw?: number; percentile_pct?: number }
+    spy_momentum: SentimentSubscore & { return_20d_pct?: number }
+    breadth: SentimentSubscore & { up?: number; down?: number; total?: number }
+  }
+  fetched_at_epoch: number
+}
+
+export function useSentiment() {
+  return useQuery({
+    queryKey: ['sentiment'],
+    queryFn: () => fetchJSON<SentimentData>('/api/sentiment'),
+    staleTime: 8 * 60_000,
+    refetchInterval: 10 * 60_000,
+  })
+}
+
 // ── Fund / ETF deep-dive ────────────────────────────────
 export interface FundHolding { symbol: string; name: string; weight_pct: number }
 export interface FundInfo {

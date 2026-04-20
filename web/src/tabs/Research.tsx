@@ -14,32 +14,35 @@ import { EarningsWidget } from '@/components/widgets/EarningsWidget'
 import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWidget'
 import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
 import { FundExplorerWidget } from '@/components/widgets/FundExplorerWidget'
+import { SentimentGaugeWidget } from '@/components/widgets/SentimentGaugeWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v9 adds the fund/ETF explorer (Tier-2 #7). Lives in the detail
-// band under the charts so you can drill from a symbol chart into
-// fund-level profile + holdings.
-const LS_KEY = 'neomind.research.layout.v9'
+// v11 adds the market sentiment gauge (Tier-2 #4). Lives in the
+// hero row next to news so "what's happening" and "how is the
+// tape positioned" read together.
+const LS_KEY = 'neomind.research.layout.v11'
 
 const DEFAULT_LAYOUT: Layout[] = [
-  // Hero row — visible on first paint
-  { i: 'watchlist', x: 0,  y: 0,  w: 5,  h: 12 },
-  { i: 'news',      x: 5,  y: 0,  w: 4,  h: 12 },
-  { i: 'us_quote',  x: 9,  y: 0,  w: 3,  h: 6 },
-  { i: 'cn_quote',  x: 9,  y: 6,  w: 3,  h: 6 },
+  // Hero — news owns most of the top strip, sentiment gauge right
+  { i: 'news',      x: 0,  y: 0,  w: 9,  h: 12 },
+  { i: 'sentiment', x: 9,  y: 0,  w: 3,  h: 12 },
+  // Portfolio context band
+  { i: 'watchlist', x: 0,  y: 12, w: 5,  h: 10 },
+  { i: 'us_quote',  x: 5,  y: 12, w: 4,  h: 5 },
+  { i: 'cn_quote',  x: 5,  y: 17, w: 4,  h: 5 },
+  { i: 'portfolio', x: 9,  y: 12, w: 3,  h: 10 },
   // Analytics band
-  { i: 'portfolio', x: 0,  y: 12, w: 6,  h: 9 },
-  { i: 'earnings',  x: 6,  y: 12, w: 6,  h: 9 },
-  { i: 'rs_grid',   x: 0,  y: 21, w: 6,  h: 9 },
-  { i: 'sectors',   x: 6,  y: 21, w: 6,  h: 9 },
-  // Detail band — single-symbol candles + multi-symbol overlay
-  { i: 'chart',      x: 0,  y: 30, w: 6, h: 10 },
-  { i: 'multi_chart',x: 6,  y: 30, w: 6, h: 10 },
-  { i: 'fund',       x: 0,  y: 40, w: 6, h: 12 },
-  { i: 'cn_info',    x: 6,  y: 40, w: 6, h: 12 },
+  { i: 'earnings',  x: 0,  y: 22, w: 6,  h: 9 },
+  { i: 'rs_grid',   x: 6,  y: 22, w: 6,  h: 9 },
+  { i: 'sectors',   x: 0,  y: 31, w: 12, h: 9 },
+  // Detail band
+  { i: 'chart',      x: 0,  y: 40, w: 6, h: 10 },
+  { i: 'multi_chart',x: 6,  y: 40, w: 6, h: 10 },
+  { i: 'fund',       x: 0,  y: 50, w: 6, h: 12 },
+  { i: 'cn_info',    x: 6,  y: 50, w: 6, h: 12 },
   // Reference
-  { i: 'history',   x: 0,  y: 52, w: 12, h: 8 },
+  { i: 'history',   x: 0,  y: 62, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -96,6 +99,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="fund"><div className="drag-handle h-full cursor-move"><FundExplorerWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="sentiment"><div className="drag-handle h-full cursor-move"><SentimentGaugeWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
       <div key="history"><div className="drag-handle h-full cursor-move"><HistoryTable projectId={projectId} /></div></div>
       </ResponsiveGridLayout>
