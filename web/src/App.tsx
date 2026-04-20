@@ -23,11 +23,17 @@ export default function App() {
   const [projectId, setProjectId] = useState<string>(
     () => localStorage.getItem('neomind.project') ?? 'fin-core'
   )
+  const [auditReqFilter, setAuditReqFilter] = useState<string | null>(null)
   const health = useHealth()
 
   function switchProject(p: string) {
     setProjectId(p)
     try { localStorage.setItem('neomind.project', p) } catch {}
+  }
+
+  function jumpToAudit(reqId: string) {
+    setAuditReqFilter(reqId)
+    setTab('audit')
   }
 
   return (
@@ -68,9 +74,14 @@ export default function App() {
       {/* Active tab */}
       <main className="flex-1 overflow-hidden">
         {tab === 'research' && <ResearchTab projectId={projectId} />}
-        {tab === 'chat'     && <ChatTab projectId={projectId} />}
+        {tab === 'chat'     && <ChatTab projectId={projectId} onJumpToAudit={jumpToAudit} />}
         {tab === 'paper'    && <PaperTab projectId={projectId} />}
-        {tab === 'audit'    && <AuditTab />}
+        {tab === 'audit'    && (
+          <AuditTab
+            initialReqFilter={auditReqFilter}
+            onConsumeFilter={() => setAuditReqFilter(null)}
+          />
+        )}
         {tab === 'settings' && <SettingsTab projectId={projectId} onProjectChange={switchProject} />}
       </main>
     </div>

@@ -20,6 +20,10 @@ eggs/
 .eggs/
 lib/
 lib64/
+# Python-standard patterns above accidentally match our web SPA's
+# src/lib/ — make the frontend's lib explicit again.
+!web/src/lib/
+!web/src/lib/**
 parts/
 sdist/
 var/

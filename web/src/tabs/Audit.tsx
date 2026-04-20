@@ -1,14 +1,23 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useAuditRecent, useAuditStats, type AuditEntry } from '@/lib/api'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { fmtTs } from '@/lib/utils'
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, RefreshCw, X, Copy, Check } from 'lucide-react'
 
 type KindFilter = '' | 'request' | 'response' | 'error'
 
-export function AuditTab() {
+interface Props {
+  /** When set (e.g. via jump from chat), pre-populates the search
+   *  box and auto-expands matching entries on first render. */
+  initialReqFilter?: string | null
+  /** Called after we consume the incoming filter so the parent
+   *  can clear it (prevents re-applying on tab re-entry). */
+  onConsumeFilter?: () => void
+}
+
+export function AuditTab({ initialReqFilter, onConsumeFilter }: Props) {
   const [kind, setKind] = useState<KindFilter>('')
   const [limit, setLimit] = useState(50)
   const [search, setSearch] = useState('')
@@ -16,6 +25,25 @@ export function AuditTab() {
 
   const recent = useAuditRecent({ limit, kind: kind || undefined, days: 1 })
   const stats = useAuditStats(1)
+
+  // When a filter comes in from chat "raw" button, seed the search
+  // box + expand any entry whose req_id matches. One-shot: consume
+  // via callback so leaving + re-entering the tab doesn't re-apply.
+  useEffect(() => {
+    if (!initialReqFilter) return
+    setSearch(initialReqFilter)
+    if (recent.data?.entries) {
+      const nextOpen = new Set(expanded)
+      recent.data.entries.forEach((e, i) => {
+        if (e.req_id.startsWith(initialReqFilter)) {
+          nextOpen.add(entryKey(e, i))
+        }
+      })
+      setExpanded(nextOpen)
+    }
+    onConsumeFilter?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialReqFilter, recent.data])
 
   const entries = recent.data?.entries ?? []
   const filtered = search.trim()
@@ -28,7 +56,12 @@ export function AuditTab() {
     setExpanded(next)
   }
 
+  function entryKey(e: AuditEntry, i: number): string {
+    return `${e.req_id}-${e.kind}-${i}`
+  }
+
   const s = stats.data
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -40,13 +73,24 @@ export function AuditTab() {
           </div>
         )}
         <div className="flex-1" />
-        <Input
-          placeholder="search content / task_id / req_id"
-          value={search}
-          onChange={e => setSearch(e.target.value)}
-          className="w-72"
-          data-testid="audit-search"
-        />
+        <div className="relative">
+          <Input
+            placeholder="search content / task_id / req_id"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            className="w-72 pr-6"
+            data-testid="audit-search"
+          />
+          {search && (
+            <button
+              onClick={() => setSearch('')}
+              className="absolute right-1 top-1/2 -translate-y-1/2 text-[var(--color-dim)] hover:text-[var(--color-text)]"
+              title="clear"
+            >
+              <X size={11} />
+            </button>
+          )}
+        </div>
         <select
           value={kind}
           onChange={e => setKind(e.target.value as KindFilter)}
@@ -81,10 +125,10 @@ export function AuditTab() {
         )}
         {filtered.map((e, i) => (
           <AuditEntryCard
-            key={e.req_id + '-' + e.kind + '-' + i}
+            key={entryKey(e, i)}
             entry={e}
-            open={expanded.has(e.req_id + '-' + e.kind + '-' + i)}
-            onToggle={() => toggle(e.req_id + '-' + e.kind + '-' + i)}
+            open={expanded.has(entryKey(e, i))}
+            onToggle={() => toggle(entryKey(e, i))}
           />
         ))}
       </div>
@@ -92,7 +136,18 @@ export function AuditTab() {
   )
 }
 
-function AuditEntryCard({ entry, open, onToggle }: { entry: AuditEntry; open: boolean; onToggle: () => void }) {
+function AuditEntryCard({
+  entry,
+  open,
+  onToggle,
+}: {
+  entry: AuditEntry
+  open: boolean
+  onToggle: () => void
+}) {
+  const [showRaw, setShowRaw] = useState(false)
+  const [copied, setCopied] = useState(false)
+
   const badge = {
     request: 'bg-[var(--color-blue)]/20 text-[var(--color-blue)]',
     response: 'bg-[var(--color-green)]/20 text-[var(--color-green)]',
@@ -104,6 +159,16 @@ function AuditEntryCard({ entry, open, onToggle }: { entry: AuditEntry; open: bo
   const contentLen = entry.kind === 'response' ? String(p?.content ?? '').length : undefined
   const usage = (p?.usage as Record<string, number> | undefined)
   const dur = p?.duration_ms as number | undefined
+
+  async function copyRaw() {
+    try {
+      await navigator.clipboard.writeText(JSON.stringify(entry, null, 2))
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // clipboard access denied; ignore
+    }
+  }
 
   return (
     <Card>
@@ -127,49 +192,102 @@ function AuditEntryCard({ entry, open, onToggle }: { entry: AuditEntry; open: bo
       </div>
       {open && (
         <div className="px-4 pb-3 border-t border-[var(--color-border)] text-[11px]">
-          {entry.kind === 'request' && (
-            <>
-              <SectionLabel>Messages ({((p.messages as unknown[]) ?? []).length} turns)</SectionLabel>
-              {((p.messages as Array<{role: string; content: string}>) ?? []).map((m, i) => (
-                <div key={i} className="bg-[#0e1219] border border-[var(--color-border)] rounded p-2 mb-1.5">
-                  <div className="text-[10px] text-[var(--color-accent)] uppercase">{m.role}</div>
-                  <pre className="whitespace-pre-wrap break-words mt-1 text-[11px]">{m.content}</pre>
-                </div>
-              ))}
-              <SectionLabel>Params</SectionLabel>
-              <JsonBlock data={{ model: p.model, max_tokens: p.max_tokens, temperature: p.temperature }} />
-            </>
-          )}
-          {entry.kind === 'response' && (
-            <>
-              <SectionLabel>Content ({contentLen}c)</SectionLabel>
-              <pre className="whitespace-pre-wrap break-words text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2">
-                {String(p.content ?? '')}
+          {/* Toggle: pretty view ↔ raw JSON */}
+          <div className="flex gap-2 items-center mt-3 mb-1">
+            <div className="flex gap-1">
+              <button
+                onClick={() => setShowRaw(false)}
+                data-testid="audit-view-pretty"
+                className={
+                  'px-2 py-0.5 text-[10px] uppercase tracking-wider rounded border transition ' +
+                  (!showRaw
+                    ? 'bg-[var(--color-border)] text-[var(--color-accent)] border-[var(--color-accent)]'
+                    : 'text-[var(--color-dim)] border-[var(--color-border)] hover:text-[var(--color-text)]')
+                }
+              >
+                pretty
+              </button>
+              <button
+                onClick={() => setShowRaw(true)}
+                data-testid="audit-view-raw"
+                className={
+                  'px-2 py-0.5 text-[10px] uppercase tracking-wider rounded border transition ' +
+                  (showRaw
+                    ? 'bg-[var(--color-border)] text-[var(--color-accent)] border-[var(--color-accent)]'
+                    : 'text-[var(--color-dim)] border-[var(--color-border)] hover:text-[var(--color-text)]')
+                }
+              >
+                raw JSON
+              </button>
+            </div>
+            <div className="flex-1" />
+            <button
+              onClick={copyRaw}
+              className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded"
+              title="copy full entry as JSON"
+              data-testid="audit-copy-raw"
+            >
+              {copied ? <Check size={10} /> : <Copy size={10} />}
+              {copied ? 'copied' : 'copy'}
+            </button>
+          </div>
+
+          {showRaw ? (
+            <div data-testid="audit-raw-json">
+              <SectionLabel>
+                Full entry (everything that was written to ~/Desktop/Investment/_audit/YYYY-MM-DD.jsonl)
+              </SectionLabel>
+              <pre className="whitespace-pre-wrap break-words text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2 max-h-[60vh] overflow-y-auto">
+                {JSON.stringify(entry, null, 2)}
               </pre>
-              {p.reasoning_content && String(p.reasoning_content).length > 0 && (
+            </div>
+          ) : (
+            <>
+              {entry.kind === 'request' && (
                 <>
-                  <SectionLabel>Reasoning content</SectionLabel>
-                  <pre className="whitespace-pre-wrap break-words text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2 max-h-60 overflow-y-auto">
-                    {String(p.reasoning_content)}
-                  </pre>
+                  <SectionLabel>Messages ({((p.messages as unknown[]) ?? []).length} turns)</SectionLabel>
+                  {((p.messages as Array<{ role: string; content: string }>) ?? []).map((m, i) => (
+                    <div key={i} className="bg-[#0e1219] border border-[var(--color-border)] rounded p-2 mb-1.5">
+                      <div className="text-[10px] text-[var(--color-accent)] uppercase">{m.role}</div>
+                      <pre className="whitespace-pre-wrap break-words mt-1 text-[11px]">{m.content}</pre>
+                    </div>
+                  ))}
+                  <SectionLabel>Params</SectionLabel>
+                  <JsonBlock data={{ model: p.model, max_tokens: p.max_tokens, temperature: p.temperature }} />
                 </>
               )}
-              <SectionLabel>Usage · finish</SectionLabel>
-              <JsonBlock data={{ usage, finish_reason: p.finish_reason, duration_ms: dur }} />
-            </>
-          )}
-          {entry.kind === 'error' && (
-            <>
-              <SectionLabel>Error</SectionLabel>
-              <pre className="whitespace-pre-wrap text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2">
-                {String(p.error_type)}: {String(p.error_msg)}
-              </pre>
-              {p.traceback != null && (
+              {entry.kind === 'response' && (
                 <>
-                  <SectionLabel>Traceback</SectionLabel>
-                  <pre className="whitespace-pre-wrap text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2 max-h-60 overflow-y-auto">
-                    {String(p.traceback)}
+                  <SectionLabel>Content ({contentLen}c)</SectionLabel>
+                  <pre className="whitespace-pre-wrap break-words text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2">
+                    {String(p.content ?? '')}
                   </pre>
+                  {typeof p.reasoning_content === 'string' && p.reasoning_content.length > 0 && (
+                    <>
+                      <SectionLabel>Reasoning content ({p.reasoning_content.length}c)</SectionLabel>
+                      <pre className="whitespace-pre-wrap break-words text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2 max-h-60 overflow-y-auto">
+                        {p.reasoning_content}
+                      </pre>
+                    </>
+                  )}
+                  <SectionLabel>Usage · finish</SectionLabel>
+                  <JsonBlock data={{ usage, finish_reason: p.finish_reason, duration_ms: dur }} />
+                </>
+              )}
+              {entry.kind === 'error' && (
+                <>
+                  <SectionLabel>Error</SectionLabel>
+                  <pre className="whitespace-pre-wrap text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2">
+                    {String(p.error_type)}: {String(p.error_msg)}
+                  </pre>
+                  {p.traceback != null && (
+                    <>
+                      <SectionLabel>Traceback</SectionLabel>
+                      <pre className="whitespace-pre-wrap text-[11px] bg-[#0e1219] border border-[var(--color-border)] rounded p-2 max-h-60 overflow-y-auto">
+                        {String(p.traceback)}
+                      </pre>
+                    </>
+                  )}
                 </>
               )}
             </>

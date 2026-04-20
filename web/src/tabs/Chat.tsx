@@ -1,11 +1,14 @@
 import { ChatPanel } from '@/components/chat/ChatPanel'
 
-interface Props { projectId: string }
+interface Props {
+  projectId: string
+  onJumpToAudit?: (reqId: string) => void
+}
 
-export function ChatTab({ projectId }: Props) {
+export function ChatTab({ projectId, onJumpToAudit }: Props) {
   return (
-    <div className="h-full max-w-4xl mx-auto">
-      <ChatPanel projectId={projectId} />
+    <div className="h-full">
+      <ChatPanel projectId={projectId} onJumpToAudit={onJumpToAudit} />
     </div>
   )
 }
