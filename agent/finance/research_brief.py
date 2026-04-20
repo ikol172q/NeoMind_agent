@@ -54,7 +54,13 @@ _BRIEF_PROMPT = (
     "- Cite specific numbers from DASHBOARD STATE. If a value is null, say so plainly ('no positions yet').\n"
     "- Each line stands alone: no filler words ('here is...', 'today...').\n"
     "- Under 55 words total across the three lines.\n"
-    "- Plain text. No markdown, no emoji, no quotes around numbers."
+    "- Plain text. No markdown, no emoji, no quotes around numbers.\n"
+    "\n"
+    "Citation tags (IMPORTANT — the UI renders these as clickable chips):\n"
+    "- Wrap every ticker symbol you mention as [[TICKER]]  e.g. [[AAPL]], [[NVDA]].\n"
+    "- Wrap a sector reference as [[sector:Name]]  e.g. [[sector:Technology]].\n"
+    "- Wrap a position reference as [[pos:TICKER]]  e.g. [[pos:AAPL]] (use this only for symbols I actually hold).\n"
+    "- Do NOT wrap numbers, percentages, or sentiment labels — only the three reference types above."
 )
 
 

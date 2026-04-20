@@ -1,6 +1,7 @@
 import { useMemo } from 'react'
 import { useResearchBrief } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
+import { CitedText } from '@/components/ui/CitedText'
 import { Sparkles, RefreshCw, MessageSquare } from 'lucide-react'
 
 interface Props {
@@ -87,8 +88,6 @@ export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
         {!q.isLoading && !q.isError && lines.length > 0 && (
           <div className="flex flex-col gap-1">
             {lines.map((line, i) => {
-              // Render the leading label (Market:/Book:/Next:) as a
-              // dim prefix so the eye parses the three sections quickly.
               const m = line.match(/^(Market|Book|Next)[:：]\s*(.*)$/)
               if (m) {
                 return (
@@ -96,11 +95,33 @@ export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
                     <span className="text-[10px] uppercase tracking-wider text-[var(--color-dim)] w-14 shrink-0 pt-0.5">
                       {m[1]}
                     </span>
-                    <span className="flex-1 text-[var(--color-text)]">{m[2]}</span>
+                    <span className="flex-1 text-[var(--color-text)]">
+                      <CitedText
+                        text={m[2]}
+                        onCiteClick={cite => {
+                          if (!onJumpToChat) return
+                          if (cite.kind === 'sector') {
+                            onJumpToChat(
+                              `What's driving the ${cite.id} sector right now?`,
+                              { project: true },
+                            )
+                          } else {
+                            onJumpToChat(
+                              `Expand on ${cite.id}: what's the current setup and risk?`,
+                              { symbol: cite.id },
+                            )
+                          }
+                        }}
+                      />
+                    </span>
                   </div>
                 )
               }
-              return <div key={i} className="text-[var(--color-text)]">{line}</div>
+              return (
+                <div key={i} className="text-[var(--color-text)]">
+                  <CitedText text={line} />
+                </div>
+              )
             })}
           </div>
         )}
