@@ -1,8 +1,8 @@
 import { useMemo } from 'react'
-import { useResearchBrief } from '@/lib/api'
+import { useResearchBrief, useAnomalies } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
 import { CitedText } from '@/components/ui/CitedText'
-import { Sparkles, RefreshCw, MessageSquare } from 'lucide-react'
+import { Sparkles, RefreshCw, MessageSquare, AlertTriangle } from 'lucide-react'
 
 interface Props {
   projectId: string
@@ -22,6 +22,7 @@ interface Props {
  */
 export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
   const q = useResearchBrief(projectId)
+  const anomalies = useAnomalies(projectId)
 
   const lines = useMemo(() => {
     const txt = q.data?.text ?? ''
@@ -76,6 +77,36 @@ export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
           <RefreshCw size={11} className={q.isFetching ? 'animate-spin' : ''} />
         </Button>
       </div>
+      {/* Anomaly flag strip — renders only when flags exist */}
+      {(anomalies.data?.flags?.length ?? 0) > 0 && (
+        <div
+          data-testid="anomaly-flags"
+          className="flex flex-wrap gap-1 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg)]/40"
+        >
+          {anomalies.data!.flags.slice(0, 6).map((f, i) => {
+            const color =
+              f.severity === 'alert' ? 'var(--color-red)' :
+              f.severity === 'warn' ? 'var(--color-amber, #e5a200)' :
+              'var(--color-accent)'
+            return (
+              <button
+                key={i}
+                data-testid={`anomaly-flag-${f.kind}-${f.symbol}`}
+                onClick={() => onJumpToChat?.(
+                  `Dig into this flag: "${f.message}". What should I actually do about it?`,
+                  { symbol: f.symbol },
+                )}
+                className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] border whitespace-nowrap transition"
+                style={{ color, borderColor: color }}
+                title={`[${f.severity.toUpperCase()}] ${f.kind} · click to ask fin`}
+              >
+                <AlertTriangle size={9} />
+                {f.message}
+              </button>
+            )
+          })}
+        </div>
+      )}
       <div className="flex-1 overflow-y-auto p-3 text-[12px] leading-[1.6]" data-testid="brief-body">
         {q.isLoading && (
           <div className="text-[var(--color-dim)] italic">loading today's read…</div>
