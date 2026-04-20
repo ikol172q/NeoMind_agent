@@ -7,6 +7,17 @@
 import { COMMANDS } from './commandRegistry'
 import { fmtNum, fmtCap } from '@/lib/utils'
 
+// Appended to every workflow prompt. Tells the model to wrap ticker /
+// sector / position references in the UI's citation tag syntax so the
+// chat bubbles render them as clickable chips that route back to chat
+// with the cited entity as context.
+const CITATION_INSTRUCTION =
+  '\nCitation tags (IMPORTANT — the UI renders these as clickable chips):\n' +
+  '- Wrap ticker symbols as [[TICKER]]   e.g. [[AAPL]], [[NVDA]].\n' +
+  '- Wrap sector names as [[sector:Name]]  e.g. [[sector:Technology]].\n' +
+  "- Wrap a held position as [[pos:TICKER]] (only if I actually hold it per DASHBOARD STATE).\n" +
+  '- Do NOT wrap numbers, percentages, or labels — only the three reference types above.'
+
 export type ExecResult =
   | { kind: 'render'; ok: boolean; markdown: string }
   | {
@@ -63,7 +74,8 @@ export async function execCommand(input: string): Promise<ExecResult | null> {
           'one line on whether IV is pricing more, less, or about the same as the historical move.\n' +
           'End with ONE line: which sector I should pay attention to today (use sector movers).\n' +
           'Rules: cite specific numbers from DASHBOARD STATE. If a section has no data, say so plainly. ' +
-          'Under 250 words. No fluff, no disclaimers.',
+          'Under 250 words. No fluff, no disclaimers.\n' +
+          CITATION_INSTRUCTION,
       }
     }
 
@@ -86,7 +98,8 @@ export async function execCommand(input: string): Promise<ExecResult | null> {
           `- One catalyst to watch in the next 48h.\n` +
           `- One risk that would invalidate the call.\n` +
           `Rules: cite numbers from DASHBOARD STATE. Don't recommend options strategies that need ` +
-          `data the dashboard doesn't have. Under 200 words. No disclaimers.`,
+          `data the dashboard doesn't have. Under 200 words. No disclaimers.\n` +
+          CITATION_INSTRUCTION,
       }
     }
 
@@ -102,7 +115,8 @@ export async function execCommand(input: string): Promise<ExecResult | null> {
           "  - is in today's red-zone sectors (check sector movers · bottom)\n" +
           'For each flagged position: one-line diagnosis + one-line suggestion (hold / trim / hedge / watch).\n' +
           'End with ONE sentence read on the overall portfolio: healthy / watch / at risk — and why.\n' +
-          'If nothing is flagged, say so plainly. Under 200 words. Numbers, not adjectives.',
+          'If nothing is flagged, say so plainly. Under 200 words. Numbers, not adjectives.\n' +
+          CITATION_INSTRUCTION,
       }
     }
 

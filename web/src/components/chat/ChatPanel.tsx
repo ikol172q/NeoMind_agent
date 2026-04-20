@@ -384,6 +384,18 @@ export function ChatPanel({
               pending={m.pending}
               reqId={m.reqId}
               onJumpToAudit={onJumpToAudit}
+              onCiteClick={(cite) => {
+                // Clicking a citation in an assistant reply sets the
+                // NEXT send's context to that cite — so the user can
+                // type "trim it?" and the agent sees the full state
+                // for the cited symbol without retyping.
+                if (cite.kind === 'sector') {
+                  setNextSendContext({ project: true })
+                } else {
+                  setNextSendContext({ symbol: cite.id })
+                }
+                inputRef.current?.focus()
+              }}
             />
           ))}
         </div>

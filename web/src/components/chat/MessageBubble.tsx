@@ -1,5 +1,6 @@
 import { cn } from '@/lib/utils'
 import { ClipboardList } from 'lucide-react'
+import { parseCitations } from '@/lib/citations'
 
 export type Role = 'user' | 'assistant' | 'system' | 'error'
 
@@ -10,6 +11,10 @@ interface Props {
   pending?: boolean
   reqId?: string
   onJumpToAudit?: (reqId: string) => void
+  /** When an assistant message contains [[SYMBOL]] / [[sector:X]] /
+   *  [[pos:Y]] citation tags, clicking any chip routes to chat with
+   *  the cited symbol/project context. */
+  onCiteClick?: (cite: { kind: 'symbol' | 'sector' | 'pos'; id: string; label: string }) => void
 }
 
 /**
@@ -17,7 +22,7 @@ interface Props {
  * regex-based transform (we deliberately avoid react-markdown
  * to keep the bundle small and audit-surface narrow).
  */
-export function MessageBubble({ role, content, ts, pending, reqId, onJumpToAudit }: Props) {
+export function MessageBubble({ role, content, ts, pending, reqId, onJumpToAudit, onCiteClick }: Props) {
   const align = role === 'user' ? 'items-end' : 'items-start'
   const bubble =
     role === 'user'
@@ -28,10 +33,19 @@ export function MessageBubble({ role, content, ts, pending, reqId, onJumpToAudit
       ? 'bg-[var(--color-red)]/15 border border-[var(--color-red)]/50 text-[var(--color-red)] rounded-2xl'
       : 'bg-transparent text-[var(--color-dim)] italic text-[11px] px-0'
 
+  // Assistant messages may carry [[SYMBOL]] / [[sector:X]] / [[pos:Y]]
+  // citation tags. Parse them first, then markdown-render the surrounding
+  // text, so clicking a citation chip can route to chat with context.
+  const hasCitations = role === 'assistant' && /\[\[[^\]]+\]\]/.test(content)
+
   return (
     <div className={cn('flex flex-col mb-3 max-w-[85%]', align, role === 'user' ? 'self-end' : 'self-start')}>
       <div className={cn('px-3.5 py-2 text-[13px] leading-[1.55] break-words whitespace-pre-wrap', bubble)}>
-        {pending ? <TypingIndicator /> : <MarkdownLite text={content} />}
+        {pending
+          ? <TypingIndicator />
+          : hasCitations
+            ? <CitedMarkdown text={content} onCiteClick={onCiteClick} />
+            : <MarkdownLite text={content} />}
       </div>
       <div className="flex gap-2 mt-1 px-1 items-center">
         {ts && <div className="text-[10px] text-[var(--color-dim)]">{ts}</div>}
@@ -72,6 +86,45 @@ function escapeHtml(s: string): string {
  * Deliberately minimal; anything more → consider a real parser
  * later.
  */
+/**
+ * Splits text on citation tags, runs markdown on the text slices,
+ * renders citation chips inline. Preserves bold/italic/code for
+ * ordinary prose around citations.
+ */
+function CitedMarkdown({
+  text,
+  onCiteClick,
+}: {
+  text: string
+  onCiteClick?: (c: { kind: 'symbol' | 'sector' | 'pos'; id: string; label: string }) => void
+}) {
+  const segments = parseCitations(text)
+  return (
+    <>
+      {segments.map((s, i) => {
+        if (s.type === 'text') return <MarkdownLite key={i} text={s.text} />
+        const c = s.cite
+        const color =
+          c.kind === 'pos' ? 'var(--color-amber, #e5a200)' :
+          c.kind === 'sector' ? 'var(--color-accent)' :
+          'var(--color-green)'
+        return (
+          <button
+            key={i}
+            data-testid={`cite-${c.kind}-${c.id}`}
+            onClick={() => onCiteClick?.(c)}
+            title={`${c.kind === 'pos' ? 'position: ' : c.kind === 'sector' ? 'sector: ' : 'symbol: '}${c.id}`}
+            className="inline-flex items-center gap-0.5 px-1 py-0 mx-0.5 rounded text-[11px] font-mono border align-baseline"
+            style={{ color, borderColor: color, background: 'transparent' }}
+          >
+            {c.label}
+          </button>
+        )
+      })}
+    </>
+  )
+}
+
 function MarkdownLite({ text }: { text: string }) {
   const escaped = escapeHtml(text)
   // bold **x**
