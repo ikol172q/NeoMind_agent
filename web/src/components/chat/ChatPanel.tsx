@@ -47,38 +47,52 @@ interface Props {
  * the sidebar we always fetch from backend (no localStorage for
  * other sessions) to keep the local state small.
  */
+function cacheKeyFor(pid: string) {
+  return `neomind.chat.${pid}`
+}
+
+function loadCache(pid: string): { sessionId: string | null; msgs: Msg[] } {
+  try {
+    const raw = localStorage.getItem(cacheKeyFor(pid))
+    if (raw) {
+      const cached = JSON.parse(raw) as { sessionId?: string | null; msgs?: Msg[] }
+      return { sessionId: cached.sessionId ?? null, msgs: cached.msgs ?? [] }
+    }
+  } catch {
+    /* corrupt cache — treat as empty */
+  }
+  return { sessionId: null, msgs: [] }
+}
+
 export function ChatPanel({ projectId, onJumpToAudit }: Props) {
   const [input, setInput] = useState('')
-  const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
-  const [sessionId, setSessionId] = useState<string | null>(null)
   const [loadingSession, setLoadingSession] = useState(false)
+  // Hydrate sessionId + msgs synchronously from localStorage so we
+  // never race a mirror-effect that would clobber the cache with an
+  // initial empty state. This was the cause of phantom "yo" sessions
+  // appearing after a reload.
+  const [sessionId, setSessionId] = useState<string | null>(() => loadCache(projectId).sessionId)
+  const [msgs, setMsgs] = useState<Msg[]>(() => loadCache(projectId).msgs)
+  const loadedProjectRef = useRef(projectId)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const abortRef = useRef<AbortController | null>(null)
   const qc = useQueryClient()
-  const cacheKey = `neomind.chat.${projectId}`
+  const cacheKey = cacheKeyFor(projectId)
 
-  // ── On mount / project change: restore from localStorage ──
+  // Only re-hydrate on *project switch*, not on mount (the lazy
+  // initializer already did that). This avoids the null-overwrite
+  // race that was killing session persistence on reload.
   useEffect(() => {
-    try {
-      const raw = localStorage.getItem(cacheKey)
-      if (raw) {
-        const cached = JSON.parse(raw) as { sessionId: string | null; msgs: Msg[] }
-        if (cached.sessionId) {
-          setSessionId(cached.sessionId)
-          setMsgs(cached.msgs ?? [])
-          return
-        }
-      }
-    } catch {
-      /* ignore corrupt cache */
-    }
-    setSessionId(null)
-    setMsgs([])
-  }, [projectId, cacheKey])
+    if (loadedProjectRef.current === projectId) return
+    loadedProjectRef.current = projectId
+    const { sessionId: sid, msgs: m } = loadCache(projectId)
+    setSessionId(sid)
+    setMsgs(m)
+  }, [projectId])
 
-  // ── Mirror msgs + sessionId to localStorage ──
+  // Mirror msgs + sessionId to localStorage on every change.
   useEffect(() => {
     if (loadingSession) return
     try {
@@ -157,49 +171,51 @@ export function ChatPanel({ projectId, onJumpToAudit }: Props) {
   async function send() {
     const text = input.trim()
     if (!text || busy) return
+
+    // Lock + clear synchronously so the input box empties on the very
+    // next paint — do this *before* any await. We also clear the DOM
+    // node via ref in case controlled-state commit is deferred (some
+    // browsers paint stale value when `disabled` flips in the same
+    // render cycle).
+    setBusy(true)
     setInput('')
+    if (inputRef.current) inputRef.current.value = ''
     addMsg({ role: 'user', content: text })
 
-    const sid = await ensureSession()
-    // Fire-and-forget persist user msg
-    void persist(sid, { role: 'user', content: text, ts: new Date().toISOString() })
-
-    // ── Slash commands: local execution (instant) ──
-    if (text.startsWith('/')) {
-      const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
-      setBusy(true)
-      try {
-        const res = await execCommand(text)
-        if (res) {
-          updateMsg(pendingId, {
-            content: res.markdown,
-            pending: false,
-            role: res.ok ? 'assistant' : 'error',
-          })
-          void persist(sid, {
-            role: res.ok ? 'assistant' : 'error',
-            content: res.markdown,
-            ts: new Date().toISOString(),
-          })
-          setBusy(false)
-          return
-        }
-        updateMsg(pendingId, { content: '' })
-        await streamReply(sid, pendingId, text)
-      } catch (e: unknown) {
-        const errMsg = `✗ ${e instanceof Error ? e.message : String(e)}`
-        updateMsg(pendingId, { content: errMsg, pending: false, role: 'error' })
-        void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
-      } finally {
-        setBusy(false)
-      }
-      return
-    }
-
-    // ── Free-form: streaming ──
-    const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
-    setBusy(true)
     try {
+      const sid = await ensureSession()
+      void persist(sid, { role: 'user', content: text, ts: new Date().toISOString() })
+
+      // ── Slash commands: local execution (instant) ──
+      if (text.startsWith('/')) {
+        const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
+        try {
+          const res = await execCommand(text)
+          if (res) {
+            updateMsg(pendingId, {
+              content: res.markdown,
+              pending: false,
+              role: res.ok ? 'assistant' : 'error',
+            })
+            void persist(sid, {
+              role: res.ok ? 'assistant' : 'error',
+              content: res.markdown,
+              ts: new Date().toISOString(),
+            })
+            return
+          }
+          updateMsg(pendingId, { content: '' })
+          await streamReply(sid, pendingId, text)
+        } catch (e: unknown) {
+          const errMsg = `✗ ${e instanceof Error ? e.message : String(e)}`
+          updateMsg(pendingId, { content: errMsg, pending: false, role: 'error' })
+          void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
+        }
+        return
+      }
+
+      // ── Free-form: streaming ──
+      const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
       await streamReply(sid, pendingId, text)
     } finally {
       setBusy(false)
