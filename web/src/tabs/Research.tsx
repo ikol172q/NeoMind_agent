@@ -99,7 +99,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="portfolio"><div className="drag-handle h-full cursor-move"><PortfolioHeatmapWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
-      <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="fund"><div className="drag-handle h-full cursor-move"><FundExplorerWidget onJumpToChat={onJumpToChat} /></div></div>
