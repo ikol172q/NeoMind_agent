@@ -1,30 +1,92 @@
 import { useEffect, useRef, useState } from 'react'
+import { useQueryClient } from '@tanstack/react-query'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { MessageBubble, type Role } from './MessageBubble'
 import { SlashMenu } from './SlashMenu'
+import { SessionSidebar } from './SessionSidebar'
 import { execCommand } from './commandExec'
-import { dispatchChat, getTask } from '@/lib/api'
+import {
+  streamChat,
+  createChatSession,
+  loadChatSession,
+  appendChatMessage,
+  type StoredMessage,
+} from '@/lib/api'
 import { Send } from 'lucide-react'
 
-interface Msg { id: string; role: Role; content: string; ts?: string; pending?: boolean }
+interface Msg {
+  id: string
+  role: Role
+  content: string
+  ts?: string
+  pending?: boolean
+  reqId?: string
+}
 
-interface Props { projectId: string }
+interface Props {
+  projectId: string
+  onJumpToAudit?: (reqId: string) => void
+}
 
 /**
- * Telegram-style chat panel.
- * - Typing '/' opens slash menu (filterable, tab-to-complete)
- * - Slash commands execute locally via commandExec (fast);
- *   /analyze + free-form go to the fleet agent via /api/chat
- * - Streaming: fleet returns a task_id; we poll /api/tasks/{id}
- *   and update the assistant bubble when complete.
+ * Telegram-style chat with persistent sessions.
+ *
+ * Persistence strategy (two layers):
+ * 1. localStorage — mirror of (sessionId, msgs) that survives tab
+ *    switches within the SPA and browser refresh. Written on every
+ *    state change, read once on mount.
+ * 2. Backend JSONL — every completed turn (user msg + assistant
+ *    reply) is POSTed to /api/chat_sessions/{sid}/append so the
+ *    Investment-root data firewall has the durable record. This is
+ *    what the session list sidebar reads from.
+ *
+ * Design choice: the localStorage cache is authoritative for "what
+ * the user sees right now". The backend is authoritative for "what
+ * sessions exist across devices". When you click a past session in
+ * the sidebar we always fetch from backend (no localStorage for
+ * other sessions) to keep the local state small.
  */
-export function ChatPanel({ projectId }: Props) {
+export function ChatPanel({ projectId, onJumpToAudit }: Props) {
   const [input, setInput] = useState('')
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [busy, setBusy] = useState(false)
+  const [sessionId, setSessionId] = useState<string | null>(null)
+  const [loadingSession, setLoadingSession] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const abortRef = useRef<AbortController | null>(null)
+  const qc = useQueryClient()
+  const cacheKey = `neomind.chat.${projectId}`
+
+  // ── On mount / project change: restore from localStorage ──
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(cacheKey)
+      if (raw) {
+        const cached = JSON.parse(raw) as { sessionId: string | null; msgs: Msg[] }
+        if (cached.sessionId) {
+          setSessionId(cached.sessionId)
+          setMsgs(cached.msgs ?? [])
+          return
+        }
+      }
+    } catch {
+      /* ignore corrupt cache */
+    }
+    setSessionId(null)
+    setMsgs([])
+  }, [projectId, cacheKey])
+
+  // ── Mirror msgs + sessionId to localStorage ──
+  useEffect(() => {
+    if (loadingSession) return
+    try {
+      localStorage.setItem(cacheKey, JSON.stringify({ sessionId, msgs }))
+    } catch {
+      /* quota exceeded — best effort */
+    }
+  }, [msgs, sessionId, cacheKey, loadingSession])
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -32,76 +94,160 @@ export function ChatPanel({ projectId }: Props) {
     }
   }, [msgs])
 
-  function addMsg(role: Role, content: string, pending = false) {
+  useEffect(() => () => abortRef.current?.abort(), [])
+
+  function addMsg(m: Omit<Msg, 'id' | 'ts'>): string {
     const id = `${Date.now()}-${Math.random()}`
-    setMsgs(m => [...m, { id, role, content, pending, ts: new Date().toLocaleTimeString() }])
+    setMsgs(prev => [...prev, { id, ts: new Date().toLocaleTimeString(), ...m }])
     return id
   }
 
   function updateMsg(id: string, patch: Partial<Msg>) {
-    setMsgs(m => m.map(x => (x.id === id ? { ...x, ...patch } : x)))
+    setMsgs(prev => prev.map(x => (x.id === id ? { ...x, ...patch } : x)))
+  }
+
+  async function ensureSession(): Promise<string> {
+    if (sessionId) return sessionId
+    const res = await createChatSession(projectId)
+    setSessionId(res.session_id)
+    // Invalidate the sidebar list so the new session shows up
+    qc.invalidateQueries({ queryKey: ['chat_sessions', projectId] })
+    return res.session_id
+  }
+
+  async function persist(sid: string, m: StoredMessage) {
+    try {
+      await appendChatMessage(projectId, sid, m)
+      qc.invalidateQueries({ queryKey: ['chat_sessions', projectId] })
+    } catch (err) {
+      // Persistence is best-effort. localStorage still has the message.
+      console.warn('chat persist failed', err)
+    }
+  }
+
+  function startNewSession() {
+    abortRef.current?.abort()
+    setSessionId(null)
+    setMsgs([])
+    setInput('')
+  }
+
+  async function selectSession(sid: string) {
+    if (sid === sessionId) return
+    abortRef.current?.abort()
+    setLoadingSession(true)
+    try {
+      const data = await loadChatSession(projectId, sid)
+      const restored: Msg[] = data.messages.map((m, i) => ({
+        id: `${sid}-${i}`,
+        role: m.role as Role,
+        content: m.content,
+        ts: m.ts ? new Date(m.ts).toLocaleTimeString() : undefined,
+        reqId: m.req_id,
+      }))
+      setSessionId(sid)
+      setMsgs(restored)
+    } catch (err) {
+      console.error('load session failed', err)
+    } finally {
+      setLoadingSession(false)
+    }
   }
 
   async function send() {
     const text = input.trim()
     if (!text || busy) return
     setInput('')
-    addMsg('user', text)
+    addMsg({ role: 'user', content: text })
 
-    // slash commands first
+    const sid = await ensureSession()
+    // Fire-and-forget persist user msg
+    void persist(sid, { role: 'user', content: text, ts: new Date().toISOString() })
+
+    // ── Slash commands: local execution (instant) ──
     if (text.startsWith('/')) {
-      const pendingId = addMsg('assistant', '', true)
+      const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
       setBusy(true)
       try {
         const res = await execCommand(text)
         if (res) {
-          updateMsg(pendingId, { content: res.markdown, pending: false, role: res.ok ? 'assistant' : 'error' })
+          updateMsg(pendingId, {
+            content: res.markdown,
+            pending: false,
+            role: res.ok ? 'assistant' : 'error',
+          })
+          void persist(sid, {
+            role: res.ok ? 'assistant' : 'error',
+            content: res.markdown,
+            ts: new Date().toISOString(),
+          })
           setBusy(false)
           return
         }
-        // null → fall through to agent (e.g. /analyze)
-        updateMsg(pendingId, { content: '⏳ dispatching to fleet agent…', pending: true })
+        updateMsg(pendingId, { content: '' })
+        await streamReply(sid, pendingId, text)
       } catch (e: unknown) {
-        updateMsg(pendingId, { content: `✗ ${e instanceof Error ? e.message : String(e)}`, pending: false, role: 'error' })
+        const errMsg = `✗ ${e instanceof Error ? e.message : String(e)}`
+        updateMsg(pendingId, { content: errMsg, pending: false, role: 'error' })
+        void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
+      } finally {
         setBusy(false)
-        return
       }
+      return
     }
 
-    // Free-form or /analyze → fleet agent
-    const pendingId = msgs.find(m => m.pending)?.id ?? addMsg('assistant', '⏳ fleet thinking…', true)
+    // ── Free-form: streaming ──
+    const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
     setBusy(true)
     try {
-      const taskId = await dispatchChat(projectId, text)
-      const started = Date.now()
-      // poll
-      while (true) {
-        await new Promise(r => setTimeout(r, 1500))
-        const t = await getTask(taskId)
-        if (t.status === 'completed') {
-          updateMsg(pendingId, { content: t.reply || '(empty reply)', pending: false })
-          break
-        }
-        if (t.status === 'failed') {
-          updateMsg(pendingId, { content: `✗ ${t.error ?? 'task failed'}`, pending: false, role: 'error' })
-          break
-        }
-        if (Date.now() - started > 180_000) {
-          updateMsg(pendingId, { content: '⚠ timed out at 180s', pending: false, role: 'error' })
-          break
-        }
-        const secs = Math.round((Date.now() - started) / 1000)
-        updateMsg(pendingId, { content: `⏳ fleet thinking (${secs}s, R1 reasoning can take 30-90s)` })
-      }
-    } catch (e: unknown) {
-      updateMsg(pendingId, { content: `✗ ${e instanceof Error ? e.message : String(e)}`, pending: false, role: 'error' })
+      await streamReply(sid, pendingId, text)
     } finally {
       setBusy(false)
     }
   }
 
+  function streamReply(sid: string, msgId: string, text: string): Promise<void> {
+    return new Promise<void>(resolve => {
+      let accumulated = ''
+      let firstToken = true
+      let reqId: string | undefined
+      abortRef.current?.abort()
+      abortRef.current = streamChat(projectId, text, {
+        onDelta: (chunk) => {
+          accumulated += chunk
+          if (firstToken) {
+            firstToken = false
+            updateMsg(msgId, { content: accumulated, pending: false })
+          } else {
+            updateMsg(msgId, { content: accumulated })
+          }
+        },
+        onDone: (info) => {
+          reqId = info.req_id
+          updateMsg(msgId, {
+            content: accumulated || '(empty reply)',
+            pending: false,
+            reqId,
+          })
+          void persist(sid, {
+            role: 'assistant',
+            content: accumulated || '(empty reply)',
+            ts: new Date().toISOString(),
+            req_id: reqId,
+          })
+          resolve()
+        },
+        onError: (err) => {
+          const errMsg = `✗ ${err}`
+          updateMsg(msgId, { content: errMsg, pending: false, role: 'error' })
+          void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
+          resolve()
+        },
+      })
+    })
+  }
+
   function onKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
-    // If slash menu is showing and user hits Enter without Tab-completing, treat as submit anyway
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
       send()
@@ -112,52 +258,90 @@ export function ChatPanel({ projectId }: Props) {
   const showMenu = slashQuery.length > 0 && !input.includes(' ')
 
   return (
-    <div className="h-full flex flex-col">
-      <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)]">
-        <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">Fin persona · DeepSeek-R1</div>
-        <div className="text-xs mt-0.5">
-          Project: <span className="text-[var(--color-accent)]">{projectId}</span>
-          {' · '}
-          <span className="text-[var(--color-dim)]">Try <code>/help</code> to see commands</span>
-        </div>
-      </div>
+    <div className="h-full flex">
+      <SessionSidebar
+        projectId={projectId}
+        currentSessionId={sessionId}
+        onSelect={selectSession}
+        onNew={startNewSession}
+      />
 
-      <div ref={scrollRef} data-testid="chat-messages" className="flex-1 overflow-y-auto p-4 flex flex-col">
-        {msgs.length === 0 && (
-          <div className="text-[var(--color-dim)] italic text-[12px] text-center mt-8">
-            输入 / 看命令菜单，或直接提问。audit log: <code>~/Desktop/Investment/_audit/</code>
+      <div className="flex-1 flex flex-col min-w-0 max-w-4xl mx-auto">
+        <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)]">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+            Fin persona · DeepSeek-chat (streaming)
           </div>
-        )}
-        {msgs.map(m => (
-          <MessageBubble key={m.id} role={m.role} content={m.content} ts={m.ts} pending={m.pending} />
-        ))}
-      </div>
+          <div className="text-xs mt-0.5">
+            Project: <span className="text-[var(--color-accent)]">{projectId}</span>
+            {sessionId && (
+              <>
+                {' · '}
+                <span className="text-[var(--color-dim)]">
+                  session <code className="text-[var(--color-text)]" data-testid="chat-session-id">{sessionId.slice(0, 8)}</code>
+                </span>
+              </>
+            )}
+            {' · '}
+            <span className="text-[var(--color-dim)]">
+              type <code>/help</code> for commands · click <code>raw</code> on a reply to jump to its audit entry
+            </span>
+          </div>
+        </div>
 
-      <div className="relative p-3 border-t border-[var(--color-border)] bg-[var(--color-panel)]">
-        {showMenu && (
-          <SlashMenu
-            query={slashQuery}
-            onPick={name => {
-              setInput(name + ' ')
-              inputRef.current?.focus()
-            }}
-          />
-        )}
-        <div className="flex gap-2 items-center">
-          <Input
-            ref={inputRef}
-            data-testid="chat-input"
-            placeholder="Ask fin…  (type / for commands)"
-            value={input}
-            onChange={e => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            maxLength={4000}
-            className="flex-1"
-            disabled={busy}
-          />
-          <Button data-testid="chat-send" onClick={send} disabled={busy || !input.trim()}>
-            <Send size={13} /> Send
-          </Button>
+        <div
+          ref={scrollRef}
+          data-testid="chat-messages"
+          className="flex-1 overflow-y-auto p-4 flex flex-col"
+        >
+          {msgs.length === 0 && !loadingSession && (
+            <div className="text-[var(--color-dim)] italic text-[12px] text-center mt-8">
+              输入 / 看命令菜单，或直接提问。past sessions listed on the left ←
+            </div>
+          )}
+          {loadingSession && (
+            <div className="text-[var(--color-dim)] italic text-[12px] text-center mt-8">
+              loading session…
+            </div>
+          )}
+          {msgs.map(m => (
+            <MessageBubble
+              key={m.id}
+              role={m.role}
+              content={m.content}
+              ts={m.ts}
+              pending={m.pending}
+              reqId={m.reqId}
+              onJumpToAudit={onJumpToAudit}
+            />
+          ))}
+        </div>
+
+        <div className="relative p-3 border-t border-[var(--color-border)] bg-[var(--color-panel)]">
+          {showMenu && (
+            <SlashMenu
+              query={slashQuery}
+              onPick={name => {
+                setInput(name + ' ')
+                inputRef.current?.focus()
+              }}
+            />
+          )}
+          <div className="flex gap-2 items-center">
+            <Input
+              ref={inputRef}
+              data-testid="chat-input"
+              placeholder="Ask fin…  (type / for commands)"
+              value={input}
+              onChange={e => setInput(e.target.value)}
+              onKeyDown={onKeyDown}
+              maxLength={4000}
+              className="flex-1"
+              disabled={busy}
+            />
+            <Button data-testid="chat-send" onClick={send} disabled={busy || !input.trim()}>
+              <Send size={13} /> Send
+            </Button>
+          </div>
         </div>
       </div>
     </div>

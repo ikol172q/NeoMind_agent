@@ -1,4 +1,5 @@
 import { cn } from '@/lib/utils'
+import { ClipboardList } from 'lucide-react'
 
 export type Role = 'user' | 'assistant' | 'system' | 'error'
 
@@ -7,6 +8,8 @@ interface Props {
   content: string
   ts?: string
   pending?: boolean
+  reqId?: string
+  onJumpToAudit?: (reqId: string) => void
 }
 
 /**
@@ -14,7 +17,7 @@ interface Props {
  * regex-based transform (we deliberately avoid react-markdown
  * to keep the bundle small and audit-surface narrow).
  */
-export function MessageBubble({ role, content, ts, pending }: Props) {
+export function MessageBubble({ role, content, ts, pending, reqId, onJumpToAudit }: Props) {
   const align = role === 'user' ? 'items-end' : 'items-start'
   const bubble =
     role === 'user'
@@ -30,11 +33,20 @@ export function MessageBubble({ role, content, ts, pending }: Props) {
       <div className={cn('px-3.5 py-2 text-[13px] leading-[1.55] break-words whitespace-pre-wrap', bubble)}>
         {pending ? <TypingIndicator /> : <MarkdownLite text={content} />}
       </div>
-      {ts && (
-        <div className="text-[10px] text-[var(--color-dim)] mt-1 px-1">
-          {ts}
-        </div>
-      )}
+      <div className="flex gap-2 mt-1 px-1 items-center">
+        {ts && <div className="text-[10px] text-[var(--color-dim)]">{ts}</div>}
+        {reqId && onJumpToAudit && (
+          <button
+            data-testid={`audit-link-${reqId.slice(0, 8)}`}
+            onClick={() => onJumpToAudit(reqId)}
+            className="text-[10px] text-[var(--color-dim)] hover:text-[var(--color-accent)] inline-flex items-center gap-1 transition"
+            title={`Jump to audit entry ${reqId}`}
+          >
+            <ClipboardList size={10} />
+            raw
+          </button>
+        )}
+      </div>
     </div>
   )
 }

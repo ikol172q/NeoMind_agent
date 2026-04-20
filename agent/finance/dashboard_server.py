@@ -1803,6 +1803,18 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("audit router unavailable: %s", exc)
 
+    try:
+        from agent.finance.chat_streaming import build_chat_stream_router
+        app.include_router(build_chat_stream_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("chat_stream router unavailable: %s", exc)
+
+    try:
+        from agent.finance.chat_sessions import build_chat_sessions_router
+        app.include_router(build_chat_sessions_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("chat_sessions router unavailable: %s", exc)
+
     # ── OpenBB Workspace custom backend (Phase 2) ────────────────
     # Same NeoMind data + fleet agent exposed via OpenBB's standard
     # widget + Copilot HTTP contracts. Lets any OpenBB-compatible UI
