@@ -1,9 +1,26 @@
 # NeoMind as an OpenBB Workspace Custom Backend
 
 **Date:** 2026-04-19
-**Status:** DRAFT — executing immediately after user approval
+**Status (updated 2026-04-19 evening):** **PARTIALLY SUPERSEDED** — see
+`plans/2026-04-19_frontend_architecture_final.md`.
+
+- The **HTTP contract layer** (`agent/finance/openbb_adapter.py`,
+  widgets.json, apps.json, agents.json, /openbb/query SSE) is KEPT.
+  It's useful for OpenBB CLI clients, hypothetical self-hosted
+  Workspace enterprise, and any future UI that speaks the protocol.
+- The **"use pro.openbb.co as NeoMind's daily-driver UI" stance** is
+  RETRACTED. Reason: pro.openbb.co is closed-source SaaS; Copilot
+  chat passes user input through OpenBB's JS; dashboard layouts are
+  stored on OpenBB servers. User adopted zero-leak security stance
+  2026-04-19 evening.
+- **Shipped commits kept** (all still green, still functional as
+  standalone HTTP API): `3448dfa` `4513d07` `6be7f13` `06b587f`
+  `9f78b12` `d188adb`.
+
 **Supersedes:** Phase 2 of `plans/2026-04-19_fin_dashboard_fusion.md` (§4.1 was the abstract version; this is the concrete execution)
-**Goal:** Make NeoMind speak OpenBB's standard HTTP contracts so **any** OpenBB-compatible UI (Workspace free cloud, Workspace self-host, third-party forks, future replacements) can drive NeoMind's data + agent without lock-in.
+**Goal (historical, now partial):** Make NeoMind speak OpenBB's standard HTTP contracts so **any** OpenBB-compatible UI (Workspace free cloud, Workspace self-host, third-party forks, future replacements) can drive NeoMind's data + agent without lock-in.
+
+**Goal (current):** the HTTP contract remains; the primary UI moves to a self-hosted React SPA per the new plan.
 
 ---
 
