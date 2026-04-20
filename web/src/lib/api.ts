@@ -363,6 +363,34 @@ export function streamChat(
   return ac
 }
 
+// ── Earnings + IV ────────────────────────────────────────
+export interface EarningsEntry {
+  symbol: string
+  next_earnings_date: string | null
+  days_until: number | null
+  eps_estimate_avg: number | null
+  eps_estimate_high: number | null
+  eps_estimate_low: number | null
+  hist_moves: Array<{ date: string; pct: number }>
+  avg_abs_move_pct: number | null
+  rv_30d_pct: number | null
+  atm_iv_pct: number | null
+  price: number | null
+  error?: string
+}
+
+export function useEarnings(project_id: string) {
+  return useQuery({
+    queryKey: ['earnings', project_id],
+    queryFn: () => fetchJSON<{ count: number; entries: EarningsEntry[] }>(
+      `/api/earnings?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
+  })
+}
+
 // ── Relative strength ───────────────────────────────────
 export interface RSEntry {
   symbol: string
