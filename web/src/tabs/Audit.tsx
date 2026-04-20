@@ -124,12 +124,13 @@ export function AuditTab({ initialReqFilter, onConsumeFilter }: Props) {
           </div>
         )}
         {filtered.map((e, i) => (
-          <AuditEntryCard
-            key={entryKey(e, i)}
-            entry={e}
-            open={expanded.has(entryKey(e, i))}
-            onToggle={() => toggle(entryKey(e, i))}
-          />
+          <div key={entryKey(e, i)} className="shrink-0">
+            <AuditEntryCard
+              entry={e}
+              open={expanded.has(entryKey(e, i))}
+              onToggle={() => toggle(entryKey(e, i))}
+            />
+          </div>
         ))}
       </div>
     </div>

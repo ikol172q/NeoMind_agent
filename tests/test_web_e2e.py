@@ -134,6 +134,50 @@ def test_audit_tab_lists_entries(page: Page):
     assert len(text) > 0
 
 
+def test_audit_cards_are_not_squashed(page: Page):
+    """Regression: audit entries were rendering as 9px tall slivers
+    because they were flex items in a flex-col with no shrink-0,
+    so 70+ entries got crushed to fit the viewport."""
+    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.click('[data-testid="tab-audit"]')
+    page.wait_for_selector('[data-testid="audit-list"]')
+    page.wait_for_timeout(1500)
+    heights = page.evaluate(
+        """() => {
+            const lst = document.querySelector('[data-testid="audit-list"]')
+            if (!lst) return []
+            return Array.from(lst.children).slice(0, 5).map(c => c.getBoundingClientRect().height)
+        }"""
+    )
+    if not heights:
+        return  # empty state is fine
+    min_h = min(heights)
+    assert min_h >= 20, (
+        f"audit card height collapsed to {min_h}px — flex-shrink regression? "
+        f"sampled: {heights}"
+    )
+
+
+def test_research_news_visible_in_hero_row(page: Page):
+    """Regression: when we added more widgets, News got pushed below
+    the fold and the user couldn't find 'what's happening in the
+    market'. It must render inside the initial viewport."""
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.wait_for_selector('[data-testid="tab-research"]')
+    page.click('[data-testid="tab-research"]')
+    page.wait_for_selector('[data-testid="news-tabs"]', timeout=8000)
+    box = page.evaluate(
+        """() => {
+            const el = document.querySelector('[data-testid="news-tabs"]')
+            if (!el) return null
+            const r = el.getBoundingClientRect()
+            return {top: r.top, visible: r.top < window.innerHeight && r.bottom > 0}
+        }"""
+    )
+    assert box is not None, "news widget missing from Research"
+    assert box["visible"], f"news should be in initial viewport, got top={box['top']}"
+
+
 def test_legacy_fallback_available(page: Page):
     # /legacy should still serve the old inline HTML for safety
     page.goto(BASE_URL + "legacy", timeout=10000)

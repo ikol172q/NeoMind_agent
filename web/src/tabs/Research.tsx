@@ -14,22 +14,29 @@ import { EarningsWidget } from '@/components/widgets/EarningsWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v2 added watchlist, v3 added sector heatmap, v4 added RS grid,
-// v5 adds earnings+IV. Bumping forces the new default layout so
-// users pick up the new tile without clearing localStorage.
-const LS_KEY = 'neomind.research.layout.v5'
+// v6 reshuffles so News sits in the top viewport (user complaint:
+// "can't see what's happening in the market without scrolling").
+// News is right-hand column of the hero row, visible on first
+// paint alongside watchlist. Quotes stack compact in the last
+// hero column. Earnings + RS + Sectors form the mid analytics
+// band; chart + cn_info the detail band; history at the bottom.
+const LS_KEY = 'neomind.research.layout.v6'
 
 const DEFAULT_LAYOUT: Layout[] = [
-  { i: 'watchlist', x: 0,  y: 0,  w: 5,  h: 10 },
-  { i: 'us_quote',  x: 5,  y: 0,  w: 4,  h: 7 },
-  { i: 'cn_quote',  x: 9,  y: 0,  w: 3,  h: 7 },
-  { i: 'cn_info',   x: 5,  y: 7,  w: 7,  h: 5 },
-  { i: 'earnings',  x: 0,  y: 12, w: 6,  h: 10 },
-  { i: 'rs_grid',   x: 6,  y: 12, w: 6,  h: 10 },
-  { i: 'sectors',   x: 0,  y: 22, w: 12, h: 9 },
-  { i: 'chart',     x: 0,  y: 31, w: 8,  h: 10 },
-  { i: 'news',      x: 8,  y: 31, w: 4,  h: 10 },
-  { i: 'history',   x: 0,  y: 41, w: 12, h: 8 },
+  // Hero row — visible on first paint
+  { i: 'watchlist', x: 0,  y: 0,  w: 5,  h: 12 },
+  { i: 'news',      x: 5,  y: 0,  w: 4,  h: 12 },
+  { i: 'us_quote',  x: 9,  y: 0,  w: 3,  h: 6 },
+  { i: 'cn_quote',  x: 9,  y: 6,  w: 3,  h: 6 },
+  // Analytics band
+  { i: 'earnings',  x: 0,  y: 12, w: 6,  h: 9 },
+  { i: 'rs_grid',   x: 6,  y: 12, w: 6,  h: 9 },
+  { i: 'sectors',   x: 0,  y: 21, w: 12, h: 9 },
+  // Detail band
+  { i: 'chart',     x: 0,  y: 30, w: 8,  h: 10 },
+  { i: 'cn_info',   x: 8,  y: 30, w: 4,  h: 10 },
+  // Reference
+  { i: 'history',   x: 0,  y: 40, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
