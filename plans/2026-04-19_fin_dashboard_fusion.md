@@ -1,7 +1,23 @@
 # Fin Dashboard Fusion — NeoMind ⊕ OpenBB Workspace ⊕ Streamlit Lab
 
 **Date:** 2026-04-19
-**Status:** DRAFT — awaiting user approval before any code change
+**Status (updated 2026-04-19 evening):** **PARTIALLY SUPERSEDED** —
+see `plans/2026-04-19_frontend_architecture_final.md` for the final
+frontend decision.
+
+- Phase 1 (chat + news MVP) — ✅ SHIPPED (commits `d04cb5e` `4a02e80`)
+- Phase 2 OpenBB Workspace integration — ⛔ RETRACTED: OpenBB
+  Workspace (pro.openbb.co) is a closed-source SaaS; user has
+  zero-leak security stance. The backend adapter code at
+  `agent/finance/openbb_adapter.py` is KEPT (useful for OpenBB CLI
+  clients and any future compatible UI) but Workspace-as-UI is
+  ABANDONED.
+- Phase 3 commercialization — updated plan in
+  `2026-04-19_frontend_architecture_final.md` §7 (Tauri + React
+  route, post-MVP).
+- OpenBB Platform SDK as data layer — ✅ APPROVED (source audit
+  showed zero telemetry, §3.1 of the new plan).
+
 **Author context:** Individual non-pro investor (engineer background) who wants a single-entry investment system that works immediately and supports future deep NeoMind integration + commercialization
 **Relates to:** `plans/2026-04-12_fin_deepening_fusion_plan.md` (Phase 5 shipped the baseline dashboard)
 **Honors:** `CLAUDE.md` conventions (.venv python, LLM router, Investment root data firewall), memory `llm_model_preference.md` (DeepSeek reasoner default)
