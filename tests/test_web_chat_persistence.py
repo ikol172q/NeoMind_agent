@@ -201,6 +201,48 @@ def test_session_persists_across_page_reload(page: Page):
     assert "/quote" in text, "message body should restore from localStorage"
 
 
+def test_reload_does_not_create_phantom_session(page: Page):
+    """Regression: reload was creating a brand-new session each time
+    instead of restoring the one from localStorage, leaving orphan
+    records on disk."""
+    _open_chat(page)
+    page.fill('[data-testid="chat-input"]', "/help")
+    page.click('[data-testid="chat-send"]')
+    page.wait_for_timeout(1500)
+    sid_before = page.text_content('[data-testid="chat-session-id"]') or ""
+    assert sid_before
+
+    # Count session files currently on disk, via the API
+    import json as _json
+    before_list = _json.loads(
+        urllib.request.urlopen(
+            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=5
+        ).read()
+    )
+    before_count = before_list["count"]
+
+    page.reload(wait_until="networkidle")
+    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector('[data-testid="chat-input"]')
+    # Do a second turn on the SAME session (should reuse, not create)
+    page.fill('[data-testid="chat-input"]', "/help")
+    page.click('[data-testid="chat-send"]')
+    page.wait_for_timeout(1500)
+
+    sid_after = page.text_content('[data-testid="chat-session-id"]') or ""
+    assert sid_after == sid_before, \
+        f"reload must reuse session, got {sid_before!r} → {sid_after!r}"
+
+    after_list = _json.loads(
+        urllib.request.urlopen(
+            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=5
+        ).read()
+    )
+    after_count = after_list["count"]
+    assert after_count == before_count, \
+        f"reload must not create a new session ({before_count} → {after_count})"
+
+
 def test_sidebar_lists_session_and_new_button_starts_fresh(page: Page):
     _open_chat(page)
     page.fill('[data-testid="chat-input"]', "/help")
