@@ -478,6 +478,28 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Research narrative brief (Phase 1) ──────────────────
+export interface ResearchBrief {
+  project_id: string
+  text: string
+  req_id: string
+  fetched_at: string
+  duration_ms: number
+}
+
+export function useResearchBrief(project_id: string) {
+  return useQuery({
+    queryKey: ['research_brief', project_id],
+    queryFn: () => fetchJSON<ResearchBrief>(
+      `/api/research_brief?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 4 * 60_000,      // server caches 5min; client shows fresh for 4
+    refetchInterval: 5 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ── Market sentiment gauge ──────────────────────────────
 export interface SentimentSubscore {
   score: number | null
