@@ -78,24 +78,41 @@ def test_news_tabs_render(page: Page):
     )
 
 
-def test_clicking_tech_tab_shows_hacker_news_items(page: Page):
+def test_tech_tab_has_non_hn_tech_feeds(page: Page):
+    """Tech tab carries curated tech news (TechCrunch, The Verge).
+    HN feeds moved to their own tab so the firehose doesn't drown
+    them out."""
     _open_research(page)
-    # Locate the Tech tab — it should exist because the seed script
-    # adds at least one Hacker News feed there. Wait briefly for
-    # the categories fetch to land.
     try:
         page.wait_for_selector('[data-testid="news-tab-tech"]', timeout=4000)
     except Exception:
         pytest.skip("Tech category not populated — rerun seed_miniflux_feeds.py")
     page.click('[data-testid="news-tab-tech"]')
     page.wait_for_timeout(1500)
-    body_text = page.evaluate(
+    body = page.evaluate(
         "document.querySelector('[data-testid=\"news-entries\"]').innerText"
     ).lower()
-    # In the Tech tab, the feed names should contain "Hacker News" —
-    # we don't assert exact titles because those change with the feed.
-    assert "hacker news" in body_text or "techcrunch" in body_text or "verge" in body_text, \
-        f"expected tech feeds in Tech tab, got: {body_text[:300]}"
+    assert "techcrunch" in body or "verge" in body, \
+        f"expected TechCrunch / The Verge in Tech tab, got: {body[:300]}"
+    # And crucially NOT HN — its own tab owns that now.
+    assert "hacker news" not in body, \
+        "Hacker News should live in the HN tab, not Tech"
+
+
+def test_hn_tab_exists_and_has_hn_items(page: Page):
+    """HN firehose has its own tab."""
+    _open_research(page)
+    try:
+        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=4000)
+    except Exception:
+        pytest.skip("HN category not populated — rerun seed_miniflux_feeds.py")
+    page.click('[data-testid="news-tab-hn"]')
+    page.wait_for_timeout(1500)
+    body = page.evaluate(
+        "document.querySelector('[data-testid=\"news-entries\"]').innerText"
+    ).lower()
+    assert "hacker news" in body, \
+        f"HN tab should show Hacker News feed entries, got: {body[:300]}"
 
 
 def test_news_entry_is_a_link_to_external_source(page: Page):

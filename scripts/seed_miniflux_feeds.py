@@ -33,7 +33,7 @@ import urllib.error
 from typing import Any, Dict, List, Optional
 
 
-DESIRED_CATEGORIES: List[str] = ["US", "A-Shares", "Global", "Tech", "Macro"]
+DESIRED_CATEGORIES: List[str] = ["US", "A-Shares", "Global", "HN", "Tech", "Macro"]
 
 # (category, title, feed_url)
 # Keep the list deliberate — every feed a real person would want to
@@ -59,9 +59,12 @@ DESIRED_FEEDS: List[tuple[str, str, str]] = [
     ("Global", "The Economist — Finance and economics", "https://www.economist.com/finance-and-economics/rss.xml"),
     ("Global", "Al Jazeera Economy", "https://www.aljazeera.com/xml/rss/all.xml"),
 
-    # ── Tech (includes Hacker News as requested) ──
-    ("Tech", "Hacker News — Frontpage", "https://hnrss.org/frontpage"),
-    ("Tech", "Hacker News — Show HN", "https://hnrss.org/show"),
+    # ── Hacker News (its own tab so the firehose doesn't drown out
+    #    curated tech news) ──
+    ("HN", "Hacker News — Frontpage", "https://hnrss.org/frontpage"),
+    ("HN", "Hacker News — Show HN", "https://hnrss.org/show"),
+
+    # ── Tech (everything non-HN) ──
     ("Tech", "TechCrunch", "https://techcrunch.com/feed/"),
     ("Tech", "The Verge", "https://www.theverge.com/rss/index.xml"),
 
