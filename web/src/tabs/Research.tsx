@@ -10,24 +10,26 @@ import { ChartWidget } from '@/components/widgets/ChartWidget'
 import { WatchlistWidget } from '@/components/widgets/WatchlistWidget'
 import { SectorHeatmapWidget } from '@/components/widgets/SectorHeatmapWidget'
 import { RSGridWidget } from '@/components/widgets/RSGridWidget'
+import { EarningsWidget } from '@/components/widgets/EarningsWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v2 added watchlist, v3 added sector heatmap, v4 adds RS grid.
-// Bumping the version forces the new default so users pick up the
-// new tile position without having to clear localStorage.
-const LS_KEY = 'neomind.research.layout.v4'
+// v2 added watchlist, v3 added sector heatmap, v4 added RS grid,
+// v5 adds earnings+IV. Bumping forces the new default layout so
+// users pick up the new tile without clearing localStorage.
+const LS_KEY = 'neomind.research.layout.v5'
 
 const DEFAULT_LAYOUT: Layout[] = [
   { i: 'watchlist', x: 0,  y: 0,  w: 5,  h: 10 },
   { i: 'us_quote',  x: 5,  y: 0,  w: 4,  h: 7 },
   { i: 'cn_quote',  x: 9,  y: 0,  w: 3,  h: 7 },
   { i: 'cn_info',   x: 5,  y: 7,  w: 7,  h: 5 },
-  { i: 'sectors',   x: 0,  y: 12, w: 8,  h: 10 },
-  { i: 'rs_grid',   x: 8,  y: 12, w: 4,  h: 10 },
-  { i: 'chart',     x: 0,  y: 22, w: 8,  h: 10 },
-  { i: 'news',      x: 8,  y: 22, w: 4,  h: 10 },
-  { i: 'history',   x: 0,  y: 32, w: 12, h: 8 },
+  { i: 'earnings',  x: 0,  y: 12, w: 6,  h: 10 },
+  { i: 'rs_grid',   x: 6,  y: 12, w: 6,  h: 10 },
+  { i: 'sectors',   x: 0,  y: 22, w: 12, h: 9 },
+  { i: 'chart',     x: 0,  y: 31, w: 8,  h: 10 },
+  { i: 'news',      x: 8,  y: 31, w: 4,  h: 10 },
+  { i: 'history',   x: 0,  y: 41, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -69,6 +71,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>
       <div key="cn_info"><div className="drag-handle h-full cursor-move"><CNInfoCard /></div></div>
+      <div key="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
