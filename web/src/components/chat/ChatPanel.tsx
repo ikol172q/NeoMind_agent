@@ -220,12 +220,17 @@ export function ChatPanel({
       const sid = await ensureSession()
       void persist(sid, { role: 'user', content: text, ts: new Date().toISOString() })
 
-      // ── Slash commands: local execution (instant) ──
+      // ── Slash commands: three possible paths ──
+    //   1. kind:'render'   → show returned markdown inline (no LLM call)
+    //   2. kind:'workflow' → attach dashboard context, stream the LLM with
+    //                         a pre-crafted prompt; user bubble keeps showing
+    //                         the raw /command they typed
+    //   3. null            → fall through, stream raw text (e.g. /analyze)
       if (text.startsWith('/')) {
         const pendingId = addMsg({ role: 'assistant', content: '', pending: true })
         try {
           const res = await execCommand(text)
-          if (res) {
+          if (res && res.kind === 'render') {
             updateMsg(pendingId, {
               content: res.markdown,
               pending: false,
@@ -238,6 +243,12 @@ export function ChatPanel({
             })
             return
           }
+          if (res && res.kind === 'workflow') {
+            updateMsg(pendingId, { content: '' })
+            await streamReply(sid, pendingId, res.workflowPrompt, res.context)
+            return
+          }
+          // null → fall through to raw streaming
           updateMsg(pendingId, { content: '' })
           await streamReply(sid, pendingId, text)
         } catch (e: unknown) {
@@ -256,16 +267,22 @@ export function ChatPanel({
     }
   }
 
-  function streamReply(sid: string, msgId: string, text: string): Promise<void> {
+  function streamReply(
+    sid: string,
+    msgId: string,
+    text: string,
+    explicitCtx?: { symbol?: string; project?: boolean },
+  ): Promise<void> {
     return new Promise<void>(resolve => {
       let accumulated = ''
       let firstToken = true
       let reqId: string | undefined
-      // Grab the current context and consume it — each ask-agent
-      // prompt gets one context-enriched send; subsequent free-form
-      // messages are back to no-injection.
-      const ctx = nextSendContext
-      if (ctx) setNextSendContext(null)
+      // Priority: explicit (workflow commands pass this directly because
+      // React hasn't committed the setNextSendContext yet) → state.
+      // Consume state context so subsequent free-form messages aren't
+      // silently enriched.
+      const ctx = explicitCtx ?? nextSendContext
+      if (!explicitCtx && nextSendContext) setNextSendContext(null)
       abortRef.current?.abort()
       abortRef.current = streamChat(projectId, text, {
         onDelta: (chunk) => {
