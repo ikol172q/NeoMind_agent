@@ -370,16 +370,21 @@ def audit_error(**kwargs) -> None:
 def build_audit_router():
     """FastAPI router with debug-oriented query endpoints.
 
+    GET /audit                        — HTML visual browser
     GET /api/audit/recent?limit=&days=&kind=
     GET /api/audit/task/{task_id}
     GET /api/audit/req/{req_id}
     GET /api/audit/stats?days=
     """
     from fastapi import APIRouter, Query
-    from fastapi.responses import JSONResponse
+    from fastapi.responses import JSONResponse, HTMLResponse
 
     router = APIRouter()
     log = get_default_audit()
+
+    @router.get("/audit", response_class=HTMLResponse)
+    def audit_viewer() -> HTMLResponse:
+        return HTMLResponse(content=_AUDIT_HTML)
 
     @router.get("/api/audit/recent")
     def recent(
@@ -411,3 +416,208 @@ def build_audit_router():
         return JSONResponse(content=log.stats(days=days))
 
     return router
+
+
+# ── Visual HTML viewer ────────────────────────────────────────────
+
+_AUDIT_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>neomind · agent audit</title>
+<style>
+:root {
+  --bg:#0b0d12; --panel:#141822; --border:#1f2631;
+  --text:#d8dde6; --dim:#7c8598; --accent:#4dd0e1;
+  --green:#6fd07a; --red:#e57373; --yellow:#f3c969; --blue:#8ab4f8;
+}
+* { box-sizing:border-box; }
+body { margin:0; font-family:-apple-system, SF Mono, Menlo, monospace;
+       background:var(--bg); color:var(--text); font-size:13px; }
+header { padding:12px 20px; border-bottom:1px solid var(--border);
+         background:var(--panel); display:flex; gap:14px; align-items:center;
+         flex-wrap:wrap; position:sticky; top:0; z-index:10; }
+header h1 { margin:0; font-size:15px; }
+header .stats { color:var(--dim); font-size:11px; }
+input, select, button { background:#0e1219; color:var(--text);
+         border:1px solid var(--border); border-radius:4px;
+         padding:5px 9px; font-family:inherit; font-size:12px; }
+button { cursor:pointer; color:var(--bg); background:var(--accent);
+         border-color:var(--accent); font-weight:600; }
+main { padding:16px 20px; }
+.entry { background:var(--panel); border:1px solid var(--border);
+         border-radius:5px; margin-bottom:10px; overflow:hidden; }
+.entry-head { padding:8px 12px; cursor:pointer; display:flex;
+              gap:10px; align-items:center; font-size:12px;
+              border-bottom:1px solid transparent; }
+.entry.open .entry-head { border-bottom-color:var(--border); }
+.badge { display:inline-block; padding:2px 8px; border-radius:3px;
+         font-size:11px; font-weight:600; letter-spacing:0.04em; }
+.badge-request  { background:rgba(138,180,248,.18); color:var(--blue); }
+.badge-response { background:rgba(111,208,122,.18); color:var(--green); }
+.badge-error    { background:rgba(229,115,115,.22); color:var(--red); }
+.meta { color:var(--dim); font-size:11px; }
+.meta code { color:var(--text); background:rgba(120,160,220,.08);
+             padding:1px 5px; border-radius:3px; }
+.entry-body { display:none; padding:10px 14px; }
+.entry.open .entry-body { display:block; }
+.section-label { color:var(--dim); font-size:10px; text-transform:uppercase;
+                 letter-spacing:0.06em; margin:8px 0 4px; }
+pre { background:#0e1219; border:1px solid var(--border);
+      border-radius:4px; padding:10px 12px; margin:0; overflow-x:auto;
+      white-space:pre-wrap; word-break:break-word; font-size:12px;
+      line-height:1.55; max-height:400px; overflow-y:auto; }
+.msg-turn { background:#0e1219; border:1px solid var(--border);
+            border-radius:4px; padding:8px 10px; margin-bottom:6px; }
+.msg-role { font-size:10px; color:var(--accent); text-transform:uppercase; }
+.kpi { display:inline-block; margin-right:12px; }
+.kpi-lab { color:var(--dim); }
+.kpi-val { color:var(--text); font-weight:600; }
+.empty { color:var(--dim); padding:40px 10px; text-align:center; font-style:italic; }
+.search-match { background:rgba(243,201,105,.3); color:var(--yellow); }
+</style>
+</head>
+<body>
+<header>
+  <h1>◇ agent audit</h1>
+  <span class="stats" id="stats">…</span>
+  <span style="flex:1"></span>
+  <input id="search" placeholder="search content/task_id/req_id" style="width:280px;">
+  <select id="kind-filter">
+    <option value="">all kinds</option>
+    <option value="request">request</option>
+    <option value="response">response</option>
+    <option value="error">error</option>
+  </select>
+  <select id="limit">
+    <option value="50">50</option>
+    <option value="100">100</option>
+    <option value="200">200</option>
+    <option value="500">500</option>
+  </select>
+  <button id="refresh">↻ reload</button>
+</header>
+<main id="list"><div class="empty">loading…</div></main>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function esc(s) {
+  return String(s ?? "").replace(/[<>&"']/g, c => ({
+    "<":"&lt;", ">":"&gt;", "&":"&amp;", '"':"&quot;", "'":"&#39;"
+  })[c]);
+}
+
+function prettyJSON(v) {
+  try { return JSON.stringify(v, null, 2); }
+  catch { return String(v); }
+}
+
+function renderEntry(e, q) {
+  const kind = e.kind || "?";
+  const p = e.payload || {};
+  const ts = (e.ts || "").replace("T"," ").slice(0, 19);
+  const dur = p.duration_ms != null ? p.duration_ms + "ms" : "";
+  const tokens = p.usage?.total_tokens != null ? p.usage.total_tokens + " tok" : "";
+  const model = p.model || "";
+  const contentLen = kind === "response" ? (p.content || "").length + "c" : "";
+
+  // Body
+  let body = "";
+  if (kind === "request") {
+    body += '<div class="section-label">Messages (' + (p.messages||[]).length + ' turns)</div>';
+    (p.messages || []).forEach(m => {
+      body += '<div class="msg-turn"><div class="msg-role">' + esc(m.role) + '</div>';
+      body += '<pre>' + esc(m.content || "") + '</pre></div>';
+    });
+    body += '<div class="section-label">Model / params</div>';
+    body += '<pre>' + esc(prettyJSON({
+      model: p.model, max_tokens: p.max_tokens, temperature: p.temperature
+    })) + '</pre>';
+  } else if (kind === "response") {
+    body += '<div class="section-label">Content (' + (p.content||"").length + ' chars)</div>';
+    body += '<pre>' + esc(p.content || "") + '</pre>';
+    if (p.reasoning_content) {
+      body += '<div class="section-label">Reasoning content (' + p.reasoning_content.length + ' chars)</div>';
+      body += '<pre>' + esc(p.reasoning_content) + '</pre>';
+    }
+    body += '<div class="section-label">Usage · finish</div>';
+    body += '<pre>' + esc(prettyJSON({
+      usage: p.usage, finish_reason: p.finish_reason, duration_ms: p.duration_ms
+    })) + '</pre>';
+  } else if (kind === "error") {
+    body += '<div class="section-label">Error</div>';
+    body += '<pre>' + esc(p.error_type + ": " + p.error_msg) + '</pre>';
+    if (p.traceback) {
+      body += '<div class="section-label">Traceback</div>';
+      body += '<pre>' + esc(p.traceback) + '</pre>';
+    }
+  }
+
+  return `
+    <div class="entry" data-all="${esc((e.task_id||"")+" "+(e.req_id||"")+" "+JSON.stringify(p))}">
+      <div class="entry-head">
+        <span class="badge badge-${kind}">${kind}</span>
+        <span class="meta">${ts}</span>
+        <span class="meta"><code>req</code> ${esc((e.req_id||"").slice(0,10))}</span>
+        <span class="meta"><code>task</code> ${esc((e.task_id||"-").slice(0,16))}</span>
+        <span class="meta">${esc(e.agent_id||"")}</span>
+        <span style="flex:1"></span>
+        <span class="kpi"><span class="kpi-lab">${model}</span></span>
+        ${contentLen ? '<span class="kpi"><span class="kpi-val">'+contentLen+'</span></span>' : ''}
+        ${tokens ? '<span class="kpi"><span class="kpi-val">'+tokens+'</span></span>' : ''}
+        ${dur ? '<span class="kpi"><span class="kpi-val">'+dur+'</span></span>' : ''}
+      </div>
+      <div class="entry-body">${body}</div>
+    </div>`;
+}
+
+async function load() {
+  const kind = $("kind-filter").value;
+  const limit = $("limit").value;
+  const url = "/api/audit/recent?limit=" + limit + (kind ? "&kind=" + kind : "");
+  try {
+    const r = await fetch(url);
+    const d = await r.json();
+    const entries = d.entries || [];
+    $("list").innerHTML = entries.length
+      ? entries.map(e => renderEntry(e)).join("")
+      : '<div class="empty">no entries (try a chat first, then ↻ reload)</div>';
+    applySearch();
+  } catch (e) {
+    $("list").innerHTML = '<div class="empty">error: ' + esc(e.message) + '</div>';
+  }
+
+  try {
+    const s = await fetch("/api/audit/stats").then(r => r.json());
+    $("stats").textContent =
+      s.total_entries + " entries · " +
+      s.tokens_in.toLocaleString() + " in / " +
+      s.tokens_out.toLocaleString() + " out tokens · today";
+  } catch {}
+}
+
+function applySearch() {
+  const q = $("search").value.trim().toLowerCase();
+  document.querySelectorAll(".entry").forEach(el => {
+    const hay = (el.dataset.all || "").toLowerCase();
+    el.style.display = !q || hay.includes(q) ? "" : "none";
+  });
+}
+
+document.addEventListener("click", e => {
+  const head = e.target.closest(".entry-head");
+  if (head) head.parentElement.classList.toggle("open");
+});
+
+$("refresh").onclick = load;
+$("kind-filter").onchange = load;
+$("limit").onchange = load;
+$("search").oninput = applySearch;
+load();
+setInterval(load, 30000);  // auto-refresh every 30s
+</script>
+</body>
+</html>
+"""
