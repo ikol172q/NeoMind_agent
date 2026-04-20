@@ -478,6 +478,26 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Anomaly flags (Phase 5) ─────────────────────────────
+export interface AnomalyFlag {
+  kind: string
+  symbol: string
+  message: string
+  severity: 'alert' | 'warn' | 'info'
+}
+
+export function useAnomalies(project_id: string) {
+  return useQuery({
+    queryKey: ['anomalies', project_id],
+    queryFn: () => fetchJSON<{ project_id: string; count: number; flags: AnomalyFlag[] }>(
+      `/api/anomalies?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 90_000,
+    refetchInterval: 2 * 60_000,
+  })
+}
+
 // ── Factor grades (Phase 3: 3-tier drill) ───────────────
 export interface FactorAxis {
   grade: string   // "A+" | "A" | "B" | "C" | "D" | "F" | "—"

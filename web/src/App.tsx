@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useHealth } from '@/lib/api'
 import { ResearchTab } from '@/tabs/Research'
@@ -6,7 +6,8 @@ import { ChatTab } from '@/tabs/Chat'
 import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
-import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon } from 'lucide-react'
+import { CommandPalette } from '@/components/chat/CommandPalette'
+import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command } from 'lucide-react'
 
 type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings'
 
@@ -26,7 +27,20 @@ export default function App() {
   const [auditReqFilter, setAuditReqFilter] = useState<string | null>(null)
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
   const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
+  const [paletteOpen, setPaletteOpen] = useState(false)
   const health = useHealth()
+
+  // Global ⌘K / Ctrl+K — command palette. Works from any tab.
+  useEffect(() => {
+    function onKey(e: KeyboardEvent) {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen(o => !o)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   function switchProject(p: string) {
     setProjectId(p)
@@ -79,6 +93,15 @@ export default function App() {
           ))}
         </nav>
         <div className="flex-1" />
+        <button
+          data-testid="palette-open"
+          onClick={() => setPaletteOpen(true)}
+          className="flex items-center gap-1.5 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 transition"
+          title="Command palette — ⌘K / Ctrl+K"
+        >
+          <Command size={10} />
+          <span>K</span>
+        </button>
         <div className="flex items-center gap-3 text-[10px] text-[var(--color-dim)]">
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
           <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
@@ -86,6 +109,18 @@ export default function App() {
           </span>
         </div>
       </header>
+
+      <CommandPalette
+        open={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        onPick={(cmd) => {
+          // Route to chat tab with the command queued as pending prompt.
+          // ChatPanel's useEffect populates input, user hits enter to send.
+          setPendingChatPrompt(cmd)
+          setPendingChatContext(null)   // workflow commands inject context server-side
+          setTab('chat')
+        }}
+      />
 
       {/* Active tab */}
       <main className="flex-1 overflow-hidden">
