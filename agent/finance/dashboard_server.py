@@ -1821,6 +1821,18 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("watchlist router unavailable: %s", exc)
 
+    try:
+        from agent.finance.sectors import build_sectors_router
+        app.include_router(build_sectors_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("sectors router unavailable: %s", exc)
+
+    try:
+        from agent.finance.relative_strength import build_rs_router
+        app.include_router(build_rs_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("rs router unavailable: %s", exc)
+
     # ── OpenBB Workspace custom backend (Phase 2) ────────────────
     # Same NeoMind data + fleet agent exposed via OpenBB's standard
     # widget + Copilot HTTP contracts. Lets any OpenBB-compatible UI
@@ -1867,6 +1879,21 @@ def create_app(
     return app
 
 
+def _raise_fd_limit(target: int = 4096) -> None:
+    """Bump the process's soft open-file limit. macOS defaults to 256,
+    which yfinance blows through in under an hour of polling (its
+    threaded batch fetcher opens many concurrent sockets and doesn't
+    always release them promptly). A 4096 soft limit keeps us well
+    clear without touching the kernel hard limit."""
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        if soft < target:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (min(target, hard), hard))
+    except Exception as exc:
+        logging.warning("could not raise fd limit: %s", exc)
+
+
 def main() -> None:
     """CLI entrypoint — ``python -m agent.finance.dashboard_server``."""
     import argparse
@@ -1878,6 +1905,8 @@ def main() -> None:
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
+
+    _raise_fd_limit()
 
     logging.basicConfig(
         level=logging.INFO,
