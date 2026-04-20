@@ -12,13 +12,14 @@ import { SectorHeatmapWidget } from '@/components/widgets/SectorHeatmapWidget'
 import { RSGridWidget } from '@/components/widgets/RSGridWidget'
 import { EarningsWidget } from '@/components/widgets/EarningsWidget'
 import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWidget'
+import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v7 adds the portfolio heatmap (Tier-2 #8). It shares the
-// analytics band with earnings + RS so risk, momentum, and
-// calendar context sit visually next to each other.
-const LS_KEY = 'neomind.research.layout.v7'
+// v8 adds the multi-symbol compare chart (Tier-2 #5). It sits in
+// the detail band beside the single-symbol chart: one zoomed in,
+// one zoomed out across a basket.
+const LS_KEY = 'neomind.research.layout.v8'
 
 const DEFAULT_LAYOUT: Layout[] = [
   // Hero row — visible on first paint
@@ -31,11 +32,12 @@ const DEFAULT_LAYOUT: Layout[] = [
   { i: 'earnings',  x: 6,  y: 12, w: 6,  h: 9 },
   { i: 'rs_grid',   x: 0,  y: 21, w: 6,  h: 9 },
   { i: 'sectors',   x: 6,  y: 21, w: 6,  h: 9 },
-  // Detail band
-  { i: 'chart',     x: 0,  y: 30, w: 8,  h: 10 },
-  { i: 'cn_info',   x: 8,  y: 30, w: 4,  h: 10 },
+  // Detail band — single-symbol candles + multi-symbol overlay
+  { i: 'chart',      x: 0,  y: 30, w: 6, h: 10 },
+  { i: 'multi_chart',x: 6,  y: 30, w: 6, h: 10 },
+  { i: 'cn_info',    x: 0,  y: 40, w: 12, h: 5 },
   // Reference
-  { i: 'history',   x: 0,  y: 40, w: 12, h: 8 },
+  { i: 'history',   x: 0,  y: 45, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -90,6 +92,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
+      <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
       <div key="history"><div className="drag-handle h-full cursor-move"><HistoryTable projectId={projectId} /></div></div>
       </ResponsiveGridLayout>
