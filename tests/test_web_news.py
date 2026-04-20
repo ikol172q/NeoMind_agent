@@ -99,6 +99,24 @@ def test_tech_tab_has_non_hn_tech_feeds(page: Page):
         "Hacker News should live in the HN tab, not Tech"
 
 
+def test_hn_tab_shows_ycombinator_shortcut(page: Page):
+    """When HN tab is selected, a shortcut link to
+    news.ycombinator.com appears in the tab bar."""
+    _open_research(page)
+    try:
+        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=4000)
+    except Exception:
+        pytest.skip("HN category not populated")
+    # Shortcut should NOT be present on the default All tab
+    assert page.query_selector('[data-testid="news-source-shortcut"]') is None
+    page.click('[data-testid="news-tab-hn"]')
+    page.wait_for_selector('[data-testid="news-source-shortcut"]', timeout=3000)
+    el = page.query_selector('[data-testid="news-source-shortcut"]')
+    assert el is not None
+    href = el.get_attribute('href') or ''
+    assert 'news.ycombinator.com' in href
+
+
 def test_hn_tab_exists_and_has_hn_items(page: Page):
     """HN firehose has its own tab."""
     _open_research(page)

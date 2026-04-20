@@ -158,6 +158,41 @@ def test_audit_cards_are_not_squashed(page: Page):
     )
 
 
+def test_research_tab_is_vertically_scrollable(page: Page):
+    """Regression: the Research grid expands well past the viewport
+    (sectors + chart + history are below the fold) but App's <main>
+    is overflow-hidden, so the user had no way to see them. The
+    tab must own its own scroll container."""
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.wait_for_selector('[data-testid="tab-research"]')
+    page.click('[data-testid="tab-research"]')
+    page.wait_for_selector('[data-testid="research-scroll"]', timeout=5000)
+    info = page.evaluate(
+        """() => {
+            const el = document.querySelector('[data-testid="research-scroll"]')
+            if (!el) return null
+            return {
+                scrollHeight: el.scrollHeight,
+                clientHeight: el.clientHeight,
+                initialTop: el.scrollTop,
+            }
+        }"""
+    )
+    assert info is not None
+    assert info["scrollHeight"] > info["clientHeight"], (
+        f"research content should exceed viewport height to need scrolling: {info}"
+    )
+    # Actually scroll and verify the scrollTop moves
+    page.evaluate(
+        "document.querySelector('[data-testid=\"research-scroll\"]').scrollTop = 800"
+    )
+    page.wait_for_timeout(200)
+    scrolled = page.evaluate(
+        "document.querySelector('[data-testid=\"research-scroll\"]').scrollTop"
+    )
+    assert scrolled > 100, f"research container did not accept scroll: scrollTop={scrolled}"
+
+
 def test_research_news_visible_in_hero_row(page: Page):
     """Regression: when we added more widgets, News got pushed below
     the fold and the user couldn't find 'what's happening in the
