@@ -157,23 +157,28 @@ def test_anomalies_endpoint_returns_drawdown_and_earnings_flags():
 def test_anomaly_chip_renders_on_brief_and_is_clickable(page: Page):
     _seed_watch("AAPL")
     _place_order("AAPL", 5)
+    # Pre-warm the anomaly + synthesis caches so the widget's first
+    # paint has data ready — avoids racing the 2-min backend compute.
+    urllib.request.urlopen(
+        BASE_URL + f"api/anomalies?project_id={PROJECT}", timeout=60
+    ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="tab-research"]')
     page.click('[data-testid="tab-research"]')
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
-    # Either a flag renders (data-dependent) or it doesn't — but if it
-    # does, the chip must carry the expected testid pattern AND be
-    # clickable without crashing.
-    has_flag = page.wait_for_function(
+    page.wait_for_function(
         """() => {
             const box = document.querySelector('[data-testid="anomaly-flags"]')
             return box && box.querySelectorAll('[data-testid^="anomaly-flag-"]').length > 0
         }""",
-        timeout=30000,
+        timeout=60000,
     )
-    assert has_flag
     page.locator('[data-testid^="anomaly-flag-"]').first.click()
-    # Should have routed to chat with a pre-filled follow-up prompt
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
-    val = page.input_value('[data-testid="chat-input"]')
-    assert "flag" in val.lower() or "do about" in val.lower()
+    page.wait_for_function(
+        """() => {
+            const el = document.querySelector('[data-testid="chat-input"]')
+            return el && el.value && (el.value.includes('flag') || el.value.includes('do about'))
+        }""",
+        timeout=5000,
+    )
