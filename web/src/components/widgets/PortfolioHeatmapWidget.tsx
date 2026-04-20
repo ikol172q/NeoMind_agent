@@ -3,6 +3,7 @@ import {
   usePaperAccount,
   usePaperPositions,
   refreshPaperPrices,
+  useAttribution,
   type PaperPosition,
   type PaperAccount,
 } from '@/lib/api'
@@ -51,6 +52,7 @@ function rowTint(pct: number): string {
 export function PortfolioHeatmapWidget({ projectId, onJumpToChat }: Props) {
   const posQ = usePaperPositions(projectId)
   const acctQ = usePaperAccount(projectId)
+  const attribQ = useAttribution(projectId)
 
   // Kick one refresh on mount so first paint isn't stale entry_price.
   useEffect(() => {
@@ -108,6 +110,42 @@ export function PortfolioHeatmapWidget({ projectId, onJumpToChat }: Props) {
             <Stat label="Realized" value={`$${fmtNum(account.realized_pnl)}`}
               tone={account.realized_pnl >= 0 ? 'pos' : 'neg'} />
             <Stat label="Win Rate" value={`${Math.round(account.win_rate * 100) || 0}%`} />
+          </div>
+        )}
+
+        {/* Attribution strip — today's top contributors */}
+        {attribQ.data && attribQ.data.by_position.length > 0 && (
+          <div
+            data-testid="portfolio-attribution"
+            className="text-[10px] px-1 py-1 border-b border-[var(--color-border)] flex items-center gap-2 flex-wrap"
+          >
+            <span className="uppercase tracking-wider text-[var(--color-dim)] text-[9px]">
+              today
+            </span>
+            <span className={cn(
+              'font-mono',
+              attribQ.data.total_pnl_today_usd >= 0
+                ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'
+            )}>
+              {attribQ.data.total_pnl_today_usd >= 0 ? '+' : ''}${fmtNum(attribQ.data.total_pnl_today_usd)}
+            </span>
+            <span className="text-[var(--color-dim)]">·</span>
+            {attribQ.data.by_position.slice(0, 3).map(p => (
+              <span
+                key={p.symbol}
+                data-testid={`attrib-pos-${p.symbol}`}
+                className="inline-flex items-center gap-1"
+                title={`${p.sector} · ${p.pct_of_total?.toFixed(0) ?? '—'}% of day's move`}
+              >
+                <span className="font-mono">{p.symbol}</span>
+                <span className={cn(
+                  'font-mono',
+                  p.contrib_usd >= 0 ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'
+                )}>
+                  {p.contrib_usd >= 0 ? '+' : ''}${fmtNum(p.contrib_usd)}
+                </span>
+              </span>
+            ))}
           </div>
         )}
 

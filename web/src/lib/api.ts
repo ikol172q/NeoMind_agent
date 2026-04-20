@@ -478,6 +478,56 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Portfolio attribution (Phase 6) ─────────────────────
+export interface AttribPos {
+  symbol: string
+  sector: string
+  quantity: number
+  prior_close: number | null
+  current_price: number
+  contrib_usd: number
+  contrib_pct_today: number | null
+  pct_of_total: number | null
+}
+export interface AttribSector {
+  sector: string
+  contrib_usd: number
+  contrib_pct_of_total: number | null
+}
+export function useAttribution(project_id: string) {
+  return useQuery({
+    queryKey: ['attribution', project_id],
+    queryFn: () => fetchJSON<{
+      project_id: string
+      by_position: AttribPos[]
+      by_sector: AttribSector[]
+      total_pnl_today_usd: number
+    }>(`/api/attribution?project_id=${encodeURIComponent(project_id)}`),
+    enabled: !!project_id,
+    staleTime: 5 * 60_000,
+    refetchInterval: 10 * 60_000,
+  })
+}
+
+// ── Correlation matrix (Phase 6) ────────────────────────
+export interface CorrelationData {
+  project_id: string
+  symbols: string[]
+  matrix: number[][]
+  window_days: number
+  note: string | null
+}
+export function useCorrelation(project_id: string, days: number = 90, enabled: boolean = true) {
+  return useQuery({
+    queryKey: ['correlation', project_id, days],
+    queryFn: () => fetchJSON<CorrelationData>(
+      `/api/correlation?project_id=${encodeURIComponent(project_id)}&days=${days}`,
+    ),
+    enabled: enabled && !!project_id,
+    staleTime: 30 * 60_000,
+  })
+}
+
 // ── Anomaly flags (Phase 5) ─────────────────────────────
 export interface AnomalyFlag {
   kind: string
