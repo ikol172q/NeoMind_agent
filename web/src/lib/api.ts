@@ -466,6 +466,38 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Fund / ETF deep-dive ────────────────────────────────
+export interface FundHolding { symbol: string; name: string; weight_pct: number }
+export interface FundInfo {
+  symbol: string
+  short_name: string
+  long_name: string
+  family: string
+  category: string
+  quote_type: string
+  is_etf: boolean
+  nav_price: number | null
+  last_price: number | null
+  total_assets: number | null
+  expense_ratio_pct: number | null
+  yield_pct: number | null
+  ytd_return_pct: number | null
+  three_year_return_pct: number | null
+  five_year_return_pct: number | null
+  trailing_pe: number | null
+  asset_classes: Record<string, number>
+  top_holdings: FundHolding[]
+}
+
+export function useFund(symbol: string | null) {
+  return useQuery({
+    queryKey: ['fund', symbol],
+    queryFn: () => fetchJSON<FundInfo>(`/api/fund/${encodeURIComponent(symbol!)}`),
+    enabled: !!symbol,
+    staleTime: 10 * 60_000,
+  })
+}
+
 // ── Watchlist ───────────────────────────────────────────
 export interface WatchEntry {
   symbol: string

@@ -1839,6 +1839,12 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("earnings router unavailable: %s", exc)
 
+    try:
+        from agent.finance.funds import build_funds_router
+        app.include_router(build_funds_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("funds router unavailable: %s", exc)
+
     # ── OpenBB Workspace custom backend (Phase 2) ────────────────
     # Same NeoMind data + fleet agent exposed via OpenBB's standard
     # widget + Copilot HTTP contracts. Lets any OpenBB-compatible UI

@@ -13,13 +13,14 @@ import { RSGridWidget } from '@/components/widgets/RSGridWidget'
 import { EarningsWidget } from '@/components/widgets/EarningsWidget'
 import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWidget'
 import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
+import { FundExplorerWidget } from '@/components/widgets/FundExplorerWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v8 adds the multi-symbol compare chart (Tier-2 #5). It sits in
-// the detail band beside the single-symbol chart: one zoomed in,
-// one zoomed out across a basket.
-const LS_KEY = 'neomind.research.layout.v8'
+// v9 adds the fund/ETF explorer (Tier-2 #7). Lives in the detail
+// band under the charts so you can drill from a symbol chart into
+// fund-level profile + holdings.
+const LS_KEY = 'neomind.research.layout.v9'
 
 const DEFAULT_LAYOUT: Layout[] = [
   // Hero row — visible on first paint
@@ -35,9 +36,10 @@ const DEFAULT_LAYOUT: Layout[] = [
   // Detail band — single-symbol candles + multi-symbol overlay
   { i: 'chart',      x: 0,  y: 30, w: 6, h: 10 },
   { i: 'multi_chart',x: 6,  y: 30, w: 6, h: 10 },
-  { i: 'cn_info',    x: 0,  y: 40, w: 12, h: 5 },
+  { i: 'fund',       x: 0,  y: 40, w: 6, h: 12 },
+  { i: 'cn_info',    x: 6,  y: 40, w: 6, h: 12 },
   // Reference
-  { i: 'history',   x: 0,  y: 45, w: 12, h: 8 },
+  { i: 'history',   x: 0,  y: 52, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -93,6 +95,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="fund"><div className="drag-handle h-full cursor-move"><FundExplorerWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
       <div key="history"><div className="drag-handle h-full cursor-move"><HistoryTable projectId={projectId} /></div></div>
       </ResponsiveGridLayout>
