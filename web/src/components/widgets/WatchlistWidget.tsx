@@ -19,7 +19,7 @@ interface Props {
   /** When provided, clicking the row's "ask" button prefills a chat
    *  prompt and switches the App to the Chat tab. If omitted the
    *  button is hidden. */
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 /**
@@ -110,7 +110,7 @@ interface RowProps {
   projectId: string
   entry: WatchEntry
   onRemove: () => void
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 function WatchRow({ projectId, entry, onRemove, onJumpToChat }: RowProps) {
@@ -143,7 +143,7 @@ function WatchRow({ projectId, entry, onRemove, onJumpToChat }: RowProps) {
   function askAgent() {
     if (!onJumpToChat) return
     const prompt = `Analyze ${entry.market}:${entry.symbol}${entry.note ? ` (my note: "${entry.note}")` : ''}. Cover: latest price action, what's driving it today, any risks I should watch. Keep it under 200 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { symbol: entry.symbol })
   }
 
   return (

@@ -55,7 +55,7 @@ function loadLayout(): Layout[] {
 
 interface Props {
   projectId: string
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 export function ResearchTab({ projectId, onJumpToChat }: Props) {

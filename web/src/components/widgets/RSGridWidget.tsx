@@ -8,7 +8,7 @@ import { RefreshCw, MessageSquare } from 'lucide-react'
 type Window = '3m' | '6m' | 'ytd'
 
 interface Props {
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 /**
@@ -55,7 +55,7 @@ export function RSGridWidget({ onJumpToChat }: Props) {
       `${row.symbol} has returned 3m:${pretty(row.return_3m)}, ` +
       `6m:${pretty(row.return_6m)}, YTD:${pretty(row.return_ytd)}. ` +
       `What's driving this? 3 concrete catalysts, then one risk. <150 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { symbol: row.symbol })
   }
 
   return (

@@ -8,7 +8,7 @@ import { cn } from '@/lib/utils'
 import { X, Plus, MessageSquare } from 'lucide-react'
 
 interface Props {
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 // Line colours cycle as the user adds symbols. Muted enough to
@@ -97,7 +97,9 @@ export function MultiChartWidget({ onJumpToChat }: Props) {
       `Compare ${symbols.join(', ')} over the last ${period}. ` +
       `Which outperformed? 3 concrete drivers of the divergence, ` +
       `then one line on what could flip the leader. <150 words.`
-    onJumpToChat(prompt)
+    // Multi-symbol — send the first as the primary context. Agent
+    // can still see the others in the prompt text.
+    onJumpToChat(prompt, symbols.length ? { symbol: symbols[0] } : undefined)
   }
 
   return (

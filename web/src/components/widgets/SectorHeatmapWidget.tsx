@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 import { RefreshCw } from 'lucide-react'
 
 interface Props {
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 /**
@@ -90,7 +90,7 @@ export function SectorHeatmapWidget({ onJumpToChat }: Props) {
     if (!name || name === 'All') return
     const marketLabel = market === 'US' ? 'US SPDR sector' : 'CN 行业板块'
     const prompt = `What's driving the ${marketLabel} "${name}" (${symbol}) today? Give 3 concrete catalysts or dynamics, not fluff. <150 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { project: true })
   }
 
   return (

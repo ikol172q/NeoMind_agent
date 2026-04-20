@@ -25,6 +25,7 @@ export default function App() {
   )
   const [auditReqFilter, setAuditReqFilter] = useState<string | null>(null)
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
+  const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   const health = useHealth()
 
   function switchProject(p: string) {
@@ -37,8 +38,17 @@ export default function App() {
     setTab('audit')
   }
 
-  function jumpToChat(prompt: string) {
+  /**
+   * `ctx` carries the synthesis hint — when set, the chat's next
+   * message includes a DASHBOARD STATE block so the agent sees the
+   * widget data (position, earnings, technical pills, etc.) alongside
+   * the prompt text. Widgets that ask-about-a-symbol should pass
+   * `{symbol: "AAPL"}`; slash commands that scan the whole project
+   * pass `{project: true}`.
+   */
+  function jumpToChat(prompt: string, ctx?: { symbol?: string; project?: boolean }) {
     setPendingChatPrompt(prompt)
+    setPendingChatContext(ctx ?? null)
     setTab('chat')
   }
 
@@ -85,7 +95,11 @@ export default function App() {
             projectId={projectId}
             onJumpToAudit={jumpToAudit}
             pendingPrompt={pendingChatPrompt}
-            onConsumePendingPrompt={() => setPendingChatPrompt(null)}
+            pendingContext={pendingChatContext}
+            onConsumePendingPrompt={() => {
+              setPendingChatPrompt(null)
+              setPendingChatContext(null)
+            }}
           />
         )}
         {tab === 'paper'    && <PaperTab projectId={projectId} />}

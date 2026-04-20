@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils'
 import { RefreshCw, MessageSquare } from 'lucide-react'
 
 interface Props {
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 function toneColor(label: string): string {
@@ -75,7 +75,7 @@ export function SentimentGaugeWidget({ onJumpToChat }: Props) {
       `SPY 20d ${c.spy_momentum.return_20d_pct ?? '?'}%. ` +
       `Breadth ${c.breadth.up ?? '?'}/${c.breadth.total ?? '?'} up. ` +
       `Is this reading actionable? What would flip it fastest? <150 words.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { project: true })
   }
 
   return (

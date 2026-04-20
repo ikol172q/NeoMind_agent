@@ -32,6 +32,10 @@ interface Props {
    *  onConsumePendingPrompt so the parent clears it — otherwise
    *  switching away and back would replay the same prompt. */
   pendingPrompt?: string | null
+  /** Synthesis context hint attached to the pending prompt. When
+   *  set, the next send() passes `context_symbol` / `context_project`
+   *  so the agent sees the dashboard state in its system prompt. */
+  pendingContext?: { symbol?: string; project?: boolean } | null
   onConsumePendingPrompt?: () => void
 }
 
@@ -74,11 +78,16 @@ export function ChatPanel({
   projectId,
   onJumpToAudit,
   pendingPrompt,
+  pendingContext,
   onConsumePendingPrompt,
 }: Props) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
   const [loadingSession, setLoadingSession] = useState(false)
+  // Synthesis context attached to the NEXT send. Cleared after
+  // that send completes so subsequent free-form messages aren't
+  // silently enriched. Shown to the user as a chip so they know.
+  const [nextSendContext, setNextSendContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   // Hydrate sessionId + msgs synchronously from localStorage so we
   // never race a mirror-effect that would clobber the cache with an
   // initial empty state. This was the cause of phantom "yo" sessions
@@ -122,17 +131,18 @@ export function ChatPanel({
   useEffect(() => () => abortRef.current?.abort(), [])
 
   // ── Pending prompt hand-off from other tabs ──
-  // When the user clicks "ask agent" on a watchlist row, App.tsx
-  // sets a pendingPrompt + switches to Chat. We pre-fill the input,
-  // focus it, and tell the parent to clear the queued prompt so
-  // leaving + re-entering the tab doesn't replay it.
+  // When the user clicks "ask agent" on a widget, App.tsx sets a
+  // pendingPrompt + optional pendingContext + switches to Chat.
+  // We pre-fill the input, attach the context to the next send,
+  // focus, then tell the parent to clear so leaving + re-entering
+  // the tab doesn't replay it.
   useEffect(() => {
     if (!pendingPrompt) return
     setInput(pendingPrompt)
-    // Focus after the DOM commits so the cursor lands in the box.
+    if (pendingContext) setNextSendContext(pendingContext)
     queueMicrotask(() => inputRef.current?.focus())
     onConsumePendingPrompt?.()
-  }, [pendingPrompt, onConsumePendingPrompt])
+  }, [pendingPrompt, pendingContext, onConsumePendingPrompt])
 
   function addMsg(m: Omit<Msg, 'id' | 'ts'>): string {
     const id = `${Date.now()}-${Math.random()}`
@@ -251,6 +261,11 @@ export function ChatPanel({
       let accumulated = ''
       let firstToken = true
       let reqId: string | undefined
+      // Grab the current context and consume it — each ask-agent
+      // prompt gets one context-enriched send; subsequent free-form
+      // messages are back to no-injection.
+      const ctx = nextSendContext
+      if (ctx) setNextSendContext(null)
       abortRef.current?.abort()
       abortRef.current = streamChat(projectId, text, {
         onDelta: (chunk) => {
@@ -283,7 +298,7 @@ export function ChatPanel({
           void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
           resolve()
         },
-      })
+      }, ctx ? { symbol: ctx.symbol, project: ctx.project } : undefined)
     })
   }
 
@@ -357,6 +372,26 @@ export function ChatPanel({
         </div>
 
         <div className="relative p-3 border-t border-[var(--color-border)] bg-[var(--color-panel)]">
+          {nextSendContext && (
+            <div
+              data-testid="chat-context-chip"
+              className="mb-2 inline-flex items-center gap-2 px-2 py-0.5 rounded bg-[var(--color-accent)]/15 border border-[var(--color-accent)]/40 text-[10px] text-[var(--color-accent)]"
+              title="the next message will include the dashboard's live state for this symbol/project"
+            >
+              <span>+ context:</span>
+              <code className="font-mono">
+                {nextSendContext.symbol ?? (nextSendContext.project ? 'project snapshot' : '?')}
+              </code>
+              <button
+                data-testid="chat-context-clear"
+                onClick={() => setNextSendContext(null)}
+                className="text-[var(--color-dim)] hover:text-[var(--color-red)]"
+                title="drop context — next message sends without dashboard state"
+              >
+                ×
+              </button>
+            </div>
+          )}
           {showMenu && (
             <SlashMenu
               query={slashQuery}

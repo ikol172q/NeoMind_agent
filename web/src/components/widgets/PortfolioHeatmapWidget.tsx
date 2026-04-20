@@ -13,7 +13,7 @@ import { RefreshCw, MessageSquare } from 'lucide-react'
 
 interface Props {
   projectId: string
-  onJumpToChat?: (prompt: string) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
 // Color scale for per-position P&L%. Clamped so a single outlier
@@ -69,7 +69,7 @@ export function PortfolioHeatmapWidget({ projectId, onJumpToChat }: Props) {
       `entry ${p.entry_price.toFixed(2)}, now ${p.current_price.toFixed(2)}, ` +
       `qty ${p.quantity}. Hold / trim / add / cut? Give me a one-paragraph case, ` +
       `then one line on the catalyst to watch.`
-    onJumpToChat(prompt)
+    onJumpToChat(prompt, { symbol: p.symbol })
   }
 
   return (
