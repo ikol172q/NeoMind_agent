@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { InsightHover } from '@/components/ui/InsightHover'
 import { cn, fmtNum } from '@/lib/utils'
 import { RefreshCw, MessageSquare } from 'lucide-react'
 
@@ -135,7 +136,11 @@ export function PortfolioHeatmapWidget({ projectId, onJumpToChat }: Props) {
             </div>
           )}
           {positions.map(p => (
-            <PositionRow key={p.symbol} p={p} onAsk={onJumpToChat ? () => ask(p) : undefined} />
+            <InsightHover key={p.symbol} projectId={projectId} symbol={p.symbol}>
+              <div className="relative">
+                <PositionRow p={p} onAsk={onJumpToChat ? () => ask(p) : undefined} />
+              </div>
+            </InsightHover>
           ))}
         </div>
       </CardBody>

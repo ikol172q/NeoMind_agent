@@ -478,6 +478,27 @@ export function useSectors(market: 'US' | 'CN') {
   })
 }
 
+// ── Per-symbol insight for hover tooltips (Phase 2) ─────
+export interface SymbolInsight {
+  symbol: string
+  text: string
+  req_id: string
+  fetched_at: string
+  duration_ms: number
+}
+
+export function useSymbolInsight(project_id: string, symbol: string | null, enabled: boolean) {
+  return useQuery({
+    queryKey: ['insight', project_id, symbol],
+    queryFn: () => fetchJSON<SymbolInsight>(
+      `/api/insight/symbol/${encodeURIComponent(symbol!)}?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: enabled && !!symbol && !!project_id,
+    staleTime: 4 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ── Research narrative brief (Phase 1) ──────────────────
 export interface ResearchBrief {
   project_id: string

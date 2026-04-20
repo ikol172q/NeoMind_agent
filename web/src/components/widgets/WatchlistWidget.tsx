@@ -11,6 +11,7 @@ import {
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
+import { InsightHover } from '@/components/ui/InsightHover'
 import { fmtNum } from '@/lib/utils'
 import { Plus, X, MessageSquare, RefreshCw } from 'lucide-react'
 
@@ -92,13 +93,20 @@ export function WatchlistWidget({ projectId, onJumpToChat }: Props) {
             </div>
           )}
           {entries.map(entry => (
-            <WatchRow
+            <InsightHover
               key={`${entry.market}:${entry.symbol}`}
               projectId={projectId}
-              entry={entry}
-              onRemove={() => remove.mutate({ symbol: entry.symbol, market: entry.market })}
-              onJumpToChat={onJumpToChat}
-            />
+              symbol={entry.symbol}
+            >
+              <div className="relative">
+                <WatchRow
+                  projectId={projectId}
+                  entry={entry}
+                  onRemove={() => remove.mutate({ symbol: entry.symbol, market: entry.market })}
+                  onJumpToChat={onJumpToChat}
+                />
+              </div>
+            </InsightHover>
           ))}
         </div>
       </CardBody>

@@ -2,12 +2,14 @@ import { useMemo, useState } from 'react'
 import { useRS, type RSEntry } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { InsightHover } from '@/components/ui/InsightHover'
 import { cn, fmtNum } from '@/lib/utils'
 import { RefreshCw, MessageSquare } from 'lucide-react'
 
 type Window = '3m' | '6m' | 'ytd'
 
 interface Props {
+  projectId: string
   onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
 }
 
@@ -20,7 +22,7 @@ interface Props {
  * Row click / chat button → prefills a chat prompt asking the
  * agent about the stock's recent move.
  */
-export function RSGridWidget({ onJumpToChat }: Props) {
+export function RSGridWidget({ projectId, onJumpToChat }: Props) {
   const rs = useRS('US', 100)
   const [win, setWin] = useState<Window>('3m')
   const [limit, setLimit] = useState<number>(20)
@@ -117,14 +119,17 @@ export function RSGridWidget({ onJumpToChat }: Props) {
             </div>
           )}
           {sorted.map((r, i) => (
-            <RSRow
-              key={r.symbol}
-              row={r}
-              rank={i + 1}
-              sortKey={sortKey as 'return_3m' | 'return_6m' | 'return_ytd'}
-              topAbs={topAbs}
-              onAsk={onJumpToChat ? () => ask(r) : undefined}
-            />
+            <InsightHover key={r.symbol} projectId={projectId} symbol={r.symbol}>
+              <div className="relative">
+                <RSRow
+                  row={r}
+                  rank={i + 1}
+                  sortKey={sortKey as 'return_3m' | 'return_6m' | 'return_ytd'}
+                  topAbs={topAbs}
+                  onAsk={onJumpToChat ? () => ask(r) : undefined}
+                />
+              </div>
+            </InsightHover>
           ))}
         </div>
       </CardBody>
