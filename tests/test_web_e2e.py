@@ -66,7 +66,7 @@ def _ignore(msg: str) -> bool:
 
 
 def test_spa_loads_and_shows_nav(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="top-nav"]', timeout=8000)
     tabs = page.evaluate(
         """Array.from(document.querySelectorAll('[data-testid^="tab-"]')).map(e => e.textContent.trim())""",
@@ -77,7 +77,7 @@ def test_spa_loads_and_shows_nav(page: Page):
 
 @pytest.mark.parametrize("tab", ["research", "chat", "paper", "audit", "settings"])
 def test_each_tab_renders_some_content(page: Page, tab: str):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="top-nav"]')
     page.click(f'[data-testid="tab-{tab}"]')
     page.wait_for_timeout(1200)
@@ -86,7 +86,7 @@ def test_each_tab_renders_some_content(page: Page, tab: str):
 
 
 def test_chat_slash_menu_opens_on_slash(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.click('[data-testid="tab-chat"]')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/")
@@ -101,7 +101,7 @@ def test_chat_slash_menu_opens_on_slash(page: Page):
 
 
 def test_chat_help_command_local_execution(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.click('[data-testid="tab-chat"]')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/help")
@@ -113,7 +113,7 @@ def test_chat_help_command_local_execution(page: Page):
 
 
 def test_chat_audit_command_returns_local_entries(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.click('[data-testid="tab-chat"]')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/audit 3")
@@ -125,7 +125,7 @@ def test_chat_audit_command_returns_local_entries(page: Page):
 
 
 def test_audit_tab_lists_entries(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.click('[data-testid="tab-audit"]')
     page.wait_for_selector('[data-testid="audit-list"]')
     page.wait_for_timeout(1500)
@@ -138,7 +138,7 @@ def test_audit_cards_are_not_squashed(page: Page):
     """Regression: audit entries were rendering as 9px tall slivers
     because they were flex items in a flex-col with no shrink-0,
     so 70+ entries got crushed to fit the viewport."""
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.click('[data-testid="tab-audit"]')
     page.wait_for_selector('[data-testid="audit-list"]')
     page.wait_for_timeout(1500)

@@ -208,6 +208,40 @@ export function usePaperTrades(projectId: string, limit = 50) {
   })
 }
 
+export async function refreshPaperPrices(projectId: string): Promise<void> {
+  await fetchJSON(`/api/paper/refresh?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' })
+}
+
+// Typed position / account shapes so widgets don't have to cast
+// Record<string, unknown> fields individually.
+export interface PaperPosition {
+  symbol: string
+  quantity: number
+  entry_price: number
+  current_price: number
+  side: 'buy' | 'sell'
+  opened_at: string
+  unrealized_pnl: number
+  unrealized_pnl_pct: number
+}
+
+export interface PaperAccount {
+  initial_capital: number
+  cash: number
+  equity: number
+  unrealized_pnl: number
+  realized_pnl: number
+  total_pnl: number
+  total_pnl_pct: number
+  total_trades: number
+  winning_trades: number
+  losing_trades: number
+  win_rate: number
+  positions: number
+  open_orders: number
+  project_id: string
+}
+
 export function usePaperOrder() {
   const qc = useQueryClient()
   return useMutation({

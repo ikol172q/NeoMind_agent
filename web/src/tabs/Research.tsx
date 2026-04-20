@@ -11,16 +11,14 @@ import { WatchlistWidget } from '@/components/widgets/WatchlistWidget'
 import { SectorHeatmapWidget } from '@/components/widgets/SectorHeatmapWidget'
 import { RSGridWidget } from '@/components/widgets/RSGridWidget'
 import { EarningsWidget } from '@/components/widgets/EarningsWidget'
+import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v6 reshuffles so News sits in the top viewport (user complaint:
-// "can't see what's happening in the market without scrolling").
-// News is right-hand column of the hero row, visible on first
-// paint alongside watchlist. Quotes stack compact in the last
-// hero column. Earnings + RS + Sectors form the mid analytics
-// band; chart + cn_info the detail band; history at the bottom.
-const LS_KEY = 'neomind.research.layout.v6'
+// v7 adds the portfolio heatmap (Tier-2 #8). It shares the
+// analytics band with earnings + RS so risk, momentum, and
+// calendar context sit visually next to each other.
+const LS_KEY = 'neomind.research.layout.v7'
 
 const DEFAULT_LAYOUT: Layout[] = [
   // Hero row — visible on first paint
@@ -29,9 +27,10 @@ const DEFAULT_LAYOUT: Layout[] = [
   { i: 'us_quote',  x: 9,  y: 0,  w: 3,  h: 6 },
   { i: 'cn_quote',  x: 9,  y: 6,  w: 3,  h: 6 },
   // Analytics band
-  { i: 'earnings',  x: 0,  y: 12, w: 6,  h: 9 },
-  { i: 'rs_grid',   x: 6,  y: 12, w: 6,  h: 9 },
-  { i: 'sectors',   x: 0,  y: 21, w: 12, h: 9 },
+  { i: 'portfolio', x: 0,  y: 12, w: 6,  h: 9 },
+  { i: 'earnings',  x: 6,  y: 12, w: 6,  h: 9 },
+  { i: 'rs_grid',   x: 0,  y: 21, w: 6,  h: 9 },
+  { i: 'sectors',   x: 6,  y: 21, w: 6,  h: 9 },
   // Detail band
   { i: 'chart',     x: 0,  y: 30, w: 8,  h: 10 },
   { i: 'cn_info',   x: 8,  y: 30, w: 4,  h: 10 },
@@ -86,6 +85,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>
       <div key="cn_info"><div className="drag-handle h-full cursor-move"><CNInfoCard /></div></div>
+      <div key="portfolio"><div className="drag-handle h-full cursor-move"><PortfolioHeatmapWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget onJumpToChat={onJumpToChat} /></div></div>
