@@ -24,6 +24,7 @@ export default function App() {
     () => localStorage.getItem('neomind.project') ?? 'fin-core'
   )
   const [auditReqFilter, setAuditReqFilter] = useState<string | null>(null)
+  const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
   const health = useHealth()
 
   function switchProject(p: string) {
@@ -34,6 +35,11 @@ export default function App() {
   function jumpToAudit(reqId: string) {
     setAuditReqFilter(reqId)
     setTab('audit')
+  }
+
+  function jumpToChat(prompt: string) {
+    setPendingChatPrompt(prompt)
+    setTab('chat')
   }
 
   return (
@@ -73,8 +79,15 @@ export default function App() {
 
       {/* Active tab */}
       <main className="flex-1 overflow-hidden">
-        {tab === 'research' && <ResearchTab projectId={projectId} />}
-        {tab === 'chat'     && <ChatTab projectId={projectId} onJumpToAudit={jumpToAudit} />}
+        {tab === 'research' && <ResearchTab projectId={projectId} onJumpToChat={jumpToChat} />}
+        {tab === 'chat'     && (
+          <ChatTab
+            projectId={projectId}
+            onJumpToAudit={jumpToAudit}
+            pendingPrompt={pendingChatPrompt}
+            onConsumePendingPrompt={() => setPendingChatPrompt(null)}
+          />
+        )}
         {tab === 'paper'    && <PaperTab projectId={projectId} />}
         {tab === 'audit'    && (
           <AuditTab

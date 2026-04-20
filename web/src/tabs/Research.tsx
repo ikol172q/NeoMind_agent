@@ -7,18 +7,23 @@ import { CNInfoCard } from '@/components/widgets/CNInfoCard'
 import { NewsList } from '@/components/widgets/NewsList'
 import { HistoryTable } from '@/components/widgets/HistoryTable'
 import { ChartWidget } from '@/components/widgets/ChartWidget'
+import { WatchlistWidget } from '@/components/widgets/WatchlistWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-const LS_KEY = 'neomind.research.layout.v1'
+// Bumped v1 → v2 when the watchlist widget was added. Old layouts
+// under v1 don't include the watchlist key, so react-grid-layout
+// would either drop it or stack it at the bottom.
+const LS_KEY = 'neomind.research.layout.v2'
 
 const DEFAULT_LAYOUT: Layout[] = [
-  { i: 'us_quote',  x: 0,  y: 0, w: 4,  h: 7 },
-  { i: 'cn_quote',  x: 4,  y: 0, w: 4,  h: 7 },
-  { i: 'cn_info',   x: 8,  y: 0, w: 4,  h: 7 },
-  { i: 'chart',     x: 0,  y: 7, w: 8,  h: 10 },
-  { i: 'news',      x: 8,  y: 7, w: 4,  h: 10 },
-  { i: 'history',   x: 0,  y: 17, w: 12, h: 8 },
+  { i: 'watchlist', x: 0,  y: 0,  w: 5,  h: 10 },
+  { i: 'us_quote',  x: 5,  y: 0,  w: 4,  h: 7 },
+  { i: 'cn_quote',  x: 9,  y: 0,  w: 3,  h: 7 },
+  { i: 'cn_info',   x: 5,  y: 7,  w: 7,  h: 5 },
+  { i: 'chart',     x: 0,  y: 12, w: 8,  h: 10 },
+  { i: 'news',      x: 8,  y: 12, w: 4,  h: 10 },
+  { i: 'history',   x: 0,  y: 22, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -29,9 +34,12 @@ function loadLayout(): Layout[] {
   return DEFAULT_LAYOUT
 }
 
-interface Props { projectId: string }
+interface Props {
+  projectId: string
+  onJumpToChat?: (prompt: string) => void
+}
 
-export function ResearchTab({ projectId }: Props) {
+export function ResearchTab({ projectId, onJumpToChat }: Props) {
   const layout = loadLayout()
 
   return (
@@ -42,11 +50,18 @@ export function ResearchTab({ projectId }: Props) {
       cols={{ lg: 12, md: 12, sm: 8, xs: 4 }}
       rowHeight={32}
       draggableHandle=".cursor-move, .drag-handle"
+      // Inputs / buttons / selects inside a widget must not trigger a
+      // grid-drag on mousedown — otherwise clicking "Add" on the
+      // watchlist (and every other button inside a widget) gets
+      // swallowed before the onClick handler can fire. Matches the
+      // pattern react-grid-layout recommends for interactive cards.
+      draggableCancel="input, select, textarea, button, a, [contenteditable='true']"
       margin={[10, 10]}
       onLayoutChange={(l) => {
         try { localStorage.setItem(LS_KEY, JSON.stringify(l)) } catch {}
       }}
     >
+      <div key="watchlist"><div className="drag-handle h-full cursor-move"><WatchlistWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>
       <div key="cn_info"><div className="drag-handle h-full cursor-move"><CNInfoCard /></div></div>

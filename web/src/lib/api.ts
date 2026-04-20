@@ -348,6 +348,70 @@ export function streamChat(
   return ac
 }
 
+// ── Watchlist ───────────────────────────────────────────
+export interface WatchEntry {
+  symbol: string
+  market: 'US' | 'CN' | 'HK'
+  note: string
+  added_at?: string
+  updated_at?: string
+}
+
+export function useWatchlist(project_id: string) {
+  return useQuery({
+    queryKey: ['watchlist', project_id],
+    queryFn: () => fetchJSON<{ project_id: string; count: number; entries: WatchEntry[] }>(
+      `/api/watchlist?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 5_000,
+  })
+}
+
+export function useWatchlistUpsert(project_id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (entry: { symbol: string; market: string; note?: string }) =>
+      fetchJSON<{ ok: boolean; count: number }>(
+        `/api/watchlist?project_id=${encodeURIComponent(project_id)}`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ symbol: entry.symbol, market: entry.market, note: entry.note ?? '' }),
+        },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['watchlist', project_id] }),
+  })
+}
+
+export function useWatchlistPatchNote(project_id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (args: { symbol: string; market: string; note: string }) =>
+      fetchJSON<{ ok: boolean }>(
+        `/api/watchlist/${encodeURIComponent(args.symbol)}?project_id=${encodeURIComponent(project_id)}&market=${encodeURIComponent(args.market)}`,
+        {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ note: args.note }),
+        },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['watchlist', project_id] }),
+  })
+}
+
+export function useWatchlistRemove(project_id: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (args: { symbol: string; market: string }) =>
+      fetchJSON<{ ok: boolean; count: number }>(
+        `/api/watchlist/${encodeURIComponent(args.symbol)}?project_id=${encodeURIComponent(project_id)}&market=${encodeURIComponent(args.market)}`,
+        { method: 'DELETE' },
+      ),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['watchlist', project_id] }),
+  })
+}
+
 // ── Chat sessions (persistence) ────────────────────────
 export interface ChatSessionSummary {
   session_id: string
