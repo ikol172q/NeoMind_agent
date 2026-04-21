@@ -51,7 +51,11 @@ export function WatchlistWidget({ projectId, onJumpToChat }: Props) {
     <Card className="h-full flex flex-col" data-testid="watchlist-widget">
       <CardHeader
         title="Watchlist"
-        subtitle={`${entries.length} tracked · project ${projectId}`}
+        subtitle={
+          entries.length > 0
+            ? `${entries.length} tracked · hover row for agent read · click › to drill`
+            : `${entries.length} tracked · project ${projectId}`
+        }
         right={
           <Button size="sm" variant="ghost" onClick={() => list.refetch()} disabled={list.isFetching}>
             <RefreshCw size={11} className={list.isFetching ? 'animate-spin' : ''} />
@@ -90,8 +94,23 @@ export function WatchlistWidget({ projectId, onJumpToChat }: Props) {
             <div className="text-[var(--color-dim)] text-xs p-2">loading…</div>
           )}
           {!list.isLoading && entries.length === 0 && (
-            <div className="text-[var(--color-dim)] italic text-xs text-center p-4">
-              Empty. Add a symbol above.
+            <div
+              data-testid="watchlist-empty-hint"
+              className="text-[11px] text-[var(--color-dim)] p-3 flex flex-col gap-2"
+            >
+              <div className="text-[var(--color-text)] text-[12px]">
+                Add a symbol above to unlock these features:
+              </div>
+              <ul className="list-disc ml-5 leading-relaxed">
+                <li><b>Hover any row</b> → 1-sentence agent read (no click needed).</li>
+                <li><b>Click the <code>›</code></b> at the row's left edge → 3-tier drill:
+                  1-line → 5 factor pills (M V Q G R) → raw + agent narrative.</li>
+                <li><b>Add ≥2 US symbols</b> → correlation heatmap lights up below.</li>
+                <li><b>Click the chat icon</b> → open the agent with full context for that symbol.</li>
+              </ul>
+              <div className="italic text-[10px] mt-1">
+                Try: select US, type <code>AAPL</code>, click Add. Then <code>NVDA</code>. Then hover the AAPL row.
+              </div>
             </div>
           )}
           {entries.map(entry => (
@@ -169,7 +188,7 @@ function WatchRow({ projectId, entry, onRemove, onJumpToChat }: RowProps) {
   return (
     <div
       data-testid={`watchlist-row-${entry.market}-${entry.symbol}`}
-      className="flex flex-col px-1 py-1 text-[11px] border-b border-[var(--color-border)]/40 hover:bg-[var(--color-border)]/20"
+      className="flex flex-col px-1 py-1 text-[11px] border-b border-[var(--color-border)]/40 hover:bg-[var(--color-border)]/20 hover:border-l-2 hover:border-l-[var(--color-accent)] transition-all"
     >
       {/* Tier 1: one-line row (always visible) */}
       <div className="flex items-center gap-2">

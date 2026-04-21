@@ -1,5 +1,5 @@
 import { useMemo } from 'react'
-import { useResearchBrief, useAnomalies } from '@/lib/api'
+import { useResearchBrief, useAnomalies, useWatchlist, usePaperPositions } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
 import { CitedText } from '@/components/ui/CitedText'
 import { Sparkles, RefreshCw, MessageSquare, AlertTriangle } from 'lucide-react'
@@ -23,6 +23,14 @@ interface Props {
 export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
   const q = useResearchBrief(projectId)
   const anomalies = useAnomalies(projectId)
+  // Detect the "fresh install" state — no watchlist, no positions.
+  // In that state the 3-line agent brief is mostly "no data"; a
+  // quickstart is far more useful than a vague read.
+  const wl = useWatchlist(projectId)
+  const pos = usePaperPositions(projectId)
+  const isFreshInstall =
+    (wl.data?.entries?.length ?? 0) === 0 &&
+    (pos.data?.positions?.length ?? 0) === 0
 
   const lines = useMemo(() => {
     const txt = q.data?.text ?? ''
@@ -116,7 +124,38 @@ export function ResearchBriefWidget({ projectId, onJumpToChat }: Props) {
             {(q.error as Error).message.slice(0, 200)}
           </div>
         )}
-        {!q.isLoading && !q.isError && lines.length > 0 && (
+        {!q.isLoading && isFreshInstall && (
+          <div data-testid="brief-quickstart" className="flex flex-col gap-2 text-[12px]">
+            <div className="text-[var(--color-accent)] font-semibold">
+              Welcome — here's how to light this dashboard up:
+            </div>
+            <ol className="list-decimal ml-5 space-y-1 text-[var(--color-text)]">
+              <li>
+                Scroll to <b>Watchlist</b> (left, below) → add <code>AAPL</code> and <code>NVDA</code>.
+              </li>
+              <li>
+                <b>Hover</b> any row → 1-sentence agent read pops up (no click).
+              </li>
+              <li>
+                Click the <code>›</code> at a row's left edge →
+                expand into 5 factor pills (<b>M V Q G R</b>) → expand again for full agent analysis.
+              </li>
+              <li>
+                Open the <b>Paper</b> tab, buy 5 shares of AAPL → come back, the portfolio heatmap
+                fills in + this hero starts citing real P&L.
+              </li>
+              <li>
+                Press <kbd className="px-1 rounded border border-[var(--color-border)]">⌘K</kbd>
+                anywhere to open the command palette. Try <code>brief</code>, <code>prep AAPL</code>, <code>check</code>.
+              </li>
+            </ol>
+            <div className="text-[10px] text-[var(--color-dim)] italic mt-1">
+              Once you have watchlist entries + positions, this hero becomes a 3-line
+              auto-refreshing agent brief (Market / Book / Next) with clickable citation chips.
+            </div>
+          </div>
+        )}
+        {!q.isLoading && !q.isError && !isFreshInstall && lines.length > 0 && (
           <div className="flex flex-col gap-1">
             {lines.map((line, i) => {
               const m = line.match(/^(Market|Book|Next)[:：]\s*(.*)$/)

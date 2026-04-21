@@ -73,7 +73,19 @@ export function CorrelationWidget({ projectId }: Props) {
           </div>
         )}
         {data && data.note && (
-          <div className="text-[10px] text-[var(--color-dim)] italic mb-2">{data.note}</div>
+          <div
+            data-testid="correlation-empty-hint"
+            className="text-[11px] text-[var(--color-dim)] p-2 flex flex-col gap-1"
+          >
+            <div className="text-[var(--color-text)]">{data.note}</div>
+            <div className="italic">
+              Add US tickers to Watchlist or open paper positions.
+              The heatmap reveals which of your bets move together —
+              useful for spotting hidden factor concentration
+              (e.g. 5 stocks you thought were diversified turn out to
+              all track Tech beta).
+            </div>
+          </div>
         )}
         {data && data.matrix.length > 0 && (
           <table
