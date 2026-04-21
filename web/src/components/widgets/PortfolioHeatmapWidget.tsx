@@ -169,8 +169,21 @@ export function PortfolioHeatmapWidget({ projectId, onJumpToChat }: Props) {
             </div>
           )}
           {!posQ.isLoading && positions.length === 0 && (
-            <div className="text-[var(--color-dim)] italic text-[11px] text-center p-4">
-              Empty — open a position from the Paper tab and it will show up here.
+            <div
+              data-testid="portfolio-empty-hint"
+              className="text-[11px] text-[var(--color-dim)] p-3 flex flex-col gap-2"
+            >
+              <div className="text-[var(--color-text)] text-[12px]">
+                No paper positions yet. To unlock these features:
+              </div>
+              <ol className="list-decimal ml-5 leading-relaxed">
+                <li>Click the <b>Paper</b> tab at the top.</li>
+                <li>Open a position (buy AAPL, 5 shares).</li>
+                <li>Back to Research: this widget fills in, an <b>attribution strip</b>
+                  appears at top (today's PnL broken down by symbol and sector),
+                  and <b>anomaly flags</b> may appear on the narrative hero.</li>
+                <li>Hover any position row for a 1-sentence agent read.</li>
+              </ol>
             </div>
           )}
           {positions.map(p => (
