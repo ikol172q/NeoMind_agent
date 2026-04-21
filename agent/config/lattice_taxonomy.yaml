@@ -1,0 +1,168 @@
+# Insight Lattice tag taxonomy — v1
+#
+# Tags are multi-label labels on L1 observations. L2 themes are
+# formed by set-intersection over these tags (soft membership,
+# overlap preserved by construction).
+#
+# Bump `version` when tag keys change. Never mutate an existing key
+# silently — add a migration script under scripts/lattice_migrate/.
+#
+# Conventions:
+#   - Tag format is `key:value`. No spaces. Lowercase except for
+#     `symbol:TICKER` and `sector:Human Name` where case carries info.
+#   - Each observation must carry ≥1 tag from {symbol, sector, regime,
+#     catalyst, pnl}. Taxonomy completeness test enforces this.
+#   - "Dimensions" below are documentation; the authoritative list
+#     is the `valid_values` under each dimension.
+
+version: 1
+
+dimensions:
+  symbol:
+    description: The specific ticker the observation concerns. Free-form (no enum).
+    example: "symbol:AAPL"
+
+  market:
+    description: Exchange / regulatory market the ticker trades in.
+    valid_values: [US, CN, HK]
+    example: "market:US"
+
+  sector:
+    description: GICS-ish sector name. Free-form because yfinance
+      returns human-readable strings (e.g. "Consumer Discretionary").
+    example: "sector:Technology"
+
+  risk:
+    description: A risk kind that elevates attention to the observation.
+    valid_values:
+      - earnings     # a reporting event in the near term
+      - regulatory   # FDA, SEC, DOJ, EU, China policy
+      - liquidity    # thin volume, wide spread, drawdown pressure
+      - macro        # rates, inflation, geopolitics spilling down
+      - concentration  # portfolio / sector concentration
+      - drawdown     # position is below stop threshold
+    example: "risk:earnings"
+
+  technical:
+    description: A technical-pattern annotation.
+    valid_values:
+      - breakout
+      - breakdown
+      - oversold
+      - overbought
+      - near_52w_high
+      - near_52w_low
+      - support
+      - resistance
+      - trend_up
+      - trend_down
+      - trend_mixed
+    example: "technical:near_52w_high"
+
+  pnl:
+    description: P&L direction or magnitude qualifier.
+    valid_values: [positive, negative, flat, large_gain, large_loss]
+    example: "pnl:large_gain"
+
+  position:
+    description: Marks an observation tied to an actual held position.
+      Value is the ticker held.
+    example: "position:AAPL"
+
+  timescale:
+    description: Rough time horizon the signal operates on.
+    valid_values:
+      - intraday   # today's move
+      - short      # days to ≤2 weeks
+      - mid        # weeks to ~3 months
+      - long       # quarters or more
+    example: "timescale:short"
+
+  direction:
+    description: Up or down, if the observation has a direction.
+    valid_values: [up, down, flat]
+    example: "direction:up"
+
+  signal:
+    description: Directional read from the observation's author POV.
+    valid_values: [bullish, bearish, neutral]
+    example: "signal:bullish"
+
+  regime:
+    description: Market-wide context axis the observation reflects.
+    valid_values:
+      - vix             # volatility regime
+      - breadth         # advance/decline health
+      - sentiment       # composite fear/greed
+      - rotation        # sector rotation
+    example: "regime:vix"
+
+  catalyst:
+    description: A concrete upcoming event driving the observation.
+    valid_values:
+      - earnings
+      - fed
+      - data            # CPI / jobs / econ data
+      - product         # product launch, conference
+      - merger
+      - regulatory
+    example: "catalyst:earnings"
+
+
+# Theme signatures: L2 themes are formed by matching observations
+# whose tags intersect the signature. `any_of` = at least one tag
+# from the set must match; `all_of` = all must match.
+#
+# Observations can belong to multiple themes. This is the overlap
+# mechanism — no theme claims exclusivity.
+#
+# Keep 5-7 themes; add more only when a real information gap is
+# felt. Ordering here is the default ranking weight.
+themes:
+  - id: theme_earnings_risk
+    title: "Earnings risk"
+    signature:
+      any_of: ["risk:earnings", "catalyst:earnings"]
+    min_members: 1
+
+  - id: theme_near_highs
+    title: "Near 52w highs"
+    signature:
+      any_of: ["technical:near_52w_high", "technical:breakout"]
+    min_members: 1
+
+  - id: theme_near_lows
+    title: "Near 52w lows / oversold"
+    signature:
+      any_of: ["technical:near_52w_low", "technical:oversold", "technical:breakdown"]
+    min_members: 1
+
+  - id: theme_book_performance
+    title: "Book performance"
+    signature:
+      any_of: ["pnl:positive", "pnl:negative", "pnl:large_gain", "pnl:large_loss"]
+    min_members: 1
+
+  - id: theme_drawdown_watch
+    title: "Drawdown watch"
+    signature:
+      any_of: ["risk:drawdown", "pnl:large_loss"]
+    min_members: 1
+
+  - id: theme_macro_regime
+    title: "Macro regime"
+    signature:
+      any_of: ["regime:vix", "regime:breadth", "regime:sentiment"]
+    min_members: 1
+
+  - id: theme_sector_rotation
+    title: "Sector rotation"
+    signature:
+      any_of: ["regime:rotation"]
+    min_members: 2
+
+  - id: theme_news_flow
+    title: "News in focus"
+    signature:
+      any_of: ["catalyst:regulatory", "catalyst:product", "catalyst:merger", "catalyst:data", "catalyst:fed"]
+    min_members: 1
