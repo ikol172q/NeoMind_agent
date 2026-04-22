@@ -166,3 +166,42 @@ themes:
     signature:
       any_of: ["catalyst:regulatory", "catalyst:product", "catalyst:merger", "catalyst:data", "catalyst:fed"]
     min_members: 1
+
+
+# L1.5 · Sub-themes (optional — engages n=4 lattice when non-empty)
+#
+# Sub-themes sit BETWEEN observations and themes. They use the same
+# tag-intersection signature shape as themes, just with narrower
+# intents: per-sector or per-risk focuses that give the user a
+# "zoom closer" view without losing the coarser theme grouping.
+# Overlap is still preserved — the same obs can land in multiple
+# sub-themes and multiple themes simultaneously.
+#
+# To disengage n=4 and revert to n=3, simply delete this whole
+# block (or set it to an empty list). No code change needed.
+sub_themes:
+  - id: subtheme_momentum_breakouts
+    title: "Momentum breakouts"
+    signature:
+      any_of: ["technical:breakout", "technical:near_52w_high"]
+      all_of: ["direction:up"]
+    min_members: 1
+
+  - id: subtheme_mean_reversion
+    title: "Mean-reversion setups"
+    signature:
+      any_of: ["technical:oversold", "technical:near_52w_low"]
+    min_members: 1
+
+  - id: subtheme_event_risk
+    title: "Near-term event risk"
+    signature:
+      any_of: ["catalyst:earnings", "catalyst:regulatory", "catalyst:fed"]
+      all_of: ["timescale:short"]
+    min_members: 1
+
+  - id: subtheme_book_stress
+    title: "Book stress signals"
+    signature:
+      any_of: ["pnl:large_loss", "risk:drawdown"]
+    min_members: 1

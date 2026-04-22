@@ -370,38 +370,78 @@ def _theme_tags(members: List[tuple[Observation, float]], sig: ThemeSignature, m
     return distinctive + extra
 
 
-def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
-    """Full L1 + L2 pipeline: observations → clusters → narratives.
+def _cluster_to_layer(
+    observations: Sequence[Observation],
+    signatures: Sequence[ThemeSignature],
+    *,
+    fresh: bool,
+    generate_narratives: bool,
+) -> List[Theme]:
+    """Shared builder for any middle layer (sub_themes, themes, ...).
+    Runs the deterministic tag clusterer; optionally asks the LLM to
+    write a narrative per non-empty cluster.
 
-    Returns a dict with:
-      observations  — L1 rows (for downstream L3 and frontend drill)
-      themes        — L2 rows with narrative + members
+    sub_themes skip the narrative call — the UX presents them as
+    compact groupings, not standalone prose. Saves ~5 LLM calls
+    per refresh when n=4 is engaged.
     """
-    observations = build_observations(project_id, fresh=fresh)
-
-    clusters = cluster_observations(observations)
-    themes: List[Theme] = []
+    if not signatures:
+        return []
+    clusters = cluster_observations(observations, signatures)
+    out: List[Theme] = []
     for c in clusters:
         sig: ThemeSignature = c["sig"]
         members: List[tuple[Observation, float]] = c["members"]
-        narrative = generate_narrative(sig.id, sig.title, members, fresh=fresh)
-        theme = Theme(
+        if generate_narratives:
+            narrative = generate_narrative(sig.id, sig.title, members, fresh=fresh)
+            narrative_text = narrative["narrative"]
+            narrative_source = narrative["source"]
+            cited_numbers = narrative["cited_numbers"]
+        else:
+            # Template-only for intermediate layers — short join of
+            # member kinds, no LLM needed.
+            narrative_text = f"{sig.title} ({len(members)} obs)"
+            narrative_source = "template_fallback"
+            cited_numbers = []
+        out.append(Theme(
             id=sig.id,
             title=sig.title,
-            narrative=narrative["narrative"],
-            narrative_source=narrative["source"],
+            narrative=narrative_text,
+            narrative_source=narrative_source,
             members=[ThemeMember(obs_id=o.id, weight=round(w, 3)) for o, w in members],
             tags=_theme_tags(members, sig),
             severity=_theme_severity(members),
-            cited_numbers=narrative["cited_numbers"],
-        )
-        themes.append(theme)
+            cited_numbers=cited_numbers,
+        ))
+    out.sort(key=lambda t: (_severity_rank(t.severity), -len(t.members)))
+    return out
 
-    # Sort themes alert > warn > info, then by member count desc
-    themes.sort(key=lambda t: (_severity_rank(t.severity), -len(t.members)))
+
+def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
+    """Full L1 (+ optional L1.5) + L2 pipeline: observations → clusters
+    → narratives.
+
+    Returns a dict with:
+      observations  — L1 rows
+      sub_themes    — L1.5 rows (empty list when YAML has no sub_themes)
+      themes        — L2 rows with LLM narrative + members
+
+    `sub_themes` is the D6 hook: adding a `sub_themes:` block to
+    lattice_taxonomy.yaml engages n=4. No code change required.
+    """
+    observations = build_observations(project_id, fresh=fresh)
+    tax = load_taxonomy()
+
+    sub_themes = _cluster_to_layer(
+        observations, tax.sub_themes, fresh=fresh, generate_narratives=False,
+    )
+    themes = _cluster_to_layer(
+        observations, tax.themes, fresh=fresh, generate_narratives=True,
+    )
 
     return {
         "project_id": project_id,
         "observations": [o.to_dict() for o in observations],
+        "sub_themes": [t.to_dict() for t in sub_themes],
         "themes": [t.to_dict() for t in themes],
     }
