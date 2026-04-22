@@ -1,0 +1,679 @@
+{
+  "generated_at": 1776829499.559078,
+  "runs": {
+    "empty": {
+      "scenario": {
+        "name": "empty",
+        "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+        "watchlist": [],
+        "positions": []
+      },
+      "calls": [
+        {
+          "id": "call_001",
+          "claim": "Buy intraday energy sector ETF (XLE) calls while selling real estate sector ETF (XLRE) calls to capture rotation momentum.",
+          "grounds": [
+            "theme_sector_rotation"
+          ],
+          "warrant": "Energy sector leading with +1.45% while real estate lags with -1.93% shows clear intraday rotation into energy and out of defensive sectors, suggesting momentum continuation as funds reallocate.",
+          "qualifier": "Size at \u2264 1% of book per leg; exit if energy sector momentum reverses (XLE drops >0.5% from intraday high).",
+          "rebuttal": "If real estate sector (XLRE) outperforms energy (XLE) by >0.5% during the trading session.",
+          "confidence": "medium",
+          "time_horizon": "intraday"
+        },
+        {
+          "id": "call_002",
+          "claim": "Short intraday S&P 100 index via futures or SPY puts to capitalize on bearish breadth weakness.",
+          "grounds": [
+            "theme_macro_regime"
+          ],
+          "warrant": "Only 25 of 98 S&P 100 stocks advancing indicates severe breadth deterioration, which typically precedes broader market declines as weakness spreads from individual stocks to the overall index.",
+          "qualifier": "Intraday only; unwind position if S&P 100 index advances by >0.5% from entry or before market close.",
+          "rebuttal": "If more than 60 S&P 100 stocks advance during the trading session, indicating breadth recovery.",
+          "confidence": "medium",
+          "time_horizon": "intraday"
+        }
+      ],
+      "l3_scores": {
+        "call_001": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Clear portfolio action with specific instruments, directly supported by grounds, specific qualifiers and rebuttal thresholds."
+        },
+        "call_002": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Specific short action with instruments, directly follows from breadth data, clear exit conditions and falsifiable rebuttal."
+        }
+      },
+      "l3_summary": {
+        "scenario": "empty",
+        "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+        "call_count": 2,
+        "judged_count": 2,
+        "avg_claim_actionability": 5.0,
+        "avg_grounds_traceability": 5.0,
+        "avg_warrant_validity": 5.0,
+        "avg_qualifier_specificity": 5.0,
+        "avg_rebuttal_realism": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "thin": {
+      "scenario": {
+        "name": "thin",
+        "description": "One watchlist symbol, one position. Minimum viable state.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ]
+        ]
+      },
+      "calls": [
+        {
+          "id": "call_001",
+          "claim": "Reduce long exposure to Real Estate sector immediately",
+          "grounds": [
+            "theme_sector_rotation",
+            "theme_macro_regime"
+          ],
+          "warrant": "Real Estate sector declining -1.93% (worst performer mentioned) during market breadth weakness suggests it's particularly vulnerable in current environment, and interest-rate sensitive sectors like Real Estate typically underperform during market stress periods, creating elevated downside risk.",
+          "qualifier": "Cut Real Estate positions by 50% today; complete unwind if sector drops another 1% from current levels",
+          "rebuttal": "If Real Estate sector shows >0.75% intraday recovery with increasing volume",
+          "confidence": "high",
+          "time_horizon": "intraday"
+        },
+        {
+          "id": "call_002",
+          "claim": "Short Financials sector ETF (XLF) against long Energy sector ETF (XLE)",
+          "grounds": [
+            "theme_sector_rotation"
+          ],
+          "warrant": "Financials sector declining -0.63% while Energy leads at +1.45% shows clear sector divergence that often persists over short-term as momentum and rotation patterns tend to continue once established, creating a pairs trade opportunity with defined risk parameters.",
+          "qualifier": "Execute only if XLE/XLF ratio crosses above 1.02; maintain 1:1 dollar exposure with stop-loss if ratio falls below 0.995",
+          "rebuttal": "If Financials sector shows >0.5% outperformance vs Energy on any single trading day",
+          "confidence": "medium",
+          "time_horizon": "days"
+        },
+        {
+          "id": "call_003",
+          "claim": "Buy protective puts on AAPL ahead of earnings report",
+          "grounds": [
+            "theme_earnings_risk"
+          ],
+          "warrant": "AAPL faces earnings risk with report in 8 days, creating asymmetric payoff potential as options markets may not fully price uncertainty, and negative earnings surprises typically cause larger price moves than positive surprises in current market environment.",
+          "qualifier": "Purchase 30-day ATM puts (not weeklies) with position size limited to 1% of book; unwind within 3 days post-earnings regardless of outcome",
+          "rebuttal": "If AAPL pre-earnings implied volatility drops below 25% (indicating reduced market concern)",
+          "confidence": "medium",
+          "time_horizon": "weeks"
+        }
+      ],
+      "l3_scores": {
+        "call_001": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Clear action with specific thresholds; grounds directly support; warrant explains mechanism; qualifier/rebuttal are concrete."
+        },
+        "call_002": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 3.0,
+          "grounds_traceability_stdev": 1.15,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 1.15,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Specific pairs trade action; grounds support divergence; warrant explains momentum; qualifier/rebuttal have precise triggers."
+        },
+        "call_003": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Explicit protective put purchase; grounds match earnings risk; warrant details asymmetry; qualifier/rebuttal are specific and observable."
+        }
+      },
+      "l3_summary": {
+        "scenario": "thin",
+        "description": "One watchlist symbol, one position. Minimum viable state.",
+        "call_count": 3,
+        "judged_count": 3,
+        "avg_claim_actionability": 5.0,
+        "avg_grounds_traceability": 4.33,
+        "avg_warrant_validity": 5.0,
+        "avg_qualifier_specificity": 5.0,
+        "avg_rebuttal_realism": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "mid": {
+      "scenario": {
+        "name": "mid",
+        "description": "4 watchlist + 2 positions, mixed sectors.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ],
+          [
+            "NVDA",
+            "US"
+          ],
+          [
+            "XOM",
+            "US"
+          ],
+          [
+            "JPM",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ],
+          [
+            "NVDA",
+            3
+          ]
+        ]
+      },
+      "calls": [
+        {
+          "id": "call_001",
+          "claim": "Buy XOM as a tactical bounce trade ahead of earnings",
+          "grounds": [
+            "theme_near_lows",
+            "theme_earnings_risk"
+          ],
+          "warrant": "XOM's oversold condition at the 8th percentile of its 20-day range suggests potential mean reversion, while elevated ATM IV of 44.5% indicates options markets are pricing in significant earnings volatility, creating opportunity for a pre-earnings bounce as oversold conditions may be overstating downside risk.",
+          "qualifier": "Size at \u2264 1.5% of book; exit position if XOM reaches 85th percentile of 20-day range or 24 hours before earnings announcement (whichever comes first)",
+          "rebuttal": "If XOM breaks below its 20-day low and closes there for two consecutive sessions before earnings",
+          "confidence": "medium",
+          "time_horizon": "days"
+        },
+        {
+          "id": "call_002",
+          "claim": "Avoid earnings-related volatility trades in XOM/AAPL",
+          "grounds": [
+            "theme_earnings_risk",
+            "theme_macro_regime"
+          ],
+          "warrant": "Elevated ATM IV of 44.5% for XOM indicates options markets have already priced in significant earnings volatility, while weak market breadth (25/98 S&P100 stocks advancing) suggests unfavorable conditions for earnings-driven breakouts, making premium selling or volatility strategies unattractive.",
+          "qualifier": "Skip all earnings-related options trades in XOM/AAPL unless IV percentile drops below 70",
+          "rebuttal": "If VIX drops below 15 before either company's earnings announcement",
+          "confidence": "medium",
+          "time_horizon": "weeks"
+        },
+        {
+          "id": "call_003",
+          "claim": "Reduce exposure to NVDA/JPM momentum trades",
+          "grounds": [
+            "theme_near_highs",
+            "theme_macro_regime"
+          ],
+          "warrant": "NVDA and JPM at 94th/88th percentiles of their 20-day ranges indicate extended positioning vulnerable to profit-taking, while broader market weakness (only 25 of 98 S&P100 stocks advancing) suggests limited upside runway for already-extended names in a deteriorating breadth environment.",
+          "qualifier": "Trim positions by 25-50% if either stock exceeds 95th percentile of 20-day range; avoid new long entries",
+          "rebuttal": "If S&P100 advance-decline ratio improves to >0.6 (60+ stocks advancing) for two consecutive sessions",
+          "confidence": "medium",
+          "time_horizon": "days"
+        }
+      ],
+      "l3_scores": {
+        "call_001": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Clear buy instruction with sizing and exit triggers; grounds directly support tactical bounce; warrant explains mechanism; qualifier has thresholds; rebuttal is specific and observable."
+        },
+        "call_002": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Explicit avoid instruction with condition; grounds justify volatility avoidance; warrant links IV and breadth; qualifier has IV threshold; rebuttal uses VIX level."
+        },
+        "call_003": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Concrete reduce/trim actions with percentages; grounds support vulnerability; warrant explains profit-taking risk; qualifier has percentile threshold; rebuttal uses advance-decline ratio."
+        }
+      },
+      "l3_summary": {
+        "scenario": "mid",
+        "description": "4 watchlist + 2 positions, mixed sectors.",
+        "call_count": 3,
+        "judged_count": 3,
+        "avg_claim_actionability": 5.0,
+        "avg_grounds_traceability": 5.0,
+        "avg_warrant_validity": 5.0,
+        "avg_qualifier_specificity": 5.0,
+        "avg_rebuttal_realism": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "rich": {
+      "scenario": {
+        "name": "rich",
+        "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ],
+          [
+            "MSFT",
+            "US"
+          ],
+          [
+            "NVDA",
+            "US"
+          ],
+          [
+            "GOOGL",
+            "US"
+          ],
+          [
+            "TSLA",
+            "US"
+          ],
+          [
+            "XOM",
+            "US"
+          ],
+          [
+            "JPM",
+            "US"
+          ],
+          [
+            "UNH",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ],
+          [
+            "NVDA",
+            3
+          ],
+          [
+            "TSLA",
+            2
+          ]
+        ]
+      },
+      "calls": [
+        {
+          "id": "call_001",
+          "claim": "Avoid new long positions in NVDA and UNH",
+          "grounds": [
+            "theme_near_highs",
+            "theme_macro_regime"
+          ],
+          "warrant": "NVDA at 94th percentile and UNH at 100th percentile of their 20-day ranges indicate extended positioning, while weak market breadth (only 25 S&P100 stocks advancing) suggests limited buying support for stocks at highs, increasing downside risk.",
+          "qualifier": "No new long entries until NVDA closes below its 10-day moving average or UNH closes below its 20-day low",
+          "rebuttal": "If both NVDA and UNH break to new 52-week highs on >150% average volume",
+          "confidence": "high",
+          "time_horizon": "days"
+        },
+        {
+          "id": "call_002",
+          "claim": "Sell short-dated calls or buy puts on GOOGL and MSFT ahead of earnings",
+          "grounds": [
+            "theme_earnings_risk",
+            "theme_near_highs"
+          ],
+          "warrant": "Elevated implied volatility (42.5% for GOOGL, 35.3% for MSFT) indicates options are pricing in significant earnings moves, while both stocks are near the top of their 20-day ranges, suggesting limited upside momentum before earnings. This creates favorable risk/reward for bearish options strategies as volatility may compress post-earnings.",
+          "qualifier": "Use 7-14 day expiration options, size at \u2264 1.5% of book per position, and enter within 3 trading days before earnings",
+          "rebuttal": "If GOOGL and MSFT both gap up >5% on earnings day",
+          "confidence": "medium",
+          "time_horizon": "days"
+        },
+        {
+          "id": "call_003",
+          "claim": "Reduce overall market exposure or hedge with index puts",
+          "grounds": [
+            "theme_macro_regime",
+            "theme_earnings_risk"
+          ],
+          "warrant": "Only 25 S&P100 stocks advancing indicates weak market breadth and bearish intraday conditions, while multiple large-cap earnings reports (TSLA, GOOGL, MSFT) create event risk that could exacerbate market weakness if results disappoint.",
+          "qualifier": "Reduce net long exposure by 10-15%, hedge with SPY 30-day ATM puts sized at \u2264 1% of book",
+          "rebuttal": "If S&P 500 advances on >70% volume tomorrow",
+          "confidence": "medium",
+          "time_horizon": "weeks"
+        }
+      ],
+      "l3_scores": {
+        "call_001": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Clear action with specific triggers; grounds directly support; warrant explains mechanism; qualifier has thresholds; rebuttal is concrete."
+        },
+        "call_002": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Specific options strategy; grounds align with claim; warrant details volatility and positioning; qualifier has limits; rebuttal is observable."
+        },
+        "call_003": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Concrete reduction/hedge instructions; grounds justify market caution; warrant links breadth and earnings risk; qualifier specifies amounts; rebuttal has volume threshold."
+        }
+      },
+      "l3_summary": {
+        "scenario": "rich",
+        "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+        "call_count": 3,
+        "judged_count": 3,
+        "avg_claim_actionability": 5.0,
+        "avg_grounds_traceability": 5.0,
+        "avg_warrant_validity": 5.0,
+        "avg_qualifier_specificity": 5.0,
+        "avg_rebuttal_realism": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "iv_heavy": {
+      "scenario": {
+        "name": "iv_heavy",
+        "description": "Symbols with upcoming earnings, testing IV signal density.",
+        "watchlist": [
+          [
+            "TSLA",
+            "US"
+          ],
+          [
+            "MSFT",
+            "US"
+          ],
+          [
+            "META",
+            "US"
+          ],
+          [
+            "GOOGL",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "TSLA",
+            2
+          ],
+          [
+            "MSFT",
+            3
+          ]
+        ]
+      },
+      "calls": [
+        {
+          "id": "call_001",
+          "claim": "Buy META 30-day ATM puts ahead of earnings to hedge against potential downside volatility.",
+          "grounds": [
+            "theme_earnings_risk",
+            "theme_near_highs"
+          ],
+          "warrant": "META is approaching earnings while trading near its 52-week highs (88th percentile of 20-day range), creating asymmetric risk as elevated positioning and high expectations increase vulnerability to negative surprises. The historical average move of 9.3% suggests significant volatility is priced in, making options attractive for downside protection.",
+          "qualifier": "Size at \u2264 1.5% of book; enter only if META remains above 95th percentile of its 20-day range; use 30-day expiration, not weeklies.",
+          "rebuttal": "If META reports earnings with revenue growth > 15% YoY and guides Q2 revenue above consensus.",
+          "confidence": "medium",
+          "time_horizon": "weeks"
+        },
+        {
+          "id": "call_002",
+          "claim": "Sell GOOGL calls or buy puts ahead of earnings given elevated implied volatility.",
+          "grounds": [
+            "theme_earnings_risk"
+          ],
+          "warrant": "GOOGL's ATM implied volatility at 42.5% is significantly elevated ahead of earnings, suggesting options are richly priced. Selling premium or buying downside protection can capitalize on volatility contraction post-earnings or hedge against a negative surprise.",
+          "qualifier": "Sell 7-day ATM calls if GOOGL IV > 40%; size at \u2264 1% of book per leg; close position within 1 day post-earnings.",
+          "rebuttal": "If GOOGL reports cloud revenue growth > 25% YoY with operating margin expansion > 200 bps.",
+          "confidence": "medium",
+          "time_horizon": "weeks"
+        },
+        {
+          "id": "call_003",
+          "claim": "Overweight Energy sector ETFs (XLE) and underweight Real Estate (XLRE) to capture ongoing sector rotation.",
+          "grounds": [
+            "theme_sector_rotation"
+          ],
+          "warrant": "Energy sector leads with +1.45% while Real Estate declines -1.93%, showing clear intraday rotation away from rate-sensitive sectors toward cyclical/value. This momentum suggests continued relative strength as capital rotates based on macro expectations.",
+          "qualifier": "Maintain 2:1 ratio of XLE to XLRE position sizes; rebalance daily if Energy sector momentum (5-day RSI) drops below 60.",
+          "rebuttal": "If Energy sector closes negative tomorrow while Real Estate gains > 1.5%.",
+          "confidence": "medium",
+          "time_horizon": "days"
+        }
+      ],
+      "l3_scores": {
+        "call_001": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Clear buy action with specific instrument, grounds directly support, warrant explains mechanism, qualifier has thresholds, rebuttal is concrete."
+        },
+        "call_002": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Explicit sell/buy actions with ticker, grounds support, warrant explains IV rationale, qualifier has specific thresholds, rebuttal is checkable."
+        },
+        "call_003": {
+          "claim_actionability": 5.0,
+          "claim_actionability_stdev": 0.0,
+          "grounds_traceability": 5.0,
+          "grounds_traceability_stdev": 0.0,
+          "warrant_validity": 5.0,
+          "warrant_validity_stdev": 0.0,
+          "qualifier_specificity": 5.0,
+          "qualifier_specificity_stdev": 0.0,
+          "rebuttal_realism": 5.0,
+          "rebuttal_realism_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Concrete overweight/underweight with ETFs, grounds directly support, warrant explains rotation mechanism, qualifier has ratio and RSI threshold, rebuttal is observable."
+        }
+      },
+      "l3_summary": {
+        "scenario": "iv_heavy",
+        "description": "Symbols with upcoming earnings, testing IV signal density.",
+        "call_count": 3,
+        "judged_count": 3,
+        "avg_claim_actionability": 5.0,
+        "avg_grounds_traceability": 5.0,
+        "avg_warrant_validity": 5.0,
+        "avg_qualifier_specificity": 5.0,
+        "avg_rebuttal_realism": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    }
+  },
+  "l1_summaries": [],
+  "l2_summaries": [],
+  "l3_summaries": [
+    {
+      "scenario": "empty",
+      "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+      "call_count": 2,
+      "judged_count": 2,
+      "avg_claim_actionability": 5.0,
+      "avg_grounds_traceability": 5.0,
+      "avg_warrant_validity": 5.0,
+      "avg_qualifier_specificity": 5.0,
+      "avg_rebuttal_realism": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "thin",
+      "description": "One watchlist symbol, one position. Minimum viable state.",
+      "call_count": 3,
+      "judged_count": 3,
+      "avg_claim_actionability": 5.0,
+      "avg_grounds_traceability": 4.33,
+      "avg_warrant_validity": 5.0,
+      "avg_qualifier_specificity": 5.0,
+      "avg_rebuttal_realism": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "mid",
+      "description": "4 watchlist + 2 positions, mixed sectors.",
+      "call_count": 3,
+      "judged_count": 3,
+      "avg_claim_actionability": 5.0,
+      "avg_grounds_traceability": 5.0,
+      "avg_warrant_validity": 5.0,
+      "avg_qualifier_specificity": 5.0,
+      "avg_rebuttal_realism": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "rich",
+      "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+      "call_count": 3,
+      "judged_count": 3,
+      "avg_claim_actionability": 5.0,
+      "avg_grounds_traceability": 5.0,
+      "avg_warrant_validity": 5.0,
+      "avg_qualifier_specificity": 5.0,
+      "avg_rebuttal_realism": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "iv_heavy",
+      "description": "Symbols with upcoming earnings, testing IV signal density.",
+      "call_count": 3,
+      "judged_count": 3,
+      "avg_claim_actionability": 5.0,
+      "avg_grounds_traceability": 5.0,
+      "avg_warrant_validity": 5.0,
+      "avg_qualifier_specificity": 5.0,
+      "avg_rebuttal_realism": 5.0,
+      "problem_count": 0,
+      "problems": []
+    }
+  ]
+}
