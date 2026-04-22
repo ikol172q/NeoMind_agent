@@ -159,6 +159,11 @@ def fetch_themes() -> Dict[str, Any]:
     return d
 
 
+def fetch_calls() -> Dict[str, Any]:
+    d = _get(f"api/lattice/calls?project_id={PROJECT}&fresh=1", timeout=600)
+    return d
+
+
 # ── Judge prompts ──────────────────────────────────────
 
 _JUDGE_SYSTEM = (
@@ -521,6 +526,208 @@ def summarize_themes_run(
     }
 
 
+# ── L3 judge (calls) ───────────────────────────────────
+
+_JUDGE_L3_SYSTEM = (
+    "You evaluate L3 actionable calls produced by a layered "
+    "distillation system. Each call follows the Toulmin model: "
+    "claim, grounds (theme_ids), warrant (why grounds imply claim), "
+    "qualifier (conditions / confidence), rebuttal (what would "
+    "invalidate it). You are judging whether the call is sound as "
+    "an argument and useful as guidance — not whether it is "
+    "eloquent. Zero calls is an acceptable output when themes don't "
+    "support one; if calls are shown, they must meet the bar. "
+    "Respond in JSON only, no prose outside the object."
+)
+
+_JUDGE_L3_RUBRIC = """
+Score each call 1-5 on these five axes.
+
+CLAIM_ACTIONABILITY (is the claim something the user can act on?):
+  5 = concrete, verb-first portfolio action with a named target
+      (buy/hold/reduce/trim/avoid/hedge/add/wait) AND an object
+      (a ticker, sector, or ETF) — a reader could immediately know
+      what to change in their book
+  3 = directional but vague ("stay cautious", "tilt defensive"),
+      no explicit portfolio action
+  1 = commentary or advice-to-be-informed, NOT a portfolio
+      instruction ("markets are uncertain", "stay informed",
+      "watch for volatility", "monitor conditions"). Anything
+      where the "action" is just observing or thinking scores 1.
+
+GROUNDS_TRACEABILITY (does the claim follow from the cited grounds?):
+  5 = each ground, taken as given, meaningfully supports the claim;
+      removing any ground would weaken the case
+  3 = grounds are related but one is a stretch
+  1 = grounds are cargo-culted — the claim would be identical
+      with or without them
+
+WARRANT_VALIDITY (is the warrant a genuine reasoning step?):
+  5 = names the mechanism (why the grounds imply the claim), not a
+      restatement of either grounds or claim
+  3 = plausible but hand-wavy — "because of market conditions"
+  1 = tautology / circular / restates the claim
+
+QUALIFIER_SPECIFICITY (does the qualifier tell you when the call
+breaks?):
+  5 = specific trigger or threshold ("if VIX > 25", "intraday only",
+      "for positions ≤ 5% of book")
+  3 = gestures at conditionality without naming a threshold
+  1 = generic hedge ("market conditions may change")
+
+REBUTTAL_REALISM (is the rebuttal a concrete observable?):
+  5 = a specific falsifier the user could actually check
+      (e.g. "if earnings come in ≥ 10% below guidance")
+  3 = broadly right direction ("if the market trend reverses")
+  1 = vague ("unexpected events") or something that never happens
+
+For each call, output:
+  {"id": "...", "claim_actionability": N, "grounds_traceability": N,
+   "warrant_validity": N, "qualifier_specificity": N,
+   "rebuttal_realism": N,
+   "critique": "≤25 words on why this score"}
+"""
+
+
+def _judge_l3_prompt(calls: List[Dict[str, Any]], themes: List[Dict[str, Any]]) -> str:
+    theme_view = [
+        {"id": t["id"], "title": t["title"], "severity": t["severity"],
+         "narrative": t["narrative"]}
+        for t in themes
+    ]
+    return (
+        _JUDGE_L3_RUBRIC
+        + "\n\nCONTEXT — AVAILABLE THEMES (for grounds traceability):\n"
+        + json.dumps(theme_view, indent=1)
+        + "\n\nCALLS TO SCORE:\n"
+        + json.dumps(calls, indent=1)
+        + '\n\nReply with {"scores": [ {...}, ... ]}'
+    )
+
+
+def _judge_l3_call(prompt: str, temperature: float = 0.3, timeout: float = 120) -> Dict[str, Any]:
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("DEEPSEEK_API_KEY missing — run scripts/sync_launchd_env.sh")
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(
+            DEEPSEEK_URL,
+            json={
+                "model": JUDGE_MODEL,
+                "messages": [
+                    {"role": "system", "content": _JUDGE_L3_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": 3000,
+                "response_format": {"type": "json_object"},
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"DeepSeek {resp.status_code}: {resp.text[:200]}")
+    content = resp.json()["choices"][0]["message"]["content"]
+    return json.loads(content)
+
+
+def judge_calls(
+    calls: List[Dict[str, Any]],
+    themes: List[Dict[str, Any]],
+    n_samples: int = 3,
+) -> Dict[str, Dict[str, Any]]:
+    if not calls:
+        return {}
+
+    axes = ("claim_actionability", "grounds_traceability", "warrant_validity",
+            "qualifier_specificity", "rebuttal_realism")
+    samples: List[List[Dict[str, Any]]] = []
+    for i in range(n_samples):
+        try:
+            reply = _judge_l3_call(_judge_l3_prompt(calls, themes), temperature=0.3)
+            scores = reply.get("scores") or []
+            if scores:
+                samples.append(scores)
+        except Exception as exc:
+            print(f"  [L3 judge pass {i+1}/{n_samples} FAILED: {exc}]")
+
+    if not samples:
+        return {}
+
+    by_id: Dict[str, Dict[str, List[Any]]] = {
+        c["id"]: {axis: [] for axis in axes} | {"critique": []}
+        for c in calls
+    }
+    for sample in samples:
+        for score in sample:
+            cid = score.get("id")
+            if cid not in by_id:
+                continue
+            for axis in axes:
+                v = score.get(axis)
+                if isinstance(v, (int, float)):
+                    by_id[cid][axis].append(float(v))
+            if score.get("critique"):
+                by_id[cid]["critique"].append(str(score["critique"]))
+
+    aggregate: Dict[str, Dict[str, Any]] = {}
+    for cid, bag in by_id.items():
+        row: Dict[str, Any] = {}
+        for axis in axes:
+            vals = bag[axis]
+            row[axis] = round(statistics.median(vals), 2) if vals else None
+            row[f"{axis}_stdev"] = round(statistics.stdev(vals), 2) if len(vals) >= 2 else 0.0
+        row["sample_count"] = len(bag["claim_actionability"])
+        row["critique"] = bag["critique"][0] if bag["critique"] else ""
+        aggregate[cid] = row
+    return aggregate
+
+
+def summarize_calls_run(
+    scenario: Scenario,
+    calls: List[Dict[str, Any]],
+    scores: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    axes = ("claim_actionability", "grounds_traceability", "warrant_validity",
+            "qualifier_specificity", "rebuttal_realism")
+
+    def _avg(name: str):
+        xs = [s[name] for s in scores.values() if s.get(name) is not None]
+        return round(sum(xs) / len(xs), 2) if xs else None
+
+    problems: List[Dict[str, Any]] = []
+    for c in calls:
+        s = scores.get(c["id"], {})
+        if not s:
+            continue
+        issues = []
+        for axis in axes:
+            v = s.get(axis)
+            if v is not None and v <= 2:
+                issues.append(f"low {axis} ({v})")
+        if issues:
+            problems.append({
+                "id": c["id"],
+                "claim": c["claim"][:120],
+                "grounds": c.get("grounds", []),
+                "issues": issues,
+                "critique": s.get("critique", ""),
+            })
+
+    return {
+        "scenario": scenario.name,
+        "description": scenario.description,
+        "call_count": len(calls),
+        "judged_count": sum(1 for s in scores.values() if s.get("sample_count", 0) > 0),
+        "avg_claim_actionability": _avg("claim_actionability"),
+        "avg_grounds_traceability": _avg("grounds_traceability"),
+        "avg_warrant_validity": _avg("warrant_validity"),
+        "avg_qualifier_specificity": _avg("qualifier_specificity"),
+        "avg_rebuttal_realism": _avg("rebuttal_realism"),
+        "problem_count": len(problems),
+        "problems": problems,
+    }
+
+
 # ── Reporting ──────────────────────────────────────────
 
 def summarize_run(
@@ -577,7 +784,9 @@ def summarize_run(
 def render_report(
     l1_summaries: List[Dict[str, Any]],
     l2_summaries: List[Dict[str, Any]],
+    l3_summaries: List[Dict[str, Any]] = None,
 ) -> str:
+    l3_summaries = l3_summaries or []
     lines: List[str] = ["# Insight Lattice judge report", ""]
     lines.append(f"_Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}._")
     lines.append("")
@@ -645,12 +854,46 @@ def render_report(
                     lines.append(f"  - critique: _{p['critique']}_")
         if not any_problems:
             lines.append("_No themes flagged._")
+        lines.append("")
+
+    if l3_summaries:
+        lines.append("## L3 — calls")
+        lines.append("")
+        lines.append("| scenario | calls | action ↑ | grounds ↑ | warrant ↑ | qualifier ↑ | rebuttal ↑ | problems |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|---:|")
+        for s in l3_summaries:
+            lines.append(
+                f"| {s['scenario']} | {s['call_count']} | "
+                f"{s.get('avg_claim_actionability','–')} | "
+                f"{s.get('avg_grounds_traceability','–')} | "
+                f"{s.get('avg_warrant_validity','–')} | "
+                f"{s.get('avg_qualifier_specificity','–')} | "
+                f"{s.get('avg_rebuttal_realism','–')} | "
+                f"{s['problem_count']} |"
+            )
+        lines.append("")
+        lines.append("### L3 flagged calls")
+        lines.append("")
+        any_problems = False
+        for s in l3_summaries:
+            if not s["problems"]:
+                continue
+            any_problems = True
+            lines.append(f"#### {s['scenario']}")
+            for p in s["problems"]:
+                lines.append(f"- **{p['id']}** — {p['claim']}")
+                lines.append(f"  - grounds: {p['grounds']}")
+                lines.append(f"  - issues: {', '.join(p['issues'])}")
+                if p["critique"]:
+                    lines.append(f"  - critique: _{p['critique']}_")
+        if not any_problems:
+            lines.append("_No calls flagged._")
     return "\n".join(lines)
 
 
 def run(n_samples: int, scenario_names: Optional[List[str]] = None,
         report_path: Optional[Path] = None,
-        layer: str = "both") -> Dict[str, Any]:
+        layer: str = "all") -> Dict[str, Any]:
     if scenario_names:
         selected = [s for s in SCENARIOS if s.name in scenario_names]
         if not selected:
@@ -658,8 +901,13 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
     else:
         selected = SCENARIOS
 
+    want_l1 = layer in ("l1", "both", "all")
+    want_l2 = layer in ("l2", "both", "all")
+    want_l3 = layer in ("l3", "all")
+
     l1_summaries: List[Dict[str, Any]] = []
     l2_summaries: List[Dict[str, Any]] = []
+    l3_summaries: List[Dict[str, Any]] = []
     all_scores: Dict[str, Dict[str, Any]] = {}
 
     for sc in selected:
@@ -670,7 +918,9 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
         bundle: Dict[str, Any] = {"scenario": asdict(sc)}
 
         obs: List[Dict[str, Any]] = []
-        if layer in ("l1", "both"):
+        themes: List[Dict[str, Any]] = []
+
+        if want_l1:
             print(f"  fetching L1 …")
             obs = fetch_observations()
             print(f"  {len(obs)} observations generated")
@@ -685,11 +935,10 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
                   f"uniq={s.get('avg_uniqueness')} signal={s.get('avg_signal_strength')} · "
                   f"{s['problem_count']} flagged")
 
-        if layer in ("l2", "both"):
+        if want_l2:
             print(f"  fetching L2 …")
             themes_payload = fetch_themes()
             themes = themes_payload.get("themes", [])
-            # For L2 judging we need observations too (to present members).
             if not obs:
                 obs = themes_payload.get("observations", [])
             print(f"  {len(themes)} themes generated")
@@ -704,9 +953,31 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
                   f"acc={s.get('avg_narrative_accuracy')} cite={s.get('avg_citation_validity')} · "
                   f"{s['problem_count']} flagged")
 
+        if want_l3:
+            print(f"  fetching L3 …")
+            calls_payload = fetch_calls()
+            calls = calls_payload.get("calls", [])
+            if not themes:
+                themes = calls_payload.get("themes", [])
+            print(f"  {len(calls)} calls generated")
+            if calls:
+                print(f"  judging L3 ({n_samples}× self-consistency) …")
+                l3_scores = judge_calls(calls, themes, n_samples=n_samples)
+            else:
+                l3_scores = {}
+                print(f"  zero calls — skipping judge (0 calls is a valid output)")
+            s = summarize_calls_run(sc, calls, l3_scores)
+            l3_summaries.append(s)
+            bundle["calls"] = calls
+            bundle["l3_scores"] = l3_scores
+            bundle["l3_summary"] = s
+            print(f"  L3: act={s.get('avg_claim_actionability')} grnd={s.get('avg_grounds_traceability')} "
+                  f"war={s.get('avg_warrant_validity')} qual={s.get('avg_qualifier_specificity')} "
+                  f"reb={s.get('avg_rebuttal_realism')} · {s['problem_count']} flagged")
+
         all_scores[sc.name] = bundle
 
-    report = render_report(l1_summaries, l2_summaries)
+    report = render_report(l1_summaries, l2_summaries, l3_summaries)
     print("\n" + report)
 
     if report_path:
@@ -719,6 +990,7 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
                     "runs": all_scores,
                     "l1_summaries": l1_summaries,
                     "l2_summaries": l2_summaries,
+                    "l3_summaries": l3_summaries,
                 },
                 indent=2,
             ),
@@ -727,13 +999,13 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
         print(f"\nReport written to: {report_path}")
         print(f"JSON written to:   {json_path}")
 
-    # Cleanup so we don't leave test data
     reset_project()
 
     return {
         "runs": all_scores,
         "l1_summaries": l1_summaries,
         "l2_summaries": l2_summaries,
+        "l3_summaries": l3_summaries,
         "report": report,
     }
 
@@ -753,8 +1025,9 @@ def main():
                         help="subset of scenario names (default: all)")
     parser.add_argument("--report", type=Path, default=None,
                         help="write markdown report to this path")
-    parser.add_argument("--layer", choices=("l1", "l2", "both"), default="both",
-                        help="which lattice layer to judge")
+    parser.add_argument("--layer", choices=("l1", "l2", "l3", "both", "all"),
+                        default="all",
+                        help="which lattice layer to judge ('both' = l1+l2 for backward compat)")
     args = parser.parse_args()
 
     if not _backend_up():
