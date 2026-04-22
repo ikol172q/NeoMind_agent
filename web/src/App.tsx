@@ -7,6 +7,7 @@ import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
 import { CommandPalette } from '@/components/chat/CommandPalette'
+import type { DigestFocus } from '@/components/widgets/DigestView'
 import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command } from 'lucide-react'
 
 type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings'
@@ -28,6 +29,7 @@ export default function App() {
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
   const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [digestFocus, setDigestFocus] = useState<DigestFocus | null>(null)
   const health = useHealth()
 
   // Global ⌘K / Ctrl+K — command palette. Works from any tab.
@@ -64,6 +66,17 @@ export default function App() {
     setPendingChatPrompt(prompt)
     setPendingChatContext(ctx ?? null)
     setTab('chat')
+  }
+
+  /**
+   * Reverse of jumpToChat: from a chat citation chip, jump back
+   * to Research and light up the evidence rows for `symbol`.
+   * Nonce bumps every call so clicking the same cite twice still
+   * re-triggers the highlight animation.
+   */
+  function jumpToResearch(focus: { symbol?: string }) {
+    setDigestFocus({ symbol: focus.symbol, nonce: Date.now() })
+    setTab('research')
   }
 
   return (
@@ -124,11 +137,18 @@ export default function App() {
 
       {/* Active tab */}
       <main className="flex-1 overflow-hidden">
-        {tab === 'research' && <ResearchTab projectId={projectId} onJumpToChat={jumpToChat} />}
+        {tab === 'research' && (
+          <ResearchTab
+            projectId={projectId}
+            onJumpToChat={jumpToChat}
+            digestFocus={digestFocus}
+          />
+        )}
         {tab === 'chat'     && (
           <ChatTab
             projectId={projectId}
             onJumpToAudit={jumpToAudit}
+            onNavigateToResearch={jumpToResearch}
             pendingPrompt={pendingChatPrompt}
             pendingContext={pendingChatContext}
             onConsumePendingPrompt={() => {

@@ -3,6 +3,10 @@ import { ChatPanel } from '@/components/chat/ChatPanel'
 interface Props {
   projectId: string
   onJumpToAudit?: (reqId: string) => void
+  /** Reverse of onJumpToChat — fired when a citation chip in an
+   *  assistant reply is clicked. Routes the user to the Research
+   *  tab with the DigestView focused on the cited symbol. */
+  onNavigateToResearch?: (focus: { symbol?: string }) => void
   /** A prompt queued by another tab (e.g. watchlist "ask agent"
    *  button). Pre-fills the input when ChatPanel mounts. */
   pendingPrompt?: string | null
@@ -14,6 +18,7 @@ interface Props {
 export function ChatTab({
   projectId,
   onJumpToAudit,
+  onNavigateToResearch,
   pendingPrompt,
   pendingContext,
   onConsumePendingPrompt,
@@ -23,6 +28,7 @@ export function ChatTab({
       <ChatPanel
         projectId={projectId}
         onJumpToAudit={onJumpToAudit}
+        onNavigateToResearch={onNavigateToResearch}
         pendingPrompt={pendingPrompt}
         pendingContext={pendingContext}
         onConsumePendingPrompt={onConsumePendingPrompt}

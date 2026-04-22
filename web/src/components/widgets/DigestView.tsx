@@ -1,20 +1,33 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  useLatticeCalls, useWatchlist, usePaperPositions,
+  useLatticeCalls, useWatchlist, usePaperPositions, useAnomalies,
   type LatticeCall, type LatticeTheme, type LatticeObservation,
+  type AnomalyFlag,
 } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
 import {
   Sparkles, RefreshCw, ChevronRight, ChevronDown,
-  Target, Shield, AlertCircle, Info,
+  Target, Shield, AlertCircle, Info, AlertTriangle,
 } from 'lucide-react'
+
+export interface DigestFocus {
+  symbol?: string
+  /** Monotonic counter — bump to re-trigger the highlight even when
+   *  the symbol is unchanged (e.g. clicking the same cite twice). */
+  nonce?: number
+}
 
 interface Props {
   projectId: string
   onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  /** When this changes, DigestView flips to flat mode, scrolls to
+   *  nodes matching `symbol`, and applies a transient highlight. */
+  focus?: DigestFocus | null
 }
 
 type Mode = 'summary' | 'drilldown' | 'flat'
+
+const HIGHLIGHT_MS = 2500
 
 const SEVERITY_COLOR: Record<string, string> = {
   alert: 'var(--color-red)',
@@ -28,11 +41,15 @@ const CONF_COLOR: Record<string, string> = {
   low: 'var(--color-dim)',
 }
 
-export function DigestView({ projectId, onJumpToChat }: Props) {
+export function DigestView({ projectId, onJumpToChat, focus }: Props) {
   const q = useLatticeCalls(projectId)
+  const anomalies = useAnomalies(projectId)
   const wl = useWatchlist(projectId)
   const pos = usePaperPositions(projectId)
   const [mode, setMode] = useState<Mode>('summary')
+  const [highlightId, setHighlightId] = useState<string | null>(null)
+  const scrollBodyRef = useRef<HTMLDivElement | null>(null)
+  const targetRefs = useRef<Record<string, HTMLElement | null>>({})
 
   const isFreshInstall =
     (wl.data?.entries?.length ?? 0) === 0 &&
@@ -42,6 +59,33 @@ export function DigestView({ projectId, onJumpToChat }: Props) {
   const themes = payload?.themes ?? []
   const calls = payload?.calls ?? []
   const observations = payload?.observations ?? []
+
+  // External focus: when a chat citation routes back to us, flip to
+  // flat mode (so every layer is rendered + findable) and scroll to
+  // the first matching node. One-shot highlight that auto-clears.
+  useEffect(() => {
+    if (!focus || !focus.symbol) return
+    const symbol = focus.symbol.toUpperCase()
+    setMode('flat')
+    // Wait one tick for flat mode to render all sections/rows
+    const t = window.setTimeout(() => {
+      const target = findFocusTarget(symbol, calls, themes, observations)
+      if (!target) return
+      setHighlightId(target)
+      const el = targetRefs.current[target]
+      if (el && scrollBodyRef.current) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      }
+      window.setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
+    }, 60)
+    return () => window.clearTimeout(t)
+  }, [focus?.symbol, focus?.nonce, calls, themes, observations])
+
+  const ctx: DigestCtx = {
+    highlightId,
+    registerRef: (id, el) => { targetRefs.current[id] = el },
+    onJumpToChat,
+  }
 
   return (
     <div
@@ -56,7 +100,27 @@ export function DigestView({ projectId, onJumpToChat }: Props) {
         onRefresh={() => q.refetch()}
       />
 
-      <div className="flex-1 overflow-y-auto" data-testid="digest-body">
+      {(anomalies.data?.flags?.length ?? 0) > 0 && !isFreshInstall && (
+        <AnomalyStrip
+          flags={anomalies.data!.flags}
+          onJumpToChat={onJumpToChat}
+          onFocusSymbol={(sym) => {
+            setMode('flat')
+            // Mirror the focus-prop pathway so anomaly click ==
+            // external-cite click for the same symbol.
+            window.setTimeout(() => {
+              const t = findFocusTarget(sym, calls, themes, observations)
+              if (t) {
+                setHighlightId(t)
+                targetRefs.current[t]?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                window.setTimeout(() => setHighlightId(null), HIGHLIGHT_MS)
+              }
+            }, 60)
+          }}
+        />
+      )}
+
+      <div className="flex-1 overflow-y-auto" data-testid="digest-body" ref={scrollBodyRef}>
         {q.isLoading && (
           <div className="p-3 text-[11px] italic text-[var(--color-dim)]">
             reading the lattice…
@@ -75,7 +139,7 @@ export function DigestView({ projectId, onJumpToChat }: Props) {
             calls={calls}
             themes={themes}
             observations={observations}
-            onJumpToChat={onJumpToChat}
+            ctx={ctx}
             onJumpToDrilldown={() => setMode('drilldown')}
           />
         )}
@@ -85,7 +149,7 @@ export function DigestView({ projectId, onJumpToChat }: Props) {
             themes={themes}
             observations={observations}
             startCollapsed
-            onJumpToChat={onJumpToChat}
+            ctx={ctx}
           />
         )}
         {!q.isLoading && !q.isError && !isFreshInstall && mode === 'flat' && (
@@ -94,10 +158,105 @@ export function DigestView({ projectId, onJumpToChat }: Props) {
             themes={themes}
             observations={observations}
             startCollapsed={false}
-            onJumpToChat={onJumpToChat}
+            ctx={ctx}
           />
         )}
       </div>
+    </div>
+  )
+}
+
+
+// Context threaded to each row so they can participate in the
+// ref-map + highlight state without prop-drilling 5 deep.
+interface DigestCtx {
+  highlightId: string | null
+  registerRef: (id: string, el: HTMLElement | null) => void
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+}
+
+
+function findFocusTarget(
+  symbol: string,
+  calls: LatticeCall[],
+  themes: LatticeTheme[],
+  observations: LatticeObservation[],
+): string | null {
+  const symU = symbol.toUpperCase()
+  // Prefer L1 (most specific) → L2 → L3. The user clicked a citation,
+  // they want the evidence, not the high-level claim.
+  for (const o of observations) {
+    if (
+      o.tags.includes(`symbol:${symU}`) ||
+      o.tags.includes(`position:${symU}`) ||
+      o.text.toUpperCase().includes(symU)
+    ) {
+      return `obs-${o.id}`
+    }
+  }
+  for (const t of themes) {
+    if (t.narrative.toUpperCase().includes(symU)) {
+      return `drill-theme-${t.id}`
+    }
+  }
+  for (const c of calls) {
+    if (c.claim.toUpperCase().includes(symU)) {
+      return `drill-call-${c.id}`
+    }
+  }
+  return null
+}
+
+
+// ── Anomaly strip ──────────────────────────────────────
+
+function AnomalyStrip({
+  flags, onJumpToChat, onFocusSymbol,
+}: {
+  flags: AnomalyFlag[]
+  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  onFocusSymbol: (sym: string) => void
+}) {
+  return (
+    <div
+      data-testid="digest-anomaly-strip"
+      className="flex flex-wrap gap-1 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg)]/40 shrink-0"
+    >
+      {flags.slice(0, 6).map((f, i) => {
+        const color = SEVERITY_COLOR[f.severity] ?? SEVERITY_COLOR.info
+        return (
+          <div
+            key={i}
+            className="inline-flex items-stretch rounded border whitespace-nowrap overflow-hidden"
+            style={{ borderColor: color }}
+          >
+            <button
+              data-testid={`digest-anomaly-${f.kind}-${f.symbol}`}
+              onClick={() => onFocusSymbol(f.symbol)}
+              className="flex items-center gap-1 px-2 py-0.5 text-[10px] transition hover:brightness-125"
+              style={{ color }}
+              title={`[${f.severity.toUpperCase()}] ${f.kind} · click to scroll to evidence`}
+            >
+              <AlertTriangle size={9} />
+              {f.message}
+            </button>
+            {onJumpToChat && (
+              <button
+                data-testid={`digest-anomaly-ask-${f.kind}-${f.symbol}`}
+                onClick={() => onJumpToChat(
+                  `Dig into this flag: "${f.message}". What should I actually do about it?`,
+                  { symbol: f.symbol },
+                )}
+                className="px-1.5 text-[10px] border-l"
+                style={{ color, borderColor: color }}
+                title="ask fin about this flag"
+              >
+                ask
+              </button>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -188,12 +347,12 @@ function Quickstart() {
 // ── Summary mode ───────────────────────────────────────
 
 function SummaryMode({
-  calls, themes, observations, onJumpToChat, onJumpToDrilldown,
+  calls, themes, observations, ctx, onJumpToDrilldown,
 }: {
   calls: LatticeCall[]
   themes: LatticeTheme[]
   observations: LatticeObservation[]
-  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  ctx: DigestCtx
   onJumpToDrilldown: () => void
 }) {
   const themeById = useMemo(
@@ -228,7 +387,7 @@ function SummaryMode({
           key={c.id}
           call={c}
           themes={c.grounds.map(g => themeById[g]).filter(Boolean)}
-          onJumpToChat={onJumpToChat}
+          onJumpToChat={ctx.onJumpToChat}
         />
       ))}
     </div>
@@ -362,13 +521,13 @@ function Chip({
 // ── Drilldown / Flat mode ──────────────────────────────
 
 function DrilldownMode({
-  calls, themes, observations, startCollapsed, onJumpToChat,
+  calls, themes, observations, startCollapsed, ctx,
 }: {
   calls: LatticeCall[]
   themes: LatticeTheme[]
   observations: LatticeObservation[]
   startCollapsed: boolean
-  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  ctx: DigestCtx
 }) {
   const themeById = useMemo(
     () => Object.fromEntries(themes.map(t => [t.id, t])),
@@ -410,7 +569,7 @@ function DrilldownMode({
             obsById={obsById}
             obsToThemes={obsToThemes}
             startCollapsed={startCollapsed}
-            onJumpToChat={onJumpToChat}
+            ctx={ctx}
           />
         ))}
       </Section>
@@ -427,6 +586,7 @@ function DrilldownMode({
             obsById={obsById}
             obsToThemes={obsToThemes}
             startCollapsed={startCollapsed}
+            ctx={ctx}
           />
         ))}
       </Section>
@@ -442,6 +602,7 @@ function DrilldownMode({
               key={o.id}
               obs={o}
               belongsTo={(obsToThemes[o.id] ?? []).map(id => themeById[id]?.title ?? id)}
+              ctx={ctx}
             />
           ))}
         </div>
@@ -475,20 +636,30 @@ function Section({
 }
 
 function CallDrilldown({
-  call, themeById, obsById, obsToThemes, startCollapsed, onJumpToChat,
+  call, themeById, obsById, obsToThemes, startCollapsed, ctx,
 }: {
   call: LatticeCall
   themeById: Record<string, LatticeTheme>
   obsById: Record<string, LatticeObservation>
   obsToThemes: Record<string, string[]>
   startCollapsed: boolean
-  onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  ctx: DigestCtx
 }) {
   const [open, setOpen] = useState(!startCollapsed)
   const themes = call.grounds.map(g => themeById[g]).filter(Boolean)
+  const targetId = `drill-call-${call.id}`
+  const highlighted = ctx.highlightId === targetId
 
   return (
-    <div className="border-t border-[var(--color-border)] first:border-t-0" data-testid={`drill-call-${call.id}`}>
+    <div
+      ref={el => ctx.registerRef(targetId, el)}
+      className={
+        'border-t border-[var(--color-border)] first:border-t-0 transition-shadow ' +
+        (highlighted ? 'ring-2 ring-[var(--color-accent)] rounded' : '')
+      }
+      data-testid={targetId}
+      data-highlighted={highlighted ? 'true' : undefined}
+    >
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[var(--color-bg)]/40"
@@ -517,13 +688,14 @@ function CallDrilldown({
                   obsById={obsById}
                   obsToThemes={obsToThemes}
                   startCollapsed
+                  ctx={ctx}
                 />
               ))}
             </div>
           </div>
-          {onJumpToChat && (
+          {ctx.onJumpToChat && (
             <button
-              onClick={() => onJumpToChat(
+              onClick={() => ctx.onJumpToChat!(
                 `Expand on this call: "${call.claim}" — what could change it?`,
                 { project: true },
               )}
@@ -539,17 +711,25 @@ function CallDrilldown({
 }
 
 function ThemeDrilldown({
-  theme, obsById, obsToThemes, startCollapsed,
+  theme, obsById, obsToThemes, startCollapsed, ctx,
 }: {
   theme: LatticeTheme
   obsById: Record<string, LatticeObservation>
   obsToThemes: Record<string, string[]>
   startCollapsed: boolean
+  ctx: DigestCtx
 }) {
   const [open, setOpen] = useState(!startCollapsed)
+  const targetId = `drill-theme-${theme.id}`
+  const highlighted = ctx.highlightId === targetId
 
   return (
-    <div data-testid={`drill-theme-${theme.id}`}>
+    <div
+      ref={el => ctx.registerRef(targetId, el)}
+      data-testid={targetId}
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={highlighted ? 'ring-2 ring-[var(--color-accent)] rounded' : ''}
+    >
       <button
         onClick={() => setOpen(!open)}
         className="w-full flex items-start gap-2 text-left hover:text-[var(--color-text)] text-[var(--color-text)]"
@@ -580,6 +760,7 @@ function ThemeDrilldown({
                 weight={m.weight}
                 belongsTo={(obsToThemes[m.obs_id] ?? [])
                   .filter(tid => tid !== theme.id)}
+                ctx={ctx}
               />
             )
           })}
@@ -590,20 +771,28 @@ function ThemeDrilldown({
 }
 
 function ObservationRow({
-  obs, weight, belongsTo,
+  obs, weight, belongsTo, ctx,
 }: {
   obs: LatticeObservation
   weight?: number
   belongsTo?: string[]
+  ctx: DigestCtx
 }) {
   const reverseHint = belongsTo && belongsTo.length > 0
     ? `also in: ${belongsTo.join(', ')}`
     : undefined
+  const targetId = `obs-${obs.id}`
+  const highlighted = ctx.highlightId === targetId
   return (
     <div
-      data-testid={`obs-${obs.id}`}
+      ref={el => ctx.registerRef(targetId, el)}
+      data-testid={targetId}
+      data-highlighted={highlighted ? 'true' : undefined}
       title={reverseHint}
-      className="group flex items-start gap-2 text-[11px] py-0.5 hover:bg-[var(--color-bg)]/40 rounded px-1 -mx-1"
+      className={
+        'group flex items-start gap-2 text-[11px] py-0.5 hover:bg-[var(--color-bg)]/40 rounded px-1 -mx-1 transition-shadow ' +
+        (highlighted ? 'ring-2 ring-[var(--color-accent)]' : '')
+      }
     >
       <span
         className="shrink-0 w-14 text-[9px] uppercase tracking-wider mt-0.5"
