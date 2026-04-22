@@ -301,16 +301,26 @@ def gen_portfolio_signals(proj: Dict[str, Any]) -> List[Observation]:
                     confidence=0.85,
                 ))
 
-    # Account-level day move — if account + positions both exist
+    # Account-level day move — Q4: only emit on a meaningful move.
+    # A $-35 swing on a $100k book is rounding error; emitting it
+    # burns an L1 slot on nothing. Threshold: |pct| >= 1.0% OR
+    # |usd| >= 500. Below that, the fact isn't worth a user's attention.
     total_pnl_today = account.get("total_pnl")
+    total_pnl_pct_today = account.get("total_pnl_pct")
     if total_pnl_today is not None and positions:
-        if abs(total_pnl_today) > 0:
+        abs_usd = abs(total_pnl_today)
+        abs_pct = abs(total_pnl_pct_today or 0.0)
+        if abs_usd >= 500 or abs_pct >= 1.0:
             direction = "up" if total_pnl_today > 0 else "down"
             out.append(Observation(
                 id=_next_id("book_day_move"),
                 kind="book_day_move",
-                text=f"Book total P&L ${total_pnl_today:+.2f} today.",
-                numbers={"pnl_usd": total_pnl_today},
+                text=(
+                    f"Book P&L ${total_pnl_today:+.2f} today"
+                    + (f" ({total_pnl_pct_today:+.2f}%)" if total_pnl_pct_today is not None else "")
+                    + "."
+                ),
+                numbers={"pnl_usd": total_pnl_today, "pnl_pct": total_pnl_pct_today or 0.0},
                 tags=[
                     tag_market("US"),
                     f"pnl:{'positive' if total_pnl_today > 0 else 'negative'}",
@@ -325,36 +335,53 @@ def gen_portfolio_signals(proj: Dict[str, Any]) -> List[Observation]:
     return out
 
 
+_SECTOR_MIN_PCT = 0.5   # Q1: don't emit obs for noise-level moves
+
 def gen_sector_signals(proj: Dict[str, Any]) -> List[Observation]:
-    """Today's sector leaders / laggards — market regime context."""
+    """Today's sector movers — only those that actually moved.
+
+    Q1 fix: apply a |pct| >= 0.5% threshold. Before this, a "leader"
+    at +0.08% or a "leader" at -0.63% (sign-wrong: it was merely the
+    top of a down day) polluted the L1 layer with false signal.
+    Also rewrites the human text to use "top-ranked" / "bottom-ranked"
+    which is accurate regardless of absolute sign.
+    """
     out: List[Observation] = []
     sm = proj.get("sector_movers") or {}
-    for s in (sm.get("top") or [])[:3]:
+    for s in (sm.get("top") or []):
         name = s.get("name")
         pct = s.get("change_pct")
         if not name or pct is None:
             continue
+        if abs(pct) < _SECTOR_MIN_PCT:
+            continue
+        direction = "up" if pct >= 0 else "down"
+        label = "leading" if pct >= _SECTOR_MIN_PCT else "top-ranked"
         out.append(Observation(
             id=_next_id("sector_leader"),
             kind="sector_leader",
-            text=f"{name} sector leading today ({pct:+.2f}%).",
+            text=f"{name} sector {label} today ({pct:+.2f}%).",
             numbers={"day_pct": pct},
-            tags=[tag_sector(name), "regime:rotation", "direction:up", "timescale:intraday"],
+            tags=[tag_sector(name), "regime:rotation", f"direction:{direction}", "timescale:intraday"],
             source={"widget": "sectors", "field": "change_pct"},
             severity="info",
             confidence=0.95,
         ))
-    for s in (sm.get("bottom") or [])[:3]:
+    for s in (sm.get("bottom") or []):
         name = s.get("name")
         pct = s.get("change_pct")
         if not name or pct is None:
             continue
+        if abs(pct) < _SECTOR_MIN_PCT:
+            continue
+        direction = "down" if pct <= 0 else "up"
+        label = "lagging" if pct <= -_SECTOR_MIN_PCT else "bottom-ranked"
         out.append(Observation(
             id=_next_id("sector_laggard"),
             kind="sector_laggard",
-            text=f"{name} sector lagging today ({pct:+.2f}%).",
+            text=f"{name} sector {label} today ({pct:+.2f}%).",
             numbers={"day_pct": pct},
-            tags=[tag_sector(name), "regime:rotation", "direction:down", "timescale:intraday"],
+            tags=[tag_sector(name), "regime:rotation", f"direction:{direction}", "timescale:intraday"],
             source={"widget": "sectors", "field": "change_pct"},
             severity="info",
             confidence=0.95,
@@ -371,20 +398,25 @@ def gen_sentiment_signals(proj: Dict[str, Any]) -> List[Observation]:
     if score is None or not label:
         return out
 
-    out.append(Observation(
-        id=_next_id("market_regime"),
-        kind="market_regime",
-        text=f"Market regime: {label} ({score:.1f}/100 composite).",
-        numbers={"composite_score": score},
-        tags=[
-            "regime:sentiment",
-            f"signal:{'bullish' if score >= 55 else 'bearish' if score <= 45 else 'neutral'}",
-            "timescale:short",
-        ],
-        source={"widget": "sentiment", "field": "composite_score"},
-        severity="info",
-        confidence=0.85,
-    ))
+    # Q2: suppress the "neutral" regime obs (45 <= score <= 55).
+    # A neutral reading is literally "no actionable read" — emitting
+    # it clutters L1 with a zero-information fact. Only emit when the
+    # regime actually leans (greed or fear).
+    if score >= 55 or score <= 45:
+        out.append(Observation(
+            id=_next_id("market_regime"),
+            kind="market_regime",
+            text=f"Market regime: {label} ({score:.1f}/100 composite).",
+            numbers={"composite_score": score},
+            tags=[
+                "regime:sentiment",
+                f"signal:{'bullish' if score >= 55 else 'bearish'}",
+                "timescale:short",
+            ],
+            source={"widget": "sentiment", "field": "composite_score"},
+            severity="info",
+            confidence=0.85,
+        ))
 
     components = sent.get("components") or {}
     vix = components.get("vix") or {}
