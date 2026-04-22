@@ -15,7 +15,7 @@ import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWid
 import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
 import { FundExplorerWidget } from '@/components/widgets/FundExplorerWidget'
 import { SentimentGaugeWidget } from '@/components/widgets/SentimentGaugeWidget'
-import { DigestView } from '@/components/widgets/DigestView'
+import { DigestView, type DigestFocus } from '@/components/widgets/DigestView'
 import { CorrelationWidget } from '@/components/widgets/CorrelationWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
@@ -61,9 +61,10 @@ function loadLayout(): Layout[] {
 interface Props {
   projectId: string
   onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  digestFocus?: DigestFocus | null
 }
 
-export function ResearchTab({ projectId, onJumpToChat }: Props) {
+export function ResearchTab({ projectId, onJumpToChat, digestFocus }: Props) {
   const layout = loadLayout()
 
   return (
@@ -93,7 +94,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
         try { localStorage.setItem(LS_KEY, JSON.stringify(l)) } catch {}
       }}
     >
-      <div key="brief"><div className="drag-handle h-full cursor-move"><DigestView projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
+      <div key="brief"><div className="drag-handle h-full cursor-move"><DigestView projectId={projectId} onJumpToChat={onJumpToChat} focus={digestFocus} /></div></div>
       <div key="watchlist"><div className="drag-handle h-full cursor-move"><WatchlistWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>

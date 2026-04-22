@@ -27,6 +27,10 @@ interface Msg {
 interface Props {
   projectId: string
   onJumpToAudit?: (reqId: string) => void
+  /** Reverse of onJumpToChat — fired when an assistant-reply
+   *  citation chip is clicked. Routes the user to the Research
+   *  tab with the DigestView focused on the cited symbol. */
+  onNavigateToResearch?: (focus: { symbol?: string }) => void
   /** One-shot prompt handed in from another tab (e.g. watchlist
    *  "ask agent" button). We pre-fill the input then call
    *  onConsumePendingPrompt so the parent clears it — otherwise
@@ -77,6 +81,7 @@ function loadCache(pid: string): { sessionId: string | null; msgs: Msg[] } {
 export function ChatPanel({
   projectId,
   onJumpToAudit,
+  onNavigateToResearch,
   pendingPrompt,
   pendingContext,
   onConsumePendingPrompt,
@@ -385,14 +390,24 @@ export function ChatPanel({
               reqId={m.reqId}
               onJumpToAudit={onJumpToAudit}
               onCiteClick={(cite) => {
-                // Clicking a citation in an assistant reply sets the
-                // NEXT send's context to that cite — so the user can
-                // type "trim it?" and the agent sees the full state
-                // for the cited symbol without retyping.
+                // Two things happen on a cite click:
+                // (1) The next message's synthesis context is set
+                //     to the cited symbol/project, so if the user
+                //     comes back and types "trim it?" the agent
+                //     already has the dashboard state.
+                // (2) The user is routed to the Research tab, with
+                //     DigestView scrolling to + highlighting the
+                //     evidence behind the citation. This is the
+                //     plan's L3→L0 traceability direction — the
+                //     cite in the narrative lands you in the tree.
                 if (cite.kind === 'sector') {
                   setNextSendContext({ project: true })
+                  // Sector cites don't map cleanly to a DigestView
+                  // node yet; leave the focus pathway to symbol
+                  // cites only.
                 } else {
                   setNextSendContext({ symbol: cite.id })
+                  onNavigateToResearch?.({ symbol: cite.id })
                 }
                 inputRef.current?.focus()
               }}
