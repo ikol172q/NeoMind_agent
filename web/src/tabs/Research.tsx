@@ -15,39 +15,39 @@ import { PortfolioHeatmapWidget } from '@/components/widgets/PortfolioHeatmapWid
 import { MultiChartWidget } from '@/components/widgets/MultiChartWidget'
 import { FundExplorerWidget } from '@/components/widgets/FundExplorerWidget'
 import { SentimentGaugeWidget } from '@/components/widgets/SentimentGaugeWidget'
-import { ResearchBriefWidget } from '@/components/widgets/ResearchBriefWidget'
+import { DigestView } from '@/components/widgets/DigestView'
 import { CorrelationWidget } from '@/components/widgets/CorrelationWidget'
 
 const ResponsiveGridLayout = WidthProvider(Responsive)
 
-// v13 adds the correlation heatmap (Phase 6). Lives in the
-// analytics band alongside earnings/RS because all three answer
-// "what's related to what in my book".
-const LS_KEY = 'neomind.research.layout.v13'
+// v14 swaps the old ResearchBrief hero for DigestView (Insight
+// Lattice L1→L2→L3). Hero height bumped from 5 to 9 rows to give
+// the Toulmin chips + drilldown accordion breathing room.
+const LS_KEY = 'neomind.research.layout.v14'
 
 const DEFAULT_LAYOUT: Layout[] = [
-  // Hero strip — agent-authored narrative at the very top
-  { i: 'brief',     x: 0,  y: 0,  w: 12, h: 5 },
+  // Hero strip — 3-layer lattice digest at the very top
+  { i: 'brief',     x: 0,  y: 0,  w: 12, h: 9 },
   // News + sentiment row
-  { i: 'news',      x: 0,  y: 5,  w: 9,  h: 12 },
-  { i: 'sentiment', x: 9,  y: 5,  w: 3,  h: 12 },
+  { i: 'news',      x: 0,  y: 9,  w: 9,  h: 12 },
+  { i: 'sentiment', x: 9,  y: 9,  w: 3,  h: 12 },
   // Portfolio context band
-  { i: 'watchlist', x: 0,  y: 17, w: 5,  h: 10 },
-  { i: 'us_quote',  x: 5,  y: 17, w: 4,  h: 5 },
-  { i: 'cn_quote',  x: 5,  y: 22, w: 4,  h: 5 },
-  { i: 'portfolio', x: 9,  y: 17, w: 3,  h: 10 },
+  { i: 'watchlist', x: 0,  y: 21, w: 5,  h: 10 },
+  { i: 'us_quote',  x: 5,  y: 21, w: 4,  h: 5 },
+  { i: 'cn_quote',  x: 5,  y: 26, w: 4,  h: 5 },
+  { i: 'portfolio', x: 9,  y: 21, w: 3,  h: 10 },
   // Analytics band
-  { i: 'earnings',    x: 0,  y: 27, w: 6,  h: 9 },
-  { i: 'rs_grid',     x: 6,  y: 27, w: 6,  h: 9 },
-  { i: 'correlation', x: 0,  y: 36, w: 6,  h: 9 },
-  { i: 'sectors',     x: 6,  y: 36, w: 6,  h: 9 },
+  { i: 'earnings',    x: 0,  y: 31, w: 6,  h: 9 },
+  { i: 'rs_grid',     x: 6,  y: 31, w: 6,  h: 9 },
+  { i: 'correlation', x: 0,  y: 40, w: 6,  h: 9 },
+  { i: 'sectors',     x: 6,  y: 40, w: 6,  h: 9 },
   // Detail band
-  { i: 'chart',      x: 0,  y: 45, w: 6, h: 10 },
-  { i: 'multi_chart',x: 6,  y: 45, w: 6, h: 10 },
-  { i: 'fund',       x: 0,  y: 55, w: 6, h: 12 },
-  { i: 'cn_info',    x: 6,  y: 55, w: 6, h: 12 },
+  { i: 'chart',      x: 0,  y: 49, w: 6, h: 10 },
+  { i: 'multi_chart',x: 6,  y: 49, w: 6, h: 10 },
+  { i: 'fund',       x: 0,  y: 59, w: 6, h: 12 },
+  { i: 'cn_info',    x: 6,  y: 59, w: 6, h: 12 },
   // Reference
-  { i: 'history',   x: 0,  y: 67, w: 12, h: 8 },
+  { i: 'history',   x: 0,  y: 71, w: 12, h: 8 },
 ]
 
 function loadLayout(): Layout[] {
@@ -93,7 +93,7 @@ export function ResearchTab({ projectId, onJumpToChat }: Props) {
         try { localStorage.setItem(LS_KEY, JSON.stringify(l)) } catch {}
       }}
     >
-      <div key="brief"><div className="drag-handle h-full cursor-move"><ResearchBriefWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
+      <div key="brief"><div className="drag-handle h-full cursor-move"><DigestView projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="watchlist"><div className="drag-handle h-full cursor-move"><WatchlistWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>

@@ -620,6 +620,68 @@ export function useResearchBrief(project_id: string) {
   })
 }
 
+// ── Insight Lattice (L1 → L2 → L3) ──────────────────────
+
+export interface LatticeObservation {
+  id: string
+  kind: string
+  text: string
+  tags: string[]
+  severity: 'alert' | 'warn' | 'info'
+  numbers?: Record<string, number>
+  source?: Record<string, unknown>
+}
+
+export interface LatticeThemeMember {
+  obs_id: string
+  weight: number
+}
+
+export interface LatticeTheme {
+  id: string
+  title: string
+  narrative: string
+  narrative_source: 'llm' | 'template_fallback'
+  members: LatticeThemeMember[]
+  tags: string[]
+  severity: 'alert' | 'warn' | 'info'
+  cited_numbers?: string[]
+}
+
+export interface LatticeCall {
+  id: string
+  claim: string
+  grounds: string[]           // theme_ids
+  warrant: string
+  qualifier: string
+  rebuttal: string
+  confidence: 'high' | 'medium' | 'low'
+  time_horizon: 'intraday' | 'days' | 'weeks' | 'quarter'
+}
+
+export interface LatticePayload {
+  project_id: string
+  observations: LatticeObservation[]
+  themes: LatticeTheme[]
+  calls: LatticeCall[]
+  taxonomy_version: number
+  fetched_at: string
+  duration_ms: number
+}
+
+export function useLatticeCalls(project_id: string) {
+  return useQuery({
+    queryKey: ['lattice_calls', project_id],
+    queryFn: () => fetchJSON<LatticePayload>(
+      `/api/lattice/calls?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 10 * 60_000,     // server L3 cache is 15min; stay fresh for 10
+    refetchInterval: 15 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ── Market sentiment gauge ──────────────────────────────
 export interface SentimentSubscore {
   score: number | null
