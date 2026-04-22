@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Query
 from agent.finance import investment_projects
 from agent.finance.lattice.observations import build_observations
 from agent.finance.lattice.taxonomy import load_taxonomy
+from agent.finance.lattice.themes import build_themes
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,38 @@ def build_lattice_router() -> APIRouter:
                  "any_of": sorted(s.any_of), "all_of": sorted(s.all_of)}
                 for s in tax.themes
             ],
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": duration_ms,
+        }
+        _put(cache_key, payload)
+        return payload
+
+    @router.get("/api/lattice/themes")
+    def list_themes(
+        project_id: str = Query(...),
+        fresh: bool = Query(False),
+    ) -> Dict[str, Any]:
+        if project_id not in investment_projects.list_projects():
+            raise HTTPException(404, f"project {project_id!r} is not registered")
+
+        cache_key = f"themes::{project_id}"
+        if not fresh:
+            cached = _cached(cache_key)
+            if cached is not None:
+                return cached
+
+        t0 = time.monotonic()
+        try:
+            result = build_themes(project_id, fresh=fresh)
+        except Exception as exc:
+            logger.exception("lattice themes failed")
+            raise HTTPException(502, f"themes build failed: {exc}")
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        tax = load_taxonomy()
+        payload = {
+            **result,
+            "taxonomy_version": tax.version,
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
         }

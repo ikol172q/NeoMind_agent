@@ -1,22 +1,25 @@
 #!/usr/bin/env python3
-"""LLM-as-judge evaluator for Insight Lattice L1 observations.
+"""LLM-as-judge evaluator for Insight Lattice L1 observations + L2 themes.
 
 Research-backed design (see plans/2026-04-20_insight-lattice.md §A):
 - **G-Eval style** rubric-in-prompt with chain-of-thought scoring.
-- **Self-consistency N=3**: three judge calls per observation at
-  T≈0.3; take the median. Research shows this halves judge variance
-  at ~3× cost — within budget for ≤40 obs per scenario.
-- **Four axes**: Specificity, Actionability, Novelty, Noise (each
-  1–5 Likert).
-- **Fixed scenarios** (empty, thin, mid, rich, drawdown, iv-heavy)
-  so runs are comparable over time — drift detection.
+- **Self-consistency N=3**: three judge calls per item at T≈0.3;
+  take the median. Research shows this halves judge variance at
+  ~3× cost — within budget for ≤40 items per scenario.
+- **L1 rubric** (infrastructure-first): specificity / tag_fit /
+  uniqueness / signal_strength.
+- **L2 rubric** (distillation quality): theme_coherence /
+  member_fit / narrative_accuracy / citation_validity.
+- **Fixed scenarios** (empty, thin, mid, rich, iv_heavy) so runs
+  are comparable over time — drift detection.
 - **Output**: structured JSON report + human-readable markdown.
-  Flags observations that score low on any axis, separately from
-  aggregate stability.
+  Flags low-scoring items separately from aggregate stability.
 
 Run:
-    .venv/bin/python tools/eval/lattice_judge.py
-    .venv/bin/python tools/eval/lattice_judge.py --scenarios rich
+    .venv/bin/python tools/eval/lattice_judge.py --layer l1
+    .venv/bin/python tools/eval/lattice_judge.py --layer l2
+    .venv/bin/python tools/eval/lattice_judge.py --layer both
+    .venv/bin/python tools/eval/lattice_judge.py --layer l2 --scenarios rich
     .venv/bin/python tools/eval/lattice_judge.py --n 5 --report /tmp/out.md
 """
 from __future__ import annotations
@@ -149,6 +152,11 @@ def seed_scenario(sc: Scenario) -> None:
 def fetch_observations() -> List[Dict[str, Any]]:
     d = _get(f"api/lattice/observations?project_id={PROJECT}&fresh=1", timeout=180)
     return d["observations"]
+
+
+def fetch_themes() -> Dict[str, Any]:
+    d = _get(f"api/lattice/themes?project_id={PROJECT}&fresh=1", timeout=300)
+    return d
 
 
 # ── Judge prompts ──────────────────────────────────────
@@ -306,6 +314,213 @@ def judge_observations(
     return aggregate
 
 
+# ── L2 judge (themes) ──────────────────────────────────
+
+_JUDGE_L2_SYSTEM = (
+    "You evaluate L2 themes inside a layered distillation system. "
+    "A theme groups L1 observations that share a signature (tag pattern) "
+    "and ships a short narrative summarising them. You are judging "
+    "whether the theme is a faithful, useful distillation of its "
+    "members — not whether the narrative is eloquent. "
+    "Respond in JSON only, no prose outside the object."
+)
+
+_JUDGE_L2_RUBRIC = """
+Score each theme 1-5 on these four axes.
+
+THEME_COHERENCE (do the members belong together?):
+  5 = every member clearly fits the theme's intent (e.g. all are
+      genuinely earnings-risk plays for theme_earnings_risk)
+  3 = most members fit, 1-2 are loose but defensible
+  1 = members are a grab-bag; they share a tag but no real narrative
+
+MEMBER_FIT (are the right members chosen for this theme?):
+  5 = membership weights track actual relevance — highest-weight
+      member IS the most illustrative observation
+  3 = weights roughly correct but some ordering is off
+  1 = weights seem arbitrary; low-weight member looks more
+      important than high-weight one
+
+NARRATIVE_ACCURACY (does the narrative describe what the members show?):
+  5 = narrative claim is directly supported by ≥2 members' text/numbers
+  3 = narrative supported by one member; others are consistent but
+      not cited
+  1 = narrative contradicts or ignores members — hallucinated content
+
+CITATION_VALIDITY (are cited numbers traceable to member text?):
+  5 = every number in the narrative appears verbatim in at least
+      one member's text
+  3 = numbers roughly match member text (off by rounding)
+  1 = numbers cited that don't appear in any member — hallucination
+
+Notes:
+- If a theme is template_fallback (no LLM), judge narrative_accuracy
+  and citation_validity as N/A (score 3, no penalty) — template is
+  known-safe by construction.
+- Empty themes should not be present; if you see one, score all
+  axes 1.
+
+For each theme, output:
+  {"id": "...", "theme_coherence": N, "member_fit": N,
+   "narrative_accuracy": N, "citation_validity": N,
+   "critique": "≤25 words on why this score"}
+"""
+
+
+def _judge_l2_prompt(themes: List[Dict[str, Any]], observations: List[Dict[str, Any]]) -> str:
+    obs_by_id = {o["id"]: o for o in observations}
+    minimal = []
+    for t in themes:
+        member_view = []
+        for m in t.get("members", []):
+            o = obs_by_id.get(m["obs_id"])
+            if not o:
+                continue
+            member_view.append({
+                "obs_id": m["obs_id"],
+                "weight": m["weight"],
+                "kind": o["kind"],
+                "text": o["text"],
+                "tags": o["tags"],
+            })
+        minimal.append({
+            "id": t["id"],
+            "title": t["title"],
+            "narrative": t["narrative"],
+            "narrative_source": t.get("narrative_source"),
+            "severity": t["severity"],
+            "cited_numbers": t.get("cited_numbers", []),
+            "members": member_view,
+        })
+    return (
+        _JUDGE_L2_RUBRIC
+        + "\n\nTHEMES TO SCORE:\n"
+        + json.dumps(minimal, indent=1)
+        + '\n\nReply with {"scores": [ {...}, ... ]}'
+    )
+
+
+def _judge_l2_call(prompt: str, temperature: float = 0.3, timeout: float = 120) -> Dict[str, Any]:
+    api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
+    if not api_key:
+        raise SystemExit("DEEPSEEK_API_KEY missing — run scripts/sync_launchd_env.sh")
+    with httpx.Client(timeout=timeout) as client:
+        resp = client.post(
+            DEEPSEEK_URL,
+            json={
+                "model": JUDGE_MODEL,
+                "messages": [
+                    {"role": "system", "content": _JUDGE_L2_SYSTEM},
+                    {"role": "user", "content": prompt},
+                ],
+                "temperature": temperature,
+                "max_tokens": 3000,
+                "response_format": {"type": "json_object"},
+            },
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+    if resp.status_code != 200:
+        raise RuntimeError(f"DeepSeek {resp.status_code}: {resp.text[:200]}")
+    content = resp.json()["choices"][0]["message"]["content"]
+    return json.loads(content)
+
+
+def judge_themes(
+    themes: List[Dict[str, Any]],
+    observations: List[Dict[str, Any]],
+    n_samples: int = 3,
+) -> Dict[str, Dict[str, Any]]:
+    if not themes:
+        return {}
+
+    axes = ("theme_coherence", "member_fit", "narrative_accuracy", "citation_validity")
+    samples: List[List[Dict[str, Any]]] = []
+    for i in range(n_samples):
+        try:
+            reply = _judge_l2_call(_judge_l2_prompt(themes, observations), temperature=0.3)
+            scores = reply.get("scores") or []
+            if scores:
+                samples.append(scores)
+        except Exception as exc:
+            print(f"  [L2 judge pass {i+1}/{n_samples} FAILED: {exc}]")
+
+    if not samples:
+        return {}
+
+    by_id: Dict[str, Dict[str, List[Any]]] = {
+        t["id"]: {axis: [] for axis in axes} | {"critique": []}
+        for t in themes
+    }
+    for sample in samples:
+        for score in sample:
+            tid = score.get("id")
+            if tid not in by_id:
+                continue
+            for axis in axes:
+                v = score.get(axis)
+                if isinstance(v, (int, float)):
+                    by_id[tid][axis].append(float(v))
+            if score.get("critique"):
+                by_id[tid]["critique"].append(str(score["critique"]))
+
+    aggregate: Dict[str, Dict[str, Any]] = {}
+    for tid, bag in by_id.items():
+        row: Dict[str, Any] = {}
+        for axis in axes:
+            vals = bag[axis]
+            row[axis] = round(statistics.median(vals), 2) if vals else None
+            row[f"{axis}_stdev"] = round(statistics.stdev(vals), 2) if len(vals) >= 2 else 0.0
+        row["sample_count"] = len(bag["theme_coherence"])
+        row["critique"] = bag["critique"][0] if bag["critique"] else ""
+        aggregate[tid] = row
+    return aggregate
+
+
+def summarize_themes_run(
+    scenario: Scenario,
+    themes: List[Dict[str, Any]],
+    scores: Dict[str, Dict[str, Any]],
+) -> Dict[str, Any]:
+    axes = ("theme_coherence", "member_fit", "narrative_accuracy", "citation_validity")
+
+    def _avg(name: str):
+        xs = [s[name] for s in scores.values() if s.get(name) is not None]
+        return round(sum(xs) / len(xs), 2) if xs else None
+
+    problems: List[Dict[str, Any]] = []
+    for t in themes:
+        s = scores.get(t["id"], {})
+        if not s:
+            continue
+        issues = []
+        for axis in axes:
+            v = s.get(axis)
+            if v is not None and v <= 2:
+                issues.append(f"low {axis} ({v})")
+        if issues:
+            problems.append({
+                "id": t["id"],
+                "title": t["title"],
+                "narrative": t["narrative"][:120],
+                "narrative_source": t.get("narrative_source"),
+                "issues": issues,
+                "critique": s.get("critique", ""),
+            })
+
+    return {
+        "scenario": scenario.name,
+        "description": scenario.description,
+        "theme_count": len(themes),
+        "judged_count": sum(1 for s in scores.values() if s.get("sample_count", 0) > 0),
+        "avg_theme_coherence": _avg("theme_coherence"),
+        "avg_member_fit": _avg("member_fit"),
+        "avg_narrative_accuracy": _avg("narrative_accuracy"),
+        "avg_citation_validity": _avg("citation_validity"),
+        "problem_count": len(problems),
+        "problems": problems,
+    }
+
+
 # ── Reporting ──────────────────────────────────────────
 
 def summarize_run(
@@ -359,45 +574,83 @@ def summarize_run(
     }
 
 
-def render_report(summaries: List[Dict[str, Any]]) -> str:
-    lines: List[str] = ["# Insight Lattice L1 judge report", ""]
+def render_report(
+    l1_summaries: List[Dict[str, Any]],
+    l2_summaries: List[Dict[str, Any]],
+) -> str:
+    lines: List[str] = ["# Insight Lattice judge report", ""]
     lines.append(f"_Generated at {time.strftime('%Y-%m-%d %H:%M:%S')}._")
     lines.append("")
-    lines.append("## Scores per scenario (median across N judge samples)")
-    lines.append("")
-    lines.append("| scenario | obs | spec ↑ | tag_fit ↑ | uniq ↑ | signal ↑ | problems |")
-    lines.append("|---|---:|---:|---:|---:|---:|---:|")
-    for s in summaries:
-        lines.append(
-            f"| {s['scenario']} | {s['obs_count']} | "
-            f"{s.get('avg_specificity','–')} | "
-            f"{s.get('avg_tag_fit','–')} | "
-            f"{s.get('avg_uniqueness','–')} | "
-            f"{s.get('avg_signal_strength','–')} | "
-            f"{s['problem_count']} |"
-        )
 
-    lines.append("")
-    lines.append("## Observations flagged as problems")
-    lines.append("")
-    any_problems = False
-    for s in summaries:
-        if not s["problems"]:
-            continue
-        any_problems = True
-        lines.append(f"### {s['scenario']}")
-        for p in s["problems"]:
-            lines.append(f"- **{p['kind']}** — {p['text'][:100]}")
-            lines.append(f"  - issues: {', '.join(p['issues'])}")
-            if p["critique"]:
-                lines.append(f"  - critique: _{p['critique']}_")
-    if not any_problems:
-        lines.append("_No observations flagged as low-quality._")
+    if l1_summaries:
+        lines.append("## L1 — observations")
+        lines.append("")
+        lines.append("| scenario | obs | spec ↑ | tag_fit ↑ | uniq ↑ | signal ↑ | problems |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        for s in l1_summaries:
+            lines.append(
+                f"| {s['scenario']} | {s['obs_count']} | "
+                f"{s.get('avg_specificity','–')} | "
+                f"{s.get('avg_tag_fit','–')} | "
+                f"{s.get('avg_uniqueness','–')} | "
+                f"{s.get('avg_signal_strength','–')} | "
+                f"{s['problem_count']} |"
+            )
+        lines.append("")
+        lines.append("### L1 flagged observations")
+        lines.append("")
+        any_problems = False
+        for s in l1_summaries:
+            if not s["problems"]:
+                continue
+            any_problems = True
+            lines.append(f"#### {s['scenario']}")
+            for p in s["problems"]:
+                lines.append(f"- **{p['kind']}** — {p['text'][:100]}")
+                lines.append(f"  - issues: {', '.join(p['issues'])}")
+                if p["critique"]:
+                    lines.append(f"  - critique: _{p['critique']}_")
+        if not any_problems:
+            lines.append("_No observations flagged._")
+        lines.append("")
+
+    if l2_summaries:
+        lines.append("## L2 — themes")
+        lines.append("")
+        lines.append("| scenario | themes | coherence ↑ | fit ↑ | accuracy ↑ | citation ↑ | problems |")
+        lines.append("|---|---:|---:|---:|---:|---:|---:|")
+        for s in l2_summaries:
+            lines.append(
+                f"| {s['scenario']} | {s['theme_count']} | "
+                f"{s.get('avg_theme_coherence','–')} | "
+                f"{s.get('avg_member_fit','–')} | "
+                f"{s.get('avg_narrative_accuracy','–')} | "
+                f"{s.get('avg_citation_validity','–')} | "
+                f"{s['problem_count']} |"
+            )
+        lines.append("")
+        lines.append("### L2 flagged themes")
+        lines.append("")
+        any_problems = False
+        for s in l2_summaries:
+            if not s["problems"]:
+                continue
+            any_problems = True
+            lines.append(f"#### {s['scenario']}")
+            for p in s["problems"]:
+                src = p.get("narrative_source") or "?"
+                lines.append(f"- **{p['id']}** ({src}) — {p['narrative']}")
+                lines.append(f"  - issues: {', '.join(p['issues'])}")
+                if p["critique"]:
+                    lines.append(f"  - critique: _{p['critique']}_")
+        if not any_problems:
+            lines.append("_No themes flagged._")
     return "\n".join(lines)
 
 
 def run(n_samples: int, scenario_names: Optional[List[str]] = None,
-        report_path: Optional[Path] = None) -> Dict[str, Any]:
+        report_path: Optional[Path] = None,
+        layer: str = "both") -> Dict[str, Any]:
     if scenario_names:
         selected = [s for s in SCENARIOS if s.name in scenario_names]
         if not selected:
@@ -405,31 +658,55 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
     else:
         selected = SCENARIOS
 
-    summaries: List[Dict[str, Any]] = []
+    l1_summaries: List[Dict[str, Any]] = []
+    l2_summaries: List[Dict[str, Any]] = []
     all_scores: Dict[str, Dict[str, Any]] = {}
 
     for sc in selected:
         print(f"\n=== Scenario: {sc.name} ===")
         print(f"  seeding …")
         seed_scenario(sc)
-        print(f"  fetching L1 …")
-        obs = fetch_observations()
-        print(f"  {len(obs)} observations generated")
-        print(f"  judging ({n_samples}× self-consistency) …")
-        scores = judge_observations(obs, n_samples=n_samples)
-        s = summarize_run(sc, obs, scores)
-        summaries.append(s)
-        all_scores[sc.name] = {
-            "scenario": asdict(sc),
-            "observations": obs,
-            "scores": scores,
-            "summary": s,
-        }
-        print(f"  spec={s.get('avg_specificity')} tag_fit={s.get('avg_tag_fit')} "
-              f"uniq={s.get('avg_uniqueness')} signal={s.get('avg_signal_strength')} · "
-              f"{s['problem_count']} flagged")
 
-    report = render_report(summaries)
+        bundle: Dict[str, Any] = {"scenario": asdict(sc)}
+
+        obs: List[Dict[str, Any]] = []
+        if layer in ("l1", "both"):
+            print(f"  fetching L1 …")
+            obs = fetch_observations()
+            print(f"  {len(obs)} observations generated")
+            print(f"  judging L1 ({n_samples}× self-consistency) …")
+            l1_scores = judge_observations(obs, n_samples=n_samples)
+            s = summarize_run(sc, obs, l1_scores)
+            l1_summaries.append(s)
+            bundle["observations"] = obs
+            bundle["l1_scores"] = l1_scores
+            bundle["l1_summary"] = s
+            print(f"  L1: spec={s.get('avg_specificity')} tag_fit={s.get('avg_tag_fit')} "
+                  f"uniq={s.get('avg_uniqueness')} signal={s.get('avg_signal_strength')} · "
+                  f"{s['problem_count']} flagged")
+
+        if layer in ("l2", "both"):
+            print(f"  fetching L2 …")
+            themes_payload = fetch_themes()
+            themes = themes_payload.get("themes", [])
+            # For L2 judging we need observations too (to present members).
+            if not obs:
+                obs = themes_payload.get("observations", [])
+            print(f"  {len(themes)} themes generated")
+            print(f"  judging L2 ({n_samples}× self-consistency) …")
+            l2_scores = judge_themes(themes, obs, n_samples=n_samples)
+            s = summarize_themes_run(sc, themes, l2_scores)
+            l2_summaries.append(s)
+            bundle["themes"] = themes
+            bundle["l2_scores"] = l2_scores
+            bundle["l2_summary"] = s
+            print(f"  L2: coh={s.get('avg_theme_coherence')} fit={s.get('avg_member_fit')} "
+                  f"acc={s.get('avg_narrative_accuracy')} cite={s.get('avg_citation_validity')} · "
+                  f"{s['problem_count']} flagged")
+
+        all_scores[sc.name] = bundle
+
+    report = render_report(l1_summaries, l2_summaries)
     print("\n" + report)
 
     if report_path:
@@ -437,7 +714,12 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
         json_path = report_path.with_suffix(".json")
         json_path.write_text(
             json.dumps(
-                {"generated_at": time.time(), "runs": all_scores, "summaries": summaries},
+                {
+                    "generated_at": time.time(),
+                    "runs": all_scores,
+                    "l1_summaries": l1_summaries,
+                    "l2_summaries": l2_summaries,
+                },
                 indent=2,
             ),
             encoding="utf-8",
@@ -448,7 +730,12 @@ def run(n_samples: int, scenario_names: Optional[List[str]] = None,
     # Cleanup so we don't leave test data
     reset_project()
 
-    return {"runs": all_scores, "summaries": summaries, "report": report}
+    return {
+        "runs": all_scores,
+        "l1_summaries": l1_summaries,
+        "l2_summaries": l2_summaries,
+        "report": report,
+    }
 
 
 def _backend_up() -> bool:
@@ -466,18 +753,16 @@ def main():
                         help="subset of scenario names (default: all)")
     parser.add_argument("--report", type=Path, default=None,
                         help="write markdown report to this path")
+    parser.add_argument("--layer", choices=("l1", "l2", "both"), default="both",
+                        help="which lattice layer to judge")
     args = parser.parse_args()
 
     if not _backend_up():
         print(f"Backend not reachable at {BASE_URL}", file=sys.stderr)
         sys.exit(2)
 
-    result = run(n_samples=args.n, scenario_names=args.scenarios,
-                 report_path=args.report)
-    # Exit non-zero if any scenario scored noise >= 3.5 on average
-    for s in result["summaries"]:
-        if (s.get("avg_noise") or 0) >= 3.5:
-            print(f"\nWARN: {s['scenario']} noise score above threshold", file=sys.stderr)
+    run(n_samples=args.n, scenario_names=args.scenarios,
+        report_path=args.report, layer=args.layer)
 
 
 if __name__ == "__main__":

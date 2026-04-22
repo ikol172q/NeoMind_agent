@@ -1,0 +1,1226 @@
+{
+  "generated_at": 1776826689.7423518,
+  "runs": {
+    "empty": {
+      "scenario": {
+        "name": "empty",
+        "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+        "watchlist": [],
+        "positions": []
+      },
+      "themes": [
+        {
+          "id": "theme_macro_regime",
+          "title": "Macro regime",
+          "narrative": "Weak market breadth shows only 25 S&P100 stocks rose today, indicating bearish intraday conditions.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_breadth_weak_001",
+              "weight": 0.333
+            }
+          ],
+          "tags": [
+            "regime:vix",
+            "regime:breadth",
+            "regime:sentiment",
+            "signal:bearish",
+            "timescale:intraday"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "25"
+          ]
+        },
+        {
+          "id": "theme_sector_rotation",
+          "title": "Sector rotation",
+          "narrative": "Energy sector leads with +1.45% while four other sectors including Real Estate lag with declines up to -1.93% today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_sector_leader_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_leader_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_003",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "regime:rotation",
+            "timescale:intraday",
+            "direction:down",
+            "sector:Energy",
+            "direction:up",
+            "sector:Financials",
+            "sector:Industrials",
+            "sector:Utilities"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "+1.45%",
+            "-1.93%"
+          ]
+        }
+      ],
+      "l2_scores": {
+        "theme_macro_regime": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member perfectly matches theme; narrative fully supported."
+        },
+        "theme_sector_rotation": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 1.15,
+          "narrative_accuracy": 3.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit theme but weights are equal despite varying relevance; narrative partially supported."
+        }
+      },
+      "l2_summary": {
+        "scenario": "empty",
+        "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+        "theme_count": 2,
+        "judged_count": 2,
+        "avg_theme_coherence": 5.0,
+        "avg_member_fit": 4.0,
+        "avg_narrative_accuracy": 4.0,
+        "avg_citation_validity": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "thin": {
+      "scenario": {
+        "name": "thin",
+        "description": "One watchlist symbol, one position. Minimum viable state.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ]
+        ]
+      },
+      "themes": [
+        {
+          "id": "theme_macro_regime",
+          "title": "Macro regime",
+          "narrative": "Market breadth shows weakness with only 25 of 98 S&P100 stocks advancing today, indicating bearish intraday conditions.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_breadth_weak_001",
+              "weight": 0.333
+            }
+          ],
+          "tags": [
+            "regime:vix",
+            "regime:breadth",
+            "regime:sentiment",
+            "signal:bearish",
+            "timescale:intraday"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "25",
+            "98"
+          ]
+        },
+        {
+          "id": "theme_sector_rotation",
+          "title": "Sector rotation",
+          "narrative": "Energy sector leads with +1.45% while four other sectors including Real Estate lag with declines up to -1.93% today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_sector_leader_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_leader_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_003",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "regime:rotation",
+            "timescale:intraday",
+            "direction:down",
+            "sector:Energy",
+            "direction:up",
+            "sector:Financials",
+            "sector:Industrials",
+            "sector:Utilities"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "+1.45%",
+            "-1.93%"
+          ]
+        },
+        {
+          "id": "theme_earnings_risk",
+          "title": "Earnings risk",
+          "narrative": "AAPL faces earnings risk with its report in 8 days on 2026-04-30.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_earnings_soon_001",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "risk:earnings",
+            "catalyst:earnings",
+            "symbol:AAPL",
+            "market:US",
+            "timescale:short"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "8",
+            "2026-04-30"
+          ]
+        }
+      ],
+      "l2_scores": {
+        "theme_macro_regime": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member perfectly matches theme, narrative, and citations."
+        },
+        "theme_sector_rotation": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 3.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 3.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit rotation theme. Narrative cites only extremes, not all sectors. Weights equal but ordering unclear."
+        },
+        "theme_earnings_risk": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member perfectly matches theme, narrative, and citations."
+        }
+      },
+      "l2_summary": {
+        "scenario": "thin",
+        "description": "One watchlist symbol, one position. Minimum viable state.",
+        "theme_count": 3,
+        "judged_count": 3,
+        "avg_theme_coherence": 5.0,
+        "avg_member_fit": 4.33,
+        "avg_narrative_accuracy": 4.33,
+        "avg_citation_validity": 4.33,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "mid": {
+      "scenario": {
+        "name": "mid",
+        "description": "4 watchlist + 2 positions, mixed sectors.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ],
+          [
+            "NVDA",
+            "US"
+          ],
+          [
+            "XOM",
+            "US"
+          ],
+          [
+            "JPM",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ],
+          [
+            "NVDA",
+            3
+          ]
+        ]
+      },
+      "themes": [
+        {
+          "id": "theme_earnings_risk",
+          "title": "Earnings risk",
+          "narrative": "XOM's implied volatility of 44.5% suggests elevated earnings risk ahead of reports from XOM in 9 days and AAPL in 8 days.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_iv_rich_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_002",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "risk:earnings",
+            "catalyst:earnings",
+            "market:US",
+            "timescale:short",
+            "symbol:XOM",
+            "signal:neutral",
+            "symbol:AAPL"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "44.5%",
+            "9 days",
+            "8 days"
+          ]
+        },
+        {
+          "id": "theme_near_lows",
+          "title": "Near 52w lows / oversold",
+          "narrative": "XOM is at the 8th percentile of its 20-day range, indicating it is near-bottom and oversold.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_near_52w_low_001",
+              "weight": 0.667
+            }
+          ],
+          "tags": [
+            "technical:near_52w_low",
+            "technical:breakdown",
+            "technical:oversold",
+            "symbol:XOM",
+            "market:US",
+            "sector:Energy",
+            "timescale:short",
+            "direction:down"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "8th percentile"
+          ]
+        },
+        {
+          "id": "theme_macro_regime",
+          "title": "Macro regime",
+          "narrative": "Market breadth shows weakness with only 25 S&P100 stocks rising today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_breadth_weak_001",
+              "weight": 0.333
+            }
+          ],
+          "tags": [
+            "regime:vix",
+            "regime:breadth",
+            "regime:sentiment",
+            "signal:bearish",
+            "timescale:intraday"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "25"
+          ]
+        },
+        {
+          "id": "theme_sector_rotation",
+          "title": "Sector rotation",
+          "narrative": "Energy sector leads with +1.45% while four other sectors including Real Estate lag with declines up to -1.93% today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_sector_leader_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_leader_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_003",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "regime:rotation",
+            "timescale:intraday",
+            "direction:down",
+            "sector:Energy",
+            "direction:up",
+            "sector:Financials",
+            "sector:Industrials",
+            "sector:Utilities"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "+1.45%",
+            "-1.93%"
+          ]
+        },
+        {
+          "id": "theme_near_highs",
+          "title": "Near 52w highs",
+          "narrative": "JPM and NVDA are near 52-week highs, with NVDA at the 94th percentile of its 20-day range.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_near_52w_high_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_002",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "technical:near_52w_high",
+            "technical:breakout",
+            "market:US",
+            "timescale:short",
+            "direction:up",
+            "signal:bullish",
+            "symbol:JPM",
+            "sector:Financial Services"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "94th"
+          ]
+        }
+      ],
+      "l2_scores": {
+        "theme_earnings_risk": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit earnings risk theme; weights equal but obs_iv_rich_001 most illustrative; narrative fully supported."
+        },
+        "theme_near_lows": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member perfectly fits theme; narrative accurately reflects member text."
+        },
+        "theme_macro_regime": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member fits macro regime theme; narrative directly cites member data."
+        },
+        "theme_sector_rotation": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 3.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit rotation; weights equal but narrative only cites Energy and Real Estate extremes."
+        },
+        "theme_near_highs": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 3.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Both members fit near-highs; weights equal but narrative only cites NVDA's percentile."
+        }
+      },
+      "l2_summary": {
+        "scenario": "mid",
+        "description": "4 watchlist + 2 positions, mixed sectors.",
+        "theme_count": 5,
+        "judged_count": 5,
+        "avg_theme_coherence": 5.0,
+        "avg_member_fit": 3.8,
+        "avg_narrative_accuracy": 4.2,
+        "avg_citation_validity": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "rich": {
+      "scenario": {
+        "name": "rich",
+        "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+        "watchlist": [
+          [
+            "AAPL",
+            "US"
+          ],
+          [
+            "MSFT",
+            "US"
+          ],
+          [
+            "NVDA",
+            "US"
+          ],
+          [
+            "GOOGL",
+            "US"
+          ],
+          [
+            "TSLA",
+            "US"
+          ],
+          [
+            "XOM",
+            "US"
+          ],
+          [
+            "JPM",
+            "US"
+          ],
+          [
+            "UNH",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "AAPL",
+            5
+          ],
+          [
+            "NVDA",
+            3
+          ],
+          [
+            "TSLA",
+            2
+          ]
+        ]
+      },
+      "themes": [
+        {
+          "id": "theme_earnings_risk",
+          "title": "Earnings risk",
+          "narrative": "Multiple US stocks including TSLA, GOOGL, and MSFT face earnings reports within 9 days, with GOOGL's ATM IV at 42.5% implying elevated daily moves.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_earnings_soon_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_003",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_rich_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_rich_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_004",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_005",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_iv_richness_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_cheap_001",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "risk:earnings",
+            "catalyst:earnings",
+            "market:US",
+            "timescale:short",
+            "symbol:GOOGL",
+            "symbol:MSFT",
+            "signal:neutral",
+            "symbol:XOM"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "42.5%"
+          ]
+        },
+        {
+          "id": "theme_near_highs",
+          "title": "Near 52w highs",
+          "narrative": "Several US stocks including UNH at 100th percentile and MSFT at 100th percentile are trading near the top of their 20-day ranges ahead of earnings in 7d.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_near_52w_high_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_003",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_004",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_005",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_001",
+              "weight": 0.5
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_002",
+              "weight": 0.5
+            }
+          ],
+          "tags": [
+            "technical:near_52w_high",
+            "technical:breakout",
+            "market:US",
+            "timescale:short",
+            "direction:up",
+            "signal:bullish",
+            "sector:Technology",
+            "symbol:MSFT"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "100th percentile",
+            "7d"
+          ]
+        },
+        {
+          "id": "theme_near_lows",
+          "title": "Near 52w lows / oversold",
+          "narrative": "XOM trades at the 8th percentile of its 20-day range, indicating oversold conditions near 52-week lows.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_near_52w_low_001",
+              "weight": 0.667
+            }
+          ],
+          "tags": [
+            "technical:near_52w_low",
+            "technical:breakdown",
+            "technical:oversold",
+            "symbol:XOM",
+            "market:US",
+            "sector:Energy",
+            "timescale:short",
+            "direction:down"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "8th percentile"
+          ]
+        },
+        {
+          "id": "theme_macro_regime",
+          "title": "Macro regime",
+          "narrative": "Weak market breadth shows only 25 S&P100 stocks rose today, indicating bearish intraday conditions.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_breadth_weak_001",
+              "weight": 0.333
+            }
+          ],
+          "tags": [
+            "regime:vix",
+            "regime:breadth",
+            "regime:sentiment",
+            "signal:bearish",
+            "timescale:intraday"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "25"
+          ]
+        },
+        {
+          "id": "theme_sector_rotation",
+          "title": "Sector rotation",
+          "narrative": "Energy sector leads with +1.45% while four other sectors including Real Estate lag with declines up to -1.93% today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_sector_leader_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_leader_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_003",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "regime:rotation",
+            "timescale:intraday",
+            "direction:down",
+            "sector:Energy",
+            "direction:up",
+            "sector:Financials",
+            "sector:Industrials",
+            "sector:Utilities"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "+1.45%",
+            "-1.93%"
+          ]
+        }
+      ],
+      "l2_scores": {
+        "theme_earnings_risk": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 1.15,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit earnings risk, but weights equal despite varying relevance. Narrative supported by GOOGL IV member only."
+        },
+        "theme_near_highs": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 3.0,
+          "narrative_accuracy_stdev": 1.15,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit near-highs theme. Weights equal except two at 0.5. Narrative cites UNH/MSFT but not others."
+        },
+        "theme_near_lows": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member perfectly fits theme, narrative accurate, citation valid."
+        },
+        "theme_macro_regime": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member fits macro theme, narrative matches text, citation correct."
+        },
+        "theme_sector_rotation": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit sector rotation. Weights equal but Financials is top-ranked laggard. Narrative fully supported."
+        }
+      },
+      "l2_summary": {
+        "scenario": "rich",
+        "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+        "theme_count": 5,
+        "judged_count": 5,
+        "avg_theme_coherence": 5.0,
+        "avg_member_fit": 3.8,
+        "avg_narrative_accuracy": 4.6,
+        "avg_citation_validity": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    },
+    "iv_heavy": {
+      "scenario": {
+        "name": "iv_heavy",
+        "description": "Symbols with upcoming earnings, testing IV signal density.",
+        "watchlist": [
+          [
+            "TSLA",
+            "US"
+          ],
+          [
+            "MSFT",
+            "US"
+          ],
+          [
+            "META",
+            "US"
+          ],
+          [
+            "GOOGL",
+            "US"
+          ]
+        ],
+        "positions": [
+          [
+            "TSLA",
+            2
+          ],
+          [
+            "MSFT",
+            3
+          ]
+        ]
+      },
+      "themes": [
+        {
+          "id": "theme_earnings_risk",
+          "title": "Earnings risk",
+          "narrative": "Four major US tech stocks (TSLA, GOOGL, META, MSFT) face earnings reports within 0-7 days, with GOOGL's ATM IV at 42.5% pricing elevated daily moves.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_earnings_soon_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_003",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_earnings_soon_004",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_rich_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_003",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_iv_richness_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_cheap_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_iv_cheap_002",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "risk:earnings",
+            "catalyst:earnings",
+            "market:US",
+            "timescale:short",
+            "symbol:GOOGL",
+            "symbol:META",
+            "symbol:MSFT",
+            "signal:neutral"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "42.5%"
+          ]
+        },
+        {
+          "id": "theme_near_highs",
+          "title": "Near 52w highs",
+          "narrative": "META, MSFT, and GOOGL are near their 20-day range tops, with META at the 88th percentile, ahead of earnings in 7 days.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_near_52w_high_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_near_52w_high_003",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_001",
+              "weight": 0.5
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_002",
+              "weight": 0.5
+            },
+            {
+              "obs_id": "obs_anomaly_near_52w_with_earnings_003",
+              "weight": 0.5
+            }
+          ],
+          "tags": [
+            "technical:near_52w_high",
+            "technical:breakout",
+            "market:US",
+            "timescale:short",
+            "direction:up",
+            "signal:bullish",
+            "risk:earnings",
+            "catalyst:earnings"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "88th",
+            "7"
+          ]
+        },
+        {
+          "id": "theme_macro_regime",
+          "title": "Macro regime",
+          "narrative": "Weak market breadth shows only 25 S&P100 stocks rising today, signaling bearish intraday conditions.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_breadth_weak_001",
+              "weight": 0.333
+            }
+          ],
+          "tags": [
+            "regime:vix",
+            "regime:breadth",
+            "regime:sentiment",
+            "signal:bearish",
+            "timescale:intraday"
+          ],
+          "severity": "warn",
+          "cited_numbers": [
+            "25"
+          ]
+        },
+        {
+          "id": "theme_sector_rotation",
+          "title": "Sector rotation",
+          "narrative": "Energy leads with a +1.45% gain while four other sectors including Real Estate lag with declines up to -1.93% today.",
+          "narrative_source": "llm",
+          "members": [
+            {
+              "obs_id": "obs_sector_leader_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_leader_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_001",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_002",
+              "weight": 1.0
+            },
+            {
+              "obs_id": "obs_sector_laggard_003",
+              "weight": 1.0
+            }
+          ],
+          "tags": [
+            "regime:rotation",
+            "timescale:intraday",
+            "direction:down",
+            "sector:Energy",
+            "direction:up",
+            "sector:Financials",
+            "sector:Industrials",
+            "sector:Utilities"
+          ],
+          "severity": "info",
+          "cited_numbers": [
+            "+1.45%",
+            "-1.93%"
+          ]
+        }
+      ],
+      "l2_scores": {
+        "theme_earnings_risk": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members fit earnings risk, weights equal but not ranked by relevance."
+        },
+        "theme_near_highs": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 3.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Members all near highs, weights equal but not ranked, narrative accurate."
+        },
+        "theme_macro_regime": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 0.0,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "Single member fits perfectly, narrative directly supported."
+        },
+        "theme_sector_rotation": {
+          "theme_coherence": 5.0,
+          "theme_coherence_stdev": 0.0,
+          "member_fit": 5.0,
+          "member_fit_stdev": 1.15,
+          "narrative_accuracy": 5.0,
+          "narrative_accuracy_stdev": 0.0,
+          "citation_validity": 5.0,
+          "citation_validity_stdev": 0.0,
+          "sample_count": 3,
+          "critique": "All members show sector rotation, weights equal but not ranked."
+        }
+      },
+      "l2_summary": {
+        "scenario": "iv_heavy",
+        "description": "Symbols with upcoming earnings, testing IV signal density.",
+        "theme_count": 4,
+        "judged_count": 4,
+        "avg_theme_coherence": 5.0,
+        "avg_member_fit": 4.0,
+        "avg_narrative_accuracy": 5.0,
+        "avg_citation_validity": 5.0,
+        "problem_count": 0,
+        "problems": []
+      }
+    }
+  },
+  "l1_summaries": [],
+  "l2_summaries": [
+    {
+      "scenario": "empty",
+      "description": "No watchlist, no positions. Baseline: only market-level obs should fire.",
+      "theme_count": 2,
+      "judged_count": 2,
+      "avg_theme_coherence": 5.0,
+      "avg_member_fit": 4.0,
+      "avg_narrative_accuracy": 4.0,
+      "avg_citation_validity": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "thin",
+      "description": "One watchlist symbol, one position. Minimum viable state.",
+      "theme_count": 3,
+      "judged_count": 3,
+      "avg_theme_coherence": 5.0,
+      "avg_member_fit": 4.33,
+      "avg_narrative_accuracy": 4.33,
+      "avg_citation_validity": 4.33,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "mid",
+      "description": "4 watchlist + 2 positions, mixed sectors.",
+      "theme_count": 5,
+      "judged_count": 5,
+      "avg_theme_coherence": 5.0,
+      "avg_member_fit": 3.8,
+      "avg_narrative_accuracy": 4.2,
+      "avg_citation_validity": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "rich",
+      "description": "8 watchlist + 3 positions, cross-sector diverse basket.",
+      "theme_count": 5,
+      "judged_count": 5,
+      "avg_theme_coherence": 5.0,
+      "avg_member_fit": 3.8,
+      "avg_narrative_accuracy": 4.6,
+      "avg_citation_validity": 5.0,
+      "problem_count": 0,
+      "problems": []
+    },
+    {
+      "scenario": "iv_heavy",
+      "description": "Symbols with upcoming earnings, testing IV signal density.",
+      "theme_count": 4,
+      "judged_count": 4,
+      "avg_theme_coherence": 5.0,
+      "avg_member_fit": 4.0,
+      "avg_narrative_accuracy": 5.0,
+      "avg_citation_validity": 5.0,
+      "problem_count": 0,
+      "problems": []
+    }
+  ]
+}
