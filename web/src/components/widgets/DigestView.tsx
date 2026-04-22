@@ -57,6 +57,7 @@ export function DigestView({ projectId, onJumpToChat, focus }: Props) {
 
   const payload = q.data
   const themes = payload?.themes ?? []
+  const subThemes = payload?.sub_themes ?? []
   const calls = payload?.calls ?? []
   const observations = payload?.observations ?? []
 
@@ -147,6 +148,7 @@ export function DigestView({ projectId, onJumpToChat, focus }: Props) {
           <DrilldownMode
             calls={calls}
             themes={themes}
+            subThemes={subThemes}
             observations={observations}
             startCollapsed
             ctx={ctx}
@@ -156,6 +158,7 @@ export function DigestView({ projectId, onJumpToChat, focus }: Props) {
           <DrilldownMode
             calls={calls}
             themes={themes}
+            subThemes={subThemes}
             observations={observations}
             startCollapsed={false}
             ctx={ctx}
@@ -521,10 +524,11 @@ function Chip({
 // ── Drilldown / Flat mode ──────────────────────────────
 
 function DrilldownMode({
-  calls, themes, observations, startCollapsed, ctx,
+  calls, themes, subThemes, observations, startCollapsed, ctx,
 }: {
   calls: LatticeCall[]
   themes: LatticeTheme[]
+  subThemes: LatticeTheme[]
   observations: LatticeObservation[]
   startCollapsed: boolean
   ctx: DigestCtx
@@ -590,6 +594,25 @@ function DrilldownMode({
           />
         ))}
       </Section>
+
+      {subThemes.length > 0 && (
+        <Section
+          title={`L1.5 · ${subThemes.length} sub-theme${subThemes.length === 1 ? '' : 's'}`}
+          startOpen={!startCollapsed}
+          testId="section-l15"
+        >
+          {subThemes.map(t => (
+            <ThemeDrilldown
+              key={t.id}
+              theme={t}
+              obsById={obsById}
+              obsToThemes={obsToThemes}
+              startCollapsed={startCollapsed}
+              ctx={ctx}
+            />
+          ))}
+        </Section>
+      )}
 
       <Section
         title={`L1 · ${observations.length} observation${observations.length === 1 ? '' : 's'}`}

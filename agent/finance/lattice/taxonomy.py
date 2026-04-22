@@ -50,6 +50,11 @@ class Taxonomy:
     version: int
     dimensions: Dict[str, Optional[frozenset[str]]]   # None = open (symbol, sector, position)
     themes: List[ThemeSignature]
+    # Optional L1.5 layer between observations and themes. Empty list
+    # means n=3 (the default). A non-empty list engages n=4 — the
+    # lattice pipeline picks the config up automatically; no code
+    # change is needed (D6 gate: YAML switch).
+    sub_themes: List[ThemeSignature] = field(default_factory=list)
 
     def is_valid_tag(self, tag: str) -> bool:
         """True if `tag` matches a declared dimension + its enum."""
@@ -109,19 +114,28 @@ def load_taxonomy(path: Optional[Path] = None) -> Taxonomy:
         else:
             dimensions[name] = _freeze_values(body)
 
-    themes_raw = raw.get("themes") or []
-    themes: List[ThemeSignature] = []
-    for t in themes_raw:
-        sig_raw = t.get("signature") or {}
-        themes.append(ThemeSignature(
-            id=t["id"],
-            title=t["title"],
-            any_of=frozenset(sig_raw.get("any_of") or []),
-            all_of=frozenset(sig_raw.get("all_of") or []),
-            min_members=int(t.get("min_members", 1)),
-        ))
+    def _parse_sigs(raw_list) -> List[ThemeSignature]:
+        sigs: List[ThemeSignature] = []
+        for t in raw_list or []:
+            sig_raw = t.get("signature") or {}
+            sigs.append(ThemeSignature(
+                id=t["id"],
+                title=t["title"],
+                any_of=frozenset(sig_raw.get("any_of") or []),
+                all_of=frozenset(sig_raw.get("all_of") or []),
+                min_members=int(t.get("min_members", 1)),
+            ))
+        return sigs
 
-    tax = Taxonomy(version=version, dimensions=dimensions, themes=themes)
+    themes = _parse_sigs(raw.get("themes"))
+    sub_themes = _parse_sigs(raw.get("sub_themes"))
+
+    tax = Taxonomy(
+        version=version,
+        dimensions=dimensions,
+        themes=themes,
+        sub_themes=sub_themes,
+    )
     if path is None:
         _cached_taxonomy = tax
     return tax

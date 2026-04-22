@@ -662,6 +662,10 @@ export interface LatticeCall {
 export interface LatticePayload {
   project_id: string
   observations: LatticeObservation[]
+  /** Optional L1.5 layer between observations and themes. Populated
+   *  when `sub_themes:` is set in lattice_taxonomy.yaml (n=4 lattice).
+   *  Empty array when the YAML has no sub_themes block (n=3). */
+  sub_themes?: LatticeTheme[]
   themes: LatticeTheme[]
   calls: LatticeCall[]
   taxonomy_version: number
