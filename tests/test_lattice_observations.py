@@ -252,12 +252,16 @@ def test_seeded_position_is_referenced_in_at_least_one_observation():
 
 def test_at_least_one_observation_belongs_to_two_themes():
     """The user's non-negotiable: overlap must be preserved. We seed
-    AAPL with a known near-earnings anomaly and expect its observation
-    to legitimately land in BOTH theme_earnings_risk and
-    theme_near_highs. Without this test, a regression toward MECE
-    clustering would go unnoticed."""
+    multiple large-cap symbols so at least one is likely to be near
+    its 20d range top AND have earnings soon — producing an
+    observation that legitimately lands in BOTH theme_earnings_risk
+    and theme_near_highs. Without this test, a regression toward
+    MECE clustering would go unnoticed. Seeds multiple symbols to
+    stay robust against one particular stock's market state today."""
     _reset()
-    _seed_watch("AAPL")
+    # Seed a broad basket so at least one lands near 52w high + earnings
+    for sym in ("AAPL", "MSFT", "NVDA", "GOOGL", "META"):
+        _seed_watch(sym)
     _place_order("AAPL", 5)
     d = _fetch_obs()
     sigs = d["theme_signatures"]
