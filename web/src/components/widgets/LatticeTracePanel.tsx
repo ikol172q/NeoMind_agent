@@ -120,6 +120,21 @@ function NodeDetail({
         )}
       </Section>
 
+      {/* V7: L1 obs nodes get a "jump to source widget" button that
+          scrolls the Research tab to the relevant widget and
+          triggers a transient highlight. */}
+      {node.layer === 'L1' && Boolean((attrs.source as Record<string, unknown> | undefined)?.widget) && (
+        <button
+          data-testid="trace-jump-to-widget"
+          onClick={() => jumpToSourceWidget(
+            String((attrs.source as Record<string, unknown>).widget),
+          )}
+          className="self-start px-2 py-0.5 rounded border border-[var(--color-accent)] text-[10px] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
+        >
+          ↳ jump to {String((attrs.source as Record<string, unknown>).widget)} widget
+        </button>
+      )}
+
       <Section title="Attributes">
         {Object.entries(attrs).map(([k, v]) => (
           <KV key={k} k={k} v={formatAttr(v)} />
@@ -569,6 +584,26 @@ function Collapsible({
       )}
     </div>
   )
+}
+
+
+// V7: scroll Research tab to the widget whose `source.widget` value
+// matches and apply a 2.5s pulse highlight. No-op if the widget
+// isn't mounted (e.g., user removed it from the grid).
+function jumpToSourceWidget(widget: string) {
+  const el = document.querySelector(
+    `[data-widget-source="${CSS.escape(widget)}"]`,
+  ) as HTMLElement | null
+  if (!el) {
+    console.warn(`[lattice] no widget with data-widget-source=${widget}`)
+    return
+  }
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+  el.classList.remove('lattice-source-highlight')
+  // force reflow so the animation re-triggers on repeat clicks
+  void el.offsetHeight
+  el.classList.add('lattice-source-highlight')
+  window.setTimeout(() => el.classList.remove('lattice-source-highlight'), 2600)
 }
 
 

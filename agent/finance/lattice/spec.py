@@ -22,7 +22,8 @@ Rules for editing this file:
 """
 from __future__ import annotations
 
-from typing import AbstractSet
+from dataclasses import dataclass, field, replace
+from typing import AbstractSet, Any, Optional
 
 
 # ── Severity axes ───────────────────────────────────────
@@ -76,6 +77,100 @@ CALL_REQUIRED_FIELDS: tuple[str, ...] = (
 # extends it by fewer than this many characters is rejected as
 # adding no reasoning.
 TAUTOLOGY_MIN_EXTENSION: int = 10
+
+
+# ── V7 · Per-layer budgets (YAML-controlled item caps) ─
+
+@dataclass(frozen=True)
+class LayerBudget:
+    """Per-layer emission budget. None = unbounded / use default.
+    Budgets are OPT-IN tightening: YAML can lower the numbers; the
+    hard ceilings (MAX_CALLS, MAX_CANDIDATES) cannot be exceeded."""
+    # Total emission cap (per refresh). When set, the builder trims
+    # the lowest-priority items (by severity then member count).
+    max_items: Optional[int] = None
+    # Minimum members for a cluster to be emitted (sub_themes / themes).
+    min_members: Optional[int] = None
+    # L3 only — maximum candidate pool size fed to MMR. Bounded by
+    # spec.MAX_CANDIDATES.
+    max_candidates: Optional[int] = None
+    # L3 only — MMR λ. Must be within [0, 1]; 0 = full diversity,
+    # 1 = pure relevance. Default spec.MMR_LAMBDA.
+    mmr_lambda: Optional[float] = None
+
+
+@dataclass(frozen=True)
+class LayerBudgets:
+    """Four-layer budget envelope. Missing layers inherit defaults."""
+    observations: LayerBudget = field(default_factory=LayerBudget)
+    sub_themes:   LayerBudget = field(default_factory=lambda: LayerBudget(min_members=1))
+    themes:       LayerBudget = field(default_factory=lambda: LayerBudget(min_members=1))
+    calls:        LayerBudget = field(default_factory=LayerBudget)
+
+
+# Defaults match today's production behaviour bit-for-bit. L1
+# tests pin these values so accidental drift is caught.
+DEFAULT_LAYER_BUDGETS = LayerBudgets(
+    observations=LayerBudget(max_items=None),  # no cap today
+    sub_themes=LayerBudget(max_items=None, min_members=1),
+    themes=LayerBudget(max_items=None, min_members=1),
+    calls=LayerBudget(
+        max_items=MAX_CALLS,
+        max_candidates=MAX_CANDIDATES,
+        mmr_lambda=MMR_LAMBDA,
+    ),
+)
+
+
+def parse_layer_budgets(raw: Optional[dict]) -> LayerBudgets:
+    """Merge a YAML `layer_budgets:` block over DEFAULT_LAYER_BUDGETS.
+
+    Validation:
+      - max_items must be non-negative int
+      - min_members must be non-negative int
+      - max_candidates must be 0..spec.MAX_CANDIDATES
+      - mmr_lambda must be float in [0, 1]
+    On violation, the bad field falls back to its default and a
+    warning is logged (via caller — this function raises ValueError
+    so the taxonomy loader can decide policy)."""
+    if not raw:
+        return DEFAULT_LAYER_BUDGETS
+
+    def _override(name: str, base: LayerBudget) -> LayerBudget:
+        override = (raw or {}).get(name) or {}
+        kwargs: dict[str, Any] = {}
+        if "max_items" in override and override["max_items"] is not None:
+            v = int(override["max_items"])
+            if v < 0:
+                raise ValueError(f"layer_budgets.{name}.max_items must be ≥0, got {v}")
+            kwargs["max_items"] = v
+        if "min_members" in override and override["min_members"] is not None:
+            v = int(override["min_members"])
+            if v < 0:
+                raise ValueError(f"layer_budgets.{name}.min_members must be ≥0, got {v}")
+            kwargs["min_members"] = v
+        if "max_candidates" in override and override["max_candidates"] is not None:
+            v = int(override["max_candidates"])
+            if not (0 <= v <= MAX_CANDIDATES):
+                raise ValueError(
+                    f"layer_budgets.{name}.max_candidates must be 0..{MAX_CANDIDATES}, got {v}"
+                )
+            kwargs["max_candidates"] = v
+        if "mmr_lambda" in override and override["mmr_lambda"] is not None:
+            v = float(override["mmr_lambda"])
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(
+                    f"layer_budgets.{name}.mmr_lambda must be in [0, 1], got {v}"
+                )
+            kwargs["mmr_lambda"] = v
+        return replace(base, **kwargs)
+
+    return LayerBudgets(
+        observations=_override("observations", DEFAULT_LAYER_BUDGETS.observations),
+        sub_themes=_override("sub_themes", DEFAULT_LAYER_BUDGETS.sub_themes),
+        themes=_override("themes", DEFAULT_LAYER_BUDGETS.themes),
+        calls=_override("calls", DEFAULT_LAYER_BUDGETS.calls),
+    )
 
 
 # ── V6 · Deep trace (candidate drop reasons) ───────────

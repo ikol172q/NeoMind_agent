@@ -62,6 +62,13 @@ class Taxonomy:
     # on unknown input. Edit the YAML's top-level `output_language`
     # field to switch.
     output_language: str = spec.OUTPUT_LANGUAGE_DEFAULT
+    # Per-layer emission budgets (V7). Default = DEFAULT_LAYER_BUDGETS,
+    # which matches today's hardcoded caps bit-for-bit. YAML's
+    # `layer_budgets:` block tightens them (never relaxes past the
+    # hard ceilings in spec.MAX_*).
+    layer_budgets: spec.LayerBudgets = field(
+        default_factory=lambda: spec.DEFAULT_LAYER_BUDGETS,
+    )
 
     def is_valid_tag(self, tag: str) -> bool:
         """True if `tag` matches a declared dimension + its enum."""
@@ -145,12 +152,21 @@ def load_taxonomy(path: Optional[Path] = None) -> Taxonomy:
         )
         raw_lang = spec.OUTPUT_LANGUAGE_DEFAULT
 
+    try:
+        layer_budgets = spec.parse_layer_budgets(raw.get("layer_budgets"))
+    except ValueError as exc:
+        logger.warning(
+            "lattice taxonomy: invalid layer_budgets (%s); using defaults", exc,
+        )
+        layer_budgets = spec.DEFAULT_LAYER_BUDGETS
+
     tax = Taxonomy(
         version=version,
         dimensions=dimensions,
         themes=themes,
         sub_themes=sub_themes,
         output_language=raw_lang,
+        layer_budgets=layer_budgets,
     )
     if path is None:
         _cached_taxonomy = tax

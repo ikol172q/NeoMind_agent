@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
 import {
   useLatticeGraph,
   type LatticeGraphEdge, type LatticeGraphNode,
@@ -49,9 +50,21 @@ const SEVERITY_COLOR = {
 
 // ── Main component ─────────────────────────────────────
 
+const ZOOM_MIN = 0.3
+const ZOOM_MAX = 3.0
+const ZOOM_STEP = 1.18   // 18% per wheel tick
+
+interface ViewTransform { scale: number; tx: number; ty: number }
+const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 0 }
+
 export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
   const q = useLatticeGraph(projectId)
   const [selection, setSelection] = useState<TraceSelection>(null)
+  const [view, setView] = useState<ViewTransform>(IDENTITY)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const dragRef = useRef<null | {
+    startX: number; startY: number; startTx: number; startTy: number;
+  }>(null)
 
   const layout = useMemo(() => q.data ? computeLayout(q.data) : null, [q.data])
 
@@ -65,56 +78,169 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
     return <div className="p-3 text-[11px] italic text-[var(--color-dim)]">no lattice data yet</div>
   }
 
+  // ── Zoom / pan handlers ────────────────────────────
+  function svgPoint(clientX: number, clientY: number): { x: number; y: number } {
+    const svg = svgRef.current
+    if (!svg) return { x: 0, y: 0 }
+    const rect = svg.getBoundingClientRect()
+    // Convert client coords → viewBox coords (account for current scale/pan)
+    const scale = svg.viewBox.baseVal.width / rect.width
+    return {
+      x: (clientX - rect.left) * scale,
+      y: (clientY - rect.top) * scale,
+    }
+  }
+
+  function onWheel(e: React.WheelEvent<SVGSVGElement>) {
+    e.preventDefault()
+    const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * factor))
+    if (newScale === view.scale) return
+    // Zoom around cursor: keep the viewBox point under cursor fixed
+    const p = svgPoint(e.clientX, e.clientY)
+    const k = newScale / view.scale
+    setView({
+      scale: newScale,
+      tx: p.x - (p.x - view.tx) * k,
+      ty: p.y - (p.y - view.ty) * k,
+    })
+  }
+
+  function onMouseDown(e: React.MouseEvent<SVGSVGElement>) {
+    // Start a pan only on empty background — not on interactive node/edge groups
+    const target = e.target as Element
+    if (target.closest('[data-node-id], [data-edge-source]')) return
+    dragRef.current = {
+      startX: e.clientX, startY: e.clientY,
+      startTx: view.tx, startTy: view.ty,
+    }
+  }
+  function onMouseMove(e: React.MouseEvent<SVGSVGElement>) {
+    if (!dragRef.current) return
+    const svg = svgRef.current
+    if (!svg) return
+    const rect = svg.getBoundingClientRect()
+    const scale = svg.viewBox.baseVal.width / rect.width
+    setView(v => ({
+      ...v,
+      tx: dragRef.current!.startTx + (e.clientX - dragRef.current!.startX) * scale,
+      ty: dragRef.current!.startTy + (e.clientY - dragRef.current!.startY) * scale,
+    }))
+  }
+  function onMouseUp() { dragRef.current = null }
+
+  function resetView() { setView(IDENTITY) }
+  function zoomBy(factor: number) {
+    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * factor))
+    // Zoom around viewBox center
+    const svg = svgRef.current
+    if (!svg) return
+    const cx = svg.viewBox.baseVal.width / 2
+    const cy = svg.viewBox.baseVal.height / 2
+    const k = newScale / view.scale
+    setView({
+      scale: newScale,
+      tx: cx - (cx - view.tx) * k,
+      ty: cy - (cy - view.ty) * k,
+    })
+  }
+
   return (
-    <div className="flex h-full min-h-0" data-testid="lattice-graph-wrap">
-      <div className="flex-1 min-w-0 overflow-auto" data-testid="lattice-graph-scroll">
+    <div className="flex h-full min-h-0 relative" data-testid="lattice-graph-wrap">
+      {/* Zoom controls — floating top-left */}
+      <div
+        className="absolute top-2 left-2 z-10 flex flex-col gap-1"
+        data-testid="lattice-zoom-controls"
+      >
+        <button
+          data-testid="lattice-zoom-in"
+          onClick={() => zoomBy(ZOOM_STEP)}
+          className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+          title="zoom in (wheel up)"
+        ><ZoomIn size={11} /></button>
+        <button
+          data-testid="lattice-zoom-out"
+          onClick={() => zoomBy(1 / ZOOM_STEP)}
+          className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+          title="zoom out (wheel down)"
+        ><ZoomOut size={11} /></button>
+        <button
+          data-testid="lattice-zoom-reset"
+          onClick={resetView}
+          className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+          title="reset view"
+        ><Maximize2 size={10} /></button>
+        <div
+          data-testid="lattice-zoom-level"
+          className="text-[9px] font-mono text-center text-[var(--color-dim)] pt-0.5"
+        >{Math.round(view.scale * 100)}%</div>
+      </div>
+
+      <div className="flex-1 min-w-0 overflow-hidden" data-testid="lattice-graph-scroll">
         <svg
+          ref={svgRef}
           data-testid="lattice-svg"
+          data-zoom-scale={view.scale.toFixed(3)}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
-          width={layout.width}
-          height={layout.height}
-          style={{ display: 'block' }}
+          width="100%"
+          height="100%"
+          preserveAspectRatio="xMidYMid meet"
+          onWheel={onWheel}
+          onMouseDown={onMouseDown}
+          onMouseMove={onMouseMove}
+          onMouseUp={onMouseUp}
+          onMouseLeave={onMouseUp}
+          style={{
+            display: 'block',
+            cursor: dragRef.current ? 'grabbing' : 'grab',
+            userSelect: 'none',
+          }}
         >
-          {/* Column headers */}
-          {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
-            const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
-            return (
-              <text
-                key={layer}
-                x={x} y={18}
-                textAnchor="middle"
-                className="fill-[var(--color-dim)]"
-                style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em' }}
-              >
-                {LAYER_LABELS[layer].toUpperCase()}
-              </text>
-            )
-          })}
+          <g
+            data-testid="lattice-svg-viewport"
+            transform={`translate(${view.tx},${view.ty}) scale(${view.scale})`}
+          >
+            {/* Column headers */}
+            {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
+              const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
+              return (
+                <text
+                  key={layer}
+                  x={x} y={18}
+                  textAnchor="middle"
+                  className="fill-[var(--color-dim)]"
+                  style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em' }}
+                >
+                  {LAYER_LABELS[layer].toUpperCase()}
+                </text>
+              )
+            })}
 
-          {/* Edges first (so nodes render on top) */}
-          {layout.edges.map((e, i) => (
-            <EdgeSvg
-              key={i}
-              edge={e.edge}
-              x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
-              selected={isEdgeSelected(selection, e.edge)}
-              dimmed={isSelectionActive(selection) && !isEdgeSelected(selection, e.edge) && !isEdgeAdjacentToSelection(selection, e.edge)}
-              onClick={() => setSelection({ type: 'edge', edge: e.edge })}
-            />
-          ))}
+            {/* Edges first (so nodes render on top) */}
+            {layout.edges.map((e, i) => (
+              <EdgeSvg
+                key={i}
+                edge={e.edge}
+                x1={e.x1} y1={e.y1} x2={e.x2} y2={e.y2}
+                selected={isEdgeSelected(selection, e.edge)}
+                dimmed={isSelectionActive(selection) && !isEdgeSelected(selection, e.edge) && !isEdgeAdjacentToSelection(selection, e.edge)}
+                onClick={() => setSelection({ type: 'edge', edge: e.edge })}
+              />
+            ))}
 
-          {/* Nodes */}
-          {layout.nodes.map((n) => (
-            <NodeSvg
-              key={n.node.id}
-              node={n.node}
-              x={n.x} y={n.y} w={NODE_W} h={NODE_H}
-              selected={isNodeSelected(selection, n.node)}
-              dimmed={isSelectionActive(selection) && !isNodeSelected(selection, n.node) && !isNodeAdjacentToSelection(selection, n.node, layout.edges)}
-              onClick={() => setSelection({ type: 'node', node: n.node })}
-              focused={initialFocusNodeId === n.node.id}
-            />
-          ))}
+            {/* Nodes */}
+            {layout.nodes.map((n) => (
+              <NodeSvg
+                key={n.node.id}
+                node={n.node}
+                x={n.x} y={n.y} w={NODE_W} h={NODE_H}
+                selected={isNodeSelected(selection, n.node)}
+                dimmed={isSelectionActive(selection) && !isNodeSelected(selection, n.node) && !isNodeAdjacentToSelection(selection, n.node, layout.edges)}
+                onClick={() => setSelection({ type: 'node', node: n.node })}
+                focused={initialFocusNodeId === n.node.id}
+              />
+            ))}
+          </g>
         </svg>
       </div>
 

@@ -25,6 +25,38 @@ version: 1
 #                   unicode-safe so scoring still works.
 output_language: zh-CN-mixed
 
+# Per-layer emission budgets (V7). Each field is optional; omitted
+# layers inherit spec.DEFAULT_LAYER_BUDGETS (= the hardcoded caps
+# from V1-V6). You can TIGHTEN here, never relax past spec.MAX_*.
+#
+# - max_items:     cap on items emitted this layer
+# - min_members:   cluster needs ≥ this many members to ship
+#                  (layer-wide floor, stacked on top of per-signature)
+# - max_candidates (L3 only): LLM pool size before MMR (≤5)
+# - mmr_lambda     (L3 only): float in [0, 1], 0.7 default
+#
+# Defaults (matching today's production):
+#   observations: {max_items: null}         # no cap
+#   sub_themes:   {min_members: 1}          # no cap
+#   themes:       {min_members: 1}          # no cap
+#   calls:        {max_items: 3, max_candidates: 5, mmr_lambda: 0.7}
+#
+# Uncomment + adjust to flex the funnel:
+#
+# layer_budgets:
+#   observations:
+#     max_items: 40
+#   sub_themes:
+#     max_items: 6
+#     min_members: 1
+#   themes:
+#     max_items: 7
+#     min_members: 1
+#   calls:
+#     max_items: 3
+#     max_candidates: 5
+#     mmr_lambda: 0.7
+
 dimensions:
   symbol:
     description: The specific ticker the observation concerns. Free-form (no enum).

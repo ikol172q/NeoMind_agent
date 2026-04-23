@@ -455,6 +455,7 @@ def _cluster_to_layer(
     *,
     fresh: bool,
     generate_narratives: bool,
+    budget: Optional[spec.LayerBudget] = None,
 ) -> List[Theme]:
     """Shared builder for any middle layer (sub_themes, themes, ...).
     Runs the deterministic tag clusterer; optionally asks the LLM to
@@ -463,10 +464,27 @@ def _cluster_to_layer(
     sub_themes skip the narrative call — the UX presents them as
     compact groupings, not standalone prose. Saves ~5 LLM calls
     per refresh when n=4 is engaged.
+
+    V7: when `budget.min_members` is set, it OVERRIDES each
+    signature's own min_members (layer-wide floor). When
+    `budget.max_items` is set, the output is sorted by
+    (severity_rank, -member_count) and trimmed to that cap.
     """
     if not signatures:
         return []
-    clusters = cluster_observations(observations, signatures)
+    # V7: apply layer-wide min_members floor (if set) on top of the
+    # per-signature min_members. Takes the MAX (tighter wins).
+    effective_sigs = signatures
+    if budget is not None and budget.min_members is not None:
+        floor = budget.min_members
+        effective_sigs = [
+            ThemeSignature(
+                id=s.id, title=s.title, any_of=s.any_of, all_of=s.all_of,
+                min_members=max(s.min_members, floor),
+            )
+            for s in signatures
+        ]
+    clusters = cluster_observations(observations, effective_sigs)
     out: List[Theme] = []
     for c in clusters:
         sig: ThemeSignature = c["sig"]
@@ -493,6 +511,9 @@ def _cluster_to_layer(
             cited_numbers=cited_numbers,
         ))
     out.sort(key=lambda t: (_severity_rank(t.severity), -len(t.members)))
+    # V7: apply max_items cap after severity/count sort
+    if budget is not None and budget.max_items is not None:
+        out = out[:budget.max_items]
     return out
 
 
@@ -510,12 +531,23 @@ def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
     """
     observations = build_observations(project_id, fresh=fresh)
     tax = load_taxonomy()
+    budgets = tax.layer_budgets
+
+    # V7: apply L1 max_items cap before clustering. Sort by severity
+    # then confidence so the least-important obs drop first.
+    if budgets.observations.max_items is not None:
+        observations = sorted(
+            observations,
+            key=lambda o: (_severity_rank(o.severity), -(o.confidence or 0.0)),
+        )[:budgets.observations.max_items]
 
     sub_themes = _cluster_to_layer(
         observations, tax.sub_themes, fresh=fresh, generate_narratives=False,
+        budget=budgets.sub_themes,
     )
     themes = _cluster_to_layer(
         observations, tax.themes, fresh=fresh, generate_narratives=True,
+        budget=budgets.themes,
     )
 
     return {

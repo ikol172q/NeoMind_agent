@@ -48,3 +48,15 @@ button, input, select, textarea {
   opacity: 0.15;
   border-radius: 6px;
 }
+
+/* V7 · lattice → widget jump-to-source transient highlight. Set
+   via scripted class add in DigestView; auto-removed after 2.5s. */
+@keyframes lattice-source-pulse {
+  0%   { box-shadow: 0 0 0 0   rgba(77, 208, 225, 0.0); }
+  15%  { box-shadow: 0 0 0 4px rgba(77, 208, 225, 0.85); }
+  100% { box-shadow: 0 0 0 0   rgba(77, 208, 225, 0.0); }
+}
+.lattice-source-highlight {
+  animation: lattice-source-pulse 2.5s ease-out 1;
+  border-radius: 6px;
+}
