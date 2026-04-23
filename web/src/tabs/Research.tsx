@@ -94,21 +94,25 @@ export function ResearchTab({ projectId, onJumpToChat, digestFocus }: Props) {
         try { localStorage.setItem(LS_KEY, JSON.stringify(l)) } catch {}
       }}
     >
+      {/* data-widget-source labels match obs.source.widget values
+          emitted by agent/finance/lattice/observations.py generators.
+          The lattice viz scrolls+highlights here when a user clicks
+          an L1 obs node's "jump to source" link. */}
       <div key="brief"><div className="drag-handle h-full cursor-move"><DigestView projectId={projectId} onJumpToChat={onJumpToChat} focus={digestFocus} /></div></div>
       <div key="watchlist"><div className="drag-handle h-full cursor-move"><WatchlistWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="us_quote"><div className="drag-handle h-full cursor-move"><USQuoteCard /></div></div>
       <div key="cn_quote"><div className="drag-handle h-full cursor-move"><CNQuoteCard /></div></div>
       <div key="cn_info"><div className="drag-handle h-full cursor-move"><CNInfoCard /></div></div>
-      <div key="portfolio"><div className="drag-handle h-full cursor-move"><PortfolioHeatmapWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
-      <div key="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
-      <div key="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="portfolio" data-widget-source="portfolio"><div className="drag-handle h-full cursor-move"><PortfolioHeatmapWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
+      <div key="earnings" data-widget-source="earnings"><div className="drag-handle h-full cursor-move"><EarningsWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
+      <div key="sectors" data-widget-source="sectors"><div className="drag-handle h-full cursor-move"><SectorHeatmapWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="correlation"><div className="drag-handle h-full cursor-move"><CorrelationWidget projectId={projectId} /></div></div>
-      <div key="rs_grid"><div className="drag-handle h-full cursor-move"><RSGridWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
+      <div key="rs_grid" data-widget-source="technical"><div className="drag-handle h-full cursor-move"><RSGridWidget projectId={projectId} onJumpToChat={onJumpToChat} /></div></div>
       <div key="chart"><div className="drag-handle h-full cursor-move"><ChartWidget /></div></div>
       <div key="multi_chart"><div className="drag-handle h-full cursor-move"><MultiChartWidget onJumpToChat={onJumpToChat} /></div></div>
       <div key="fund"><div className="drag-handle h-full cursor-move"><FundExplorerWidget onJumpToChat={onJumpToChat} /></div></div>
-      <div key="sentiment"><div className="drag-handle h-full cursor-move"><SentimentGaugeWidget onJumpToChat={onJumpToChat} /></div></div>
-      <div key="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
+      <div key="sentiment" data-widget-source="sentiment"><div className="drag-handle h-full cursor-move"><SentimentGaugeWidget onJumpToChat={onJumpToChat} /></div></div>
+      <div key="news" data-widget-source="news"><div className="drag-handle h-full cursor-move"><NewsList /></div></div>
       <div key="history"><div className="drag-handle h-full cursor-move"><HistoryTable projectId={projectId} /></div></div>
       </ResponsiveGridLayout>
     </div>

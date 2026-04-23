@@ -450,6 +450,15 @@ def generate_calls(
             })
             return [Call(**c) for c in cached.get("calls", [])]
 
+    # V7: pull per-layer L3 budget from taxonomy. Defaults match
+    # spec.MAX_CALLS / MAX_CANDIDATES / MMR_LAMBDA so existing
+    # behaviour is preserved when YAML lacks the layer_budgets block.
+    from agent.finance.lattice.taxonomy import load_taxonomy
+    _budget = load_taxonomy().layer_budgets.calls
+    _max_calls = _budget.max_items if _budget.max_items is not None else _MAX_CALLS
+    _max_candidates = _budget.max_candidates if _budget.max_candidates is not None else _MAX_CANDIDATES
+    _lam = _budget.mmr_lambda if _budget.mmr_lambda is not None else _MMR_LAMBDA
+
     valid_theme_ids = {t.id for t in themes}
     prompt = _generation_prompt(themes)
     system_prompt = _system_prompt()
@@ -501,7 +510,7 @@ def generate_calls(
     candidate_trace: List[Dict[str, Any]] = []
     validated: List[Dict[str, Any]] = []
     validated_to_source_idx: Dict[int, int] = {}   # id(v) → position in raw
-    for idx, raw in enumerate(raw_candidates[:_MAX_CANDIDATES]):
+    for idx, raw in enumerate(raw_candidates[:_max_candidates]):
         v, drop_reason, drop_detail = _validate_candidate(raw, valid_theme_ids)
         entry = {
             "candidate_idx": idx,
@@ -529,7 +538,9 @@ def generate_calls(
         _put_call_trace(_POOL_TRACE_KEY, llm_trace)
         return []
 
-    picked, mmr_trace_list = select_calls_mmr(validated, themes, return_trace=True)
+    picked, mmr_trace_list = select_calls_mmr(
+        validated, themes, k=_max_calls, lambda_=_lam, return_trace=True,
+    )
     # Merge MMR trace back into candidate_trace by original candidate_idx.
     for v_idx, m_entry in enumerate(mmr_trace_list):
         src_idx = validated_to_source_idx.get(id(validated[v_idx]))
@@ -587,7 +598,7 @@ def generate_calls(
             "call_id": call_id,
             "candidate_idx": src_idx,
             "candidate_trace": candidate_trace[src_idx],
-            "pool_size": len(raw_candidates[:_MAX_CANDIDATES]),
+            "pool_size": len(raw_candidates[:_max_candidates]),
             "validated_count": len(validated),
             "model": _CALLS_MODEL,
         })
