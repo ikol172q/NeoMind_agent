@@ -15,6 +15,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Set
 
+from agent.finance.lattice import spec
+
 import yaml
 
 logger = logging.getLogger(__name__)
@@ -55,6 +57,11 @@ class Taxonomy:
     # lattice pipeline picks the config up automatically; no code
     # change is needed (D6 gate: YAML switch).
     sub_themes: List[ThemeSignature] = field(default_factory=list)
+    # Output language for LLM-authored narratives / calls. V5.
+    # Must be one of spec.OUTPUT_LANGUAGES; falls back to default
+    # on unknown input. Edit the YAML's top-level `output_language`
+    # field to switch.
+    output_language: str = spec.OUTPUT_LANGUAGE_DEFAULT
 
     def is_valid_tag(self, tag: str) -> bool:
         """True if `tag` matches a declared dimension + its enum."""
@@ -130,11 +137,20 @@ def load_taxonomy(path: Optional[Path] = None) -> Taxonomy:
     themes = _parse_sigs(raw.get("themes"))
     sub_themes = _parse_sigs(raw.get("sub_themes"))
 
+    raw_lang = str(raw.get("output_language") or spec.OUTPUT_LANGUAGE_DEFAULT).strip()
+    if raw_lang not in spec.OUTPUT_LANGUAGES:
+        logger.warning(
+            "lattice taxonomy: unknown output_language %r; falling back to %r",
+            raw_lang, spec.OUTPUT_LANGUAGE_DEFAULT,
+        )
+        raw_lang = spec.OUTPUT_LANGUAGE_DEFAULT
+
     tax = Taxonomy(
         version=version,
         dimensions=dimensions,
         themes=themes,
         sub_themes=sub_themes,
+        output_language=raw_lang,
     )
     if path is None:
         _cached_taxonomy = tax

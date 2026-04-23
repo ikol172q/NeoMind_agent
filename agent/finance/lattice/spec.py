@@ -99,6 +99,44 @@ EDGE_KINDS: tuple[str, ...] = (
 )
 
 
+# ── Output language (V5) ───────────────────────────────
+
+# Valid values for Taxonomy.output_language, which drives how L2
+# narratives and L3 Toulmin fields get written. Default stays "en"
+# for backward compatibility; "zh-CN-mixed" writes prose in Chinese
+# while preserving tickers / sectors / financial terms in English
+# (the judge rubric extracts numbers via regex, which is unicode-
+# safe, so scoring keeps working).
+OUTPUT_LANGUAGES: tuple[str, ...] = ("en", "zh-CN-mixed")
+OUTPUT_LANGUAGE_DEFAULT: str = "en"
+
+_LANGUAGE_DIRECTIVES: dict[str, str] = {
+    "en": "",                                     # no extra directive — prompts are English natively
+    "zh-CN-mixed": (
+        " Write the narrative (or claim / warrant / qualifier / rebuttal) "
+        "in Simplified Chinese. KEEP in English, verbatim: ticker symbols "
+        "(e.g. AAPL, NVDA, TSLA), sector names (e.g. Energy, Technology, "
+        "Consumer Discretionary), and standard financial/derivatives "
+        "terms (IV, DTE, MMR, VIX, earnings, Fed, ATM, OTM). Numbers, "
+        "percentages, and units stay as-is. Example good: "
+        "'AAPL 即将在 7 天后发布 earnings，考虑买入 protective puts 对冲 "
+        "IV 扩张。'"
+    ),
+}
+
+
+def language_directive(language: str) -> str:
+    """Return the system-prompt snippet that tells the LLM what
+    language to produce. The caller appends this to the base system
+    prompt at call time.
+
+    Unknown languages fall back to OUTPUT_LANGUAGE_DEFAULT (i.e., no
+    additional directive) rather than raising, so a bad config in
+    the YAML doesn't break the live endpoint.
+    """
+    return _LANGUAGE_DIRECTIVES.get(language, _LANGUAGE_DIRECTIVES[OUTPUT_LANGUAGE_DEFAULT])
+
+
 # ── Reference formulas ─────────────────────────────────
 
 def cluster_severity_bonus(severity: str) -> float:
