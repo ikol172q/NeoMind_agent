@@ -94,6 +94,9 @@ include-package-data = true
 testpaths = ["tests", "tests/llm"]
 markers = [
     "llm: tests requiring real LLM API calls (always run if API key available)",
+    "lattice_fast: spec + formulas + endpoint coherence (pure Python, <10s, pre-commit)",
+    "lattice_slow: graph + viz + Playwright (CI only)",
+    "lattice_drift: fixture regression + judge baseline (nightly)",
 ]
 
 [tool.setuptools.package-data]
