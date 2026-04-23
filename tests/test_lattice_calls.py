@@ -61,6 +61,8 @@ def test_mmr_respects_k_cap_and_empty_input():
 
 
 def test_validator_drops_call_with_unknown_grounds():
+    """V6: validator now returns (sanitised, drop_reason, drop_detail).
+    Phantom grounds → (None, 'grounds_phantom', {unknown, valid_theme_ids})."""
     from agent.finance.lattice.calls import _validate_candidate
     raw = {
         "claim": "Hold AAPL", "grounds": ["theme_fake_001"],
@@ -68,7 +70,10 @@ def test_validator_drops_call_with_unknown_grounds():
         "qualifier": "medium confidence", "rebuttal": "VIX < 15",
         "confidence": "medium", "time_horizon": "days",
     }
-    assert _validate_candidate(raw, valid_theme_ids={"theme_earnings_risk"}) is None
+    sanitised, reason, detail = _validate_candidate(raw, valid_theme_ids={"theme_earnings_risk"})
+    assert sanitised is None
+    assert reason == "grounds_phantom"
+    assert "theme_fake_001" in detail["unknown"]
 
 
 def test_validator_accepts_well_formed_call():
@@ -81,10 +86,14 @@ def test_validator_accepts_well_formed_call():
         "rebuttal": "if AAPL pre-announces a warning",
         "confidence": "medium", "time_horizon": "days",
     }
-    result = _validate_candidate(raw, valid_theme_ids={"theme_earnings_risk"})
-    assert result is not None
-    assert result["grounds"] == ["theme_earnings_risk"]
-    assert result["confidence"] == "medium"
+    sanitised, reason, detail = _validate_candidate(
+        raw, valid_theme_ids={"theme_earnings_risk"},
+    )
+    assert reason is None
+    assert detail is None
+    assert sanitised is not None
+    assert sanitised["grounds"] == ["theme_earnings_risk"]
+    assert sanitised["confidence"] == "medium"
 
 
 def test_validator_drops_tautological_warrant():
@@ -96,7 +105,12 @@ def test_validator_drops_tautological_warrant():
         "qualifier": "medium confidence", "rebuttal": "if bad",
         "confidence": "medium", "time_horizon": "days",
     }
-    assert _validate_candidate(raw, valid_theme_ids={"theme_earnings_risk"}) is None
+    sanitised, reason, detail = _validate_candidate(
+        raw, valid_theme_ids={"theme_earnings_risk"},
+    )
+    assert sanitised is None
+    assert reason == "tautology"
+    assert detail["delta_chars"] == 0   # claim == warrant → 0-char extension
 
 
 def test_validator_drops_unknown_confidence_or_horizon():
@@ -107,10 +121,19 @@ def test_validator_drops_unknown_confidence_or_horizon():
         "qualifier": "q", "rebuttal": "r",
         "confidence": "medium", "time_horizon": "days",
     }
-    assert _validate_candidate({**base, "confidence": "extreme"},
-                               valid_theme_ids={"theme_a"}) is None
-    assert _validate_candidate({**base, "time_horizon": "forever"},
-                               valid_theme_ids={"theme_a"}) is None
+    sanitised, reason, detail = _validate_candidate(
+        {**base, "confidence": "extreme"}, valid_theme_ids={"theme_a"},
+    )
+    assert sanitised is None
+    assert reason == "invalid_confidence"
+    assert detail["got"] == "extreme"
+
+    sanitised, reason, detail = _validate_candidate(
+        {**base, "time_horizon": "forever"}, valid_theme_ids={"theme_a"},
+    )
+    assert sanitised is None
+    assert reason == "invalid_horizon"
+    assert detail["got"] == "forever"
 
 
 def test_generate_calls_returns_empty_on_llm_failure(monkeypatch):

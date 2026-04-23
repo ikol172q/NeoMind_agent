@@ -764,6 +764,59 @@ export function useLatticeGraph(project_id: string) {
   })
 }
 
+
+// ── /api/lattice/trace/{node_id} — V6 deep trace ────────
+
+/** Shape of the server-side trace. The `trace` field is intentionally
+ *  Record<string, unknown> because backend emits different shapes per
+ *  layer (narrative LLM call vs. call candidate pool vs. deterministic
+ *  note). The UI renders a layer-specific view. */
+export interface LatticeTracePayload {
+  node_id: string
+  layer: LatticeLayer
+  trace: Record<string, unknown>
+}
+
+// ── Lattice language runtime toggle ────────────────────
+
+export interface LatticeLanguageState {
+  active: 'en' | 'zh-CN-mixed'
+  override: 'en' | 'zh-CN-mixed' | null
+  yaml_default: 'en' | 'zh-CN-mixed'
+  available: Array<'en' | 'zh-CN-mixed'>
+}
+
+export function useLatticeLanguage() {
+  return useQuery({
+    queryKey: ['lattice_language'],
+    queryFn: () => fetchJSON<LatticeLanguageState>('/api/lattice/language'),
+    staleTime: 30_000,
+  })
+}
+
+export async function setLatticeLanguage(lang: 'en' | 'zh-CN-mixed' | 'clear') {
+  const r = await fetch(
+    `/api/lattice/language?lang=${encodeURIComponent(lang)}`,
+    { method: 'POST' },
+  )
+  if (!r.ok) throw new Error(`set language failed: ${r.status}`)
+  return (await r.json()) as Omit<LatticeLanguageState, 'available'>
+}
+
+
+export function useLatticeTrace(project_id: string, node_id: string | null) {
+  return useQuery({
+    queryKey: ['lattice_trace', project_id, node_id],
+    queryFn: () => fetchJSON<LatticeTracePayload>(
+      `/api/lattice/trace/${encodeURIComponent(node_id!)}?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id && !!node_id,
+    staleTime: 60_000,
+    retry: false,           // 404 means no trace captured; don't retry
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ── Market sentiment gauge ──────────────────────────────
 export interface SentimentSubscore {
   score: number | null

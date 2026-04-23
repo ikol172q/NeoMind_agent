@@ -78,6 +78,26 @@ CALL_REQUIRED_FIELDS: tuple[str, ...] = (
 TAUTOLOGY_MIN_EXTENSION: int = 10
 
 
+# ── V6 · Deep trace (candidate drop reasons) ───────────
+
+# Why a single L3 candidate was dropped before reaching the final
+# calls list. Every drop in production must use one of these.
+# Matches the rejection paths in _validate_candidate +
+# select_calls_mmr. If a new drop reason is introduced, add it
+# here first (L1 contract test will fail otherwise).
+DROP_REASONS: tuple[str, ...] = (
+    "missing_field",        # required Toulmin field absent / empty
+    "invalid_confidence",   # confidence ∉ CONFIDENCE_VALUES
+    "invalid_horizon",      # time_horizon ∉ TIME_HORIZON_VALUES
+    "tautology",            # warrant fails is_tautological_warrant
+    "grounds_empty",        # grounds list empty after strip
+    "grounds_phantom",      # a ground references a theme_id not in the payload
+    "mmr_hard_dedup",       # identical grounds set already selected
+    "mmr_low_score",        # MMR score too low vs the k selected
+    "candidate_pool_full",  # pool already at MAX_CALLS
+)
+
+
 # ── Graph provenance enumeration (V2 uses this) ────────
 
 # Exact set of `computed_by` values the /api/lattice/graph endpoint

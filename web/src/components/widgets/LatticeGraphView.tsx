@@ -121,6 +121,7 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
       <LatticeTracePanel
         selection={selection}
         graph={q.data}
+        projectId={projectId}
         onClose={() => setSelection(null)}
         onSelectNodeById={(id) => {
           const node = q.data!.nodes.find((n) => n.id === id)

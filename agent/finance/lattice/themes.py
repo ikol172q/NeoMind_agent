@@ -52,6 +52,32 @@ _NARRATIVE_TIMEOUT_S = 30.0
 _narrative_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _narrative_cache_lock = threading.Lock()
 
+# V6 deep-trace store: keyed by theme_id (last-write-wins within
+# TTL). Holds the exact prompt sent, the raw LLM response, and
+# the validator outcome so /api/lattice/trace/theme_* can answer
+# "how was this narrative computed?" with the actual bytes. TTL
+# matches the narrative cache.
+_narrative_trace: Dict[str, tuple[float, Dict[str, Any]]] = {}
+_narrative_trace_lock = threading.Lock()
+
+
+def _put_narrative_trace(theme_id: str, entry: Dict[str, Any]) -> None:
+    with _narrative_trace_lock:
+        _narrative_trace[theme_id] = (time.time(), entry)
+
+
+def get_narrative_trace(theme_id: str) -> Optional[Dict[str, Any]]:
+    """Return the most recent trace for a theme, or None if TTL has
+    expired or no trace was captured (e.g., served from cache on
+    the request that's asking). Exported for the trace endpoint."""
+    with _narrative_trace_lock:
+        entry = _narrative_trace.get(theme_id)
+    if entry is None:
+        return None
+    if time.time() - entry[0] > _NARRATIVE_TTL_S:
+        return None
+    return entry[1]
+
 
 # ── Data class ─────────────────────────────────────────
 
@@ -148,13 +174,11 @@ _SYSTEM_PROMPT_BASE = (
 
 
 def _system_prompt() -> str:
-    """Assemble the system prompt from the base + the current
-    language directive loaded from taxonomy.output_language.
-    Computed per-call because the YAML can change between refreshes
-    (fresh=True bypass clears caches, so a new language takes
-    effect immediately on next narrative generation)."""
-    lang = load_taxonomy().output_language
-    return _SYSTEM_PROMPT_BASE + spec.language_directive(lang)
+    """Assemble the system prompt from the base + the effective
+    language directive. V6: runtime.get_effective_language() lets
+    the UI toggle override the YAML without a restart."""
+    from agent.finance.lattice import runtime
+    return _SYSTEM_PROMPT_BASE + spec.language_directive(runtime.get_effective_language())
 
 
 def _narrative_prompt(theme_title: str, members: List[tuple[Observation, float]]) -> str:
@@ -310,23 +334,61 @@ def generate_narrative(
 ) -> Dict[str, Any]:
     """Return {narrative, source, cited_numbers}. ``source`` is
     'llm' if the LLM call succeeded + validated, 'template_fallback'
-    otherwise."""
+    otherwise.
+
+    V6: captures full trace (prompt, raw response, validation result,
+    model, duration) into _narrative_trace keyed by theme_id so the
+    /api/lattice/trace endpoint can answer 'how was this narrative
+    computed?' with the exact bytes sent and received."""
     cache_key = _content_hash(theme_id, members)
     if not fresh:
         cached = _cached_narrative(cache_key)
         if cached is not None:
+            # Record a minimal trace note so the endpoint can at least
+            # say "this refresh served from cache; re-run with fresh=1
+            # to see the live LLM conversation"
+            _put_narrative_trace(theme_id, {
+                "kind": "cache_hit",
+                "note": "narrative served from the 5-min content-hash cache; "
+                        "no LLM call was made on this request",
+                "cache_key": cache_key,
+            })
             return cached
 
     prompt = _narrative_prompt(theme_title, members)
+    system_prompt = _system_prompt()
+    trace: Dict[str, Any] = {
+        "kind": "llm_call",
+        "model": _NARRATIVE_MODEL,
+        "temperature": 0.3,
+        "system_prompt": system_prompt,
+        "user_prompt": prompt,
+        "member_obs_ids": [o.id for o, _ in members],
+        "cache_key": cache_key,
+    }
+    t0 = time.monotonic()
     try:
         reply = _call_llm(prompt)
     except Exception as exc:
+        duration_ms = int((time.monotonic() - t0) * 1000)
         logger.warning("themes: LLM failed for %s: %s — using template fallback", theme_id, exc)
         tmpl = _template_narrative(theme_title, members)
         result = {"narrative": tmpl["narrative"], "source": "template_fallback",
                   "cited_numbers": tmpl["cited_numbers"]}
         _put_narrative(cache_key, result)
+        trace.update({
+            "duration_ms": duration_ms,
+            "raw_response": None,
+            "error": str(exc),
+            "fallback_reason": "llm_exception",
+            "final_source": "template_fallback",
+        })
+        _put_narrative_trace(theme_id, trace)
         return result
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    trace["duration_ms"] = duration_ms
+    trace["raw_response"] = reply
 
     if not _validate_llm_narrative(reply, members):
         logger.info("themes: LLM narrative failed citation check for %s — using template", theme_id)
@@ -334,6 +396,15 @@ def generate_narrative(
         result = {"narrative": tmpl["narrative"], "source": "template_fallback",
                   "cited_numbers": tmpl["cited_numbers"]}
         _put_narrative(cache_key, result)
+        trace.update({
+            "validator": {
+                "passed": False,
+                "reason": "narrative cites no number present verbatim in member text",
+            },
+            "fallback_reason": "validation_failed",
+            "final_source": "template_fallback",
+        })
+        _put_narrative_trace(theme_id, trace)
         return result
 
     result = {
@@ -342,6 +413,11 @@ def generate_narrative(
         "cited_numbers": [str(x) for x in (reply.get("cited_numbers") or [])],
     }
     _put_narrative(cache_key, result)
+    trace.update({
+        "validator": {"passed": True, "reason": "numbers cited appear in member text"},
+        "final_source": "llm",
+    })
+    _put_narrative_trace(theme_id, trace)
     return result
 
 

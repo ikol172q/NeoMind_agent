@@ -16,11 +16,12 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException, Query
 
 from agent.finance import investment_projects
-from agent.finance.lattice.calls import build_calls
+from agent.finance.lattice import runtime, spec
+from agent.finance.lattice.calls import build_calls, get_call_trace, get_call_pool_trace
 from agent.finance.lattice.graph import build_graph
 from agent.finance.lattice.observations import build_observations
 from agent.finance.lattice.taxonomy import load_taxonomy
-from agent.finance.lattice.themes import build_themes
+from agent.finance.lattice.themes import build_themes, get_narrative_trace
 
 logger = logging.getLogger(__name__)
 
@@ -117,6 +118,128 @@ def build_lattice_router() -> APIRouter:
         }
         _put(cache_key, payload)
         return payload
+
+    @router.get("/api/lattice/language")
+    def get_language() -> Dict[str, Any]:
+        """Introspect current active language + available values."""
+        return {
+            "active": runtime.get_effective_language(),
+            "override": runtime.get_language_override(),
+            "yaml_default": load_taxonomy().output_language,
+            "available": list(spec.OUTPUT_LANGUAGES),
+        }
+
+    @router.post("/api/lattice/language")
+    def set_language(lang: str = Query(...)) -> Dict[str, Any]:
+        """Set a runtime language override. Pass `clear` to revert
+        to the YAML default. Busts narrative + calls caches so the
+        next fetch regenerates in the new language."""
+        try:
+            active = runtime.set_language_override(lang)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc))
+        # Bust caches so the next fetch regenerates in the new language
+        from agent.finance.lattice import themes, calls as calls_mod
+        with themes._narrative_cache_lock:
+            themes._narrative_cache.clear()
+        with calls_mod._calls_cache_lock:
+            calls_mod._calls_cache.clear()
+        # Router's own graph/theme caches
+        with _cache_lock:
+            _cache.clear()
+        return {
+            "active": active,
+            "override": runtime.get_language_override(),
+            "yaml_default": load_taxonomy().output_language,
+        }
+
+    @router.get("/api/lattice/trace/{node_id}")
+    def get_trace(
+        node_id: str,
+        project_id: str = Query(...),
+    ) -> Dict[str, Any]:
+        """V6 deep-trace: returns the full LLM conversation + validator
+        outcome + candidate pool for a specific node.
+
+        Dispatch by node_id prefix:
+          - theme_*     → narrative LLM trace
+          - subtheme_*  → note: sub-themes are deterministic (no LLM)
+          - call_*      → per-call origin trace + shared pool trace
+          - obs_*       → note: observations are deterministic
+          - widget:*    → note: external widget (L0)
+
+        404 when the trace has expired (TTL) or was never captured
+        (e.g., served from cache on the request that's asking;
+        re-fetch /api/lattice/calls?fresh=1 to populate)."""
+        if project_id not in investment_projects.list_projects():
+            raise HTTPException(404, f"project {project_id!r} is not registered")
+
+        if node_id.startswith("theme_"):
+            trace = get_narrative_trace(node_id)
+            if trace is None:
+                raise HTTPException(404, (
+                    f"no trace captured for {node_id}. "
+                    "Trace is populated when the narrative is freshly "
+                    "generated; if it expired or was served from cache, "
+                    "re-fetch /api/lattice/calls?fresh=1 and try again."
+                ))
+            return {"node_id": node_id, "layer": "L2", "trace": trace}
+
+        if node_id.startswith("subtheme_"):
+            return {
+                "node_id": node_id, "layer": "L1.5",
+                "trace": {
+                    "kind": "deterministic",
+                    "note": "Sub-themes are produced by a pure tag-intersection "
+                            "cluster — same math as themes, but without the LLM "
+                            "narrative step. There is no LLM conversation to show. "
+                            "Click the incoming membership edges from L1 to see "
+                            "the Jaccard breakdown per observation.",
+                },
+            }
+
+        if node_id.startswith("call_"):
+            per_call = get_call_trace(node_id)
+            pool = get_call_pool_trace()
+            if per_call is None and pool is None:
+                raise HTTPException(404, (
+                    f"no trace captured for {node_id}. Re-fetch "
+                    "/api/lattice/calls?fresh=1 to populate."
+                ))
+            return {
+                "node_id": node_id, "layer": "L3",
+                "trace": {
+                    "kind": "llm+mmr",
+                    "per_call": per_call,
+                    "pool": pool,
+                },
+            }
+
+        if node_id.startswith("obs_"):
+            return {
+                "node_id": node_id, "layer": "L1",
+                "trace": {
+                    "kind": "deterministic",
+                    "note": "Observations are emitted by deterministic Python "
+                            "generators. See the upstream L0 source widget via "
+                            "the source_emission edge (the generator function "
+                            "and the specific widget field are in that edge's "
+                            "computation detail).",
+                },
+            }
+
+        if node_id.startswith("widget:"):
+            return {
+                "node_id": node_id, "layer": "L0",
+                "trace": {
+                    "kind": "source",
+                    "note": f"{node_id!r} is an external widget (dashboard "
+                            "synthesis input). Its values flow into L1 via "
+                            "specific generator functions.",
+                },
+            }
+
+        raise HTTPException(404, f"unknown node_id shape: {node_id!r}")
 
     @router.get("/api/lattice/graph")
     def list_graph(

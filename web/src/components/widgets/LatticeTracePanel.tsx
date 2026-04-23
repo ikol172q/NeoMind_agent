@@ -1,8 +1,10 @@
+import { useState } from 'react'
 import {
+  useLatticeTrace,
   type LatticeGraphNode, type LatticeGraphEdge, type LatticeGraphPayload,
   type MembershipComputationDetail,
 } from '@/lib/api'
-import { X } from 'lucide-react'
+import { X, ChevronRight, ChevronDown } from 'lucide-react'
 
 export type TraceSelection =
   | { type: 'node'; node: LatticeGraphNode }
@@ -12,6 +14,7 @@ export type TraceSelection =
 interface Props {
   selection: TraceSelection
   graph: LatticeGraphPayload
+  projectId: string
   onClose: () => void
   onSelectNodeById: (id: string) => void
 }
@@ -25,7 +28,7 @@ const PROVENANCE_LABEL: Record<string, string> = {
 }
 
 export function LatticeTracePanel({
-  selection, graph, onClose, onSelectNodeById,
+  selection, graph, projectId, onClose, onSelectNodeById,
 }: Props) {
   if (!selection) {
     return (
@@ -57,7 +60,10 @@ export function LatticeTracePanel({
       </div>
       <div className="flex-1 overflow-y-auto p-3 text-[11px] text-[var(--color-text)] leading-[1.55]">
         {selection.type === 'node'
-          ? <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} />
+          ? <>
+              <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} />
+              <DeepTraceSection node={selection.node} projectId={projectId} />
+            </>
           : <EdgeDetail edge={selection.edge} graph={graph} onSelectNodeById={onSelectNodeById} />
         }
       </div>
@@ -307,6 +313,264 @@ function NodeLink({
     </div>
   )
 }
+
+// ── V6 Deep Trace section ──────────────────────────────
+
+function DeepTraceSection({
+  node, projectId,
+}: {
+  node: LatticeGraphNode
+  projectId: string
+}) {
+  const q = useLatticeTrace(projectId, node.id)
+
+  return (
+    <div className="mt-4" data-testid="trace-panel-deep-section">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)] border-b border-[var(--color-border)] pb-0.5 mb-1">
+        Deep trace · how was this derived?
+      </div>
+      {q.isLoading && (
+        <div className="text-[10px] italic text-[var(--color-dim)]">fetching trace…</div>
+      )}
+      {q.isError && (
+        <div className="text-[10px] text-[var(--color-dim)]" data-testid="trace-panel-deep-missing">
+          No captured trace for this node. It was either served from
+          cache on this refresh, or the TTL expired. Hit the Research
+          refresh button (⟳) to rebuild and try again.
+        </div>
+      )}
+      {q.data && <DeepTraceRender payload={q.data.trace} layer={node.layer} />}
+    </div>
+  )
+}
+
+function DeepTraceRender({
+  payload, layer,
+}: {
+  payload: Record<string, unknown>
+  layer: string
+}) {
+  const kind = payload.kind as string | undefined
+
+  if (kind === "deterministic") {
+    return (
+      <div className="text-[10px] italic text-[var(--color-dim)]"
+           data-testid="trace-panel-deep-deterministic">
+        {String(payload.note ?? "Deterministic — see upstream edges for the math.")}
+      </div>
+    )
+  }
+
+  if (kind === "source") {
+    return (
+      <div className="text-[10px] italic text-[var(--color-dim)]">
+        {String(payload.note ?? "External widget.")}
+      </div>
+    )
+  }
+
+  if (kind === "cache_hit") {
+    return (
+      <div className="text-[10px] italic text-[var(--color-dim)]">
+        {String(payload.note ?? "Served from cache; no LLM call on this refresh.")}
+      </div>
+    )
+  }
+
+  if (kind === "llm_call" && layer === "L2") {
+    // Narrative trace
+    return (
+      <div className="flex flex-col gap-1" data-testid="trace-panel-deep-llm">
+        <KV k="model" v={String(payload.model)} />
+        <KV k="temperature" v={String(payload.temperature)} />
+        <KV k="duration_ms" v={String(payload.duration_ms)} testId="trace-panel-deep-duration" />
+        <KV k="members" v={Array.isArray(payload.member_obs_ids)
+          ? (payload.member_obs_ids as string[]).join(', ')
+          : '—'} />
+        <Collapsible
+          title="System prompt"
+          testId="trace-panel-deep-system-prompt"
+          content={String(payload.system_prompt ?? '')}
+        />
+        <Collapsible
+          title="User prompt"
+          testId="trace-panel-deep-user-prompt"
+          content={String(payload.user_prompt ?? '')}
+        />
+        <Collapsible
+          title="Raw LLM response"
+          testId="trace-panel-deep-raw-response"
+          content={JSON.stringify(payload.raw_response ?? null, null, 2)}
+        />
+        {payload.validator != null && (
+          <div className="text-[10px] pt-1">
+            <b className="text-[var(--color-dim)]">validator:</b>{' '}
+            <span style={{
+              color: (payload.validator as Record<string, unknown>)?.passed
+                ? 'var(--color-green)' : 'var(--color-red)',
+            }}>
+              {(payload.validator as Record<string, unknown>)?.passed ? 'PASS' : 'FAIL'}
+            </span>
+            {' — '}
+            {String((payload.validator as Record<string, unknown>)?.reason ?? '')}
+          </div>
+        )}
+        <KV k="final_source" v={String(payload.final_source ?? '')} />
+        {payload.error ? <KV k="error" v={String(payload.error)} /> : null}
+      </div>
+    )
+  }
+
+  if (kind === "llm+mmr" && layer === "L3") {
+    // L3 call trace: per_call + pool
+    const perCall = payload.per_call as Record<string, unknown> | undefined
+    const pool = payload.pool as Record<string, unknown> | undefined
+    if (!pool) return <div className="text-[10px] italic">No pool trace captured.</div>
+    const candidates = (pool.candidate_trace as Record<string, unknown>[]) ?? []
+    return (
+      <div className="flex flex-col gap-1" data-testid="trace-panel-deep-mmr">
+        <KV k="model" v={String(pool.model)} />
+        <KV k="temperature" v={String(pool.temperature)} />
+        <KV k="duration_ms" v={String(pool.duration_ms)} />
+        <KV k="validated_count" v={String(pool.validated_count ?? '—')} />
+        <KV k="selected" v={Array.isArray(pool.selected_call_ids)
+          ? (pool.selected_call_ids as string[]).join(', ') : '—'} />
+        <Collapsible
+          title="LLM system prompt"
+          testId="trace-panel-deep-system-prompt"
+          content={String(pool.system_prompt ?? '')}
+        />
+        <Collapsible
+          title="LLM user prompt"
+          testId="trace-panel-deep-user-prompt"
+          content={String(pool.user_prompt ?? '')}
+        />
+        <Collapsible
+          title={`LLM raw response (${candidates.length} candidates)`}
+          testId="trace-panel-deep-raw-response"
+          content={JSON.stringify(pool.raw_response ?? null, null, 2)}
+        />
+        <div className="pt-2">
+          <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+            Candidate pool ({candidates.length})
+          </div>
+          <div className="flex flex-col gap-1 pt-1"
+               data-testid="trace-panel-deep-candidates">
+            {candidates.map((c, i) => (
+              <CandidateRow
+                key={i}
+                c={c}
+                isThisCall={c.final_call_id === perCall?.call_id}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // Fallback: dump JSON
+  return (
+    <pre className="text-[10px] font-mono whitespace-pre-wrap break-all text-[var(--color-dim)]">
+      {JSON.stringify(payload, null, 2).slice(0, 2000)}
+    </pre>
+  )
+}
+
+function CandidateRow({
+  c, isThisCall,
+}: {
+  c: Record<string, unknown>
+  isThisCall: boolean
+}) {
+  const status = String(c.status ?? 'unknown')
+  const reason = String(c.drop_reason ?? '')
+  const finalId = String(c.final_call_id ?? '')
+  const raw = (c.raw ?? c.sanitised) as Record<string, unknown> | undefined
+  const claim = raw?.claim ? String(raw.claim) : '(no claim)'
+  const mmr = (c.mmr as Record<string, unknown>) ?? {}
+  const mmrScore = mmr.selected_mmr_score as number | undefined
+
+  const borderColor =
+    status === 'accepted' ? 'var(--color-green)' :
+    status === 'passed_validator' ? 'var(--color-accent)' :
+    'var(--color-dim)'
+  const accent = isThisCall ? 'var(--color-accent)' : 'transparent'
+  return (
+    <div
+      data-testid={`trace-candidate-${c.candidate_idx}`}
+      data-status={status}
+      data-drop-reason={reason || undefined}
+      className="border rounded p-1.5"
+      style={{
+        borderColor,
+        background: isThisCall ? 'var(--color-accent)/10' : 'transparent',
+        boxShadow: isThisCall ? `0 0 0 1px ${accent} inset` : undefined,
+      }}
+    >
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className="font-mono">#{String(c.candidate_idx ?? '?')}</span>
+        <span
+          className="px-1 rounded border text-[9px] uppercase"
+          style={{ borderColor, color: borderColor }}
+        >
+          {status}
+        </span>
+        {reason && (
+          <span className="text-[var(--color-red)] text-[9px]">drop: {reason}</span>
+        )}
+        {finalId && (
+          <span className="ml-auto text-[var(--color-accent)] text-[9px]">→ {finalId}</span>
+        )}
+        {mmrScore !== undefined && (
+          <span className="text-[9px] text-[var(--color-dim)]">mmr {mmrScore.toFixed(3)}</span>
+        )}
+      </div>
+      <div className="text-[10px] pt-1 font-mono break-words">
+        {claim.length > 150 ? claim.slice(0, 149) + '…' : claim}
+      </div>
+      {c.drop_detail != null && Object.keys(c.drop_detail as Record<string, unknown>).length > 0 && (
+        <details className="text-[9px] text-[var(--color-dim)] pt-0.5">
+          <summary className="cursor-pointer">drop detail</summary>
+          <pre className="whitespace-pre-wrap break-all">
+            {JSON.stringify(c.drop_detail, null, 2)}
+          </pre>
+        </details>
+      )}
+    </div>
+  )
+}
+
+function Collapsible({
+  title, content, testId,
+}: {
+  title: string
+  content: string
+  testId?: string
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="pt-1">
+      <button
+        data-testid={testId ? `${testId}-toggle` : undefined}
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+      >
+        {open ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+        {title} <span className="text-[var(--color-dim)]">({content.length} chars)</span>
+      </button>
+      {open && (
+        <pre
+          data-testid={testId}
+          className="mt-1 p-2 bg-[var(--color-bg)]/50 border border-[var(--color-border)] rounded text-[9.5px] font-mono whitespace-pre-wrap break-all max-h-64 overflow-auto"
+        >
+          {content}
+        </pre>
+      )}
+    </div>
+  )
+}
+
 
 function formatAttr(v: unknown): string {
   if (v === null || v === undefined) return '—'
