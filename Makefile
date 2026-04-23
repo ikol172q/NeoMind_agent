@@ -10,12 +10,21 @@ PYTEST := $(PY) -m pytest
 # (test_search.py, test_token_budget.py) have pre-existing syntax
 # errors that break blanket collection; they're tracked separately.
 validate-algorithm-only:
-	$(PYTEST) tests/test_lattice_spec_contract.py tests/test_lattice_formulas.py -m lattice_fast -v
+	$(PYTEST) \
+		tests/test_lattice_spec_contract.py \
+		tests/test_lattice_formulas.py \
+		tests/test_lattice_graph_builder.py \
+		-m lattice_fast -v
 
 # V1 + V2 scope: + endpoint coherence + graph-algorithm recompute.
-# Requires a live backend.
+# Requires a live backend on 127.0.0.1:8001.
 validate-lattice:
-	$(PYTEST) -m "lattice_fast or lattice_slow" -v
+	$(PYTEST) \
+		tests/test_lattice_spec_contract.py \
+		tests/test_lattice_formulas.py \
+		tests/test_lattice_graph_builder.py \
+		tests/test_lattice_endpoint_coherence.py \
+		-v
 
 # V1 + V2 + V3 + V4 scope: + fixture drift + judge baseline.
 # Nightly or on demand; takes several minutes.

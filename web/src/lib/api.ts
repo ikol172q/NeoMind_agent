@@ -686,6 +686,84 @@ export function useLatticeCalls(project_id: string) {
   })
 }
 
+// ── /api/lattice/graph — structural view for V3 viz ────
+//
+// Shape mirrors agent/finance/lattice/graph.py output exactly.
+// Every field here has a backend test that pins it; if this
+// type drifts from the backend shape, the frontend TypeScript
+// strict compile catches it. See tests/test_lattice_graph_builder.py
+// + tests/test_lattice_endpoint_coherence.py.
+
+export type LatticeLayer = 'L0' | 'L1' | 'L1.5' | 'L2' | 'L3'
+export type LatticeProvenance =
+  | 'source' | 'deterministic' | 'llm' | 'llm+validator' | 'llm+mmr'
+export type LatticeEdgeKind = 'source_emission' | 'membership' | 'grounds'
+
+export interface LatticeGraphNode {
+  id: string
+  layer: LatticeLayer
+  label: string
+  provenance: {
+    computed_by: LatticeProvenance
+    method: string
+    model: string | null
+    inputs: string[]   // upstream node ids
+  }
+  attrs: Record<string, unknown>
+}
+
+/** Computation breakdown for a membership edge. Always present
+ *  on kind=='membership' edges. */
+export interface MembershipComputationDetail {
+  jaccard_num: number
+  jaccard_den: number
+  any_of_matched: string[]
+  any_of_required: string[]
+  all_of_required: string[]
+  all_of_satisfied: boolean
+  base: number
+  severity: string
+  severity_bonus: number
+  final: number
+}
+
+export interface LatticeGraphEdge {
+  source: string
+  target: string
+  kind: LatticeEdgeKind
+  weight: number | null       // present on membership only
+  computation: {
+    method: string
+    detail: Record<string, unknown>   // shape varies by kind
+  }
+}
+
+export interface LatticeGraphPayload {
+  nodes: LatticeGraphNode[]
+  edges: LatticeGraphEdge[]
+  meta: {
+    project_id: string
+    taxonomy_version: number
+    fetched_at: string
+    duration_ms?: number
+    layer_counts: Record<LatticeLayer, number>
+    edge_counts: Record<LatticeEdgeKind, number>
+  }
+}
+
+export function useLatticeGraph(project_id: string) {
+  return useQuery({
+    queryKey: ['lattice_graph', project_id],
+    queryFn: () => fetchJSON<LatticeGraphPayload>(
+      `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id,
+    staleTime: 10 * 60_000,
+    refetchInterval: 15 * 60_000,
+    refetchOnWindowFocus: false,
+  })
+}
+
 // ── Market sentiment gauge ──────────────────────────────
 export interface SentimentSubscore {
   score: number | null
