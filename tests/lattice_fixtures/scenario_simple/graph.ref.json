@@ -1,0 +1,345 @@
+{
+  "edges": [
+    {
+      "computation": {
+        "detail": {
+          "max_calls": 3,
+          "max_candidates": 5,
+          "mmr_lambda": 0.7
+        },
+        "method": "llm_selection+mmr_survived"
+      },
+      "kind": "grounds",
+      "source": "theme_earnings_risk",
+      "target": "call_001",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "any_of_required": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "base": 1.0,
+          "final": 0.85,
+          "jaccard_den": 2,
+          "jaccard_num": 2,
+          "severity": "warn",
+          "severity_bonus": 0.85
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_aapl_earnings",
+      "target": "theme_earnings_risk",
+      "weight": 0.85
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "pnl:large_loss",
+            "risk:drawdown"
+          ],
+          "any_of_required": [
+            "pnl:large_loss",
+            "risk:drawdown"
+          ],
+          "base": 1.0,
+          "final": 1.0,
+          "jaccard_den": 2,
+          "jaccard_num": 2,
+          "severity": "alert",
+          "severity_bonus": 1.0
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_tsla_drawdown",
+      "target": "subtheme_book_stress",
+      "weight": 1.0
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "days_until",
+          "generator": "gen_earnings_signals",
+          "symbol": "AAPL",
+          "widget": "earnings"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:earnings",
+      "target": "obs_aapl_earnings",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "pct_change",
+          "generator": "gen_portfolio_signals",
+          "symbol": "TSLA",
+          "widget": "portfolio"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:portfolio",
+      "target": "obs_tsla_drawdown",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "percentile",
+          "generator": "gen_technical_signals",
+          "symbol": "NVDA",
+          "widget": "technical"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:technical",
+      "target": "obs_nvda_near_high",
+      "weight": null
+    }
+  ],
+  "meta": {
+    "edge_counts": {
+      "grounds": 1,
+      "membership": 2,
+      "source_emission": 3
+    },
+    "fetched_at": "FIXED",
+    "layer_counts": {
+      "L0": 3,
+      "L1": 3,
+      "L1.5": 1,
+      "L2": 1,
+      "L3": 1
+    },
+    "project_id": "fixture_simple",
+    "taxonomy_version": 1
+  },
+  "nodes": [
+    {
+      "attrs": {
+        "generator": "gen_earnings_signals",
+        "obs_count": 1,
+        "widget": "earnings"
+      },
+      "id": "widget:earnings",
+      "label": "Earnings calendar",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "generator": "gen_portfolio_signals",
+        "obs_count": 1,
+        "widget": "portfolio"
+      },
+      "id": "widget:portfolio",
+      "label": "Portfolio positions",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "generator": "gen_technical_signals",
+        "obs_count": 1,
+        "widget": "technical"
+      },
+      "id": "widget:technical",
+      "label": "Price / technical",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "earnings_soon",
+        "numbers": {},
+        "severity": "warn",
+        "source": {
+          "field": "days_until",
+          "symbol": "AAPL",
+          "widget": "earnings"
+        },
+        "tags": [
+          "symbol:AAPL",
+          "risk:earnings",
+          "catalyst:earnings",
+          "timescale:short"
+        ]
+      },
+      "id": "obs_aapl_earnings",
+      "label": "AAPL reports in 7d.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:earnings"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "near_52w_high",
+        "numbers": {},
+        "severity": "info",
+        "source": {
+          "field": "percentile",
+          "symbol": "NVDA",
+          "widget": "technical"
+        },
+        "tags": [
+          "symbol:NVDA",
+          "technical:near_52w_high",
+          "direction:up"
+        ]
+      },
+      "id": "obs_nvda_near_high",
+      "label": "NVDA at 94th percentile of 20d range.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:technical"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "position_deep_loss",
+        "numbers": {},
+        "severity": "alert",
+        "source": {
+          "field": "pct_change",
+          "symbol": "TSLA",
+          "widget": "portfolio"
+        },
+        "tags": [
+          "symbol:TSLA",
+          "pnl:large_loss",
+          "risk:drawdown",
+          "position:TSLA"
+        ]
+      },
+      "id": "obs_tsla_drawdown",
+      "label": "TSLA position down 15%.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:portfolio"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 1,
+        "narrative": "Book stress signals (1 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "alert",
+        "tags": [
+          "pnl:large_loss",
+          "risk:drawdown"
+        ],
+        "title": "Book stress signals"
+      },
+      "id": "subtheme_book_stress",
+      "label": "Book stress signals",
+      "layer": "L1.5",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_tsla_drawdown"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 1,
+        "narrative": "Earnings risk (1 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "warn",
+        "tags": [
+          "catalyst:earnings",
+          "risk:earnings"
+        ],
+        "title": "Earnings risk"
+      },
+      "id": "theme_earnings_risk",
+      "label": "Earnings risk",
+      "layer": "L2",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_aapl_earnings"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "claim": "Hedge AAPL earnings with protective puts.",
+        "confidence": "medium",
+        "grounds_count": 1,
+        "qualifier": "Size \u2264 1.5% of book; skip if VIX > 25.",
+        "rebuttal": "If AAPL pre-announces revenue > 5% above consensus.",
+        "time_horizon": "weeks",
+        "warrant": "Warn-level earnings risk with elevated IV suggests asymmetric downside."
+      },
+      "id": "call_001",
+      "label": "Hedge AAPL earnings with protective puts.",
+      "layer": "L3",
+      "provenance": {
+        "computed_by": "llm+mmr",
+        "inputs": [
+          "theme_earnings_risk"
+        ],
+        "method": "toulmin_candidate_then_mmr_select",
+        "model": "deepseek-chat"
+      }
+    }
+  ]
+}

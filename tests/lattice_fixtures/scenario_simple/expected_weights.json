@@ -1,0 +1,4 @@
+{
+  "obs_aapl_earnings::theme_earnings_risk": 0.85,
+  "obs_tsla_drawdown::subtheme_book_stress": 1.0
+}

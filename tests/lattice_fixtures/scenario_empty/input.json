@@ -1,0 +1,15 @@
+{
+  "name": "empty",
+  "description": "Zero observations. Expected: zero edges, zero members, no sub_themes or themes emitted (all fail min_members).",
+  "project_id": "fixture_empty",
+  "observations": [],
+  "signatures": [
+    {
+      "id": "theme_earnings_risk",
+      "title": "Earnings risk",
+      "any_of": ["risk:earnings", "catalyst:earnings"],
+      "min_members": 1
+    }
+  ],
+  "calls": []
+}

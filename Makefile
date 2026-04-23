@@ -14,7 +14,8 @@ validate-algorithm-only:
 		tests/test_lattice_spec_contract.py \
 		tests/test_lattice_formulas.py \
 		tests/test_lattice_graph_builder.py \
-		-m lattice_fast -v
+		tests/test_lattice_drift.py \
+		-m "lattice_fast and not lattice_drift" -v
 
 # V1 + V2 scope: + endpoint coherence + graph-algorithm recompute.
 # Requires a live backend on 127.0.0.1:8001.
@@ -27,11 +28,23 @@ validate-lattice:
 		-v
 
 # V1 + V2 + V3 + V4 scope: + fixture drift + judge baseline.
-# Nightly or on demand; takes several minutes.
+# Nightly or on demand; takes several minutes (runs live judge).
 validate-lattice-full:
-	$(PYTEST) -m "lattice_fast or lattice_slow or lattice_drift" -v
+	$(PYTEST) \
+		tests/test_lattice_spec_contract.py \
+		tests/test_lattice_formulas.py \
+		tests/test_lattice_graph_builder.py \
+		tests/test_lattice_endpoint_coherence.py \
+		tests/test_lattice_drift.py \
+		tests/test_web_lattice_viz.py \
+		-v
 	$(PY) tools/eval/lattice_judge.py --layer all --n 3 \
 		--report /tmp/lattice_judge_latest.md
+
+# Just the drift fixtures + judge baseline regression.
+# Use after pulling changes or before releases.
+validate-lattice-drift:
+	$(PYTEST) tests/test_lattice_drift.py -v
 
 # UI-only subset (V3 onwards)
 validate-viz-only:
