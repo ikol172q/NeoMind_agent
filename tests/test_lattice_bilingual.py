@@ -79,26 +79,14 @@ def test_themes_base_prompt_unchanged_by_en_language(monkeypatch):
     _system_prompt() must equal the base prompt exactly. Any
     accidental trailing whitespace or extra sentence would break
     prompt caching AND the LLM's behaviour."""
-    from agent.finance.lattice import themes, taxonomy as taxmod
-
-    fake_tax = taxmod.Taxonomy(
-        version=1, dimensions={}, themes=[], sub_themes=[],
-        output_language="en",
-    )
-    monkeypatch.setattr(taxmod, "load_taxonomy", lambda *a, **kw: fake_tax)
-    monkeypatch.setattr(themes, "load_taxonomy", lambda *a, **kw: fake_tax)
+    from agent.finance.lattice import themes, runtime
+    monkeypatch.setattr(runtime, "get_effective_language", lambda: "en")
     assert themes._system_prompt() == themes._SYSTEM_PROMPT_BASE
 
 
 def test_themes_prompt_extended_when_zh_cn_mixed(monkeypatch):
-    from agent.finance.lattice import themes, taxonomy as taxmod
-
-    fake_tax = taxmod.Taxonomy(
-        version=1, dimensions={}, themes=[], sub_themes=[],
-        output_language="zh-CN-mixed",
-    )
-    monkeypatch.setattr(taxmod, "load_taxonomy", lambda *a, **kw: fake_tax)
-    monkeypatch.setattr(themes, "load_taxonomy", lambda *a, **kw: fake_tax)
+    from agent.finance.lattice import themes, runtime
+    monkeypatch.setattr(runtime, "get_effective_language", lambda: "zh-CN-mixed")
     p = themes._system_prompt()
     assert p.startswith(themes._SYSTEM_PROMPT_BASE)
     assert "Simplified Chinese" in p
@@ -106,24 +94,14 @@ def test_themes_prompt_extended_when_zh_cn_mixed(monkeypatch):
 
 
 def test_calls_base_prompt_unchanged_by_en_language(monkeypatch):
-    from agent.finance.lattice import calls as calls_mod, taxonomy as taxmod
-
-    fake_tax = taxmod.Taxonomy(
-        version=1, dimensions={}, themes=[], sub_themes=[],
-        output_language="en",
-    )
-    monkeypatch.setattr(taxmod, "load_taxonomy", lambda *a, **kw: fake_tax)
+    from agent.finance.lattice import calls as calls_mod, runtime
+    monkeypatch.setattr(runtime, "get_effective_language", lambda: "en")
     assert calls_mod._system_prompt() == calls_mod._SYSTEM_PROMPT_BASE
 
 
 def test_calls_prompt_extended_when_zh_cn_mixed(monkeypatch):
-    from agent.finance.lattice import calls as calls_mod, taxonomy as taxmod
-
-    fake_tax = taxmod.Taxonomy(
-        version=1, dimensions={}, themes=[], sub_themes=[],
-        output_language="zh-CN-mixed",
-    )
-    monkeypatch.setattr(taxmod, "load_taxonomy", lambda *a, **kw: fake_tax)
+    from agent.finance.lattice import calls as calls_mod, runtime
+    monkeypatch.setattr(runtime, "get_effective_language", lambda: "zh-CN-mixed")
     p = calls_mod._system_prompt()
     assert p.startswith(calls_mod._SYSTEM_PROMPT_BASE)
     assert "Simplified Chinese" in p

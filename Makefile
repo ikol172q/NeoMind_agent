@@ -16,6 +16,7 @@ validate-algorithm-only:
 		tests/test_lattice_graph_builder.py \
 		tests/test_lattice_drift.py \
 		tests/test_lattice_bilingual.py \
+		tests/test_lattice_trace.py \
 		-m "lattice_fast and not lattice_drift and not lattice_slow" -v
 
 # V1 + V2 scope: + endpoint coherence + graph-algorithm recompute.

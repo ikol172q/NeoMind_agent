@@ -4,10 +4,12 @@ import {
   type LatticeCall, type LatticeTheme, type LatticeObservation,
   type AnomalyFlag,
 } from '@/lib/api'
+import { useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
 import { LatticeGraphView } from './LatticeGraphView'
+import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
 import {
-  Sparkles, RefreshCw, ChevronRight, ChevronDown,
+  Sparkles, RefreshCw, ChevronRight, ChevronDown, Languages,
   Target, Shield, AlertCircle, Info, AlertTriangle,
 } from 'lucide-react'
 
@@ -320,6 +322,7 @@ function Header({
           </button>
         ))}
       </div>
+      <LanguageToggle />
       <Button
         size="sm"
         variant="ghost"
@@ -331,6 +334,46 @@ function Header({
         <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
       </Button>
     </div>
+  )
+}
+
+
+function LanguageToggle() {
+  const qc = useQueryClient()
+  const q = useLatticeLanguage()
+  const active = q.data?.active
+  const label = active === 'zh-CN-mixed' ? '中' : active === 'en' ? 'EN' : '—'
+  const title = active === 'zh-CN-mixed'
+    ? 'Output language: 中英混合 — click to switch to English'
+    : active === 'en'
+      ? 'Output language: English — click to switch to 中英混合'
+      : 'Output language (loading)'
+  return (
+    <button
+      data-testid="digest-language-toggle"
+      data-language-active={active}
+      onClick={async () => {
+        if (!active) return
+        const next = active === 'en' ? 'zh-CN-mixed' : 'en'
+        try {
+          await setLatticeLanguage(next)
+        } catch (e) {
+          console.error('failed to set language', e)
+          return
+        }
+        // Busts server caches; now bust client caches so UI repaints
+        qc.invalidateQueries({ queryKey: ['lattice_language'] })
+        qc.invalidateQueries({ queryKey: ['lattice_calls'] })
+        qc.invalidateQueries({ queryKey: ['lattice_graph'] })
+        qc.invalidateQueries({ queryKey: ['lattice_trace'] })
+      }}
+      disabled={!active}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-border)] text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] transition"
+      title={title}
+    >
+      <Languages size={10} />
+      <span className="font-mono">{label}</span>
+    </button>
   )
 }
 
