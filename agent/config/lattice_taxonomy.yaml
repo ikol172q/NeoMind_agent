@@ -17,6 +17,14 @@
 
 version: 1
 
+# Output language for LLM-authored narratives / calls. V5.
+# Valid values (see agent/finance/lattice/spec.OUTPUT_LANGUAGES):
+#   en            — English narratives + claims (default, stable)
+#   zh-CN-mixed   — Chinese prose with tickers / sectors / derivatives
+#                   terms preserved in English. Judge rubric is
+#                   unicode-safe so scoring still works.
+output_language: zh-CN-mixed
+
 dimensions:
   symbol:
     description: The specific ticker the observation concerns. Free-form (no enum).

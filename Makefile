@@ -15,7 +15,8 @@ validate-algorithm-only:
 		tests/test_lattice_formulas.py \
 		tests/test_lattice_graph_builder.py \
 		tests/test_lattice_drift.py \
-		-m "lattice_fast and not lattice_drift" -v
+		tests/test_lattice_bilingual.py \
+		-m "lattice_fast and not lattice_drift and not lattice_slow" -v
 
 # V1 + V2 scope: + endpoint coherence + graph-algorithm recompute.
 # Requires a live backend on 127.0.0.1:8001.

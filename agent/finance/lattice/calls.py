@@ -74,7 +74,7 @@ class Call:
 
 # ── LLM generation ─────────────────────────────────────
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "You are a disciplined investment analyst. Given a set of "
     "observational themes (pre-clustered facts from the market + the "
     "user's positions), propose up to 5 CANDIDATE actionable calls "
@@ -92,6 +92,13 @@ _SYSTEM_PROMPT = (
     "Never force-emit. "
     "Reply JSON only."
 )
+
+
+def _system_prompt() -> str:
+    """System prompt = base + language directive from taxonomy (V5)."""
+    from agent.finance.lattice.taxonomy import load_taxonomy
+    lang = load_taxonomy().output_language
+    return _SYSTEM_PROMPT_BASE + spec.language_directive(lang)
 
 
 def _generation_prompt(themes: List[Theme]) -> str:
@@ -141,7 +148,7 @@ def _call_llm(prompt: str) -> Dict[str, Any]:
             json={
                 "model": _CALLS_MODEL,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": _system_prompt()},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.4,

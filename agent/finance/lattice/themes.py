@@ -139,12 +139,22 @@ def cluster_observations(
 
 # ── LLM narrative step ─────────────────────────────────
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "You write one short sentence describing a cluster of financial "
     "observations. You NEVER invent data. You cite at least one specific "
     "number (a percentage, price, count, or time frame) that appears "
     "verbatim in the member observations you are given. Reply JSON only."
 )
+
+
+def _system_prompt() -> str:
+    """Assemble the system prompt from the base + the current
+    language directive loaded from taxonomy.output_language.
+    Computed per-call because the YAML can change between refreshes
+    (fresh=True bypass clears caches, so a new language takes
+    effect immediately on next narrative generation)."""
+    lang = load_taxonomy().output_language
+    return _SYSTEM_PROMPT_BASE + spec.language_directive(lang)
 
 
 def _narrative_prompt(theme_title: str, members: List[tuple[Observation, float]]) -> str:
@@ -252,7 +262,7 @@ def _call_llm(prompt: str) -> Dict[str, Any]:
             json={
                 "model": _NARRATIVE_MODEL,
                 "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
+                    {"role": "system", "content": _system_prompt()},
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.3,
