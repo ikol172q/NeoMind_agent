@@ -127,7 +127,7 @@ def test_anomaly_strip_absent_when_no_flags_would_be_shown(page: Page):
     )
     if strip_present:
         count = page.evaluate(
-            "document.querySelectorAll('[data-testid^=\"digest-anomaly-\"][data-testid!=\"digest-anomaly-strip\"]').length"
+            "document.querySelectorAll('[data-testid^=\"digest-anomaly-\"]:not([data-testid=\"digest-anomaly-strip\"])').length"
         )
         assert count >= 1, "strip rendered with zero flags inside"
 

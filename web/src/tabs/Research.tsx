@@ -88,7 +88,7 @@ export function ResearchTab({ projectId, onJumpToChat, digestFocus }: Props) {
       // watchlist (and every other button inside a widget) gets
       // swallowed before the onClick handler can fire. Matches the
       // pattern react-grid-layout recommends for interactive cards.
-      draggableCancel="input, select, textarea, button, a, [contenteditable='true']"
+      draggableCancel="input, select, textarea, button, a, svg, svg *, [contenteditable='true']"
       margin={[10, 10]}
       onLayoutChange={(l) => {
         try { localStorage.setItem(LS_KEY, JSON.stringify(l)) } catch {}
