@@ -32,6 +32,7 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
+from agent.finance.lattice import spec
 from agent.finance.lattice.themes import Theme, build_themes
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,14 @@ _CALLS_MODEL = "deepseek-chat"
 _CALLS_TTL_S = 900.0           # 15 min, per plan
 _CALLS_TIMEOUT_S = 45.0
 
-_MAX_CANDIDATES = 5
-_MAX_CALLS = 3
-_MMR_LAMBDA = 0.7
+# Identity imports from spec — same objects, not copies. L1
+# contract tests assert this with `is`.
+_MAX_CANDIDATES = spec.MAX_CANDIDATES
+_MAX_CALLS = spec.MAX_CALLS
+_MMR_LAMBDA = spec.MMR_LAMBDA
 
-_CONFIDENCE = ("high", "medium", "low")
-_HORIZON = ("intraday", "days", "weeks", "quarter")
+_CONFIDENCE = spec.CONFIDENCE_VALUES
+_HORIZON = spec.TIME_HORIZON_VALUES
 
 _calls_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _calls_cache_lock = threading.Lock()
@@ -154,8 +157,7 @@ def _call_llm(prompt: str) -> Dict[str, Any]:
 
 # ── Validation ─────────────────────────────────────────
 
-_REQUIRED = ("claim", "grounds", "warrant", "qualifier", "rebuttal",
-             "confidence", "time_horizon")
+_REQUIRED = spec.CALL_REQUIRED_FIELDS
 
 
 def _validate_candidate(
@@ -181,14 +183,9 @@ def _validate_candidate(
         rebuttal = str(raw["rebuttal"]).strip()
         if not (claim and warrant and qualifier and rebuttal):
             return None
-        # Tautology guard: warrant must add reasoning, not restate
-        # the claim. Drop warrants that equal the claim or barely
-        # extend it.
-        c_lower = claim.lower()
-        w_lower = warrant.lower()
-        if c_lower == w_lower:
-            return None
-        if c_lower in w_lower and len(w_lower) - len(c_lower) < 10:
+        # Tautology guard — spec-defined, TAUTOLOGY_MIN_EXTENSION
+        # chars of extension required. See spec.is_tautological_warrant.
+        if spec.is_tautological_warrant(claim, warrant):
             return None
         grounds_raw = raw.get("grounds") or []
         if not isinstance(grounds_raw, list) or not grounds_raw:
@@ -224,27 +221,20 @@ def _validate_candidate(
 # ── MMR selector ───────────────────────────────────────
 
 def _ground_similarity(a: Sequence[str], b: Sequence[str]) -> float:
-    """Jaccard over ground sets — 1.0 = identical evidence."""
-    sa, sb = set(a), set(b)
-    if not sa or not sb:
-        return 0.0
-    return len(sa & sb) / len(sa | sb)
+    """Thin adapter over spec.ground_similarity (Sequence vs Set)."""
+    return spec.ground_similarity(set(a), set(b))
 
 
 def _relevance_score(call: Dict[str, Any], theme_by_id: Dict[str, Theme]) -> float:
-    """A call's relevance scales with the severity and size of the
-    themes it rests on. Alerts > warnings > info; more-populated
-    themes carry more weight. Confidence breaks ties."""
-    sev_score = {"alert": 1.0, "warn": 0.7, "info": 0.5}
-    conf_score = {"high": 1.0, "medium": 0.7, "low": 0.4}
-    s = 0.0
+    """A call's MMR relevance — delegates to spec.relevance_score so
+    there is one source of truth for the severity × confidence math."""
+    grounds = []
     for gid in call["grounds"]:
         t = theme_by_id.get(gid)
-        if not t:
+        if t is None:
             continue
-        s += sev_score.get(t.severity, 0.5) * (1 + min(len(t.members), 5) / 5)
-    s *= conf_score.get(call["confidence"], 0.5)
-    return s
+        grounds.append((t.severity, len(t.members)))
+    return spec.relevance_score(grounds, call["confidence"])
 
 
 def select_calls_mmr(
@@ -286,9 +276,9 @@ def select_calls_mmr(
                 )
             else:
                 max_sim = 0.0
-            mmr = lambda_ * rel - (1.0 - lambda_) * max_sim
-            if mmr > best_score:
-                best_score = mmr
+            mmr_score = spec.mmr(rel, max_sim, lambda_)
+            if mmr_score > best_score:
+                best_score = mmr_score
                 best = c
         if best is None:
             break

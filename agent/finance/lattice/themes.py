@@ -36,6 +36,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
+from agent.finance.lattice import spec
 from agent.finance.lattice.observations import Observation, build_observations
 from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
 
@@ -80,32 +81,19 @@ class Theme:
 # ── Cluster step (pure compute) ────────────────────────
 
 def _membership_weight(obs_tags: set[str], sig: ThemeSignature) -> float:
-    """Weight = fraction of the theme's defining tags present in obs.
-
-    For a signature with any_of=[A, B] and all_of=[C]:
-      - all_of must fully match (otherwise weight 0)
-      - any_of weight is |obs ∩ any_of| / |any_of|
-      - if both present, avg the two components
-    """
-    if sig.all_of and not sig.all_of.issubset(obs_tags):
-        return 0.0
-    any_weight = 0.0
-    if sig.any_of:
-        hits = len(obs_tags & sig.any_of)
-        if hits == 0:
-            return 0.0
-        any_weight = hits / len(sig.any_of)
-    if sig.all_of:
-        all_weight = 1.0  # fully matched by construction above
-        return (any_weight + all_weight) / 2 if sig.any_of else all_weight
-    return any_weight
+    """Thin adapter over spec.base_membership_weight so the
+    function signature that production code expects (taking a
+    ThemeSignature) stays intact while the math lives in one place.
+    Any divergence between this wrapper and spec is caught by L1
+    contract tests."""
+    return spec.base_membership_weight(obs_tags, sig.any_of, sig.all_of)
 
 
-_SEVERITY_BONUS = {"alert": 1.0, "warn": 0.85, "info": 0.7}
-
-
-def _severity_bonus(severity: str) -> float:
-    return _SEVERITY_BONUS.get(severity, 0.7)
+# Identity imports from spec — NOT local re-declarations. Tests
+# assert (is, not ==) so any future regression to a local copy
+# breaks Layer 1 contract tests immediately.
+_SEVERITY_BONUS = spec.CLUSTER_SEVERITY_BONUS
+_severity_bonus = spec.cluster_severity_bonus
 
 
 def cluster_observations(
@@ -130,9 +118,15 @@ def cluster_observations(
     for sig in sigs:
         members: List[tuple[Observation, float]] = []
         for obs in observations:
-            w = _membership_weight(set(obs.tags), sig)
-            if w > 0:
-                final_w = min(1.0, w * _severity_bonus(obs.severity))
+            # Go through spec.final_membership_weight directly so the
+            # complete formula (base × severity_bonus, clipped) has
+            # a single implementation. The L4 tests recompute every
+            # emitted edge's weight from this same function, so any
+            # local divergence here would fail loudly.
+            final_w = spec.final_membership_weight(
+                set(obs.tags), sig.any_of, sig.all_of, obs.severity,
+            )
+            if final_w > 0:
                 members.append((obs, final_w))
         if len(members) < sig.min_members:
             continue
@@ -343,8 +337,7 @@ def generate_narrative(
 
 # ── Full pipeline entry point ──────────────────────────
 
-def _severity_rank(severity: str) -> int:
-    return {"alert": 0, "warn": 1, "info": 2}.get(severity, 3)
+_severity_rank = spec.severity_rank
 
 
 def _theme_severity(members: List[tuple[Observation, float]]) -> str:
