@@ -5,6 +5,7 @@ import {
   type AnomalyFlag,
 } from '@/lib/api'
 import { Button } from '@/components/ui/Button'
+import { LatticeGraphView } from './LatticeGraphView'
 import {
   Sparkles, RefreshCw, ChevronRight, ChevronDown,
   Target, Shield, AlertCircle, Info, AlertTriangle,
@@ -25,7 +26,7 @@ interface Props {
   focus?: DigestFocus | null
 }
 
-type Mode = 'summary' | 'drilldown' | 'flat'
+type Mode = 'summary' | 'drilldown' | 'flat' | 'trace'
 
 const HIGHLIGHT_MS = 2500
 
@@ -164,6 +165,12 @@ export function DigestView({ projectId, onJumpToChat, focus }: Props) {
             ctx={ctx}
           />
         )}
+        {/* Trace mode uses useLatticeGraph (its own query) so it is
+            not gated on /calls loading; let LatticeGraphView render
+            its own loading/empty/error state. */}
+        {mode === 'trace' && !isFreshInstall && (
+          <LatticeGraphView projectId={projectId} />
+        )}
       </div>
     </div>
   )
@@ -291,7 +298,7 @@ function Header({
         className="flex rounded border border-[var(--color-border)] overflow-hidden text-[10px]"
         data-testid="digest-mode-toggle"
       >
-        {(['summary', 'drilldown', 'flat'] as Mode[]).map(m => (
+        {(['summary', 'drilldown', 'flat', 'trace'] as Mode[]).map(m => (
           <button
             key={m}
             data-testid={`digest-mode-${m}`}
@@ -305,7 +312,8 @@ function Header({
             title={
               m === 'summary' ? 'Toulmin chips only'
                 : m === 'drilldown' ? 'L3 → L2 → L1 accordion'
-                  : 'all layers expanded (debug)'
+                  : m === 'flat' ? 'all layers expanded (debug)'
+                    : 'full graph with provenance (V3)'
             }
           >
             {m[0].toUpperCase()}
