@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from agent.finance import investment_projects
 from agent.finance.lattice.calls import build_calls
+from agent.finance.lattice.graph import build_graph
 from agent.finance.lattice.observations import build_observations
 from agent.finance.lattice.taxonomy import load_taxonomy
 from agent.finance.lattice.themes import build_themes
@@ -116,6 +117,46 @@ def build_lattice_router() -> APIRouter:
         }
         _put(cache_key, payload)
         return payload
+
+    @router.get("/api/lattice/graph")
+    def list_graph(
+        project_id: str = Query(...),
+        fresh: bool = Query(False),
+    ) -> Dict[str, Any]:
+        """Structural view of the lattice — pure transformation of
+        /api/lattice/calls. Designed for V3 visualisation: each node
+        carries provenance (computed_by ∈ spec.PROVENANCE_KINDS),
+        each edge carries a computation breakdown that the V4
+        invariant tests recompute via spec.final_membership_weight
+        to prove the graph cannot drift from the underlying formula.
+        """
+        if project_id not in investment_projects.list_projects():
+            raise HTTPException(404, f"project {project_id!r} is not registered")
+
+        cache_key = f"graph::{project_id}"
+        if not fresh:
+            cached = _cached(cache_key)
+            if cached is not None:
+                return cached
+
+        t0 = time.monotonic()
+        try:
+            calls_payload = build_calls(project_id, fresh=fresh)
+            graph = build_graph(calls_payload)
+        except Exception as exc:
+            logger.exception("lattice graph failed")
+            raise HTTPException(502, f"graph build failed: {exc}")
+        duration_ms = int((time.monotonic() - t0) * 1000)
+
+        tax = load_taxonomy()
+        graph.setdefault("meta", {})
+        graph["meta"].update({
+            "taxonomy_version": tax.version,
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "duration_ms": duration_ms,
+        })
+        _put(cache_key, graph)
+        return graph
 
     @router.get("/api/lattice/calls")
     def list_calls(
