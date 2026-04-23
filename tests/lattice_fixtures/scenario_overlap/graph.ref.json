@@ -1,0 +1,564 @@
+{
+  "edges": [
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [
+            "timescale:short"
+          ],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "catalyst:earnings"
+          ],
+          "any_of_required": [
+            "catalyst:earnings",
+            "catalyst:fed",
+            "catalyst:regulatory"
+          ],
+          "base": 0.6666666666666666,
+          "final": 0.5666666666666667,
+          "jaccard_den": 3,
+          "jaccard_num": 1,
+          "severity": "warn",
+          "severity_bonus": 0.85
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_aapl_earnings_and_high",
+      "target": "subtheme_event_risk",
+      "weight": 0.567
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [
+            "direction:up"
+          ],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "technical:near_52w_high"
+          ],
+          "any_of_required": [
+            "technical:breakout",
+            "technical:near_52w_high"
+          ],
+          "base": 0.75,
+          "final": 0.6375,
+          "jaccard_den": 2,
+          "jaccard_num": 1,
+          "severity": "warn",
+          "severity_bonus": 0.85
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_aapl_earnings_and_high",
+      "target": "subtheme_momentum_breakouts",
+      "weight": 0.637
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "any_of_required": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "base": 1.0,
+          "final": 0.85,
+          "jaccard_den": 2,
+          "jaccard_num": 2,
+          "severity": "warn",
+          "severity_bonus": 0.85
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_aapl_earnings_and_high",
+      "target": "theme_earnings_risk",
+      "weight": 0.85
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "technical:near_52w_high"
+          ],
+          "any_of_required": [
+            "technical:breakout",
+            "technical:near_52w_high"
+          ],
+          "base": 0.5,
+          "final": 0.425,
+          "jaccard_den": 2,
+          "jaccard_num": 1,
+          "severity": "warn",
+          "severity_bonus": 0.85
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_aapl_earnings_and_high",
+      "target": "theme_near_highs",
+      "weight": 0.425
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "technical:near_52w_high"
+          ],
+          "any_of_required": [
+            "technical:breakout",
+            "technical:near_52w_high"
+          ],
+          "base": 0.5,
+          "final": 0.35,
+          "jaccard_den": 2,
+          "jaccard_num": 1,
+          "severity": "info",
+          "severity_bonus": 0.7
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_msft_near_high_no_direction",
+      "target": "theme_near_highs",
+      "weight": 0.35
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [
+            "timescale:short"
+          ],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "catalyst:earnings"
+          ],
+          "any_of_required": [
+            "catalyst:earnings",
+            "catalyst:fed",
+            "catalyst:regulatory"
+          ],
+          "base": 0.6666666666666666,
+          "final": 0.6666666666666666,
+          "jaccard_den": 3,
+          "jaccard_num": 1,
+          "severity": "alert",
+          "severity_bonus": 1.0
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_nvda_earnings",
+      "target": "subtheme_event_risk",
+      "weight": 0.667
+    },
+    {
+      "computation": {
+        "detail": {
+          "all_of_required": [],
+          "all_of_satisfied": true,
+          "any_of_matched": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "any_of_required": [
+            "catalyst:earnings",
+            "risk:earnings"
+          ],
+          "base": 1.0,
+          "final": 1.0,
+          "jaccard_den": 2,
+          "jaccard_num": 2,
+          "severity": "alert",
+          "severity_bonus": 1.0
+        },
+        "method": "jaccard+severity_bonus"
+      },
+      "kind": "membership",
+      "source": "obs_nvda_earnings",
+      "target": "theme_earnings_risk",
+      "weight": 1.0
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "kind",
+          "generator": "gen_anomaly_signals",
+          "symbol": "AAPL",
+          "widget": "anomalies"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:anomalies",
+      "target": "obs_aapl_earnings_and_high",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "days_until",
+          "generator": "gen_earnings_signals",
+          "symbol": "NVDA",
+          "widget": "earnings"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:earnings",
+      "target": "obs_nvda_earnings",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "rank",
+          "generator": "gen_sector_signals",
+          "symbol": null,
+          "widget": "sectors"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:sectors",
+      "target": "obs_energy_leader",
+      "weight": null
+    },
+    {
+      "computation": {
+        "detail": {
+          "field": "percentile",
+          "generator": "gen_technical_signals",
+          "symbol": "MSFT",
+          "widget": "technical"
+        },
+        "method": "generator_emission"
+      },
+      "kind": "source_emission",
+      "source": "widget:technical",
+      "target": "obs_msft_near_high_no_direction",
+      "weight": null
+    }
+  ],
+  "meta": {
+    "edge_counts": {
+      "grounds": 0,
+      "membership": 7,
+      "source_emission": 4
+    },
+    "fetched_at": "FIXED",
+    "layer_counts": {
+      "L0": 4,
+      "L1": 4,
+      "L1.5": 2,
+      "L2": 2,
+      "L3": 0
+    },
+    "project_id": "fixture_overlap",
+    "taxonomy_version": 1
+  },
+  "nodes": [
+    {
+      "attrs": {
+        "generator": "gen_anomaly_signals",
+        "obs_count": 1,
+        "widget": "anomalies"
+      },
+      "id": "widget:anomalies",
+      "label": "Anomaly detector",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "generator": "gen_earnings_signals",
+        "obs_count": 1,
+        "widget": "earnings"
+      },
+      "id": "widget:earnings",
+      "label": "Earnings calendar",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "generator": "gen_sector_signals",
+        "obs_count": 1,
+        "widget": "sectors"
+      },
+      "id": "widget:sectors",
+      "label": "Sector heatmap",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "generator": "gen_technical_signals",
+        "obs_count": 1,
+        "widget": "technical"
+      },
+      "id": "widget:technical",
+      "label": "Price / technical",
+      "layer": "L0",
+      "provenance": {
+        "computed_by": "source",
+        "inputs": [],
+        "method": "external_widget",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "anomaly_near_52w_with_earnings",
+        "numbers": {},
+        "severity": "warn",
+        "source": {
+          "field": "kind",
+          "symbol": "AAPL",
+          "widget": "anomalies"
+        },
+        "tags": [
+          "symbol:AAPL",
+          "risk:earnings",
+          "catalyst:earnings",
+          "technical:near_52w_high",
+          "direction:up",
+          "timescale:short"
+        ]
+      },
+      "id": "obs_aapl_earnings_and_high",
+      "label": "AAPL at 52w high going into earnings.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:anomalies"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "sector_leader",
+        "numbers": {},
+        "severity": "info",
+        "source": {
+          "field": "rank",
+          "widget": "sectors"
+        },
+        "tags": [
+          "sector:Energy",
+          "regime:rotation",
+          "direction:up",
+          "timescale:intraday"
+        ]
+      },
+      "id": "obs_energy_leader",
+      "label": "Energy sector leading.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:sectors"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "near_52w_high",
+        "numbers": {},
+        "severity": "info",
+        "source": {
+          "field": "percentile",
+          "symbol": "MSFT",
+          "widget": "technical"
+        },
+        "tags": [
+          "symbol:MSFT",
+          "technical:near_52w_high"
+        ]
+      },
+      "id": "obs_msft_near_high_no_direction",
+      "label": "MSFT at 96th percentile.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:technical"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "confidence": null,
+        "kind": "earnings_soon",
+        "numbers": {},
+        "severity": "alert",
+        "source": {
+          "field": "days_until",
+          "symbol": "NVDA",
+          "widget": "earnings"
+        },
+        "tags": [
+          "symbol:NVDA",
+          "risk:earnings",
+          "catalyst:earnings",
+          "timescale:short"
+        ]
+      },
+      "id": "obs_nvda_earnings",
+      "label": "NVDA reports in 3d.",
+      "layer": "L1",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "widget:earnings"
+        ],
+        "method": "python_generator",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 2,
+        "narrative": "Near-term event risk (all_of: timescale:short) (2 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "alert",
+        "tags": [
+          "catalyst:earnings",
+          "catalyst:fed",
+          "catalyst:regulatory",
+          "timescale:short"
+        ],
+        "title": "Near-term event risk (all_of: timescale:short)"
+      },
+      "id": "subtheme_event_risk",
+      "label": "Near-term event risk (all_of: timescale:short)",
+      "layer": "L1.5",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_nvda_earnings",
+          "obs_aapl_earnings_and_high"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 1,
+        "narrative": "Momentum breakouts (all_of: direction:up) (1 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "warn",
+        "tags": [
+          "direction:up",
+          "technical:breakout",
+          "technical:near_52w_high"
+        ],
+        "title": "Momentum breakouts (all_of: direction:up)"
+      },
+      "id": "subtheme_momentum_breakouts",
+      "label": "Momentum breakouts (all_of: direction:up)",
+      "layer": "L1.5",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_aapl_earnings_and_high"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 2,
+        "narrative": "Earnings risk (2 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "alert",
+        "tags": [
+          "catalyst:earnings",
+          "risk:earnings"
+        ],
+        "title": "Earnings risk"
+      },
+      "id": "theme_earnings_risk",
+      "label": "Earnings risk",
+      "layer": "L2",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_nvda_earnings",
+          "obs_aapl_earnings_and_high"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    },
+    {
+      "attrs": {
+        "cited_numbers": [],
+        "member_count": 2,
+        "narrative": "Near 52w highs (2 obs)",
+        "narrative_source": "template_fallback",
+        "severity": "warn",
+        "tags": [
+          "technical:breakout",
+          "technical:near_52w_high"
+        ],
+        "title": "Near 52w highs"
+      },
+      "id": "theme_near_highs",
+      "label": "Near 52w highs",
+      "layer": "L2",
+      "provenance": {
+        "computed_by": "deterministic",
+        "inputs": [
+          "obs_aapl_earnings_and_high",
+          "obs_msft_near_high_no_direction"
+        ],
+        "method": "tag_intersection_cluster",
+        "model": null
+      }
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "edges": [],
+  "meta": {
+    "edge_counts": {
+      "grounds": 0,
+      "membership": 0,
+      "source_emission": 0
+    },
+    "fetched_at": "FIXED",
+    "layer_counts": {
+      "L0": 0,
+      "L1": 0,
+      "L1.5": 0,
+      "L2": 0,
+      "L3": 0
+    },
+    "project_id": "fixture_empty",
+    "taxonomy_version": 1
+  },
+  "nodes": []
+}

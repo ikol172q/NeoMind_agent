@@ -1,0 +1,71 @@
+{
+  "name": "overlap",
+  "description": "Stress-test overlap preservation: the same obs fits multiple signatures; multiple obs fit the same signature. Also exercises all_of hard gate + failing-gate (weight=0). This is the non-negotiable property of the Insight Lattice.",
+  "project_id": "fixture_overlap",
+  "observations": [
+    {
+      "id": "obs_aapl_earnings_and_high",
+      "kind": "anomaly_near_52w_with_earnings",
+      "text": "AAPL at 52w high going into earnings.",
+      "tags": [
+        "symbol:AAPL", "risk:earnings", "catalyst:earnings",
+        "technical:near_52w_high", "direction:up", "timescale:short"
+      ],
+      "severity": "warn",
+      "source": {"widget": "anomalies", "field": "kind", "symbol": "AAPL"}
+    },
+    {
+      "id": "obs_nvda_earnings",
+      "kind": "earnings_soon",
+      "text": "NVDA reports in 3d.",
+      "tags": ["symbol:NVDA", "risk:earnings", "catalyst:earnings", "timescale:short"],
+      "severity": "alert",
+      "source": {"widget": "earnings", "field": "days_until", "symbol": "NVDA"}
+    },
+    {
+      "id": "obs_msft_near_high_no_direction",
+      "kind": "near_52w_high",
+      "text": "MSFT at 96th percentile.",
+      "tags": ["symbol:MSFT", "technical:near_52w_high"],
+      "severity": "info",
+      "source": {"widget": "technical", "field": "percentile", "symbol": "MSFT"}
+    },
+    {
+      "id": "obs_energy_leader",
+      "kind": "sector_leader",
+      "text": "Energy sector leading.",
+      "tags": ["sector:Energy", "regime:rotation", "direction:up", "timescale:intraday"],
+      "severity": "info",
+      "source": {"widget": "sectors", "field": "rank"}
+    }
+  ],
+  "signatures": [
+    {
+      "id": "theme_earnings_risk",
+      "title": "Earnings risk",
+      "any_of": ["risk:earnings", "catalyst:earnings"],
+      "min_members": 1
+    },
+    {
+      "id": "theme_near_highs",
+      "title": "Near 52w highs",
+      "any_of": ["technical:near_52w_high", "technical:breakout"],
+      "min_members": 1
+    },
+    {
+      "id": "subtheme_momentum_breakouts",
+      "title": "Momentum breakouts (all_of: direction:up)",
+      "any_of": ["technical:breakout", "technical:near_52w_high"],
+      "all_of": ["direction:up"],
+      "min_members": 1
+    },
+    {
+      "id": "subtheme_event_risk",
+      "title": "Near-term event risk (all_of: timescale:short)",
+      "any_of": ["catalyst:earnings", "catalyst:regulatory", "catalyst:fed"],
+      "all_of": ["timescale:short"],
+      "min_members": 1
+    }
+  ],
+  "calls": []
+}

@@ -1,0 +1,57 @@
+{
+  "name": "simple",
+  "description": "3 obs x 2 signatures. Exercises: pure any_of match, all_of hard gate, severity bonus for each of alert/warn/info. Every weight is hand-computable; see fixture/NOTES.md.",
+  "project_id": "fixture_simple",
+  "observations": [
+    {
+      "id": "obs_aapl_earnings",
+      "kind": "earnings_soon",
+      "text": "AAPL reports in 7d.",
+      "tags": ["symbol:AAPL", "risk:earnings", "catalyst:earnings", "timescale:short"],
+      "severity": "warn",
+      "source": {"widget": "earnings", "field": "days_until", "symbol": "AAPL"}
+    },
+    {
+      "id": "obs_nvda_near_high",
+      "kind": "near_52w_high",
+      "text": "NVDA at 94th percentile of 20d range.",
+      "tags": ["symbol:NVDA", "technical:near_52w_high", "direction:up"],
+      "severity": "info",
+      "source": {"widget": "technical", "field": "percentile", "symbol": "NVDA"}
+    },
+    {
+      "id": "obs_tsla_drawdown",
+      "kind": "position_deep_loss",
+      "text": "TSLA position down 15%.",
+      "tags": ["symbol:TSLA", "pnl:large_loss", "risk:drawdown", "position:TSLA"],
+      "severity": "alert",
+      "source": {"widget": "portfolio", "field": "pct_change", "symbol": "TSLA"}
+    }
+  ],
+  "signatures": [
+    {
+      "id": "theme_earnings_risk",
+      "title": "Earnings risk",
+      "any_of": ["risk:earnings", "catalyst:earnings"],
+      "min_members": 1
+    },
+    {
+      "id": "subtheme_book_stress",
+      "title": "Book stress signals",
+      "any_of": ["pnl:large_loss", "risk:drawdown"],
+      "min_members": 1
+    }
+  ],
+  "calls": [
+    {
+      "id": "call_001",
+      "claim": "Hedge AAPL earnings with protective puts.",
+      "grounds": ["theme_earnings_risk"],
+      "warrant": "Warn-level earnings risk with elevated IV suggests asymmetric downside.",
+      "qualifier": "Size ≤ 1.5% of book; skip if VIX > 25.",
+      "rebuttal": "If AAPL pre-announces revenue > 5% above consensus.",
+      "confidence": "medium",
+      "time_horizon": "weeks"
+    }
+  ]
+}
