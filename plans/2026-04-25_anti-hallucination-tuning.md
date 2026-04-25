@@ -127,3 +127,31 @@ adversarial-test): implement a wrapper in `agent/agentic/agentic_loop.py`
 that detects "stock_ticker + price_question" patterns in user messages
 and prepends a forced `<tool_call>` injection to the LLM context. This
 is invasive but may be the only solution short of model upgrade.
+
+---
+
+## 2026-04-25 ADDENDUM — "model-level limit" was wrong
+
+User pushed back on my conclusion that `aapl-price` was a model-level
+training-data residue. They were 100% right. Investigation showed:
+
+`chat_history.db` had 22 messages of `<tool_result>` containing the
+exact `$271.06` data, persisted as `role=user` injections from real
+`finance_get_stock` invocations. The bot was correctly calling the
+tool the whole time; my suite's `_detect_tool_call()` only scanned the
+visible reply text for `✅ **ToolName**` markers, which `finance_*`
+tools don't include in user-facing replies.
+
+Adding chat_history.db ground-truth tool detection to the suite:
+- fin: 8/9 → **9/9**
+- full: 19/23 → **21/23 stable** (the 2 remaining fails are real
+  prompt-tightening items: an opener "状态不错" leak and one regex
+  edge case on "我整理过" matching honest "我没整理过")
+
+The "TRAINING-DATA NUMBER LOCKDOWN" block in fin.yaml was solving a
+problem that didn't exist. Could be removed in cleanup. Kept for now
+as defensive depth — if a future scenario actually does fabricate
+numbers, the rule is still a good guardrail.
+
+Captured as troubleshooting entry:
+`.claude/docs/troubleshooting/2026-04-25-tool-use-detector-blind-to-toolresult-messages.md`

@@ -344,6 +344,43 @@ def _docker_logs_since(seconds: int) -> str:
         return ""
 
 
+def _query_recent_tool_calls(chat_id: int = 0, max_age_seconds: int = 120) -> list[str]:
+    """Read the bot's chat_history.db for recent <tool_result> entries.
+
+    Tool calls in NeoMind's agentic loop are persisted to chat_history.db
+    as messages with role=user (the system injects tool results back into
+    the conversation as if the user-side ran them). The bot's visible
+    reply often digests the data WITHOUT a ✅ **ToolName** prefix, so a
+    reply-text-only detector misses real tool calls. Querying the DB
+    directly is the ground truth.
+    """
+    cmd = [
+        "docker", "exec", "neomind-telegram", "python", "-c",
+        f'''
+import sqlite3, json
+conn = sqlite3.connect("/data/neomind/db/chat_history.db")
+rows = conn.execute(
+    """SELECT content FROM messages
+       WHERE content LIKE '<tool_result>%'
+       AND datetime(created_at) > datetime('now', '-{max_age_seconds} seconds')
+       ORDER BY id DESC LIMIT 5"""
+).fetchall()
+for r in rows:
+    print(r[0][:300])
+print("---END---")
+'''
+    ]
+    try:
+        out = subprocess.check_output(cmd, stderr=subprocess.STDOUT, timeout=10).decode("utf-8", errors="ignore")
+        results = []
+        for line in out.split("---END---")[0].split("\n"):
+            if "<tool_result>" in line or "tool:" in line:
+                results.append(line.strip())
+        return results
+    except Exception:
+        return []
+
+
 def _detect_tool_call(reply: str, logs: str = "") -> tuple[bool, list[str]]:
     """Did the bot invoke a tool? Check the reply text first (most reliable),
     fall back to docker logs (which may or may not capture tool traces)."""
@@ -488,12 +525,23 @@ async def run_suite(args) -> int:
         elapsed = int(time.monotonic() - log_start) + 5
         reply_text = (msg.text if msg else "") or ""
 
-        # Tool detection — check reply text first, logs as fallback
+        # Tool detection — three sources:
+        #   1. Reply text markers (✅ **ToolName**, 🔍 Sources:, etc.)
+        #   2. Docker logs (less reliable — agent stdout doesn't always trace)
+        #   3. chat_history.db <tool_result> entries (ground truth: this is
+        #      where tool returns get persisted as messages by the agentic
+        #      loop, regardless of whether the visible reply shows an emoji)
         tool_used = False
         tool_evidence = []
         if t.require_tool:
             logs = _docker_logs_since(elapsed)
             tool_used, tool_evidence = _detect_tool_call(reply_text, logs)
+            if not tool_used:
+                # Last resort: check the DB for tool_result rows in this window
+                db_results = _query_recent_tool_calls(max_age_seconds=elapsed + 30)
+                if db_results:
+                    tool_used = True
+                    tool_evidence.extend([f"db:{r[:60]}" for r in db_results[:2]])
 
         r = score(t, reply_text, tool_used, tool_evidence)
         results.append(r)
