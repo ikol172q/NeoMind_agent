@@ -405,9 +405,9 @@ class TestCommandHandlers(unittest.TestCase):
              patch.object(self.agent, 'list_models') as mock_list:
             mock_gen.return_value = "Analysis result"
             mock_list.return_value = [
-                {"id": "deepseek-chat", "created": None, "owned_by": "deepseek"},
-                {"id": "deepseek-reasoner", "created": None, "owned_by": "deepseek"},
-                {"id": "deepseek-coder", "created": None, "owned_by": "deepseek"}
+                {"id": "deepseek-v4-flash", "created": None, "owned_by": "deepseek"},
+                {"id": "deepseek-v4-pro", "created": None, "owned_by": "deepseek"},
+                {"id": "deepseek-v4-flash", "created": None, "owned_by": "deepseek"}
             ]
             result = self.agent.handle_code_command("reason test.py")
             # Should call read_file_safe
@@ -423,8 +423,8 @@ class TestCommandHandlers(unittest.TestCase):
         # Mock list_models to return models
         with patch.object(self.agent, 'list_models') as mock_list:
             mock_list.return_value = [
-                {"id": "deepseek-chat", "created": None, "owned_by": "deepseek"},
-                {"id": "deepseek-reasoner", "created": None, "owned_by": "deepseek"}
+                {"id": "deepseek-v4-flash", "created": None, "owned_by": "deepseek"},
+                {"id": "deepseek-v4-pro", "created": None, "owned_by": "deepseek"}
             ]
             # Track model changes
             original_model = self.agent.model
@@ -433,10 +433,10 @@ class TestCommandHandlers(unittest.TestCase):
                 nonlocal call_count
                 call_count += 1
                 # During execution, model should be switched
-                self.assertEqual(self.agent.model, "deepseek-reasoner")
+                self.assertEqual(self.agent.model, "deepseek-v4-pro")
                 return "result"
 
-            result = self.agent.with_model("deepseek-reasoner", dummy_func)
+            result = self.agent.with_model("deepseek-v4-pro", dummy_func)
             self.assertEqual(result, "result")
             self.assertEqual(call_count, 1)
             # Model should be restored
@@ -788,8 +788,8 @@ class TestCommandHandlers(unittest.TestCase):
         """Test /switch model command."""
         self.agent.set_model = Mock(return_value=True)
 
-        result = self.agent.handle_switch_command("deepseek-reasoner")
-        self.agent.set_model.assert_called_once_with("deepseek-reasoner")
+        result = self.agent.handle_switch_command("deepseek-v4-pro")
+        self.agent.set_model.assert_called_once_with("deepseek-v4-pro")
         self.assertEqual(result, "✅ Switched model to deepseek-reasoner")
 
         # Test switch failure
@@ -1199,7 +1199,7 @@ class TestCommandHandlers(unittest.TestCase):
         # Mock set_model for switch command
         self.agent.set_model = Mock(return_value=True)
         # Mock list_models for switch command
-        self.agent.list_models = Mock(return_value=[{"id": "deepseek-chat"}])
+        self.agent.list_models = Mock(return_value=[{"id": "deepseek-v4-flash"}])
 
         # Mock generate_completion for AI commands
         self.agent.generate_completion.return_value = "Mocked AI response"
@@ -1215,7 +1215,7 @@ class TestCommandHandlers(unittest.TestCase):
                 (self.agent.handle_task_command, "create test"),
                 (self.agent.handle_plan_command, "test goal"),
                 (self.agent.handle_execute_command, "plan1"),
-                (self.agent.handle_switch_command, "deepseek-chat"),
+                (self.agent.handle_switch_command, "deepseek-v4-flash"),
                 (self.agent.handle_summarize_command, "test text"),
                 (self.agent.handle_translate_command, "hello"),
                 (self.agent.handle_generate_command, "prompt"),
@@ -1238,9 +1238,9 @@ class TestCommandHandlers(unittest.TestCase):
     def test_with_model_invalid_model(self):
         """Test with_model raises ValueError for unavailable model."""
         with patch.object(self.agent, 'list_models') as mock_list:
-            mock_list.return_value = [{"id": "deepseek-chat"}]
+            mock_list.return_value = [{"id": "deepseek-v4-flash"}]
             with self.assertRaises(ValueError):
-                self.agent.with_model("deepseek-reasoner", lambda: None)
+                self.agent.with_model("deepseek-v4-pro", lambda: None)
 
 if __name__ == '__main__':
     unittest.main()

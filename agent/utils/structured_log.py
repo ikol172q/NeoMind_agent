@@ -165,7 +165,7 @@ def log_llm_call(
 
     Args:
         logger: Logger instance
-        model: Model name (e.g., "deepseek-chat")
+        model: Model name (e.g., "deepseek-v4-flash")
         purpose: Purpose (user_chat, evolution, reflection, learning)
         input_tokens: Input token count
         output_tokens: Output token count

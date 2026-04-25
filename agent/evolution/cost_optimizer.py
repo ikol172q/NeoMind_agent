@@ -150,7 +150,7 @@ class CostOptimizer:
         """Record an API call for cost tracking.
 
         Args:
-            model: Model name (e.g., "deepseek-chat")
+            model: Model name (e.g., "deepseek-v4-flash")
             purpose: What the call was for (user_chat | evolution | reflection | etc.)
             input_tokens: Number of input tokens
             output_tokens: Number of output tokens

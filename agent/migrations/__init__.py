@@ -130,8 +130,16 @@ def _migrate_007_deprecated_model_aliases():
     config_paths = [
         os.path.expanduser('~/.neomind/config.json'),
     ]
+    # Auto-migrate any persisted reference to a deprecated DeepSeek name
+    # to deepseek-v4-flash (matches DeepSeek's own legacy alias mapping —
+    # deepseek-chat / deepseek-reasoner now both point at v4-flash). This
+    # protects users restoring an old config DB from getting silently
+    # routed to a 404'ing model name.
     deprecated_models = {
-        'deepseek-chat-v2': 'deepseek-chat',
+        'deepseek-chat': 'deepseek-v4-flash',
+        'deepseek-chat-v2': 'deepseek-v4-flash',
+        'deepseek-reasoner': 'deepseek-v4-flash',
+        'deepseek-coder': 'deepseek-v4-flash',
         'glm-4': 'glm-4.5',
         'glm-4-flash': 'glm-4.5-flash',
     }

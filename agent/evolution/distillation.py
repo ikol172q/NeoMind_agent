@@ -1,8 +1,8 @@
 """NeoMind Model Distillation — Cheap Model Knowledge Transfer
 
 Implements knowledge distillation from expensive to cheap models:
-1. When deepseek-reasoner produces high-quality output, save as exemplar
-2. When similar task arrives, try deepseek-chat first with exemplar as context
+1. When deepseek-v4-pro produces high-quality output, save as exemplar
+2. When similar task arrives, try deepseek-v4-flash first with exemplar as context
 3. If cheap model succeeds (quality above threshold), use it → save cost
 4. If cheap model fails, fall back to expensive model
 
@@ -61,7 +61,7 @@ class DistillationEngine:
             task_type="financial_analysis",
             prompt_summary="Analyze AAPL earnings impact",
             response="Based on the earnings report...",
-            model="deepseek-reasoner",
+            model="deepseek-v4-pro",
             quality_score=0.92,
         )
 

@@ -583,7 +583,7 @@ class TestIntegrationWithAgent(unittest.TestCase):
 
         # Mock agent config
         with patch('agent.core.agent_config') as mock_config:
-            mock_config.model = "deepseek-chat"
+            mock_config.model = "deepseek-v4-flash"
             mock_config.mode = "chat"
             mock_config.coding_mode_show_status_bar = False
             mock_config.thinking_enabled = False

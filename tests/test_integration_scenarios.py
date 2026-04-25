@@ -294,7 +294,7 @@ def scenario_3_distillation():
         task_type="financial_analysis",
         prompt_summary="分析 AAPL 最新财报",
         response=expensive_output,
-        model="deepseek-reasoner",
+        model="deepseek-v4-pro",
         quality_score=0.93,
     )
     ok(f"Exemplar #{eid} 已存储 (quality=0.93, model=deepseek-reasoner)")
@@ -321,15 +321,15 @@ def scenario_3_distillation():
     # ── Step 4a: cheap model 成功 ──
     step("Case A: cheap model 质量达标 (0.85 > 0.7)")
 
-    engine.record_attempt("financial_analysis", "deepseek-chat", 0.85, 0.003, 800, True)
+    engine.record_attempt("financial_analysis", "deepseek-v4-flash", 0.85, 0.003, 800, True)
     ok("cheap model 成功! $0.003 vs ~$0.015 (省 80%)")
 
     # ── Step 4b: cheap model 失败 → fallback ──
     step("Case B: cheap model 不达标 (0.55 < 0.7) → fallback")
 
-    engine.record_attempt("financial_analysis", "deepseek-chat", 0.55, 0.002, 600, True)
+    engine.record_attempt("financial_analysis", "deepseek-v4-flash", 0.55, 0.002, 600, True)
     info("cheap model 0.55 < 0.7 → fallback to expensive")
-    engine.record_attempt("financial_analysis", "deepseek-reasoner", 0.91, 0.015, 1100, False)
+    engine.record_attempt("financial_analysis", "deepseek-v4-pro", 0.91, 0.015, 1100, False)
     ok("fallback: deepseek-reasoner, quality=0.91, $0.015")
 
     # ── Step 5: 节约报告 ──

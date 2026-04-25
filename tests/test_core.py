@@ -36,7 +36,7 @@ class TestCoreInitialization(unittest.TestCase):
     def test_initialization_with_api_key(self):
         """Test agent initialization with explicit API key."""
         # Configure mock agent_config
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -54,7 +54,7 @@ class TestCoreInitialization(unittest.TestCase):
 
         # Verify basic properties
         self.assertEqual(agent.api_key, self.test_api_key)
-        self.assertEqual(agent.model, "deepseek-chat")
+        self.assertEqual(agent.model, "deepseek-v4-flash")
         self.assertEqual(agent.mode, "chat")
         self.assertFalse(agent.show_status_bar)
         self.assertFalse(agent.verbose_mode)
@@ -75,7 +75,7 @@ class TestCoreInitialization(unittest.TestCase):
         # Set environment variable
         with patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'env_api_key_123'}):
             # Configure mock agent_config
-            self.mock_agent_config.model = "deepseek-chat"
+            self.mock_agent_config.model = "deepseek-v4-flash"
             self.mock_agent_config.mode = "chat"
             self.mock_agent_config.coding_mode_show_status_bar = False
             self.mock_agent_config.thinking_enabled = False
@@ -99,7 +99,7 @@ class TestCoreInitialization(unittest.TestCase):
         # Remove environment variable if exists
         with patch.dict(os.environ, {}, clear=True):
             # Configure mock agent_config
-            self.mock_agent_config.model = "deepseek-chat"
+            self.mock_agent_config.model = "deepseek-v4-flash"
             self.mock_agent_config.mode = "chat"
 
             # Should raise ValueError
@@ -111,7 +111,7 @@ class TestCoreInitialization(unittest.TestCase):
     def test_initialization_with_custom_model(self):
         """Test agent initialization with custom model."""
         # Configure mock agent_config
-        self.mock_agent_config.model = "deepseek-chat"  # Default
+        self.mock_agent_config.model = "deepseek-v4-flash"  # Default
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -133,7 +133,7 @@ class TestCoreInitialization(unittest.TestCase):
     def test_initialization_with_system_prompt(self):
         """Test agent initialization with system prompt in config."""
         # Configure mock agent_config with system prompt
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -157,7 +157,7 @@ class TestCoreInitialization(unittest.TestCase):
     def test_initialization_coding_mode_system_prompt(self):
         """Test agent initialization with coding mode system prompt."""
         # Configure mock agent_config for coding mode
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "coding"
         self.mock_agent_config.show_status_bar = True
         self.mock_agent_config.thinking_enabled = False
@@ -185,7 +185,7 @@ class TestCoreInitialization(unittest.TestCase):
     def test_initialization_html_converter(self):
         """Test HTML converter initialization based on dependencies."""
         # Configure mock agent_config
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -227,7 +227,7 @@ class TestCoreHistoryManagement(unittest.TestCase):
         # Mock agent_config
         self.agent_config_patcher = patch('agent.core.agent_config')
         self.mock_agent_config = self.agent_config_patcher.start()
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -342,7 +342,7 @@ class TestCoreModeSwitching(unittest.TestCase):
     def test_switch_mode_chat_to_coding(self):
         """Test switching from chat mode to coding mode."""
         # Start in chat mode
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -388,7 +388,7 @@ class TestCoreModeSwitching(unittest.TestCase):
     def test_switch_mode_coding_to_chat(self):
         """Test switching from coding mode to chat mode."""
         # Start in coding mode
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "coding"
         self.mock_agent_config.show_status_bar = True
         self.mock_agent_config.thinking_enabled = False
@@ -435,7 +435,7 @@ class TestCoreModeSwitching(unittest.TestCase):
     def test_switch_mode_invalid_mode(self):
         """Test switching to invalid mode."""
         # Start in chat mode
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -461,7 +461,7 @@ class TestCoreModeSwitching(unittest.TestCase):
     def test_switch_mode_config_update_fails(self):
         """Test mode switching with invalid mode."""
         # Start in chat mode
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -494,7 +494,7 @@ class TestCoreStatusBuffer(unittest.TestCase):
         # Mock agent_config
         self.agent_config_patcher = patch('agent.core.agent_config')
         self.mock_agent_config = self.agent_config_patcher.start()
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
@@ -613,7 +613,7 @@ class TestCoreMiscellaneous(unittest.TestCase):
         # Mock agent_config
         self.agent_config_patcher = patch('agent.core.agent_config')
         self.mock_agent_config = self.agent_config_patcher.start()
-        self.mock_agent_config.model = "deepseek-chat"
+        self.mock_agent_config.model = "deepseek-v4-flash"
         self.mock_agent_config.mode = "chat"
         self.mock_agent_config.coding_mode_show_status_bar = False
         self.mock_agent_config.thinking_enabled = False
