@@ -7,20 +7,24 @@ import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
 import { LegacyTab } from '@/tabs/Legacy'
+import { StrategiesTab } from '@/tabs/Strategies'
 import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
-import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command } from 'lucide-react'
+import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
+import { PdtCounter } from '@/components/widgets/PdtCounter'
+import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
+type Tab = 'research' | 'strategies' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
-  { id: 'research', label: 'Research', icon: LineChart },
-  { id: 'chat',     label: 'Chat',     icon: MessagesSquare },
-  { id: 'paper',    label: 'Paper',    icon: Wallet },
-  { id: 'audit',    label: 'Audit',    icon: ClipboardList },
-  { id: 'settings', label: 'Settings', icon: SettingsIcon },
+  { id: 'research',   label: 'Research',   icon: LineChart },
+  { id: 'strategies', label: 'Strategies', icon: BookOpen },
+  { id: 'chat',       label: 'Chat',       icon: MessagesSquare },
+  { id: 'paper',      label: 'Paper',      icon: Wallet },
+  { id: 'audit',      label: 'Audit',      icon: ClipboardList },
+  { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
 export default function App() {
@@ -123,7 +127,9 @@ export default function App() {
           <Command size={10} />
           <span>K</span>
         </button>
-        <div className="flex items-center gap-3 text-[10px] text-[var(--color-dim)]">
+        <div className="flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
+          <PdtCounter />
+          <FinIntegrityBadge />
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
           <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
             ● {health.data ? `healthy · ${health.data.version}` : 'unreachable'}
@@ -151,6 +157,9 @@ export default function App() {
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
           />
+        )}
+        {tab === 'strategies' && (
+          <StrategiesTab onJumpToChat={(p, ctx) => jumpToChat(p, ctx)} />
         )}
         {tab === 'chat'     && (
           <ChatTab
