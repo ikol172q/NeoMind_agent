@@ -4,7 +4,7 @@ import {
   type LatticeGraphNode, type LatticeGraphEdge, type LatticeGraphPayload,
   type MembershipComputationDetail,
 } from '@/lib/api'
-import { X, ChevronRight, ChevronDown } from 'lucide-react'
+import { X, ChevronRight, ChevronDown, ExternalLink } from 'lucide-react'
 
 export type TraceSelection =
   | { type: 'node'; node: LatticeGraphNode }
@@ -120,19 +120,36 @@ function NodeDetail({
         )}
       </Section>
 
-      {/* V7: L1 obs nodes get a "jump to source widget" button that
-          scrolls the Research tab to the relevant widget and
-          triggers a transient highlight. */}
+      {/* V11: L1 obs nodes link upstream to the L0 widget node that
+          generated them. The L0 node holds the raw widget payload
+          (V10·A3) and external dashboard links (V11). Old behaviour
+          (scroll to a tile in the Research grid) is dead since the
+          grid moved to LegacyTab. */}
       {node.layer === 'L1' && Boolean((attrs.source as Record<string, unknown> | undefined)?.widget) && (
         <button
           data-testid="trace-jump-to-widget"
-          onClick={() => jumpToSourceWidget(
-            String((attrs.source as Record<string, unknown>).widget),
-          )}
+          onClick={() => {
+            const w = String((attrs.source as Record<string, unknown>).widget)
+            onSelectNodeById(`widget:${w}`)
+          }}
           className="self-start px-2 py-0.5 rounded border border-[var(--color-accent)] text-[10px] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10"
         >
-          ↳ jump to {String((attrs.source as Record<string, unknown>).widget)} widget
+          ↳ open L0 source: {String((attrs.source as Record<string, unknown>).widget)}
         </button>
+      )}
+
+      {/* V10·A3: raw widget payload on L0 nodes — the exact JSON
+          that fed the L1 generators this cycle. Collapsed by default
+          so it doesn't overwhelm the panel; expand to audit. */}
+      {node.layer === 'L0' && attrs.raw_payload != null && (
+        <RawPayloadSection payload={attrs.raw_payload} />
+      )}
+
+      {/* V11: outbound links to authoritative public dashboards for
+          this widget type. NeoMind doesn't try to compete with
+          TradingView/Finviz/Yahoo on UI — it links out. */}
+      {node.layer === 'L0' && typeof attrs.widget === 'string' && (
+        <ExternalLinksSection widget={attrs.widget} />
       )}
 
       <Section title="Attributes">
@@ -140,6 +157,113 @@ function NodeDetail({
           <KV key={k} k={k} v={formatAttr(v)} />
         ))}
       </Section>
+    </div>
+  )
+}
+
+
+// V10·A3: show the exact widget payload on L0 nodes. Collapsed by
+// default; click to expand. Preformatted JSON so the user can spot
+// "nothing came from this widget this cycle" (empty arrays, nulls)
+// or trace specific values back to the observations generated from them.
+function RawPayloadSection({ payload }: { payload: unknown }) {
+  const [open, setOpen] = useState(false)
+  const text = JSON.stringify(payload, null, 2)
+  const lines = text.split('\n').length
+  return (
+    <div data-testid="trace-l0-raw-payload" className="flex flex-col gap-1">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-dim)] hover:text-[var(--color-text)] self-start"
+      >
+        {open ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+        <span>Raw widget payload · {lines} lines</span>
+      </button>
+      {open && (
+        <pre
+          data-testid="trace-l0-raw-payload-body"
+          className="max-h-[260px] overflow-auto p-2 rounded bg-[var(--color-bg)] border border-[var(--color-border)] text-[9.5px] font-mono text-[var(--color-text)] leading-[1.45]"
+        >{text}</pre>
+      )}
+      <div className="text-[9px] text-[var(--color-dim)] italic leading-[1.4]">
+        This is exactly what fed the L1 generators this cycle. Every
+        L1 observation originates from a field in this blob.
+      </div>
+    </div>
+  )
+}
+
+
+// V11: per-widget outbound links. Mapping is curated, not derived —
+// each widget type points at the public products users would use to
+// dig deeper. Choices favour: free / no-login / no-paywall, and
+// cover both US (Yahoo/Finviz/TradingView) and CN (雪球) markets.
+const WIDGET_EXTERNAL_LINKS: Record<string, Array<{ label: string; url: string; note?: string }>> = {
+  chart: [
+    { label: 'TradingView', url: 'https://www.tradingview.com/chart/', note: 'realtime charting' },
+    { label: 'Yahoo Finance', url: 'https://finance.yahoo.com/quote/' },
+    { label: '雪球', url: 'https://xueqiu.com/', note: 'A股 + 美股' },
+  ],
+  earnings: [
+    { label: 'Yahoo Earnings', url: 'https://finance.yahoo.com/calendar/earnings', note: 'consensus + dates' },
+    { label: 'Earnings Whispers', url: 'https://www.earningswhispers.com/', note: 'whisper numbers' },
+  ],
+  sectors: [
+    { label: 'Finviz Map', url: 'https://finviz.com/map.ashx', note: 'visual sector heatmap' },
+    { label: '雪球 行业', url: 'https://xueqiu.com/hq#exchange=cn&plate=1_1_1' },
+    { label: 'OpenBB sectors', url: 'https://my.openbb.co/' },
+  ],
+  sentiment: [
+    { label: 'CNN Fear & Greed', url: 'https://www.cnn.com/markets/fear-and-greed', note: 'composite index' },
+    { label: 'AAII Sentiment', url: 'https://www.aaii.com/sentimentsurvey' },
+  ],
+  anomalies: [
+    { label: 'Finviz Top Movers', url: 'https://finviz.com/screener.ashx?v=111&s=ta_topgainers' },
+    { label: 'TradingView Screener', url: 'https://www.tradingview.com/screener/' },
+  ],
+  news: [
+    { label: 'Yahoo Finance News', url: 'https://finance.yahoo.com/news/' },
+    { label: 'Reuters Markets', url: 'https://www.reuters.com/markets/' },
+    { label: '雪球 头条', url: 'https://xueqiu.com/today' },
+  ],
+  market_regime: [
+    { label: 'TradingView Markets', url: 'https://www.tradingview.com/markets/' },
+    { label: 'OpenBB Platform', url: 'https://my.openbb.co/' },
+  ],
+  portfolio: [
+    { label: 'Yahoo Portfolio', url: 'https://finance.yahoo.com/portfolios/', note: 'manage there too' },
+  ],
+}
+
+function ExternalLinksSection({ widget }: { widget: string }) {
+  const links = WIDGET_EXTERNAL_LINKS[widget]
+  if (!links || links.length === 0) return null
+  return (
+    <div data-testid="trace-l0-external-links" className="flex flex-col gap-1">
+      <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+        Look at it externally
+      </div>
+      <div className="flex flex-wrap gap-1.5">
+        {links.map(({ label, url, note }) => (
+          <a
+            key={url}
+            data-testid={`trace-l0-link-${widget}`}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={note ?? label}
+            className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-border)] text-[10px] text-[var(--color-text)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)] transition"
+          >
+            <ExternalLink size={9} />
+            <span>{label}</span>
+          </a>
+        ))}
+      </div>
+      <div className="text-[9px] text-[var(--color-dim)] italic leading-[1.4]">
+        NeoMind tags + snapshots this widget for the lattice. For deep
+        exploration (charts, screeners, fundamentals) the products above
+        are authoritative.
+      </div>
     </div>
   )
 }
@@ -584,26 +708,6 @@ function Collapsible({
       )}
     </div>
   )
-}
-
-
-// V7: scroll Research tab to the widget whose `source.widget` value
-// matches and apply a 2.5s pulse highlight. No-op if the widget
-// isn't mounted (e.g., user removed it from the grid).
-function jumpToSourceWidget(widget: string) {
-  const el = document.querySelector(
-    `[data-widget-source="${CSS.escape(widget)}"]`,
-  ) as HTMLElement | null
-  if (!el) {
-    console.warn(`[lattice] no widget with data-widget-source=${widget}`)
-    return
-  }
-  el.scrollIntoView({ behavior: 'smooth', block: 'center' })
-  el.classList.remove('lattice-source-highlight')
-  // force reflow so the animation re-triggers on repeat clicks
-  void el.offsetHeight
-  el.classList.add('lattice-source-highlight')
-  window.setTimeout(() => el.classList.remove('lattice-source-highlight'), 2600)
 }
 
 

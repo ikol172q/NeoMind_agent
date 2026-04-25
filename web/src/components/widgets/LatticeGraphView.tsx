@@ -1,5 +1,5 @@
-import { useMemo, useRef, useState } from 'react'
-import { ZoomIn, ZoomOut, Maximize2 } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { ZoomIn, ZoomOut, HelpCircle } from 'lucide-react'
 import {
   useLatticeGraph,
   type LatticeGraphEdge, type LatticeGraphNode,
@@ -34,6 +34,44 @@ const LAYER_LABELS: Record<LatticeLayer, string> = {
   'L2':  'L2 · themes',
   'L3':  'L3 · calls',
 }
+// V10·A1: per-layer explainer shown in column-header popover.
+// Deliberately beginner-framed: what this layer IS, HOW it's computed
+// (deterministic vs LLM), which spec.py constants control it, and the
+// key invariant a reader can use to audit it.
+const LAYER_EXPLAINERS: Record<LatticeLayer, {
+  what: string; how: string; spec: string; invariant: string;
+}> = {
+  'L0': {
+    what: 'External widget sources (anomaly detector, earnings calendar, sector heatmap, etc.). These are the raw inputs to the lattice.',
+    how:  'Fetched live from /api/openbb/*. Zero transformation. Zero LLM.',
+    spec: '—  widget set is fixed in code.',
+    invariant: 'Click an L0 node to see the raw payload it returned this cycle.',
+  },
+  'L1': {
+    what: 'Atomic observations — one fact per row, tagged with dimensions (symbol, market, sector, severity, timescale).',
+    how:  'Deterministic Python generators (one per widget). No LLM. 100% reproducible from the L0 payload.',
+    spec: 'Tags conform to `spec.DIMENSIONS`. Severity ∈ {alert, warn, info}.',
+    invariant: 'Every L1 node has a `source.widget` and `source.generator` — click to see which function produced it.',
+  },
+  'L1.5': {
+    what: 'Sub-themes — intermediate clusters between observations and themes. Pure tag-intersection, no narrative.',
+    how:  'Deterministic. Each L1 obs is scored against every sub-theme signature in the taxonomy. No LLM.',
+    spec: 'Weight = `base_membership_weight` × `cluster_severity_bonus` (see `spec.py`). Clamped ≤ 1.0.',
+    invariant: 'Click a membership edge to see the Jaccard numerator/denominator + severity bonus. The weight on the edge must equal the formula re-computed.',
+  },
+  'L2': {
+    what: 'Themes — clustered observations with a 1-sentence LLM narrative summarizing what they have in common.',
+    how:  'Clustering is deterministic (same formula as L1.5). Narrative is LLM (deepseek-chat). Validator rejects any narrative that cites a number not verbatim present in the member obs text.',
+    spec: 'Cluster: `spec.final_membership_weight`. Narrative validator: numbers must overlap obs text.',
+    invariant: '`narrative_source` = "llm" when the LLM narrative passed; "template_fallback" when rejected. Click L2 → Deep Trace for the exact prompt + response + validator outcome.',
+  },
+  'L3': {
+    what: 'High-conviction Toulmin calls — claim / grounds / warrant / qualifier / rebuttal. Up to `max_items` shown.',
+    how:  'LLM generates up to `max_candidates` candidates. Deterministic validator rejects invalid ones (phantom grounds, tautology, missing fields). MMR selects top-k by λ-weighted relevance vs diversity.',
+    spec: 'Selection: `spec.mmr(λ=mmr_lambda)`. Validator: `spec.is_tautological_warrant` + grounds must reference real L2 theme_ids.',
+    invariant: 'Click L3 → Deep Trace to see every candidate + why the unselected ones were dropped (`drop_reason`).',
+  },
+}
 const COL_WIDTH = 220
 const COL_GAP = 30
 const NODE_W = 180
@@ -50,8 +88,8 @@ const SEVERITY_COLOR = {
 
 // ── Main component ─────────────────────────────────────
 
-const ZOOM_MIN = 0.3
-const ZOOM_MAX = 3.0
+const ZOOM_MIN = 0.5
+const ZOOM_MAX = 2.0
 const ZOOM_STEP = 1.18   // 18% per wheel tick
 
 interface ViewTransform { scale: number; tx: number; ty: number }
@@ -61,12 +99,151 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
   const q = useLatticeGraph(projectId)
   const [selection, setSelection] = useState<TraceSelection>(null)
   const [view, setView] = useState<ViewTransform>(IDENTITY)
+  const [isPanning, setIsPanning] = useState(false)
+  // Refs: wrapper = the element that receives CSS transform; viewport
+  // = the scrollable container the wrapper sits inside (its clientRect
+  // drives the clamp bounds).
+  const wrapperRef = useRef<HTMLDivElement | null>(null)
+  const viewportRef = useRef<HTMLDivElement | null>(null)
+  // The wheel-listener useEffect must re-run when the viewport div
+  // actually mounts — first render can early-return (loading/error/
+  // empty) so the div with `ref=` never mounts, ref stays null, and a
+  // `[]`-deps effect never re-runs. Mirror the DOM node into state so
+  // the effect fires on attach.
+  const [viewportEl, setViewportEl] = useState<HTMLDivElement | null>(null)
+  const bindViewport = (el: HTMLDivElement | null) => {
+    viewportRef.current = el
+    setViewportEl(el)
+  }
   const svgRef = useRef<SVGSVGElement | null>(null)
-  const dragRef = useRef<null | {
-    startX: number; startY: number; startTx: number; startTy: number;
-  }>(null)
+  const dragRef = useRef<null | { lastX: number; lastY: number; movedPx: number }>(null)
+  const suppressClickRef = useRef(false)
+  const teardownPanRef = useRef<null | (() => void)>(null)
+  // V8: hovered node id drives the overlap-glow — when an L1 obs node
+  // is hovered, every theme node that contains it as a member glows.
+  const [hoveredNodeId, setHoveredNodeId] = useState<string | null>(null)
+  // V10·A1: which layer's `?` popover is open (click-to-open,
+  // click-outside or click-again to close).
+  const [explainLayer, setExplainLayer] = useState<LatticeLayer | null>(null)
 
   const layout = useMemo(() => q.data ? computeLayout(q.data) : null, [q.data])
+  const layoutRef = useRef(layout)
+  layoutRef.current = layout
+
+  // Overlap set: for the currently-hovered node, every node connected
+  // to it by a membership edge. When the user hovers an L1 obs, this
+  // highlights every L2 theme it's a member of (and vice versa) — makes
+  // the "same observation lives in multiple themes" overlap visible at
+  // a glance. Recomputed only when hover changes.
+  const overlapSet = useMemo<Set<string>>(() => {
+    if (!hoveredNodeId || !q.data) return new Set()
+    const s = new Set<string>()
+    s.add(hoveredNodeId)
+    for (const e of q.data.edges) {
+      if (e.kind !== 'membership') continue
+      if (e.source === hoveredNodeId) s.add(e.target)
+      else if (e.target === hoveredNodeId) s.add(e.source)
+    }
+    return s
+  }, [hoveredNodeId, q.data])
+
+  // Clean up pan listeners if the component unmounts mid-drag.
+  useEffect(() => {
+    return () => {
+      const tm = teardownPanRef.current
+      if (tm) tm()
+    }
+  }, [])
+
+  // ── Wheel / trackpad: pan by default, zoom with ctrl/meta ──
+  // Modern infinite-canvas convention (Figma / tldraw / Miro / Excalidraw):
+  //   plain wheel / two-finger trackpad scroll → PAN
+  //   ctrl+wheel / two-finger trackpad pinch  → ZOOM
+  // Browsers synthesize trackpad pinch as wheel + ctrlKey=true, so a
+  // single handler covers both gestures.
+  //
+  // CRITICAL: React 18+ wraps `onWheel` in a PASSIVE listener — calling
+  // `e.preventDefault()` from there is a no-op + emits a console error,
+  // and the page underneath the lattice keeps scrolling. We attach a
+  // native non-passive listener via useEffect so preventDefault wins
+  // over native scroll. Must live BEFORE the early-return branches
+  // below (loading/error/empty) so React's hook order is stable.
+  useEffect(() => {
+    const vp = viewportEl
+    if (!vp) return
+    const handler = (e: WheelEvent) => {
+      e.preventDefault()
+      if (e.ctrlKey || e.metaKey) {
+        const rect = vp.getBoundingClientRect()
+        const cursorX = e.clientX - rect.left
+        const cursorY = e.clientY - rect.top
+        setView(v => {
+          const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
+          const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.scale * factor))
+          if (newScale === v.scale) return v
+          const k = newScale / v.scale
+          const next: ViewTransform = {
+            scale: newScale,
+            tx: cursorX - (cursorX - v.tx) * k,
+            ty: cursorY - (cursorY - v.ty) * k,
+          }
+          return clampView(next)
+        })
+        return
+      }
+      if (e.deltaX === 0 && e.deltaY === 0) return
+      setView(v => clampView({
+        scale: v.scale,
+        tx: v.tx - e.deltaX,
+        ty: v.ty - e.deltaY,
+      }))
+    }
+    vp.addEventListener('wheel', handler, { passive: false })
+    return () => { vp.removeEventListener('wheel', handler) }
+  }, [viewportEl])
+
+  // Clamp view so the *node bounding box* (not the empty canvas)
+  // always covers the viewport when zoomed in, or fits within the
+  // viewport when zoomed out. Earlier versions clamped on the full
+  // SVG canvas, which let users pan into the gaps between columns /
+  // rows — looking like a "black screen" even though math was fine.
+  //
+  //   Content nodes in screen space: (tx + s*bbox.x, ty + s*bbox.y)
+  //                                to (tx + s*(bbox.x + bbox.w), ...)
+  //   Viewport: (0, 0) to (vpW, vpH)
+  //
+  // For the bbox to fully cover viewport (bbox scaled ≥ viewport):
+  //   tx + s*bbox.x ≤ 0  AND  tx + s*(bbox.x + bbox.w) ≥ vpW
+  //   → tx ∈ [vpW - s*(bbox.x + bbox.w), -s*bbox.x]
+  // For bbox to fully fit (bbox scaled ≤ viewport):
+  //   tx + s*bbox.x ≥ 0  AND  tx + s*(bbox.x + bbox.w) ≤ vpW
+  //   → tx ∈ [-s*bbox.x, vpW - s*(bbox.x + bbox.w)]
+  // Unified: the two range endpoints are `-s*bbox.x` and
+  // `vpW - s*(bbox.x + bbox.w)`; min/max picks the right order.
+  function clampView(v: ViewTransform): ViewTransform {
+    const vp = viewportRef.current
+    const lay = layoutRef.current
+    if (!vp || !lay) return v
+    const vpW = vp.clientWidth
+    const vpH = vp.clientHeight
+    if (vpW === 0 || vpH === 0) return v
+    const bbox = lay.contentBox
+    const a_x = -v.scale * bbox.x
+    const b_x = vpW - v.scale * (bbox.x + bbox.width)
+    const a_y = -v.scale * bbox.y
+    const b_y = vpH - v.scale * (bbox.y + bbox.height)
+    const minTx = Math.min(a_x, b_x)
+    const maxTx = Math.max(a_x, b_x)
+    const minTy = Math.min(a_y, b_y)
+    const maxTy = Math.max(a_y, b_y)
+    const tx = Math.min(maxTx, Math.max(minTx, v.tx))
+    const ty = Math.min(maxTy, Math.max(minTy, v.ty))
+    return {
+      scale: v.scale,
+      tx: Number.isFinite(tx) ? tx : 0,
+      ty: Number.isFinite(ty) ? ty : 0,
+    }
+  }
 
   if (q.isLoading) {
     return <div className="p-3 text-[11px] italic text-[var(--color-dim)]">building graph…</div>
@@ -78,71 +255,84 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
     return <div className="p-3 text-[11px] italic text-[var(--color-dim)]">no lattice data yet</div>
   }
 
-  // ── Zoom / pan handlers ────────────────────────────
-  function svgPoint(clientX: number, clientY: number): { x: number; y: number } {
-    const svg = svgRef.current
-    if (!svg) return { x: 0, y: 0 }
-    const rect = svg.getBoundingClientRect()
-    // Convert client coords → viewBox coords (account for current scale/pan)
-    const scale = svg.viewBox.baseVal.width / rect.width
-    return {
-      x: (clientX - rect.left) * scale,
-      y: (clientY - rect.top) * scale,
-    }
-  }
-
-  function onWheel(e: React.WheelEvent<SVGSVGElement>) {
-    e.preventDefault()
-    const factor = e.deltaY < 0 ? ZOOM_STEP : 1 / ZOOM_STEP
-    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * factor))
-    if (newScale === view.scale) return
-    // Zoom around cursor: keep the viewBox point under cursor fixed
-    const p = svgPoint(e.clientX, e.clientY)
-    const k = newScale / view.scale
-    setView({
-      scale: newScale,
-      tx: p.x - (p.x - view.tx) * k,
-      ty: p.y - (p.y - view.ty) * k,
-    })
-  }
-
-  function onMouseDown(e: React.MouseEvent<SVGSVGElement>) {
-    // Start a pan only on empty background — not on interactive node/edge groups
-    const target = e.target as Element
-    if (target.closest('[data-node-id], [data-edge-source]')) return
-    dragRef.current = {
-      startX: e.clientX, startY: e.clientY,
-      startTx: view.tx, startTy: view.ty,
-    }
-  }
-  function onMouseMove(e: React.MouseEvent<SVGSVGElement>) {
-    if (!dragRef.current) return
-    const svg = svgRef.current
-    if (!svg) return
-    const rect = svg.getBoundingClientRect()
-    const scale = svg.viewBox.baseVal.width / rect.width
-    setView(v => ({
-      ...v,
-      tx: dragRef.current!.startTx + (e.clientX - dragRef.current!.startX) * scale,
-      ty: dragRef.current!.startTy + (e.clientY - dragRef.current!.startY) * scale,
-    }))
-  }
-  function onMouseUp() { dragRef.current = null }
-
   function resetView() { setView(IDENTITY) }
   function zoomBy(factor: number) {
-    const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, view.scale * factor))
-    // Zoom around viewBox center
-    const svg = svgRef.current
-    if (!svg) return
-    const cx = svg.viewBox.baseVal.width / 2
-    const cy = svg.viewBox.baseVal.height / 2
-    const k = newScale / view.scale
-    setView({
-      scale: newScale,
-      tx: cx - (cx - view.tx) * k,
-      ty: cy - (cy - view.ty) * k,
+    const vp = viewportRef.current
+    if (!vp) return
+    const vpW = vp.clientWidth
+    const vpH = vp.clientHeight
+    setView(v => {
+      const newScale = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, v.scale * factor))
+      if (newScale === v.scale) return v
+      // Zoom around viewport center.
+      const cx = vpW / 2
+      const cy = vpH / 2
+      const k = newScale / v.scale
+      const next: ViewTransform = {
+        scale: newScale,
+        tx: cx - (cx - v.tx) * k,
+        ty: cy - (cy - v.ty) * k,
+      }
+      return clampView(next)
     })
+  }
+
+  // Pan: mousedown on empty space arms the drag + attaches document-
+  // level mousemove/mouseup listeners SYNCHRONOUSLY. dxPx is directly
+  // added to tx because the transform is now CSS pixels, not viewBox.
+  function onMouseDown(e: React.MouseEvent<HTMLDivElement>) {
+    if (e.button !== 0) return
+    const target = e.target as Element
+    if (target.closest('[data-node-id], [data-edge-source]')) return
+    if (teardownPanRef.current) teardownPanRef.current()
+    dragRef.current = { lastX: e.clientX, lastY: e.clientY, movedPx: 0 }
+
+    const onMove = (me: MouseEvent) => {
+      const d = dragRef.current
+      if (!d) return
+      const dxPx = me.clientX - d.lastX
+      const dyPx = me.clientY - d.lastY
+      d.movedPx += Math.abs(dxPx) + Math.abs(dyPx)
+      if (!Number.isFinite(dxPx) || !Number.isFinite(dyPx)) return
+      d.lastX = me.clientX
+      d.lastY = me.clientY
+      setView(v => {
+        const next: ViewTransform = {
+          scale: v.scale,
+          tx: v.tx + dxPx,
+          ty: v.ty + dyPx,
+        }
+        return clampView(next)
+      })
+    }
+    const onUp = () => {
+      if (dragRef.current && dragRef.current.movedPx > 4) {
+        suppressClickRef.current = true
+        setTimeout(() => { suppressClickRef.current = false }, 0)
+      }
+      dragRef.current = null
+      setIsPanning(false)
+      teardown()
+    }
+    const teardown = () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
+      teardownPanRef.current = null
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    window.addEventListener('blur', onUp)
+    teardownPanRef.current = teardown
+    setIsPanning(true)
+  }
+
+  function onClickCapture(e: React.MouseEvent) {
+    if (suppressClickRef.current) {
+      e.stopPropagation()
+      e.preventDefault()
+      suppressClickRef.current = false
+    }
   }
 
   return (
@@ -156,50 +346,77 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           data-testid="lattice-zoom-in"
           onClick={() => zoomBy(ZOOM_STEP)}
           className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
-          title="zoom in (wheel up)"
+          title="zoom in (⌘/ctrl + scroll up · or pinch)"
         ><ZoomIn size={11} /></button>
         <button
           data-testid="lattice-zoom-out"
           onClick={() => zoomBy(1 / ZOOM_STEP)}
           className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
-          title="zoom out (wheel down)"
+          title="zoom out (⌘/ctrl + scroll down · or pinch)"
         ><ZoomOut size={11} /></button>
         <button
           data-testid="lattice-zoom-reset"
           onClick={resetView}
-          className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
-          title="reset view"
-        ><Maximize2 size={10} /></button>
+          className="w-6 h-6 flex items-center justify-center rounded border border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)] font-mono text-[8.5px] tracking-tight"
+          title="reset to 1:1 (100% zoom, no pan)"
+        >1:1</button>
         <div
           data-testid="lattice-zoom-level"
-          className="text-[9px] font-mono text-center text-[var(--color-dim)] pt-0.5"
+          title="scroll / two-finger drag → pan · ⌘ or ctrl + scroll (or pinch) → zoom · click + drag → pan"
+          className="text-[9px] font-mono text-center text-[var(--color-dim)] pt-0.5 cursor-help"
         >{Math.round(view.scale * 100)}%</div>
       </div>
 
-      <div className="flex-1 min-w-0 overflow-hidden" data-testid="lattice-graph-scroll">
+      {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
+          viewport top, always accessible regardless of zoom/pan. */}
+      <div
+        className="absolute top-2 right-2 z-10 flex items-center gap-1 pointer-events-none"
+        data-testid="lattice-layer-help-strip"
+      >
+        {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
+          <LayerHelpButton
+            key={layer}
+            layer={layer}
+            open={explainLayer === layer}
+            onToggle={() => setExplainLayer(l => l === layer ? null : layer)}
+            onClose={() => setExplainLayer(null)}
+          />
+        ))}
+      </div>
+
+      <div
+        ref={bindViewport}
+        className="flex-1 min-w-0 overflow-hidden relative"
+        data-testid="lattice-graph-scroll"
+        onMouseDown={onMouseDown}
+        onClickCapture={onClickCapture}
+        style={{
+          cursor: isPanning ? 'grabbing' : 'grab',
+          userSelect: 'none',
+        }}
+      >
+        <div
+          ref={wrapperRef}
+          data-testid="lattice-svg-viewport"
+          style={{
+            position: 'absolute',
+            top: 0,
+            left: 0,
+            transformOrigin: '0 0',
+            transform: `translate(${view.tx}px, ${view.ty}px) scale(${view.scale})`,
+            willChange: 'transform',
+          }}
+        >
         <svg
           ref={svgRef}
           data-testid="lattice-svg"
           data-zoom-scale={view.scale.toFixed(3)}
+          width={layout.width}
+          height={layout.height}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
-          width="100%"
-          height="100%"
-          preserveAspectRatio="xMidYMid meet"
-          onWheel={onWheel}
-          onMouseDown={onMouseDown}
-          onMouseMove={onMouseMove}
-          onMouseUp={onMouseUp}
-          onMouseLeave={onMouseUp}
-          style={{
-            display: 'block',
-            cursor: dragRef.current ? 'grabbing' : 'grab',
-            userSelect: 'none',
-          }}
+          style={{ display: 'block' }}
         >
-          <g
-            data-testid="lattice-svg-viewport"
-            transform={`translate(${view.tx},${view.ty}) scale(${view.scale})`}
-          >
+          <g>
             {/* Column headers */}
             {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
               const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
@@ -238,10 +455,15 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
                 dimmed={isSelectionActive(selection) && !isNodeSelected(selection, n.node) && !isNodeAdjacentToSelection(selection, n.node, layout.edges)}
                 onClick={() => setSelection({ type: 'node', node: n.node })}
                 focused={initialFocusNodeId === n.node.id}
+                overlapping={overlapSet.has(n.node.id) && overlapSet.size > 1 && hoveredNodeId !== n.node.id}
+                hoverRoot={hoveredNodeId === n.node.id && overlapSet.size > 1}
+                onPointerEnter={() => setHoveredNodeId(n.node.id)}
+                onPointerLeave={() => setHoveredNodeId(prev => prev === n.node.id ? null : prev)}
               />
             ))}
           </g>
         </svg>
+        </div>
       </div>
 
       <LatticeTracePanel
@@ -254,6 +476,77 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           if (node) setSelection({ type: 'node', node })
         }}
       />
+    </div>
+  )
+}
+
+
+// ── V10·A1 layer-help button + popover ─────────────────
+// Small `?` pill per layer. Click opens a 4-part popover explaining
+// what the layer is, how it's computed, which spec.py constants
+// govern it, and the key invariant a reader can audit.
+
+function LayerHelpButton({
+  layer, open, onToggle, onClose,
+}: {
+  layer: LatticeLayer
+  open: boolean
+  onToggle: () => void
+  onClose: () => void
+}) {
+  const info = LAYER_EXPLAINERS[layer]
+  const shortLabel = layer   // "L0" / "L1" / "L1.5" / "L2" / "L3"
+  return (
+    <div className="relative pointer-events-auto">
+      <button
+        data-testid={`layer-help-${layer}`}
+        data-layer-help-open={open ? 'true' : undefined}
+        onClick={onToggle}
+        className={
+          'inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded border text-[9px] font-mono transition ' +
+          (open
+            ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-panel)]'
+            : 'border-[var(--color-border)] bg-[var(--color-panel)] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]')
+        }
+        title={`What is ${layer}?`}
+      >
+        <HelpCircle size={9} />
+        <span>{shortLabel}</span>
+      </button>
+      {open && (
+        <div
+          data-testid={`layer-help-popover-${layer}`}
+          className="absolute top-full right-0 mt-1 w-[320px] rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg p-3 text-[10px] leading-[1.5] flex flex-col gap-2 z-20"
+        >
+          <div className="flex items-center justify-between">
+            <span className="font-mono text-[var(--color-accent)] uppercase tracking-wider">
+              {LAYER_LABELS[layer]}
+            </span>
+            <button
+              onClick={onClose}
+              className="text-[var(--color-dim)] hover:text-[var(--color-text)] text-[11px] leading-none"
+              title="close"
+            >×</button>
+          </div>
+          <ExplainField label="What" text={info.what} />
+          <ExplainField label="How" text={info.how} />
+          <ExplainField label="Spec" text={info.spec} mono />
+          <ExplainField label="Audit" text={info.invariant} />
+        </div>
+      )}
+    </div>
+  )
+}
+
+function ExplainField({ label, text, mono }: { label: string; text: string; mono?: boolean }) {
+  return (
+    <div>
+      <div className="text-[9px] uppercase tracking-wider text-[var(--color-dim)]">{label}</div>
+      <div className={mono
+        ? 'text-[var(--color-text)] font-mono text-[9.5px]'
+        : 'text-[var(--color-text)]'}>
+        {text}
+      </div>
     </div>
   )
 }
@@ -280,6 +573,10 @@ function computeLayout(g: LatticeGraphPayload): {
   edges: LaidOutEdge[]
   width: number
   height: number
+  /** Bounding box of the visible *nodes* (not the full SVG canvas).
+   *  Used for pan clamping so users can't park the viewport on the
+   *  empty margins / inter-column gaps. */
+  contentBox: { x: number; y: number; width: number; height: number }
 } {
   // Bucket nodes by layer, stable-sort by id
   const byLayer: Record<LatticeLayer, LatticeGraphNode[]> = {
@@ -319,7 +616,30 @@ function computeLayout(g: LatticeGraphPayload): {
   const width = SIDE_MARGIN * 2 + 5 * COL_WIDTH + 4 * COL_GAP
   const height = TOP_MARGIN + maxRows * (NODE_H + ROW_GAP) + 20
 
-  return { nodes: Object.values(posById), edges: laidEdges, width, height }
+  const nodes = Object.values(posById)
+  // Tight bounding box of the visible nodes. When nodes is empty
+  // we fall back to the full canvas so the clamp math still works.
+  let contentBox = { x: 0, y: 0, width, height }
+  if (nodes.length > 0) {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity
+    for (const n of nodes) {
+      if (n.x < minX) minX = n.x
+      if (n.y < minY) minY = n.y
+      if (n.x + NODE_W > maxX) maxX = n.x + NODE_W
+      if (n.y + NODE_H > maxY) maxY = n.y + NODE_H
+    }
+    // Small padding so nodes aren't flush against the viewport edge
+    // at the clamp limits.
+    const PAD = 12
+    contentBox = {
+      x: minX - PAD,
+      y: minY - PAD,
+      width: (maxX - minX) + 2 * PAD,
+      height: (maxY - minY) + 2 * PAD,
+    }
+  }
+
+  return { nodes, edges: laidEdges, width, height, contentBox }
 }
 
 
@@ -327,6 +647,7 @@ function computeLayout(g: LatticeGraphPayload): {
 
 function NodeSvg({
   node, x, y, w, h, selected, dimmed, focused, onClick,
+  overlapping, hoverRoot, onPointerEnter, onPointerLeave,
 }: {
   node: LatticeGraphNode
   x: number; y: number; w: number; h: number
@@ -334,6 +655,10 @@ function NodeSvg({
   dimmed: boolean
   focused: boolean
   onClick: () => void
+  overlapping: boolean
+  hoverRoot: boolean
+  onPointerEnter: () => void
+  onPointerLeave: () => void
 }) {
   const prov = node.provenance.computed_by
   const isDiamond = prov === 'llm' || prov === 'llm+validator' || prov === 'llm+mmr'
@@ -341,10 +666,15 @@ function NodeSvg({
   const sevColor = severity ? SEVERITY_COLOR[severity as keyof typeof SEVERITY_COLOR] : undefined
   const strokeColor = selected
     ? 'var(--color-accent)'
-    : sevColor ?? 'var(--color-border)'
-  const strokeWidth = selected ? 2.5 : focused ? 2 : 1
+    : (overlapping || hoverRoot)
+      ? 'var(--color-accent)'
+      : sevColor ?? 'var(--color-border)'
+  const strokeWidth = selected ? 2.5 : (overlapping || hoverRoot) ? 2 : focused ? 2 : 1
   const fill = dimmed ? 'var(--color-panel)' : 'var(--color-bg)'
   const opacity = dimmed ? 0.35 : 1
+  // Soft glow on overlap partners — subtle enough not to overwhelm
+  // severity coloring but unmistakable as a visual link.
+  const glowFilter = (overlapping || hoverRoot) ? 'drop-shadow(0 0 4px var(--color-accent))' : undefined
 
   const shapeClass = isDiamond
     ? `node-shape-diamond node-provenance-${prov.replace('+', '-')}`
@@ -358,9 +688,13 @@ function NodeSvg({
       data-provenance={prov}
       data-selected={selected ? 'true' : undefined}
       data-focused={focused ? 'true' : undefined}
+      data-overlapping={overlapping ? 'true' : undefined}
+      data-hover-root={hoverRoot ? 'true' : undefined}
       className={shapeClass}
       onClick={onClick}
-      style={{ cursor: 'pointer', opacity }}
+      onPointerEnter={onPointerEnter}
+      onPointerLeave={onPointerLeave}
+      style={{ cursor: 'pointer', opacity, filter: glowFilter }}
     >
       {isDiamond ? (
         <polygon

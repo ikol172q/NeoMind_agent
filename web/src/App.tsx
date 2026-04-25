@@ -6,11 +6,14 @@ import { ChatTab } from '@/tabs/Chat'
 import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
+import { LegacyTab } from '@/tabs/Legacy'
 import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command } from 'lucide-react'
 
-type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings'
+// 'legacy' is intentionally NOT in main nav. Reachable via Settings →
+// "Open legacy dashboard" or by appending ?legacy=1 to the URL.
+type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'research', label: 'Research', icon: LineChart },
@@ -21,7 +24,12 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
 ]
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>('research')
+  const [tab, setTab] = useState<Tab>(() => {
+    if (typeof window !== 'undefined' && window.location.search.includes('legacy=1')) {
+      return 'legacy'
+    }
+    return 'research'
+  })
   const [projectId, setProjectId] = useState<string>(
     () => localStorage.getItem('neomind.project') ?? 'fin-core'
   )
@@ -164,7 +172,20 @@ export default function App() {
             onConsumeFilter={() => setAuditReqFilter(null)}
           />
         )}
-        {tab === 'settings' && <SettingsTab projectId={projectId} onProjectChange={switchProject} />}
+        {tab === 'settings' && (
+          <SettingsTab
+            projectId={projectId}
+            onProjectChange={switchProject}
+            onOpenLegacy={() => setTab('legacy')}
+          />
+        )}
+        {tab === 'legacy'   && (
+          <LegacyTab
+            projectId={projectId}
+            onJumpToChat={jumpToChat}
+            digestFocus={digestFocus}
+          />
+        )}
       </main>
     </div>
   )

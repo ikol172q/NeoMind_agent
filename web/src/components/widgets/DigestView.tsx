@@ -1,16 +1,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   useLatticeCalls, useWatchlist, usePaperPositions, useAnomalies,
+  useLatticeSnapshots, useLatticeBudgets, setLatticeBudgets,
+  useLatticeSelfcheck,
   type LatticeCall, type LatticeTheme, type LatticeObservation,
   type AnomalyFlag,
 } from '@/lib/api'
-import { useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
 import { LatticeGraphView } from './LatticeGraphView'
 import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
 import {
   Sparkles, RefreshCw, ChevronRight, ChevronDown, Languages,
   Target, Shield, AlertCircle, Info, AlertTriangle,
+  Calendar, History, SlidersHorizontal, ShieldCheck, ShieldAlert,
+  Settings as SettingsIcon,
 } from 'lucide-react'
 
 export interface DigestFocus {
@@ -26,6 +30,9 @@ interface Props {
   /** When this changes, DigestView flips to flat mode, scrolls to
    *  nodes matching `symbol`, and applies a transient highlight. */
   focus?: DigestFocus | null
+  /** When provided, the header gets a `config` button that calls this.
+   *  Used by Research tab to open the watchlist + portfolio drawer. */
+  onOpenConfig?: () => void
 }
 
 type Mode = 'summary' | 'drilldown' | 'flat' | 'trace'
@@ -44,8 +51,11 @@ const CONF_COLOR: Record<string, string> = {
   low: 'var(--color-dim)',
 }
 
-export function DigestView({ projectId, onJumpToChat, focus }: Props) {
-  const q = useLatticeCalls(projectId)
+export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig }: Props) {
+  // V8: when historicalDate is non-null, render that archived day
+  // instead of live. Null = live mode.
+  const [historicalDate, setHistoricalDate] = useState<string | null>(null)
+  const q = useLatticeCalls(projectId, historicalDate)
   const anomalies = useAnomalies(projectId)
   const wl = useWatchlist(projectId)
   const pos = usePaperPositions(projectId)
@@ -102,7 +112,22 @@ export function DigestView({ projectId, onJumpToChat, focus }: Props) {
         fetchedAt={payload?.fetched_at}
         loading={q.isFetching}
         onRefresh={() => q.refetch()}
+        projectId={projectId}
+        historicalDate={historicalDate}
+        setHistoricalDate={setHistoricalDate}
+        onOpenConfig={onOpenConfig}
       />
+      {/* V9: thin animated progress bar during any refetch. Old data
+          stays visible below (via placeholderData: keepPreviousData)
+          so the user can keep reading, but mutating controls are
+          locked until the new data lands. */}
+      {q.isFetching && !q.isLoading && (
+        <div
+          data-testid="digest-refresh-bar"
+          className="h-[2px] bg-[var(--color-accent)] animate-pulse shrink-0"
+          aria-label="regenerating lattice — data may change shortly"
+        />
+      )}
 
       {(anomalies.data?.flags?.length ?? 0) > 0 && !isFreshInstall && (
         <AnomalyStrip
@@ -278,24 +303,55 @@ function AnomalyStrip({
 
 function Header({
   mode, setMode, fetchedAt, loading, onRefresh,
+  projectId, historicalDate, setHistoricalDate, onOpenConfig,
 }: {
   mode: Mode
   setMode: (m: Mode) => void
   fetchedAt?: string
   loading: boolean
   onRefresh: () => void
+  projectId: string
+  historicalDate: string | null
+  setHistoricalDate: (d: string | null) => void
+  onOpenConfig?: () => void
 }) {
+  const isHistorical = historicalDate !== null
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
       <Sparkles size={12} className="text-[var(--color-accent)]" />
       <span className="text-[10px] uppercase tracking-wider text-[var(--color-dim)] flex-1">
-        Today's lattice · L1 → L2 → L3
-        {fetchedAt && (
-          <span className="ml-2 text-[var(--color-dim)]/80">
-            updated {new Date(fetchedAt).toLocaleTimeString()}
-          </span>
+        {isHistorical ? (
+          <>
+            <span className="text-[var(--color-amber,#e5a200)]">
+              Historical · {historicalDate}
+            </span>
+            <button
+              onClick={() => setHistoricalDate(null)}
+              className="ml-2 text-[var(--color-accent)] hover:underline normal-case tracking-normal"
+              data-testid="digest-historical-clear"
+            >
+              ← back to live
+            </button>
+          </>
+        ) : (
+          <>
+            Today's lattice · L1 → L2 → L3
+            {fetchedAt && (
+              <span className="ml-2 text-[var(--color-dim)]/80">
+                updated {new Date(fetchedAt).toLocaleTimeString()}
+              </span>
+            )}
+          </>
         )}
       </span>
+      <HistoryPicker
+        projectId={projectId}
+        value={historicalDate}
+        onChange={setHistoricalDate}
+        disabled={loading}
+      />
+      <IntegrityBadge projectId={projectId} disabled={loading || isHistorical} />
+      <BudgetsPicker disabled={isHistorical || loading} />
       <div
         className="flex rounded border border-[var(--color-border)] overflow-hidden text-[10px]"
         data-testid="digest-mode-toggle"
@@ -322,7 +378,7 @@ function Header({
           </button>
         ))}
       </div>
-      <LanguageToggle />
+      <LanguageToggle fetchingLattice={loading} />
       <Button
         size="sm"
         variant="ghost"
@@ -333,45 +389,560 @@ function Header({
       >
         <RefreshCw size={11} className={loading ? 'animate-spin' : ''} />
       </Button>
+      {onOpenConfig && (
+        <button
+          data-testid="research-config-open"
+          onClick={onOpenConfig}
+          title="Edit watchlist + portfolio (lattice L0 inputs)"
+          className="flex items-center gap-1 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-0.5 transition"
+        >
+          <SettingsIcon size={11} />
+          <span>config</span>
+        </button>
+      )}
     </div>
   )
 }
 
 
-function LanguageToggle() {
+function HistoryPicker({
+  projectId, value, onChange, disabled,
+}: {
+  projectId: string
+  value: string | null
+  onChange: (d: string | null) => void
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  const q = useLatticeSnapshots(projectId)
+  const snapshots = q.data?.snapshots ?? []
+
+  return (
+    <div className="relative">
+      <button
+        data-testid="digest-history-toggle"
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+        className={
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] transition ' +
+          (value
+            ? 'border-[var(--color-amber,#e5a200)] text-[var(--color-amber,#e5a200)]'
+            : 'border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]')
+        }
+        title={value
+          ? `Viewing archived lattice for ${value}`
+          : 'View an archived past lattice (auto-saved daily)'}
+      >
+        {value ? <History size={10} /> : <Calendar size={10} />}
+        <span className="font-mono">{value ?? 'past'}</span>
+      </button>
+      {open && (
+        <div
+          data-testid="digest-history-menu"
+          className="absolute top-full right-0 mt-1 min-w-[180px] max-h-[260px] overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg z-20 text-[10px]"
+        >
+          <button
+            onClick={() => { onChange(null); setOpen(false) }}
+            className="w-full text-left px-2 py-1 hover:bg-[var(--color-accent)]/15 text-[var(--color-text)]"
+            data-testid="digest-history-live"
+          >
+            <b>Live</b> — today, auto-refreshing
+          </button>
+          <div className="border-t border-[var(--color-border)]">
+            {snapshots.length === 0 && (
+              <div className="px-2 py-1.5 text-[var(--color-dim)] italic">
+                No snapshots yet. They accumulate when you refresh the
+                live lattice — one file per calendar day (UTC).
+              </div>
+            )}
+            {snapshots.map(s => {
+              const active = s.date === value
+              return (
+                <button
+                  key={s.date}
+                  data-testid={`digest-history-date-${s.date}`}
+                  onClick={() => { onChange(s.date); setOpen(false) }}
+                  className={
+                    'w-full text-left px-2 py-1 hover:bg-[var(--color-accent)]/15 font-mono ' +
+                    (active ? 'text-[var(--color-accent)]' : 'text-[var(--color-text)]')
+                  }
+                >
+                  {s.date}
+                  {s.output_language && (
+                    <span className="ml-2 text-[9px] text-[var(--color-dim)]">
+                      {s.output_language === 'zh-CN-mixed' ? '中' : 'EN'}
+                    </span>
+                  )}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── V10·A2 live integrity badge ────────────────────────
+//
+// A small badge that, on click, runs /api/lattice/selfcheck and
+// shows a structured pass/fail report for each documented invariant.
+// Lazy — doesn't run on page load; fires only when user clicks.
+
+function IntegrityBadge({
+  projectId, disabled,
+}: {
+  projectId: string
+  disabled?: boolean
+}) {
+  const [open, setOpen] = useState(false)
+  // Only fetch when the panel opens (or stays open). Saves a recompute
+  // on every page load.
+  const q = useLatticeSelfcheck(projectId, open)
+  const checks = q.data?.checks ?? []
+  const allPass = q.data?.all_pass
+  // Show unknown (grey) if never fetched, pass (green) if clean,
+  // warn (amber) if any check failed.
+  const status: 'unknown' | 'pass' | 'fail' =
+    q.data == null ? 'unknown' : allPass ? 'pass' : 'fail'
+  const color = status === 'pass'
+    ? 'var(--color-green)'
+    : status === 'fail'
+      ? 'var(--color-amber,#e5a200)'
+      : 'var(--color-dim)'
+  const Icon = status === 'fail' ? ShieldAlert : ShieldCheck
+
+  return (
+    <div className="relative">
+      <button
+        data-testid="digest-integrity-toggle"
+        data-integrity-status={status}
+        disabled={disabled}
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] transition disabled:opacity-50"
+        style={{ borderColor: color, color }}
+        title={status === 'unknown'
+          ? 'Run live integrity checks on the current lattice'
+          : allPass
+            ? `Integrity ✓ — ${q.data?.summary}. Click for details.`
+            : `Integrity ⚠ — ${q.data?.summary}. Click to see failures.`}
+      >
+        <Icon size={10} />
+        <span className="font-mono">
+          {status === 'unknown' ? 'check' : q.data?.summary}
+        </span>
+      </button>
+      {open && (
+        <div
+          data-testid="digest-integrity-panel"
+          className="absolute top-full right-0 mt-1 w-[380px] max-h-[400px] overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg p-3 text-[10px] z-20 flex flex-col gap-2"
+        >
+          <div className="flex items-center justify-between">
+            <span className="uppercase tracking-wider text-[var(--color-dim)]">
+              Live integrity report
+            </span>
+            <button
+              onClick={() => { q.refetch(); }}
+              disabled={q.isFetching}
+              className="text-[var(--color-dim)] hover:text-[var(--color-text)] text-[9px]"
+              title="re-run checks"
+            >
+              {q.isFetching ? 'running…' : 'refresh'}
+            </button>
+          </div>
+          {q.isLoading && (
+            <div className="italic text-[var(--color-dim)]">running checks…</div>
+          )}
+          {q.isError && (
+            <div className="text-[var(--color-red)]">
+              {(q.error as Error).message.slice(0, 200)}
+            </div>
+          )}
+          {q.data && (
+            <>
+              <div className="text-[var(--color-text)]">
+                <b>{q.data.summary}</b>
+                {allPass
+                  ? ' — every invariant holds on the current lattice.'
+                  : ' — see failing checks below.'}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                {checks.map(c => (
+                  <IntegrityCheckRow key={c.name} check={c} />
+                ))}
+              </div>
+              <div className="text-[9px] text-[var(--color-dim)] border-t border-[var(--color-border)] pt-1.5 leading-[1.4]">
+                These are <b>live</b> — recomputed every time you click
+                refresh. They're also run in CI on every commit.
+                Click a failing row to see the offenders.
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function IntegrityCheckRow({ check }: { check: {
+  name: string; label: string; pass: boolean; detail: string; offenders?: unknown[]
+} }) {
+  const [expand, setExpand] = useState(false)
+  const hasOffenders = !!check.offenders && check.offenders.length > 0
+  return (
+    <div
+      data-testid={`integrity-check-${check.name}`}
+      data-integrity-pass={check.pass ? 'true' : 'false'}
+      className={
+        'rounded border px-2 py-1.5 ' +
+        (check.pass
+          ? 'border-[var(--color-border)] bg-[var(--color-bg)]/40'
+          : 'border-[var(--color-amber,#e5a200)]/60 bg-[var(--color-amber,#e5a200)]/10')
+      }
+    >
+      <button
+        onClick={() => hasOffenders && setExpand(!expand)}
+        className="w-full flex items-start gap-2 text-left"
+      >
+        <span
+          className="text-[10px] shrink-0 mt-0.5"
+          style={{ color: check.pass ? 'var(--color-green)' : 'var(--color-amber,#e5a200)' }}
+        >
+          {check.pass ? '✓' : '⚠'}
+        </span>
+        <div className="flex-1">
+          <div className="text-[var(--color-text)]">{check.label}</div>
+          <div className="text-[9px] text-[var(--color-dim)] font-mono">
+            {check.detail}
+          </div>
+        </div>
+        {hasOffenders && (
+          <span className="text-[9px] text-[var(--color-dim)]">
+            {expand ? '▾' : '▸'}
+          </span>
+        )}
+      </button>
+      {expand && check.offenders && (
+        <pre
+          data-testid={`integrity-offenders-${check.name}`}
+          className="mt-1 text-[9px] text-[var(--color-amber,#e5a200)] font-mono overflow-x-auto"
+        >
+          {JSON.stringify(check.offenders, null, 2)}
+        </pre>
+      )}
+    </div>
+  )
+}
+
+
+// ── V9 layer-budget override knob ─────────────────────
+//
+// A small cog button in the header that opens a drawer with 5
+// controls (L1.5 max, L2 max, L3 max, L3 candidate pool, MMR λ).
+// Applying fires POST /api/lattice/budgets → runtime override →
+// every RQ key that includes budget_hash re-keys → pipeline re-runs.
+
+interface BudgetDraft {
+  sub_themes_max: number | null
+  themes_max: number | null
+  calls_max: number | null
+  calls_candidates: number | null
+  calls_lambda: number | null
+}
+
+// Helper: a field value is an "override" iff it differs from the
+// YAML default. Used to color inputs + show the `budgets*` badge.
+function isOverridden(value: number | null, yamlDefault: number | null): boolean {
+  if (value === null && yamlDefault === null) return false
+  if (value === null || yamlDefault === null) return true
+  return Math.abs(value - yamlDefault) > 1e-9
+}
+
+function BudgetsPicker({ disabled }: { disabled: boolean }) {
+  const [open, setOpen] = useState(false)
+  const qc = useQueryClient()
+  const q = useLatticeBudgets()
+  const state = q.data
+  const active = !!state?.override
+
+  // Build initial draft from the effective values. `null` means "use
+  // default" — important for min_members and max_items which may be
+  // null by design.
+  const draft0: BudgetDraft = {
+    sub_themes_max: state?.effective.sub_themes.max_items ?? null,
+    themes_max:     state?.effective.themes.max_items ?? null,
+    calls_max:      state?.effective.calls.max_items ?? null,
+    calls_candidates: state?.effective.calls.max_candidates ?? null,
+    calls_lambda:   state?.effective.calls.mmr_lambda ?? null,
+  }
+  const [draft, setDraft] = useState<BudgetDraft>(draft0)
+  // Reset the draft each time the panel opens so it always reflects
+  // the current effective state.
+  useEffect(() => {
+    if (open) setDraft(draft0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, state?.effective_hash])
+
+  const mutation = useMutation({
+    mutationFn: async (clear: boolean) => {
+      const body = clear ? {} : {
+        sub_themes: { max_items: draft.sub_themes_max },
+        themes:     { max_items: draft.themes_max },
+        calls: {
+          max_items: draft.calls_max,
+          max_candidates: draft.calls_candidates,
+          mmr_lambda: draft.calls_lambda,
+        },
+      }
+      return setLatticeBudgets(body)
+    },
+    onSuccess: (resp) => {
+      // Publish the new effective state so components that depend on
+      // budget_hash re-key synchronously.
+      qc.setQueryData(['lattice_budgets'], {
+        ...state,
+        effective: resp.effective,
+        override: resp.override,
+        effective_hash: resp.effective_hash,
+      })
+      setOpen(false)
+    },
+  })
+
+  const label = active ? 'budgets*' : 'budgets'
+
+  return (
+    <div className="relative">
+      <button
+        data-testid="digest-budgets-toggle"
+        data-budgets-override={active ? 'true' : undefined}
+        disabled={disabled || !state}
+        onClick={() => setOpen(!open)}
+        className={
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] transition disabled:opacity-50 ' +
+          (active
+            ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+            : 'border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]')
+        }
+        title={disabled
+          ? 'Budget controls disabled while viewing a historical snapshot'
+          : active
+            ? 'Runtime override active — click to adjust or reset to YAML'
+            : 'Tune per-layer node counts live (runtime override)'}
+      >
+        <SlidersHorizontal size={10} />
+        <span className="font-mono">{label}</span>
+      </button>
+      {open && state && (
+        <div
+          data-testid="digest-budgets-panel"
+          className="absolute top-full right-0 mt-1 w-[260px] rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg z-20 p-3 flex flex-col gap-2 text-[10px]"
+        >
+          <div className="flex items-center justify-between text-[var(--color-dim)] uppercase tracking-wider">
+            <span>Layer budgets · runtime</span>
+            {active && (
+              <span className="text-[var(--color-accent)] normal-case tracking-normal">
+                override active
+              </span>
+            )}
+          </div>
+          <BudgetRow
+            label="L1.5 sub-themes · max"
+            value={draft.sub_themes_max}
+            effective={state.effective.sub_themes.max_items}
+            yamlDefault={state.yaml_default.sub_themes.max_items}
+            min={0} max={20}
+            onChange={v => setDraft(d => ({ ...d, sub_themes_max: v }))}
+            testId="budget-input-sub-themes-max"
+          />
+          <BudgetRow
+            label="L2 themes · max"
+            value={draft.themes_max}
+            effective={state.effective.themes.max_items}
+            yamlDefault={state.yaml_default.themes.max_items}
+            min={0} max={20}
+            onChange={v => setDraft(d => ({ ...d, themes_max: v }))}
+            testId="budget-input-themes-max"
+          />
+          <BudgetRow
+            label="L3 calls · max"
+            value={draft.calls_max}
+            effective={state.effective.calls.max_items}
+            yamlDefault={state.yaml_default.calls.max_items}
+            min={0} max={10}
+            onChange={v => setDraft(d => ({ ...d, calls_max: v }))}
+            testId="budget-input-calls-max"
+          />
+          <BudgetRow
+            label="L3 · candidate pool"
+            value={draft.calls_candidates}
+            effective={state.effective.calls.max_candidates}
+            yamlDefault={state.yaml_default.calls.max_candidates}
+            min={1} max={5}
+            onChange={v => setDraft(d => ({ ...d, calls_candidates: v }))}
+            testId="budget-input-calls-candidates"
+          />
+          <BudgetRow
+            label="L3 · MMR λ (0=diverse, 1=relevant)"
+            value={draft.calls_lambda}
+            effective={state.effective.calls.mmr_lambda}
+            yamlDefault={state.yaml_default.calls.mmr_lambda}
+            min={0} max={1} step={0.05}
+            onChange={v => setDraft(d => ({ ...d, calls_lambda: v }))}
+            testId="budget-input-calls-lambda"
+          />
+          <div className="text-[9px] text-[var(--color-dim)] pt-1 leading-[1.4]">
+            Changes to <b>L3 pool</b> re-run the LLM; others are instant.
+            Each (language × budget) combo is cached separately —
+            flipping back to a seen combo is a memory hit.
+          </div>
+          <div className="flex items-center justify-between gap-2 pt-1">
+            <button
+              data-testid="digest-budgets-reset"
+              onClick={() => mutation.mutate(true)}
+              disabled={mutation.isPending || !active}
+              className="px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)] disabled:opacity-40"
+              title="Clear runtime override (fall back to YAML)"
+            >
+              reset
+            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={() => setOpen(false)}
+                disabled={mutation.isPending}
+                className="px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+              >
+                cancel
+              </button>
+              <button
+                data-testid="digest-budgets-apply"
+                onClick={() => mutation.mutate(false)}
+                disabled={mutation.isPending}
+                className="px-2 py-0.5 rounded bg-[var(--color-accent)] text-[var(--color-bg)] hover:brightness-110 disabled:opacity-60"
+              >
+                {mutation.isPending ? 'applying…' : 'apply'}
+              </button>
+            </div>
+          </div>
+          {mutation.isError && (
+            <div className="text-[9px] text-[var(--color-red)]">
+              {(mutation.error as Error).message.slice(0, 140)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function BudgetRow({
+  label, value, effective, yamlDefault, min, max, step, onChange, testId,
+}: {
+  label: string
+  /** Draft value — may be `null` to mean "use default". */
+  value: number | null
+  /** Currently-effective value (from server) — shown in the input as
+   *  ghost text when `value` is null, so the user can see what "auto"
+   *  actually resolves to without having to guess. */
+  effective: number | null
+  /** YAML baseline — used to decide whether the effective value is
+   *  a runtime override (yellow/accent) or the default (dim). */
+  yamlDefault: number | null
+  min: number
+  max: number
+  step?: number
+  onChange: (v: number | null) => void
+  testId: string
+}) {
+  const overridden = isOverridden(value ?? effective, yamlDefault)
+  // Display value: what's in the draft, else what's currently effective,
+  // else blank. "Blank + placeholder" is avoided — user asked to see the
+  // actual number when they focus.
+  const displayValue = value !== null
+    ? value
+    : effective !== null
+      ? effective
+      : ''
+  return (
+    <label className="flex items-center gap-2 text-[var(--color-text)]">
+      <span className="flex-1">{label}</span>
+      <input
+        data-testid={testId}
+        data-overridden={overridden ? 'true' : undefined}
+        type="number"
+        value={displayValue}
+        placeholder="auto"
+        min={min}
+        max={max}
+        step={step ?? 1}
+        onChange={e => {
+          const raw = e.target.value
+          if (raw === '') { onChange(null); return }
+          const n = Number(raw)
+          if (Number.isFinite(n)) onChange(n)
+        }}
+        className={
+          'w-16 px-1 py-0.5 bg-[var(--color-bg)] border rounded font-mono text-[10px] text-right ' +
+          (overridden
+            ? 'border-[var(--color-accent)] text-[var(--color-accent)]'
+            : 'border-[var(--color-border)] text-[var(--color-dim)]')
+        }
+      />
+    </label>
+  )
+}
+
+
+function LanguageToggle({ fetchingLattice }: { fetchingLattice: boolean }) {
   const qc = useQueryClient()
   const q = useLatticeLanguage()
   const active = q.data?.active
-  const label = active === 'zh-CN-mixed' ? '中' : active === 'en' ? 'EN' : '—'
-  const title = active === 'zh-CN-mixed'
-    ? 'Output language: 中英混合 — click to switch to English'
-    : active === 'en'
-      ? 'Output language: English — click to switch to 中英混合'
-      : 'Output language (loading)'
+
+  // V8: language is now part of every dependent query's key
+  // (useLatticeCalls / useLatticeGraph / useLatticeTrace). Flipping
+  // active language switches the key — RQ serves from memory if the
+  // other language has already been fetched, or fetches fresh
+  // otherwise. No explicit refetch needed here.
+  const mutation = useMutation({
+    mutationFn: async (next: 'en' | 'zh-CN-mixed') => {
+      const resp = await setLatticeLanguage(next)
+      qc.setQueryData(['lattice_language'], {
+        active: resp.active,
+        override: resp.override,
+        yaml_default: resp.yaml_default,
+        available: ['en', 'zh-CN-mixed'],
+      })
+      return resp
+    },
+  })
+
+  const pending = mutation.isPending
+  const label = pending
+    ? '…'
+    : active === 'zh-CN-mixed' ? '中' : active === 'en' ? 'EN' : '—'
+  const title = pending
+    ? 'Regenerating narratives in the selected language (this calls the LLM — takes a few seconds)'
+    : active === 'zh-CN-mixed'
+      ? 'Output language: 中英混合 — click to switch to English'
+      : active === 'en'
+        ? 'Output language: English — click to switch to 中英混合'
+        : 'Output language (loading)'
   return (
     <button
       data-testid="digest-language-toggle"
       data-language-active={active}
-      onClick={async () => {
-        if (!active) return
+      data-language-pending={pending ? 'true' : undefined}
+      onClick={() => {
+        if (!active || pending || fetchingLattice) return
         const next = active === 'en' ? 'zh-CN-mixed' : 'en'
-        try {
-          await setLatticeLanguage(next)
-        } catch (e) {
-          console.error('failed to set language', e)
-          return
-        }
-        // Busts server caches; now bust client caches so UI repaints
-        qc.invalidateQueries({ queryKey: ['lattice_language'] })
-        qc.invalidateQueries({ queryKey: ['lattice_calls'] })
-        qc.invalidateQueries({ queryKey: ['lattice_graph'] })
-        qc.invalidateQueries({ queryKey: ['lattice_trace'] })
+        mutation.mutate(next)
       }}
-      disabled={!active}
-      className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-border)] text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] transition"
+      disabled={!active || pending || fetchingLattice}
+      className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-[var(--color-border)] text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] transition disabled:opacity-60"
       title={title}
     >
-      <Languages size={10} />
+      <Languages size={10} className={pending ? 'animate-pulse' : ''} />
       <span className="font-mono">{label}</span>
     </button>
   )
