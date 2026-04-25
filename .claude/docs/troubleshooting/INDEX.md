@@ -31,3 +31,17 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 
 - [2026-04-19-headless-browser-memory-leak.md](2026-04-19-headless-browser-memory-leak.md) — Always `trap`/`finally` to kill spawned Chrome + rm user-data-dir; check `memory_pressure` before spawning; one background poll at a time
 - [2026-04-19-openbb-workspace-schema-gotchas.md](2026-04-19-openbb-workspace-schema-gotchas.md) — apps.json is an ARRAY; agents.json endpoints.query is RELATIVE; SSE must emit `event: copilotMessageChunk` + `{"delta": …}` — Workspace drops anything else silently
+- [2026-04-19-launchd-service-stale-env-snapshot.md](2026-04-19-launchd-service-stale-env-snapshot.md) — Long-running services bake env at start; fixing .zshrc/config doesn't help. Always `ps eww <pid>` the running process, not just your shell.
+
+## 2026-04-23 — Insight Lattice pan/zoom black-screen session
+
+- [2026-04-23-ui-bug-ship-without-browser-test.md](2026-04-23-ui-bug-ship-without-browser-test.md) — After 3 failed iterative fixes for a UI bug, STOP editing and write a Playwright repro first. State dump + screenshot surfaces the real fault model; code reasoning alone doesn't.
+- [2026-04-23-svg-viewbox-transform-voodoo.md](2026-04-23-svg-viewbox-transform-voodoo.md) — For pan/zoom, CSS transform on a wrapper `<div>` beats SVG `viewBox` + inner `<g transform>` + `getScreenCTM()`; stays in CSS pixels, no letterbox math.
+- [2026-04-23-pan-clamp-on-canvas-not-content.md](2026-04-23-pan-clamp-on-canvas-not-content.md) — Pan clamp on canvas extent lets the viewport park on empty gaps between structured nodes ("black screen" despite math being correct). Compute a tight node bbox during layout and clamp on that.
+- [2026-04-23-drag-listener-useeffect-race.md](2026-04-23-drag-listener-useeffect-race.md) — Don't attach document mousemove/mouseup via useEffect keyed on isPanning. The mousedown→useEffect commit gap (1–16ms) drops mouseup; next mousemove pans from stale state. Attach listeners synchronously in mousedown; teardown via ref.
+- [2026-04-23-validate-then-ship-llm-pattern.md](2026-04-23-validate-then-ship-llm-pattern.md) — LLM output MUST pass a deterministic validator before anything downstream reads it. Never `reply["field"]` raw. Drop with a bounded drop_reason; fall back to deterministic output. Unlocks cheap self-check over stored output.
+
+## 2026-04-24 — Research-tab cleanup (lattice as single focus)
+
+- [2026-04-24-dashboard-features-that-compete-with-public-products.md](2026-04-24-dashboard-features-that-compete-with-public-products.md) — A tile that exists because "every dashboard has one" (chart / quote / heatmap / earnings calendar) competes with TradingView/Yahoo/Finviz/雪球 on their home turf and loses. Make L0 a backend tagging+snapshot pipeline (no viewing UI) and link out from each L0 node. Legacy via `?legacy=1` for reversibility.
+- [2026-04-24-useeffect-ref-race-with-early-returns.md](2026-04-24-useeffect-ref-race-with-early-returns.md) — `useEffect(() => { ref.current... }, [])` never fires if the ref-bearing div lives past an early-return (loading/error skeleton). First render returns the skeleton → ref never attached → effect reads null → `[]` deps prevent re-run. Mirror the node into state via a callback ref and put that state in the dep array.
