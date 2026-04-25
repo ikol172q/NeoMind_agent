@@ -543,7 +543,10 @@ class NeoMindInterface:
         mode = self.chat.mode
         think = "on" if self.chat.thinking_enabled else "off"
         tokens = 0
-        max_ctx = 128000
+        # Default ctx ceiling derived from currently-active model's MODEL_SPECS
+        # so the toolbar % stays meaningful when the user `/model`-switches.
+        from agent.constants.models import get_active_max_context
+        max_ctx = get_active_max_context()
         msg_count = len(self.chat.conversation_history)
         if hasattr(self.chat, "context_manager") and self.chat.context_manager:
             try:
@@ -555,7 +558,7 @@ class NeoMindInterface:
                 spec = self.chat._get_model_spec(self.chat.model)
                 max_ctx = spec["max_context"]
             except Exception:
-                max_ctx = agent_config.max_context_tokens or 128000
+                max_ctx = agent_config.max_context_tokens or get_active_max_context()
         pct = (tokens / max_ctx * 100) if max_ctx > 0 else 0
         if pct >= 80:
             pct_color = "ansired"
@@ -2434,7 +2437,8 @@ class NeoMindInterface:
         try:
             if hasattr(self.chat, 'context_manager') and self.chat.context_manager:
                 tokens = self.chat.context_manager.count_conversation_tokens()
-                max_ctx = getattr(self.chat, 'max_context', 0) or 200000
+                from agent.constants.models import get_active_max_context as _gmax
+                max_ctx = getattr(self.chat, 'max_context', 0) or _gmax()
                 usage = tokens / max_ctx if max_ctx > 0 else 0
                 if usage > 0.95:
                     self._print(f"\n[red]\u26a0 Context {usage:.0%} full! Auto-compacting...[/red]")

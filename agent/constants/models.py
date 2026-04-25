@@ -39,3 +39,32 @@ def get_active_personality(bot_name: str = "neomind") -> str:
         return ProviderStateManager().get_active_personality(bot_name)
     except Exception:
         return "fin"
+
+
+def get_active_max_context(bot_name: str = "neomind") -> int:
+    """Return the max context window (tokens) for the currently active model.
+
+    Pulls from agent.services.llm_provider.MODEL_SPECS so the value
+    automatically tracks whichever model the user has selected — switching
+    `/model deepseek-v4-pro` and `/model kimi-k2.5` should give different
+    budgets without touching any config file. Falls back to a conservative
+    128K when the registry can't be loaded.
+    """
+    try:
+        from agent.services.llm_provider import MODEL_SPECS, DEFAULT_SPEC
+        active = get_active_model(bot_name)
+        spec = MODEL_SPECS.get(active, DEFAULT_SPEC)
+        return spec.get("max_context", 131072)
+    except Exception:
+        return 131072
+
+
+def get_active_max_output(bot_name: str = "neomind") -> int:
+    """Return the max output tokens for the currently active model."""
+    try:
+        from agent.services.llm_provider import MODEL_SPECS, DEFAULT_SPEC
+        active = get_active_model(bot_name)
+        spec = MODEL_SPECS.get(active, DEFAULT_SPEC)
+        return spec.get("max_output", 8192)
+    except Exception:
+        return 8192

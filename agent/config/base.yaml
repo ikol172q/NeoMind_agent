@@ -223,7 +223,9 @@ agent:
   thinking_enabled: true
   debug: false
   context:
-    max_context_tokens: 131072
+    # max_context_tokens auto-derived from MODEL_SPECS at runtime.
+    # Set to a number to cap below the model's natural max (cost
+    # discipline). v4-flash / v4-pro both report 1,000,000 (1M).
     warning_threshold: 0.61
     break_threshold: 0.8
     compression_strategy: truncate
