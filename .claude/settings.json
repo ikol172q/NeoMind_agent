@@ -7,6 +7,10 @@
           {
             "type": "command",
             "command": ".venv/bin/python tools/hooks/iterm2_safety_hook.py"
+          },
+          {
+            "type": "command",
+            "command": ".venv/bin/python tools/hooks/leak_scan_hook.py"
           }
         ]
       }

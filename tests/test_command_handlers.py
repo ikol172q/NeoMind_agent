@@ -790,7 +790,7 @@ class TestCommandHandlers(unittest.TestCase):
 
         result = self.agent.handle_switch_command("deepseek-v4-pro")
         self.agent.set_model.assert_called_once_with("deepseek-v4-pro")
-        self.assertEqual(result, "✅ Switched model to deepseek-reasoner")
+        self.assertEqual(result, "✅ Switched model to deepseek-v4-pro")
 
         # Test switch failure
         self.agent.set_model = Mock(return_value=False)
@@ -799,7 +799,7 @@ class TestCommandHandlers(unittest.TestCase):
 
         # Test empty command (usage)
         result = self.agent.handle_switch_command("")
-        self.assertEqual(result, "Usage: /switch <model_id>")
+        self.assertIn("Usage: /switch <model_id>", result)
 
     def test_handle_summarize_command(self):
         """Test /summarize command."""

@@ -45,3 +45,9 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 
 - [2026-04-24-dashboard-features-that-compete-with-public-products.md](2026-04-24-dashboard-features-that-compete-with-public-products.md) — A tile that exists because "every dashboard has one" (chart / quote / heatmap / earnings calendar) competes with TradingView/Yahoo/Finviz/雪球 on their home turf and loses. Make L0 a backend tagging+snapshot pipeline (no viewing UI) and link out from each L0 node. Legacy via `?legacy=1` for reversibility.
 - [2026-04-24-useeffect-ref-race-with-early-returns.md](2026-04-24-useeffect-ref-race-with-early-returns.md) — `useEffect(() => { ref.current... }, [])` never fires if the ref-bearing div lives past an early-return (loading/error skeleton). First render returns the skeleton → ref never attached → effect reads null → `[]` deps prevent re-run. Mirror the node into state via a callback ref and put that state in the dep array.
+
+## 2026-04-24 — DeepSeek v4 migration session
+
+- [2026-04-24-router-auto-discover-strips-deprecated-names.md](2026-04-24-router-auto-discover-strips-deprecated-names.md) — Vendor `/v1/models` drops deprecated id → router auto_discover strips it from valid set → 404 even though the direct vendor API still aliases it. Always test through the router; add a migration map for persisted refs.
+- [2026-04-24-personality-model-override.md](2026-04-24-personality-model-override.md) — Per-personality `routing.primary_model:` defeats router's single-source-of-truth. Personality should own prompt + tools, NOT model selection. One `provider-state.json :: direct_model` rules them all.
+- [2026-04-24-vendor-context-window-decimal-not-binary.md](2026-04-24-vendor-context-window-decimal-not-binary.md) — Vendor docs say "1M / 384K" — that's decimal (1,000,000 / 384,000), not 2^20 / 384×1024. Wrong-by-default: matches binary, overshoots actual API cap by ~5%.
