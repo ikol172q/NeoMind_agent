@@ -4,7 +4,15 @@ from pathlib import Path
 from typing import Any, Optional, List
 import yaml
 
-from agent.constants.models import DEFAULT_MODEL
+from agent.constants.models import DEFAULT_MODEL, get_active_model, get_active_personality
+
+
+def _resolve_default_personality() -> str:
+    """Read the active personality from provider-state, default to 'fin'."""
+    try:
+        return get_active_personality()
+    except Exception:
+        return "fin"
 
 
 class AgentConfigManager:
@@ -31,10 +39,12 @@ class AgentConfigManager:
         self._coding_cfg = self._load_yaml(self.config_dir / "coding.yaml") or {}
         self._fin_cfg = self._load_yaml(self.config_dir / "fin.yaml") or {}
 
-        # Determine active mode
-        self._mode = mode or os.getenv("IKOL_MODE", "chat")
+        # Determine active mode. Default = fin (the user's primary use case).
+        # Telegram bot reads its own per-state default via provider_state;
+        # this branch is mainly for CLI / direct AgentConfigManager() callers.
+        self._mode = mode or os.getenv("IKOL_MODE") or _resolve_default_personality()
         if self._mode not in ("chat", "coding", "fin"):
-            self._mode = "chat"
+            self._mode = "fin"
 
         # Build merged config for active mode
         self._rebuild_active_config()
@@ -220,11 +230,14 @@ class AgentConfigManager:
 
     @property
     def model(self) -> str:
-        # Mode-specific model takes priority over base config
-        mode_model = self._active.get("model")
-        if mode_model:
-            return mode_model
-        return self._agent.get("model", DEFAULT_MODEL)
+        # Single source of truth: provider-state.json :: bots.<bot>.direct_model.
+        # YAML `model:` and `routing.primary_model:` were removed in 2026-04-25
+        # so personality switches no longer override the active model. The
+        # env var DEEPSEEK_MODEL still wins when set (CI/test override).
+        env_override = os.getenv("DEEPSEEK_MODEL")
+        if env_override:
+            return env_override
+        return get_active_model()
 
     @property
     def fallback_model(self) -> Optional[str]:

@@ -159,24 +159,15 @@ class ChatStore:
         self._conn.commit()
         return True
 
-    # ── Per-Chat Model Override ──────────────────────────────────
+    # ── Per-Chat Model Override (DEPRECATED 2026-04-25) ─────────
+    # Model selection is now global via provider-state. These methods
+    # are kept as no-ops so callers that haven't been migrated yet still
+    # work; any persisted overrides are ignored.
 
     def get_model_override(self, chat_id: int) -> str:
-        """Get the per-chat model override. Empty string means use default."""
-        row = self._conn.execute(
-            "SELECT model_override FROM chats WHERE chat_id = ?", (chat_id,)
-        ).fetchone()
-        return (row["model_override"] or "") if row else ""
+        return ""
 
     def set_model_override(self, chat_id: int, model: str) -> bool:
-        """Set a per-chat model override. Pass empty string to clear."""
-        now = datetime.now(timezone.utc).isoformat()
-        self._conn.execute("""
-            INSERT INTO chats (chat_id, model_override, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(chat_id) DO UPDATE SET model_override=?, updated_at=?
-        """, (chat_id, model, now, now, model, now))
-        self._conn.commit()
         return True
 
     # ── Write Operations ─────────────────────────────────────────
