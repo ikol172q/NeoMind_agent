@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 # Modules to auto-register at startup. Add new jobs here.
 DEFAULT_JOBS = [
     "agent.finance.scheduler.jobs.daily_market_pull",
+    "agent.finance.scheduler.jobs.compliance_check",
 ]
 
 
