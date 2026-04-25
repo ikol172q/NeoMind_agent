@@ -1,0 +1,23 @@
+# Curated allowlist of models shown in the Telegram /model picker.
+# The router itself still serves anything its /v1/models endpoint
+# returns — long-tail variants (vision-preview, mid-tier, etc.) are
+# accessible by typing `/model <full-name>` directly. This file just
+# keeps the picker UX uncluttered.
+#
+# Provider names match the keys in LLM-Router/config.yaml :: providers.
+
+visible_models:
+  deepseek:
+    - deepseek-v4-flash
+    - deepseek-v4-pro
+  moonshot:
+    - kimi-k2.5
+    - kimi-k2.6
+  zai:
+    - glm-5
+    - glm-4.7
+    - glm-4.7-flash
+  mlx-local:
+    - mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
+    - mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit
+    - mlx-community/Qwen3-Coder-30B-A3B-Instruct-4bit

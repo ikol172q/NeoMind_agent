@@ -54,8 +54,9 @@ DEFAULT_STATE = {
 DEFAULT_BOT_CONFIG = {
     "provider_mode": "direct",       # "litellm" or "direct"
     "litellm_model": "local",        # model name when using litellm
-    "direct_model": DEFAULT_MODEL,   # model name when using direct
+    "direct_model": DEFAULT_MODEL,   # global active model — ALL surfaces read here
     "thinking_model": THINKING_MODEL,
+    "active_personality": "fin",     # global active personality — chat/coding/fin
     "updated_at": "",
     "updated_by": "system",
     # Per-mode model routing (written by bot on startup, read by xbar)
@@ -306,6 +307,63 @@ class ProviderStateManager:
         self._last_known_mode[bot_name] = mode
         logger.info(f"Set {bot_name} provider_mode={mode} by {updated_by}")
 
+        return bots[bot_name]
+
+    # ── Active Model + Personality (single source of truth) ──────
+    # `direct_model` and `active_personality` in provider-state.json are
+    # the canonical "what's selected right now" for both fields. Telegram,
+    # CLI, xbar, and any LLM call all read here. Switching a personality
+    # does NOT change the model — only the `/model` command does.
+
+    def get_active_model(self, bot_name: str = "neomind") -> str:
+        """Return the currently selected model. Falls back to DEFAULT_MODEL."""
+        from agent.constants.models import DEFAULT_MODEL
+        cfg = self.get_bot_config(bot_name)
+        return cfg.get("direct_model") or DEFAULT_MODEL
+
+    def set_active_model(self, bot_name: str, model: str,
+                         updated_by: str = "unknown") -> dict:
+        """Switch the active model globally. Persists to state file."""
+        state = self._read_state()
+        bots = state.setdefault("bots", {})
+        if bot_name not in bots:
+            self.register_bot(bot_name)
+            state = self._read_state()
+            bots = state["bots"]
+        now = _now_iso()
+        bots[bot_name]["direct_model"] = model
+        bots[bot_name]["updated_at"] = now
+        bots[bot_name]["updated_by"] = updated_by
+        state["updated_at"] = now
+        state["updated_by"] = updated_by
+        self._atomic_write(state)
+        logger.info(f"Set {bot_name} active_model={model} by {updated_by}")
+        return bots[bot_name]
+
+    def get_active_personality(self, bot_name: str = "neomind") -> str:
+        """Return the active personality (chat/coding/fin). Default: fin."""
+        cfg = self.get_bot_config(bot_name)
+        return cfg.get("active_personality") or "fin"
+
+    def set_active_personality(self, bot_name: str, personality: str,
+                               updated_by: str = "unknown") -> dict:
+        """Switch active personality globally. Persists to state file."""
+        if personality not in ("chat", "coding", "fin"):
+            raise ValueError(f"Invalid personality: {personality}")
+        state = self._read_state()
+        bots = state.setdefault("bots", {})
+        if bot_name not in bots:
+            self.register_bot(bot_name)
+            state = self._read_state()
+            bots = state["bots"]
+        now = _now_iso()
+        bots[bot_name]["active_personality"] = personality
+        bots[bot_name]["updated_at"] = now
+        bots[bot_name]["updated_by"] = updated_by
+        state["updated_at"] = now
+        state["updated_by"] = updated_by
+        self._atomic_write(state)
+        logger.info(f"Set {bot_name} active_personality={personality} by {updated_by}")
         return bots[bot_name]
 
     # ── Mode Models (for xbar display) ───────────────────────

@@ -1,8 +1,8 @@
 # chat.yaml — Chat mode configuration (Command Center / 指挥中心)
 mode: chat
 
-# Model override for this mode (takes priority over base.yaml)
-model: deepseek-v4-flash
+# Model selection is global — see provider-state.json. Personality YAML
+# only owns prompt, tools, search, UI. (Removed `model:` field.)
 
 # === Cross-Mode Intelligence ===
 # Chat is the COMMAND CENTER — it receives intelligence from fin and coding,
@@ -277,33 +277,8 @@ system_prompt: |
 # so you can tune per-mode model choice without a code change. Each
 # field is optional — missing fields fall back to the hardcoded
 # defaults in NeoMindTelegramBot (see _routing_for_mode).
-routing:
-  # Primary model the LLM-Router serves for this mode. When the
-  # router is up, NeoMind dispatches chat completions with
-  # model=<primary_model>. Must match a model id returned by the
-  # router's /v1/models endpoint.
-  # Chat mode uses the local MLX 30B-A3B MoE (Qwen3) as primary —
-  # free, fast (~80-100 tok/s on M4 Max via MoE sparse activation),
-  # strong Chinese. Fallback chains kick in if MLX server is down.
-  primary_model: mlx-community/Qwen3-30B-A3B-Instruct-2507-4bit
-
-  # Thinking-mode model (used when /think is ON or reasoning is
-  # required). MLX Thinking variant shares architecture with the
-  # primary so switch cost between them is low. Falls back to
-  # deepseek-reasoner via the router chain if MLX is down.
-  thinking_model: mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit
-
-  # Rate-limit fallback — MLX is local so it doesn't rate-limit,
-  # but if MLX server is down the router will return 5xx. Second
-  # chain entry points at a cloud model on a different upstream
-  # so the fallback has an independent rate-bucket.
-  rate_limit_fallback_model: deepseek-v4-flash
-
-  # When the router path is unavailable and we fall back to direct
-  # vendor APIs, promote this provider to the front of the chain.
-  # MLX has no direct-vendor counterpart, so deepseek is the next
-  # best bet for chat-style interaction.
-  preferred_direct_provider: deepseek
+# Model selection lives in ~/.neomind/provider-state.json (single source
+# of truth). Personality YAML controls prompt + tools + UI only.
 
 search_enabled: true
 auto_search:

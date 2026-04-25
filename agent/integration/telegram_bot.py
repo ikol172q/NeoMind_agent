@@ -35,6 +35,20 @@ from typing import Dict, List, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, field
 
 from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL, THINKING_MODEL
+
+
+def _provider_for_model(model_id: str) -> str:
+    """Map a model id to its direct-vendor provider name (for fallback chain)."""
+    m = (model_id or "").lower()
+    if m.startswith("deepseek-"):
+        return "deepseek"
+    if m.startswith("kimi") or m.startswith("moonshot-"):
+        return "moonshot"
+    if m.startswith("glm-"):
+        return "zai"
+    if m.startswith("mlx-") or "/" in m:
+        return "mlx-local"
+    return "deepseek"  # safe default
 from pathlib import Path
 
 logging.basicConfig(
@@ -467,6 +481,10 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("rag", self._cmd_rag))
         self._app.add_handler(CommandHandler("tune", self._cmd_tune))
         self._app.add_handler(CommandHandler("model", self._cmd_model))
+        # Inline keyboard callbacks for the /model picker
+        self._app.add_handler(CallbackQueryHandler(
+            self._cb_model_picker, pattern=r"^mp:"
+        ))
         # System commands
         self._app.add_handler(CommandHandler("hooks", self._cmd_hooks))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
@@ -881,8 +899,13 @@ class NeoMindTelegramBot:
             "fin": "金融智能模式 — 股票、加密货币、新闻、量化分析",
         }
 
+        # Personality switch does NOT change the model — global model state
+        # is the single source of truth. Just notify what's currently active.
+        from agent.constants.models import get_active_model
+        active_model = get_active_model("neomind")
         await update.message.reply_text(
-            f"✅ 已切换到 <b>{target}</b> 模式\n{descriptions[target]}",
+            f"✅ 已切换到 <b>{target}</b> 模式\n{descriptions[target]}\n\n"
+            f"🤖 当前模型（不变）: <code>{active_model}</code>",
             parse_mode=ParseMode.HTML,
         )
 
@@ -900,11 +923,17 @@ class NeoMindTelegramBot:
         args = " ".join(context.args).strip() if context.args else ""
         cid = update.message.chat_id
         mode = self._store.get_mode(cid)
-        override = self._store.get_model_override(cid)
-        _, _, active_model = self._resolve_api(thinking=False, chat_id=cid)
+        from agent.constants.models import get_active_model
+        active_model = get_active_model("neomind")
+        override = ""  # per-chat override removed 2026-04-25
 
-        # ── No args: show current + list ──
+        # ── No args: show inline keyboard provider picker ──
         if not args:
+            await self._send_model_picker_providers(update, active_model)
+            return
+
+        # Legacy text-list path (kept for `/model list` explicit request)
+        if args.lower() == "list":
             from agent.services.llm_provider import PROVIDERS, check_primary_healthy
 
             # Header makes the override state explicit. When an override
@@ -1021,12 +1050,13 @@ class NeoMindTelegramBot:
             )
             return
 
-        # ── Reset to default ──
+        # ── Reset to factory default ──
+        # Global active model = DEFAULT_MODEL (deepseek-v4-flash).
         if args.lower() in ("reset", "default", "auto"):
-            self._store.set_model_override(cid, "")
-            _, _, default_model = self._resolve_api(thinking=False, chat_id=cid)
+            self._state_mgr.set_active_model("neomind", DEFAULT_MODEL, updated_by="telegram-reset")
+            self._publish_mode_models_to_state()
             await update.message.reply_text(
-                f"✅ 已恢复默认模型: <code>{default_model}</code>",
+                f"✅ 已恢复默认模型: <code>{DEFAULT_MODEL}</code>",
                 parse_mode=ParseMode.HTML,
             )
             return
@@ -1094,13 +1124,147 @@ class NeoMindTelegramBot:
             )
             return
 
-        self._store.set_model_override(cid, model_id)
+        # Global active model — same source xbar reads. Affects ALL chats
+        # and ALL personalities; per-chat override was removed 2026-04-25.
+        self._state_mgr.set_active_model("neomind", model_id, updated_by="telegram")
+        self._publish_mode_models_to_state()
         await update.message.reply_text(
             f"✅ 模型已切换为 <code>{model_id}</code>\n"
             f"人格: <b>{mode}</b>（不变）\n\n"
-            f"<i>仅影响此对话，/model reset 恢复默认</i>",
+            f"<i>全局生效（所有对话、所有人格）</i>",
             parse_mode=ParseMode.HTML,
         )
+
+    # ── /model Inline Keyboard Picker ────────────────────────────
+
+    @staticmethod
+    def _load_visible_models() -> dict:
+        """Curated provider→models allowlist (router_visible_models.yaml)."""
+        from pathlib import Path
+        import yaml
+        path = Path(__file__).resolve().parent.parent / "config" / "router_visible_models.yaml"
+        try:
+            data = yaml.safe_load(path.read_text()) or {}
+            return data.get("visible_models", {}) or {}
+        except Exception as exc:
+            logger.warning(f"router_visible_models.yaml load failed: {exc}")
+            return {}
+
+    async def _send_model_picker_providers(self, update, active_model: str):
+        """Step 1 of the picker: show provider buttons with model counts."""
+        visible = self._load_visible_models()
+        if not visible:
+            await update.message.reply_text(
+                f"🤖 当前模型: <code>{active_model}</code>\n\n"
+                f"⚠️ 选择列表加载失败，请用 <code>/model &lt;名字&gt;</code> 切换。",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+        rows = []
+        row = []
+        for prov, models in visible.items():
+            label = f"{prov} ({len(models)})"
+            row.append(InlineKeyboardButton(label, callback_data=f"mp:p:{prov}"))
+            if len(row) == 2:
+                rows.append(row)
+                row = []
+        if row:
+            rows.append(row)
+        rows.append([InlineKeyboardButton(
+            "↻ 恢复默认 (deepseek-v4-flash)", callback_data="mp:reset"
+        )])
+        await update.message.reply_text(
+            f"🤖 当前模型: <code>{active_model}</code>\n选择 provider:",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup(rows),
+        )
+
+    async def _cb_model_picker(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Callback for /model picker buttons. callback_data formats:
+            mp:p:<provider>     → show models for that provider
+            mp:s:<model_id>     → set active model
+            mp:back             → back to provider list
+            mp:reset            → reset to DEFAULT_MODEL
+        """
+        from agent.constants.models import get_active_model, DEFAULT_MODEL
+        query = update.callback_query
+        await query.answer()
+        data = (query.data or "").split(":", 2)
+        if len(data) < 2 or data[0] != "mp":
+            return
+        action = data[1]
+        active_model = get_active_model("neomind")
+
+        if action == "reset":
+            self._state_mgr.set_active_model("neomind", DEFAULT_MODEL, updated_by="telegram-picker")
+            self._publish_mode_models_to_state()
+            await query.edit_message_text(
+                f"✅ 已恢复默认模型: <code>{DEFAULT_MODEL}</code>\n"
+                f"<i>全局生效（所有对话、所有人格）</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
+
+        if action == "back":
+            visible = self._load_visible_models()
+            rows = []
+            row = []
+            for prov, models in visible.items():
+                row.append(InlineKeyboardButton(
+                    f"{prov} ({len(models)})", callback_data=f"mp:p:{prov}"
+                ))
+                if len(row) == 2:
+                    rows.append(row)
+                    row = []
+            if row:
+                rows.append(row)
+            rows.append([InlineKeyboardButton(
+                "↻ 恢复默认", callback_data="mp:reset"
+            )])
+            await query.edit_message_text(
+                f"🤖 当前模型: <code>{active_model}</code>\n选择 provider:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        if action == "p" and len(data) == 3:
+            provider = data[2]
+            visible = self._load_visible_models()
+            models = visible.get(provider, [])
+            if not models:
+                await query.edit_message_text(f"⚠️ provider <b>{provider}</b> 没有可选模型",
+                                              parse_mode=ParseMode.HTML)
+                return
+            rows = []
+            for mid in models:
+                marker = " ← 当前" if mid == active_model else ""
+                # Telegram callback_data limit: 64 bytes. Shorten if needed.
+                short = mid if len(mid) <= 50 else mid[:47] + "..."
+                rows.append([InlineKeyboardButton(
+                    f"{short}{marker}", callback_data=f"mp:s:{mid}"
+                )])
+            rows.append([InlineKeyboardButton(
+                "← 返回", callback_data="mp:back"
+            )])
+            await query.edit_message_text(
+                f"🤖 当前模型: <code>{active_model}</code>\n"
+                f"<b>{provider}</b> 可选模型:",
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup(rows),
+            )
+            return
+
+        if action == "s" and len(data) == 3:
+            new_model = data[2]
+            self._state_mgr.set_active_model("neomind", new_model, updated_by="telegram-picker")
+            self._publish_mode_models_to_state()
+            await query.edit_message_text(
+                f"✅ 模型已切换为 <code>{new_model}</code>\n"
+                f"<i>全局生效（所有对话、所有人格）</i>",
+                parse_mode=ParseMode.HTML,
+            )
+            return
 
     # ── Message Handlers ─────────────────────────────────────────────
 
@@ -3753,79 +3917,35 @@ class NeoMindTelegramBot:
         """
         return self._store.get_recent_history(chat_id, limit=20)
 
-    # ── Per-mode routing hardcoded DEFAULTS ──────────────────────
-    # These are the FALLBACK values used when the mode YAML file has
-    # no `routing:` block, or when the YAML can't be loaded. In normal
-    # operation the source of truth is agent/config/{mode}.yaml ::
-    # routing.{primary_model, thinking_model, rate_limit_fallback_model,
-    # preferred_direct_provider} — see _routing_for_mode().
-    _MODE_PREFERRED_PROVIDER = {
-        "fin": "moonshot",      # Kimi K2.5 for financial reasoning
-        "coding": "deepseek",   # DeepSeek for coding
-        "chat": "deepseek",     # DeepSeek for general chat
-    }
-
-    _ROUTER_DEFAULT_MODELS = {
-        "fin": "kimi-k2.5",
-        "coding": DEFAULT_MODEL,
-        "chat": DEFAULT_MODEL,
-    }
-    _ROUTER_THINKING_MODEL = THINKING_MODEL
-
-    # Per-mode rate-limit fallback model — inserted as a SECOND router
-    # entry in the chain so when the primary's upstream 429's we can
-    # fall through to a different vendor (e.g. fin primary=kimi via
-    # moonshot, fallback=deepseek-chat via deepseek — independent
-    # rate-bucket). None means "no rate-limit fallback for this mode".
-    _ROUTER_RATE_LIMIT_FALLBACK = {
-        "fin": DEFAULT_MODEL,
-        "coding": "kimi-k2.5",
-        "chat": "kimi-k2.5",
-    }
+    # ── Single-source-of-truth routing (2026-04-25 refactor) ─────
+    # Per-mode model dicts removed — model selection is global, lives
+    # in provider-state.json. Personality affects prompt + tools, not
+    # which model the user is on. See agent/constants/models.py.
+    #
+    # Direct-vendor preferred provider is computed from the model name
+    # at lookup time (deepseek-* → deepseek, kimi-* → moonshot, glm-* → zai)
+    # rather than indexed by personality.
 
     def _routing_for_mode(self, mode: str) -> dict:
-        """Read per-mode routing config from agent/config/<mode>.yaml.
+        """Return routing config — mode-AGNOSTIC since 2026-04-25 refactor.
 
-        Returns a dict with keys: primary_model, thinking_model,
-        rate_limit_fallback_model, preferred_direct_provider. Missing
-        fields fall back to the hardcoded class-level defaults so a
-        fresh install (no YAML routing block) still works identically
-        to before this refactor.
+        primary_model + thinking_model both come from the global active
+        model state. rate_limit_fallback_model is a static cross-vendor
+        backup. preferred_direct_provider is derived from the active
+        model's name prefix.
         """
-        try:
-            from agent_config import AgentConfigManager
-            cfg = AgentConfigManager(mode=mode)
-            return {
-                "primary_model": cfg.get(
-                    "routing.primary_model",
-                    self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5"),
-                ),
-                "thinking_model": cfg.get(
-                    "routing.thinking_model",
-                    self._ROUTER_THINKING_MODEL,
-                ),
-                "rate_limit_fallback_model": cfg.get(
-                    "routing.rate_limit_fallback_model",
-                    self._ROUTER_RATE_LIMIT_FALLBACK.get(mode),
-                ),
-                "preferred_direct_provider": cfg.get(
-                    "routing.preferred_direct_provider",
-                    self._MODE_PREFERRED_PROVIDER.get(mode),
-                ),
-            }
-        except Exception as exc:
-            logger.debug(
-                "_routing_for_mode(%s): config load failed (%s), "
-                "using hardcoded defaults", mode, exc,
-            )
-            return {
-                "primary_model": self._ROUTER_DEFAULT_MODELS.get(mode, "kimi-k2.5"),
-                "thinking_model": self._ROUTER_THINKING_MODEL,
-                "rate_limit_fallback_model":
-                    self._ROUTER_RATE_LIMIT_FALLBACK.get(mode),
-                "preferred_direct_provider":
-                    self._MODE_PREFERRED_PROVIDER.get(mode),
-            }
+        from agent.constants.models import (
+            get_active_model, RATE_LIMIT_FALLBACK,
+        )
+        active = get_active_model("neomind")
+        return {
+            "primary_model": active,
+            "thinking_model": active,  # v4-flash + v4-pro both support thinking via API param
+            "rate_limit_fallback_model": (
+                None if active == RATE_LIMIT_FALLBACK else RATE_LIMIT_FALLBACK
+            ),
+            "preferred_direct_provider": _provider_for_model(active),
+        }
 
     def _router_env(self) -> Tuple[str, str]:
         """Return (base_url, api_key) for the local LLM router, or ("","") if unset."""

@@ -1,19 +1,8 @@
 # coding.yaml — Coding mode configuration
 mode: coding
 
-# Model override for this mode (takes priority over base.yaml)
-# Default: deepseek-v4-flash (1M ctx, supports thinking via param)
-model: deepseek-v4-flash
-fallback_model: null
-
-# === Router routing knobs === (see chat.yaml for field docs)
-# Coding defaults to deepseek-chat for tool-call reliability; Kimi is
-# the rate-limit fallback for independent bucket.
-routing:
-  primary_model: deepseek-v4-flash
-  thinking_model: deepseek-v4-flash
-  rate_limit_fallback_model: kimi-k2.5
-  preferred_direct_provider: deepseek
+# Model selection is global — see provider-state.json. Personality YAML
+# only owns prompt, tools, search, UI.
 
 system_prompt: |
   You are NeoMind (新思) — 技术认知延伸，Coding Engine。
