@@ -1,0 +1,70 @@
+── ➜ @dev-2 (coding · worker, project=fin-core)
+  you: In one sentence, list vs tuple in Python. Start with 'DEV-2:'.
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+  @dev-2: DEV-2: Lists are mutable (modifiable after creation), while tuples are immutable (cannot be changed once created).
+[@dev-2 coding] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1●  @dev-2   ↓ to navigate tags                                                                         

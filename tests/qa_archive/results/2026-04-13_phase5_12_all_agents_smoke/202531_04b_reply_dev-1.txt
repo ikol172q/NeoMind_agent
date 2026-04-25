@@ -1,0 +1,70 @@
+── ➜ @fin-rt (fin · worker, project=fin-core)
+  you: In one sentence, buy/hold/sell view on MSFT. Start with 'FIN-RT:'.
+  @fin-rt: FIN-RT: Strong buy — AI leadership, Azure growth, and robust cash flow justify premium valuation with 15-20% upside potential 
+over 12 months.
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+[@fin-rt fin] > In one sentence, what is a Python decorator? Start with 'DEV-1:'.
+  you: In one sentence, what is a Python decorator? Start with 'DEV-1:'.
+  ⠋ @fin-rt thinking…
+  @dev-1: FIN-RSRCH: NVDA's stock performance will continue to outperform the semiconductor index over the next 12 months due to sustained 
+demand for AI accelerators in data centers.
+[@fin-rt fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓ to navigate tags                                                                          

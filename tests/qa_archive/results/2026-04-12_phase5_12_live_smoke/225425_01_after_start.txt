@@ -1,0 +1,70 @@
+
+neomind  finance mode
+Model: deepseek-chat  Think: on
+Sources: Finnhub, yfinance, AKShare, CoinGecko, DuckDuckGo, RSS
+Tools: /stock  /crypto  /news  /compute  /digest  /chart  /risk
+  / commands  |  Ctrl+O think  |  /sources trust  |  Ctrl+D exit
+
+[fin] > /fleet start fin-core
+✓ Fleet fin-core started with 4 worker(s): @fin-rt @fin-rsrch @dev-1 @dev-2
+Press Up from an empty input to navigate agent tags; ← → move, Enter to select, Esc to cancel. While an agent is focused, typing sends a 
+task to it. Prefix with @agent to dispatch inline from the leader view. /fleet stop to tear down.
+[fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,957/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↑ to navigate tags                                                                          

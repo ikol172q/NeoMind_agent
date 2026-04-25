@@ -1,0 +1,70 @@
+── ➜ @fin-rsrch (fin · worker, project=fin-core)
+  you: In one sentence, research hypothesis for NVDA. Start with 'FIN-RSRCH:'.
+  @fin-rsrch: FIN-RSRCH: NVDA's stock price will continue to outperform the S&P 500 over the next 12 months, driven by sustained demand for 
+its AI accelerators, pricing power in the data center segment, and the sec
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+[@fin-rsrch fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓ to navigate tags                                                                          
