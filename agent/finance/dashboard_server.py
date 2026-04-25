@@ -1299,12 +1299,14 @@ def create_app(
         from agent.finance.persistence.api import router as _fin_db_router
         from agent.finance.scheduler.api import router as _fin_scheduler_router
         from agent.finance.integrity.api import router as _fin_integrity_router
+        from agent.finance.strategies_catalog import router as _fin_strategies_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
         app.include_router(_fin_integrity_router)
+        app.include_router(_fin_strategies_router)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "fin persistence/scheduler/integrity routers not mounted: %s "
+            "fin persistence/scheduler/integrity/strategies routers not mounted: %s "
             "(dashboard remains functional without them)", exc,
         )
 
