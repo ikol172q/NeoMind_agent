@@ -1289,19 +1289,22 @@ def create_app(
     """
     app = FastAPI(title="neomind-fin-dashboard", version=version)
 
-    # ── Phase 1 (2026-04-25): mount fin SQLite + scheduler routers ──
-    # /api/db/...        → read-only views of the new SQLite store
-    # /api/scheduler/... → list jobs + force-rerun
-    # Lazy import keeps dashboard boot cheap when the persistence layer
-    # isn't being used (e.g., legacy projects on the file-based store).
+    # ── Phase 1 (2026-04-25): mount fin SQLite + scheduler + integrity ──
+    # /api/db/...         → read-only views of the new SQLite store
+    # /api/scheduler/...  → list jobs + force-rerun
+    # /api/integrity/...  → live invariant check (UI badge: N/N pass)
+    # Lazy import keeps dashboard boot cheap when these layers aren't
+    # being used (e.g., legacy projects on the file-based store).
     try:
         from agent.finance.persistence.api import router as _fin_db_router
         from agent.finance.scheduler.api import router as _fin_scheduler_router
+        from agent.finance.integrity.api import router as _fin_integrity_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
+        app.include_router(_fin_integrity_router)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
-            "fin persistence/scheduler routers not mounted: %s "
+            "fin persistence/scheduler/integrity routers not mounted: %s "
             "(dashboard remains functional without them)", exc,
         )
 

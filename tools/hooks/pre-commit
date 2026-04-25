@@ -27,6 +27,13 @@ SHARED_REGEX='^(agent/services/code_commands\.py|agent/services/nl_interpreter\.
 # fixture drift). Budget: <5s. See plans/2026-04-22_lattice-validation.md.
 LATTICE_REGEX='^(agent/finance/lattice/.*\.py|agent/config/lattice_taxonomy\.yaml|tests/test_lattice_.*\.py|tests/lattice_fixtures/.*\.json)$'
 
+# Fin data-platform paths — persistence + scheduler + integrity. Any
+# change here triggers the live integrity check ("13/13 pass" against
+# the local DB). Budget: <2s on a small DB. Skipped if no DB exists
+# yet (fresh clone before first scheduler run). Bypass shared with
+# lattice/smoke flags.
+FIN_PLATFORM_REGEX='^(agent/finance/(persistence|scheduler|integrity)/.*\.py)$'
+
 CHANGED=$(git diff --cached --name-only)
 
 # Lattice validation runs first because it's much faster
@@ -40,6 +47,26 @@ if echo "$CHANGED" | grep -qE "$LATTICE_REGEX"; then
         exit 1
     fi
     echo "✅ [neomind-pre-commit] Lattice fast validation passed"
+fi
+
+# Fin data-platform integrity check
+if echo "$CHANGED" | grep -qE "$FIN_PLATFORM_REGEX"; then
+    # Resolve DB path the same way agent/finance/persistence/db.py does
+    FIN_DB="${NEOMIND_FIN_DB:-$HOME/.neomind/fin/fin.db}"
+    if [ ! -f "$FIN_DB" ]; then
+        echo "[neomind-pre-commit] fin DB not found at $FIN_DB — skipping integrity"
+        echo "                     (run scheduler once to populate, then re-commit)"
+    else
+        echo "[neomind-pre-commit] fin platform paths changed — running integrity check..."
+        if ! .venv/bin/python -m agent.finance.integrity.runner --fail-on-error >/dev/null 2>&1; then
+            echo ""
+            echo "❌ [neomind-pre-commit] fin integrity check FAILED"
+            echo "   Run: .venv/bin/python -m agent.finance.integrity.runner   for details"
+            echo "   Bypass: NEOMIND_SKIP_SMOKE=1 git commit ..."
+            exit 1
+        fi
+        echo "✅ [neomind-pre-commit] fin integrity check passed"
+    fi
 fi
 
 if ! echo "$CHANGED" | grep -qE "$SHARED_REGEX"; then
