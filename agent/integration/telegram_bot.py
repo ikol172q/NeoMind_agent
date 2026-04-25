@@ -1460,7 +1460,7 @@ class NeoMindTelegramBot:
                 )
             elif val == "reset":
                 self._MODEL_CONTEXT.update({
-                    DEFAULT_MODEL: 1000000, PREMIUM_MODEL: 1000000,
+                    DEFAULT_MODEL: 1048576, PREMIUM_MODEL: 1048576,
                     "glm-5": 205000, "glm-4.5-flash": 128000,
                 })
                 await update.message.reply_text("✅ Context 上限已恢复默认值")
@@ -2211,7 +2211,7 @@ class NeoMindTelegramBot:
         try:
             import requests as req
             # Use the full provider chain (primary + router-fallback) so a
-            # 429 on kimi-k2.5 falls through to deepseek-chat like the
+            # 429 on kimi-k2.5 falls through to deepseek-v4-flash like the
             # main LLM paths. Previously this code used _resolve_api which
             # returned a single provider and had no retry/fallback —
             # resulting in "⚠️ LLM error: 429" being surfaced directly to
@@ -3902,8 +3902,8 @@ class NeoMindTelegramBot:
 
     # Context window limits per model
     _MODEL_CONTEXT = {
-        DEFAULT_MODEL: 1000000,
-        PREMIUM_MODEL: 1000000,
+        DEFAULT_MODEL: 1048576,    # 1M, matches MODEL_SPECS in llm_provider.py
+        PREMIUM_MODEL: 1048576,    # 1M
         "glm-5": 205000,
         "glm-4.5-flash": 128000,
         "kimi-k2.5": 131072,
@@ -5376,7 +5376,7 @@ class NeoMindTelegramBot:
 
                 # ── Agentic loop: if the response contains tool calls, execute them ──
                 # (mirrors _ask_llm_stream_normal; reasoning models like
-                # deepseek-reasoner emit <tool_call> blocks in `content` too,
+                # deepseek-v4-flash (thinking mode) emit <tool_call> blocks in `content` too,
                 # and without this path fin-mode tools never fire.)
                 if '<tool_call>' in response_text and used_provider:
                     print(

@@ -82,7 +82,7 @@ class TestSessionState:
     def test_defaults(self):
         state = SessionState()
         assert state.mode == "chat"
-        assert state.model == "deepseek-chat"
+        assert state.model == "deepseek-v4-flash"
         assert state.turn_count == 0
         assert state.is_active is True
 
@@ -110,7 +110,7 @@ class TestStateManager:
     def _make_manager(self):
         mock_config = MagicMock()
         mock_config.mode = "chat"
-        mock_config.model = "deepseek-chat"
+        mock_config.model = "deepseek-v4-flash"
         mock_config.fallback_model = None
         mock_config.thinking_enabled = True
         mock_config.thinking_mode = False
@@ -128,7 +128,7 @@ class TestStateManager:
     def test_init(self):
         mgr = self._make_manager()
         assert mgr.session.mode == "chat"
-        assert mgr.session.model == "deepseek-chat"
+        assert mgr.session.model == "deepseek-v4-flash"
 
     def test_update(self):
         mgr = self._make_manager()

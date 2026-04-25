@@ -337,7 +337,7 @@ async def finance_compute(
     }
 
     # Normalize common LLM-emitted argument name variants to canonical names.
-    # The LLM (deepseek-reasoner) is creative with parameter naming, so we
+    # The LLM (deepseek-v4-flash thinking mode) is creative with parameter naming, so we
     # accept synonyms rather than force it onto one convention.
     _ALIASES = {
         # cagr

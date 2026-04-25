@@ -57,15 +57,17 @@ agent/config/
   coding.yaml   # Coding mode: system prompt with tool instructions
 ```
 
-Default model is `deepseek-chat`. Change with `/switch <model>` or edit `base.yaml`.
+Default model is `deepseek-v4-flash`. Change in Telegram with `/model` (inline picker)
+or `/model <name>`. The active model is global state at
+`~/.neomind/provider-state.json :: bots.<bot>.direct_model` — switching
+personality (`/mode chat|coding|fin`) does NOT change the model.
 
 ### Supported Models
 
 | Model | Provider | Context | Max Output | Default |
 |-------|----------|---------|------------|---------|
-| deepseek-chat | DeepSeek | 128K | 8K | 8K |
-| deepseek-coder | DeepSeek | 128K | 8K | 8K |
-| deepseek-reasoner | DeepSeek | 128K | 64K | 16K |
+| deepseek-v4-flash | DeepSeek | 1M | 384K | 16K |
+| deepseek-v4-pro | DeepSeek | 1M | 384K | 16K |
 | glm-5 | z.ai | 205K | 128K | 16K |
 | glm-4.7 | z.ai | 200K | 32K | 8K |
 | glm-4.7-flash | z.ai | 200K | 32K | 8K |

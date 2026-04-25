@@ -178,7 +178,7 @@ class ChatStore:
         """Add a message to a chat's history.
 
         Args:
-            thinking: LLM reasoning/thinking content (from deepseek-reasoner).
+            thinking: LLM reasoning/thinking content (from deepseek-v4-flash thinking mode).
                       Only meaningful for role="assistant".
         """
         now = datetime.now(timezone.utc).isoformat()

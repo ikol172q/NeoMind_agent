@@ -192,14 +192,14 @@ def test_analysis_result_round_trip():
     assert data["symbol"] == "AAPL"
     assert data["analysis"]["confidence"] == 8
     assert data["project_id"] == "us-growth-2026q2"
-    assert data["model_used"] == "deepseek-reasoner"  # default per memory preference
+    assert data["model_used"] == "deepseek-v4-flash"  # global default (DEFAULT_MODEL)
 
 
 def test_analysis_result_default_model_is_deepseek():
     quote = StockQuoteSchema(symbol="AAPL", price=150.0)
     analysis = AgentAnalysis(signal="hold", confidence=5, reason="x")
     result = AnalysisResult(symbol="AAPL", quote=quote, analysis=analysis)
-    assert result.model_used == "deepseek-reasoner"
+    assert result.model_used == "deepseek-v4-flash"
 
 
 # ── validate_agent_analysis (structural checks on top of Pydantic) ──────

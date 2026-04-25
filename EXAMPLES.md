@@ -29,7 +29,7 @@ python -m neomind
 /search Python asyncio tutorial
 
 # Switch to a different model
-/models switch deepseek-reasoner
+/models switch deepseek-v4-pro
 
 # Toggle thinking mode (shows reasoning process)
 /think
@@ -162,7 +162,7 @@ The self-apply process:
 ### Deep Analysis with Reasoning Model
 
 ```bash
-# Perform deep analysis using deepseek-reasoner
+# Perform deep analysis using deepseek-v4-pro
 /code reason agent/core.py
 ```
 
@@ -348,7 +348,7 @@ The self-iteration framework provides:
 /find *.py
 
 # Switch to a different model
-/switch deepseek-reasoner
+/switch deepseek-v4-pro
 ```
 
 ## Troubleshooting

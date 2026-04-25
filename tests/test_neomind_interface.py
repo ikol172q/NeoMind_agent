@@ -22,7 +22,7 @@ os.environ["DEEPSEEK_API_KEY"] = "test-key-for-tests"
 
 def _make_mock_chat(mode="chat"):
     chat = MagicMock()
-    chat.model = "deepseek-chat"
+    chat.model = "deepseek-v4-flash"
     chat.mode = mode
     chat.thinking_enabled = False
     chat.verbose_mode = False
@@ -131,7 +131,7 @@ class TestConversationManager(unittest.TestCase):
         self.assertTrue(os.path.exists(fp))
         data = self.mgr.load("test_conv")
         self.assertIsNotNone(data)
-        self.assertEqual(data["model"], "deepseek-chat")
+        self.assertEqual(data["model"], "deepseek-v4-flash")
         self.assertEqual(data["mode"], "chat")
         self.assertEqual(len(data["history"]), 1)
 
@@ -339,7 +339,7 @@ class TestStatusBar(unittest.TestCase):
         iface = NeoMindInterface(mock)
         toolbar = iface._bottom_toolbar()
         s = str(toolbar)
-        self.assertIn("deepseek-chat", s)
+        self.assertIn("deepseek-v4-flash", s)  # default model in toolbar
         self.assertIn("chat", s)
         self.assertIn("think:off", s)
         self.assertIn("1msg", s)

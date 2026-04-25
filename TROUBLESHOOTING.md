@@ -271,7 +271,7 @@ for key in ['DEEPSEEK_API_KEY', 'ZAI_API_KEY']:
 # Check provider resolution
 python3 -c "
 from agent.core import NeoMindAgent
-for model in ['deepseek-chat', 'glm-5', 'glm-4.7-flash']:
+for model in ['deepseek-v4-flash', 'deepseek-v4-pro', 'glm-5', 'glm-4.7-flash']:
     spec = NeoMindAgent._get_model_spec(model)
     print(f'{model}: ctx={spec[\"max_context\"]//1000}K out={spec[\"max_output\"]//1000}K default={spec[\"default_max\"]//1000}K')
 "

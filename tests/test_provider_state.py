@@ -425,7 +425,7 @@ class TestProviderChain(TestProviderStateBase):
 
         names = [p["name"] for p in chain]
         self.assertEqual(names, ["deepseek", "zai"])
-        self.assertEqual(chain[0]["model"], "deepseek-chat")
+        self.assertEqual(chain[0]["model"], "deepseek-v4-flash")
 
     @patch.dict(os.environ, {
         "DEEPSEEK_API_KEY": "sk-test-deepseek-placeholder",
@@ -465,12 +465,12 @@ class TestProviderChain(TestProviderStateBase):
         "LITELLM_API_KEY": "",
     }, clear=False)
     def test_thinking_mode_uses_reasoner(self):
-        """Thinking=True → uses deepseek-reasoner model."""
+        """Thinking=True → still uses v4-flash (thinking via API param, not separate model)."""
         mgr = self._make_mgr()
         mgr.register_bot("neomind")
         chain = mgr.get_provider_chain("neomind", thinking=True)
 
-        self.assertEqual(chain[0]["model"], "deepseek-reasoner")
+        self.assertEqual(chain[0]["model"], "deepseek-v4-flash")
 
     @patch.dict(os.environ, {
         "DEEPSEEK_API_KEY": "",
@@ -497,7 +497,7 @@ class TestProviderChain(TestProviderStateBase):
 
         chain = mgr.get_provider_chain("neomind", thinking=True)
         self.assertEqual(chain[0]["name"], "litellm")
-        self.assertEqual(chain[0]["model"], "deepseek-reasoner")
+        self.assertEqual(chain[0]["model"], "deepseek-v4-flash")
 
 
 # ═══════════════════════════════════════════════════════════════════

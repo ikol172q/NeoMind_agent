@@ -1013,7 +1013,7 @@ Remember: Always ask for permission before making changes!
         Switch to a different model (may change provider).
 
         Args:
-            model_id: The model ID to switch to (e.g. "deepseek-chat", "glm-5")
+            model_id: The model ID to switch to (e.g. "deepseek-v4-flash", "glm-5")
 
         Returns:
             True if model was switched successfully, False otherwise

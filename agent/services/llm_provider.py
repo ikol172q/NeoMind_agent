@@ -4,7 +4,7 @@ Extracted from core.py (Tier 2B of architecture redesign).
 Centralizes all provider/model logic so core.py delegates to this service.
 
 Usage:
-    provider = LLMProviderService(api_key="...", model="deepseek-chat")
+    provider = LLMProviderService(api_key="...", model="deepseek-v4-flash")
     resolved = provider.resolve_provider()
     models = provider.list_models()
     provider.set_model("glm-5")

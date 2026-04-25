@@ -3,7 +3,7 @@
 LLM Usage Tracker — SQLite-backed, real-time, persists across container restarts.
 
 Records every LLM call:
-- Provider + model (litellm:local, deepseek:deepseek-chat, etc.)
+- Provider + model (litellm:local, deepseek:deepseek-v4-flash, etc.)
 - Token count (estimated from response length)
 - Latency (ms)
 - Cost estimate
@@ -51,7 +51,7 @@ COST_PER_1K_TOKENS = {
 @dataclass
 class UsageRecord:
     provider: str       # "litellm", "deepseek", "zai"
-    model: str          # "local", "deepseek-chat", etc.
+    model: str          # "local", "deepseek-v4-flash", etc.
     tokens_est: int     # estimated tokens (from response chars)
     latency_ms: int     # round-trip time in milliseconds
     cost_est: float     # estimated cost in USD
@@ -68,7 +68,7 @@ class UsageTracker:
         tracker = UsageTracker()
         tracker.record("litellm", "local", tokens=150, latency_ms=800, success=True, chat_id=123)
         today = tracker.get_today()
-        # → {"calls": 5, "tokens": 2340, "cost": 0.0, "by_model": {"local": 4, "deepseek-chat": 1}}
+        # → {"calls": 5, "tokens": 2340, "cost": 0.0, "by_model": {"local": 4, "deepseek-v4-flash": 1}}
     """
 
     def __init__(self, db_path: Optional[str] = None):
@@ -113,7 +113,7 @@ class UsageTracker:
 
         Args:
             provider: Provider name (litellm, deepseek, etc.)
-            model: Model name (local, deepseek-chat, etc.)
+            model: Model name (local, deepseek-v4-flash, etc.)
             tokens: Token count (legacy parameter name)
             tokens_est: Token count (new parameter name, takes precedence)
             latency_ms: Latency in milliseconds
