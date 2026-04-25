@@ -118,14 +118,18 @@ def test_zoom_reset_returns_to_identity(page):
 
 
 def test_zoom_has_clamped_upper_and_lower_bounds(page):
-    """Spam zoom-in many times — must cap at 300% (ZOOM_MAX=3.0).
-    Same for zoom-out bottom (ZOOM_MIN=0.3 → 30%)."""
+    """Spam zoom-in many times — must cap at 200% (ZOOM_MAX=2.0).
+    Same for zoom-out bottom (ZOOM_MIN=0.5 → 50%).
+
+    Post-V8: bounds tightened because at ≥2.5x the node-bbox clamp
+    lets the viewport show mostly whitespace between columns/rows,
+    which the user perceives as a 'black screen'."""
     _open_trace(page)
     for _ in range(20):
         page.click('[data-testid="lattice-zoom-in"]')
     page.wait_for_timeout(200)
     scale = float(page.get_attribute('[data-testid="lattice-svg"]', "data-zoom-scale"))
-    assert scale <= 3.0 + 1e-6, f"zoom should cap at 3.0x, got {scale}"
+    assert scale <= 2.0 + 1e-6, f"zoom should cap at 2.0x, got {scale}"
 
     page.click('[data-testid="lattice-zoom-reset"]')
     page.wait_for_timeout(100)
@@ -133,7 +137,7 @@ def test_zoom_has_clamped_upper_and_lower_bounds(page):
         page.click('[data-testid="lattice-zoom-out"]')
     page.wait_for_timeout(200)
     scale = float(page.get_attribute('[data-testid="lattice-svg"]', "data-zoom-scale"))
-    assert scale >= 0.3 - 1e-6, f"zoom should floor at 0.3x, got {scale}"
+    assert scale >= 0.5 - 1e-6, f"zoom should floor at 0.5x, got {scale}"
 
 
 # ── L1 → L0 widget jump ───────────────────────────────

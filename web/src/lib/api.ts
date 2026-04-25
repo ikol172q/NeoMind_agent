@@ -5,7 +5,7 @@
  * so in dev they're proxied to 127.0.0.1:8001 via Vite, and in
  * prod they hit the same FastAPI that serves this bundle.
  */
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 
 async function fetchJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init)
@@ -673,15 +673,83 @@ export interface LatticePayload {
   duration_ms: number
 }
 
-export function useLatticeCalls(project_id: string) {
+export function useLatticeCalls(project_id: string, date?: string | null) {
+  // Key on (language, budget_hash): backend keeps separate caches per
+  // (lang, budget) combo, so RQ should too — flipping knobs back to a
+  // seen combo is an in-memory hit.
+  //
+  // V8: when `date` is passed, fetch an archived snapshot instead of
+  // live /calls. Historical snapshots are frozen artifacts (don't care
+  // about current runtime overrides).
+  const lang = useLatticeLanguage()
+  const active = lang.data?.active
+  const budgets = useLatticeBudgets()
+  const bh = budgets.data?.effective_hash
+  const isHistorical = !!date
   return useQuery({
-    queryKey: ['lattice_calls', project_id],
+    queryKey: isHistorical
+      ? ['lattice_calls_snapshot', project_id, date]
+      : ['lattice_calls', project_id, active, bh],
     queryFn: () => fetchJSON<LatticePayload>(
-      `/api/lattice/calls?project_id=${encodeURIComponent(project_id)}`,
+      isHistorical
+        ? `/api/lattice/snapshot?project_id=${encodeURIComponent(project_id)}&date=${encodeURIComponent(date!)}`
+        : `/api/lattice/calls?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id && (isHistorical || (!!active && !!bh)),
+    staleTime: isHistorical ? Infinity : 10 * 60_000,
+    refetchInterval: isHistorical ? false : 15 * 60_000,
+    refetchOnWindowFocus: false,
+    retry: isHistorical ? false : 3,
+    // Keep the prior data rendered while a key change (language /
+    // budget / snapshot-date flip) fetches fresh — avoids blank viz
+    // during in-flight refetches.
+    placeholderData: keepPreviousData,
+  })
+}
+
+export interface LatticeSnapshotEntry {
+  date: string
+  size_bytes: number
+  output_language: 'en' | 'zh-CN-mixed' | null
+  recorded_at: string | null
+}
+
+// ── V10·A2 live self-check ─────────────────────────────
+
+export interface SelfcheckEntry {
+  name: string
+  label: string
+  pass: boolean
+  detail: string
+  offenders?: unknown[]
+}
+export interface SelfcheckReport {
+  project_id: string
+  summary: string
+  all_pass: boolean
+  checks: SelfcheckEntry[]
+}
+export function useLatticeSelfcheck(project_id: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['lattice_selfcheck', project_id],
+    queryFn: () => fetchJSON<SelfcheckReport>(
+      `/api/lattice/selfcheck?project_id=${encodeURIComponent(project_id)}`,
+    ),
+    enabled: !!project_id && enabled,
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
+
+export function useLatticeSnapshots(project_id: string) {
+  return useQuery({
+    queryKey: ['lattice_snapshots', project_id],
+    queryFn: () => fetchJSON<{ project_id: string; snapshots: LatticeSnapshotEntry[] }>(
+      `/api/lattice/snapshots?project_id=${encodeURIComponent(project_id)}`,
     ),
     enabled: !!project_id,
-    staleTime: 10 * 60_000,     // server L3 cache is 15min; stay fresh for 10
-    refetchInterval: 15 * 60_000,
+    staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
 }
@@ -752,15 +820,20 @@ export interface LatticeGraphPayload {
 }
 
 export function useLatticeGraph(project_id: string) {
+  const lang = useLatticeLanguage()
+  const active = lang.data?.active
+  const budgets = useLatticeBudgets()
+  const bh = budgets.data?.effective_hash
   return useQuery({
-    queryKey: ['lattice_graph', project_id],
+    queryKey: ['lattice_graph', project_id, active, bh],
     queryFn: () => fetchJSON<LatticeGraphPayload>(
       `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}`,
     ),
-    enabled: !!project_id,
+    enabled: !!project_id && !!active && !!bh,
     staleTime: 10 * 60_000,
     refetchInterval: 15 * 60_000,
     refetchOnWindowFocus: false,
+    placeholderData: keepPreviousData,
   })
 }
 
@@ -794,6 +867,52 @@ export function useLatticeLanguage() {
   })
 }
 
+// ── V9 layer-budget runtime override ───────────────────
+
+export interface LatticeLayerBudget {
+  max_items: number | null
+  min_members: number | null
+  max_candidates: number | null
+  mmr_lambda: number | null
+}
+export interface LatticeBudgets {
+  observations: LatticeLayerBudget
+  sub_themes: LatticeLayerBudget
+  themes: LatticeLayerBudget
+  calls: LatticeLayerBudget
+}
+export interface LatticeBudgetsState {
+  effective: LatticeBudgets
+  override: LatticeBudgets | null
+  yaml_default: LatticeBudgets
+  effective_hash: string
+}
+export function useLatticeBudgets() {
+  return useQuery({
+    queryKey: ['lattice_budgets'],
+    queryFn: () => fetchJSON<LatticeBudgetsState>('/api/lattice/budgets'),
+    staleTime: 30_000,
+  })
+}
+/** POST the override (partial tree; pass `{}` to clear). Returns the
+ *  new effective state + hash. Caller is responsible for setting the
+ *  RQ cache (optimistic) + invalidating budget-keyed queries. */
+export async function setLatticeBudgets(
+  override: Partial<{ [K in keyof LatticeBudgets]: Partial<LatticeLayerBudget> }>,
+): Promise<Pick<LatticeBudgetsState, 'effective' | 'override' | 'effective_hash'>> {
+  const r = await fetch('/api/lattice/budgets', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(override),
+  })
+  if (!r.ok) {
+    const body = await r.text().catch(() => '')
+    throw new Error(`set budgets failed: ${r.status} ${body.slice(0, 200)}`)
+  }
+  return r.json()
+}
+
+
 export async function setLatticeLanguage(lang: 'en' | 'zh-CN-mixed' | 'clear') {
   const r = await fetch(
     `/api/lattice/language?lang=${encodeURIComponent(lang)}`,
@@ -805,12 +924,14 @@ export async function setLatticeLanguage(lang: 'en' | 'zh-CN-mixed' | 'clear') {
 
 
 export function useLatticeTrace(project_id: string, node_id: string | null) {
+  const lang = useLatticeLanguage()
+  const active = lang.data?.active
   return useQuery({
-    queryKey: ['lattice_trace', project_id, node_id],
+    queryKey: ['lattice_trace', project_id, node_id, active],
     queryFn: () => fetchJSON<LatticeTracePayload>(
       `/api/lattice/trace/${encodeURIComponent(node_id!)}?project_id=${encodeURIComponent(project_id)}`,
     ),
-    enabled: !!project_id && !!node_id,
+    enabled: !!project_id && !!node_id && !!active,
     staleTime: 60_000,
     retry: false,           // 404 means no trace captured; don't retry
     refetchOnWindowFocus: false,

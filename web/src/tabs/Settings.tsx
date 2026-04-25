@@ -5,9 +5,10 @@ import { useQuery } from '@tanstack/react-query'
 interface Props {
   projectId: string
   onProjectChange: (p: string) => void
+  onOpenLegacy?: () => void
 }
 
-export function SettingsTab({ projectId, onProjectChange }: Props) {
+export function SettingsTab({ projectId, onProjectChange, onOpenLegacy }: Props) {
   const health = useHealth()
   const projects = useProjects()
   const newsHealth = useQuery({
@@ -64,6 +65,28 @@ export function SettingsTab({ projectId, onProjectChange }: Props) {
             <code className="text-[var(--color-dim)]">~/.neomind/</code>
             <div>Fleet state (mailboxes, transcripts)</div>
           </div>
+        </CardBody>
+      </Card>
+
+      <Card>
+        <CardHeader title="Legacy dashboard" subtitle="Old widget grid (Quote / Heatmap / Earnings / RS / Correlation / etc.)" />
+        <CardBody>
+          <div className="text-xs text-[var(--color-dim)] mb-2">
+            The dashboard widget grid was removed from Research in V11 to keep the
+            lattice (information distillation) as the single focus. The full grid
+            is preserved here — your saved layout still applies.
+            <br /><br />
+            For market data exploration, prefer external products (TradingView, Yahoo
+            Finance, Koyfin, Finviz). The legacy grid is kept as a safety net /
+            reference.
+          </div>
+          <button
+            data-testid="open-legacy-dashboard"
+            onClick={() => onOpenLegacy?.()}
+            className="text-xs px-3 py-1.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-border)]/40 transition"
+          >
+            Open legacy dashboard →
+          </button>
         </CardBody>
       </Card>
 
