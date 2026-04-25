@@ -54,6 +54,29 @@ class Observation:
         return asdict(self)
 
 
+# ── V10·A3 raw widget payload store ────────────────────
+#
+# After build_observations runs, this dict holds the last-seen raw
+# payload per widget, keyed by project_id. The graph builder reads
+# it to attach attrs.raw_payload onto L0 widget nodes so the trace
+# panel can show "this is exactly what fed L1 this cycle".
+#
+# Keys are widget ids (same strings used in obs.source["widget"]).
+# Values are JSON-serializable slices of the synthesis output.
+
+_last_widget_payloads: Dict[str, Dict[str, Any]] = {}
+
+
+def get_last_widget_payloads(project_id: str) -> Dict[str, Any]:
+    """Return the most recent widget-payload snapshot for a project,
+    or {} if build_observations hasn't run for it yet."""
+    return _last_widget_payloads.get(project_id, {})
+
+
+def _stash_widget_payloads(project_id: str, payloads: Dict[str, Any]) -> None:
+    _last_widget_payloads[project_id] = payloads
+
+
 # ── ID generation ──────────────────────────────────────
 
 _COUNTER: Dict[str, int] = {}
@@ -702,14 +725,29 @@ def build_observations(
 
     # Compose all generators. Order matters only for ID generation
     # stability within one scan — the engine itself is order-independent.
+    # V10·A3: stamp each emitted observation with the generator
+    # function name that produced it, so the trace UI can show
+    # "source.generator" alongside "source.widget". The selfcheck
+    # invariant `observations_have_source` relies on this.
     rows: List[Observation] = []
-    rows.extend(gen_technical_signals(proj, sym_snaps))
-    rows.extend(gen_earnings_signals(proj))
-    rows.extend(gen_portfolio_signals(proj))
-    rows.extend(gen_sector_signals(proj))
-    rows.extend(gen_sentiment_signals(proj))
-    rows.extend(gen_anomaly_signals(anomaly_payload))
-    rows.extend(gen_news_signals(news_entries, watchlist_syms, position_syms))
+    for name, call in [
+        ("gen_technical_signals", lambda: gen_technical_signals(proj, sym_snaps)),
+        ("gen_earnings_signals",  lambda: gen_earnings_signals(proj)),
+        ("gen_portfolio_signals", lambda: gen_portfolio_signals(proj)),
+        ("gen_sector_signals",    lambda: gen_sector_signals(proj)),
+        ("gen_sentiment_signals", lambda: gen_sentiment_signals(proj)),
+        ("gen_anomaly_signals",   lambda: gen_anomaly_signals(anomaly_payload)),
+        ("gen_news_signals",
+            lambda: gen_news_signals(news_entries, watchlist_syms, position_syms)),
+    ]:
+        try:
+            batch = call()
+        except Exception as exc:
+            logger.warning("lattice: %s failed: %s", name, exc)
+            batch = []
+        for o in batch:
+            o.source.setdefault("generator", name)
+        rows.extend(batch)
 
     # Dedup exact-text duplicates (e.g. anomaly + direct signal overlap)
     seen: set[str] = set()
@@ -730,4 +768,26 @@ def build_observations(
     severity_rank = {"alert": 0, "warn": 1, "info": 2}
     out.sort(key=lambda o: (severity_rank.get(o.severity, 99), -o.confidence))
 
+    # V10·A3: stash the raw payloads that fed the generators this
+    # cycle, keyed by widget id. The graph builder attaches these
+    # onto L0 widget nodes so the trace UI can show "this is the
+    # exact blob that drove today's observations".
+    _stash_widget_payloads(project_id, {
+        "chart":     {"sym_snaps": sym_snaps},
+        "earnings":  {"sym_snaps": {s: {k: v for k, v in (snap or {}).items()
+                                         if k in ("days_until_earnings", "atm_iv_pct",
+                                                  "earnings_date", "pre_earnings")}
+                                    for s, snap in sym_snaps.items()}},
+        "portfolio": {
+            "positions": proj.get("positions") or [],
+            "total_pnl": (proj.get("portfolio_summary") or {}).get("total_pnl"),
+        },
+        "sectors":   {"heatmap": proj.get("sector_heatmap") or proj.get("sectors") or []},
+        "sentiment": {"composite": (proj.get("sentiment") or {}).get("composite_score"),
+                      "breakdown": (proj.get("sentiment") or {})},
+        "anomalies": anomaly_payload,
+        "news":      {"entries_count": len(news_entries),
+                      "sample": news_entries[:5]},
+        "market_regime": {"regime": (proj.get("sentiment") or {}).get("regime")},
+    })
     return out

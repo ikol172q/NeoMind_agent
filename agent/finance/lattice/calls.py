@@ -450,11 +450,11 @@ def generate_calls(
             })
             return [Call(**c) for c in cached.get("calls", [])]
 
-    # V7: pull per-layer L3 budget from taxonomy. Defaults match
-    # spec.MAX_CALLS / MAX_CANDIDATES / MMR_LAMBDA so existing
-    # behaviour is preserved when YAML lacks the layer_budgets block.
-    from agent.finance.lattice.taxonomy import load_taxonomy
-    _budget = load_taxonomy().layer_budgets.calls
+    # V7/V9: pull per-layer L3 budget from runtime (which falls back
+    # to YAML when no override is set). Defaults match spec constants
+    # so unconfigured paths stay identical.
+    from agent.finance.lattice import runtime
+    _budget = runtime.get_effective_budgets().calls
     _max_calls = _budget.max_items if _budget.max_items is not None else _MAX_CALLS
     _max_candidates = _budget.max_candidates if _budget.max_candidates is not None else _MAX_CANDIDATES
     _lam = _budget.mmr_lambda if _budget.mmr_lambda is not None else _MMR_LAMBDA
@@ -624,7 +624,19 @@ def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
         for t in themes_payload["themes"]
     ]
     calls = generate_calls(themes, project_id=project_id, fresh=fresh)
-    return {
+    payload = {
         **themes_payload,
         "calls": [c.to_dict() for c in calls],
     }
+    # V8: persist the fresh payload as today's snapshot so the
+    # historical-view UI can page back. Cache-hits (fresh=False AND
+    # the inner pipelines served from cache) don't overwrite — we
+    # only want to record *actual* generations. Best-effort: never
+    # break the live endpoint if the filesystem is unhappy.
+    if fresh:
+        try:
+            from agent.finance.lattice.snapshots import write_snapshot
+            write_snapshot(project_id, payload)
+        except Exception as exc:   # pragma: no cover
+            logger.warning("lattice snapshot write failed: %s", exc)
+    return payload

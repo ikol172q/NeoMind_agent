@@ -56,7 +56,7 @@ Shape of the return value (stable contract):
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from agent.finance.lattice import spec
 from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
@@ -133,7 +133,7 @@ def _membership_computation(
 
 # ── builder ────────────────────────────────────────────
 
-def build_graph(payload: Dict[str, Any]) -> Dict[str, Any]:
+def build_graph(payload: Dict[str, Any], *, widget_payloads: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Transform a /api/lattice/calls payload into a graph view.
 
     The caller is responsible for fetching the payload (via
@@ -177,6 +177,12 @@ def build_graph(payload: Dict[str, Any]) -> Dict[str, Any]:
                 "widget": widget,
                 "generator": _widget_generator(widget),
                 "obs_count": obs_count,
+                # V10·A3: attach the raw payload slice that fed the
+                # generators this cycle. Falls back to None when the
+                # builder was called without a payload map (tests /
+                # legacy paths). The trace UI renders this verbatim
+                # so the user can see the actual JSON that drove L1.
+                "raw_payload": (widget_payloads or {}).get(widget),
             },
         })
 
