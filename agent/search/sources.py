@@ -23,6 +23,8 @@ from urllib.parse import urlparse, quote_plus
 
 import requests
 
+from agent.constants.models import DEFAULT_MODEL
+
 # ── Optional imports (graceful degradation) ──────────────────────────
 
 try:
@@ -933,7 +935,7 @@ class ScrapeGraphAIExtractor:
             llm_config = {
                 "llm": {
                     "api_key": openai_key,
-                    "model": "deepseek-chat",
+                    "model": DEFAULT_MODEL,
                     "base_url": os.getenv("OPENAI_BASE_URL", "https://api.deepseek.com/v1"),
                 },
             }

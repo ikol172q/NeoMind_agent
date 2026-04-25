@@ -33,6 +33,8 @@ import html
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Any, Callable, Tuple
 from dataclasses import dataclass, field
+
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL, THINKING_MODEL
 from pathlib import Path
 
 logging.basicConfig(
@@ -1033,7 +1035,11 @@ class NeoMindTelegramBot:
         model_id = args.lower()
         found = False
         found_provider = ""
-        from agent.services.llm_provider import PROVIDERS
+        from agent.services.llm_provider import PROVIDERS, resolve_model_alias
+
+        # Resolve centralized aliases first (opus, sonnet, reasoner, flash-v4, …)
+        # so they map to canonical model IDs before the PROVIDERS scan.
+        model_id = resolve_model_alias(model_id)
 
         # First: check if input is a provider name → use its first model
         for pname, pconf in PROVIDERS.items():
@@ -1045,11 +1051,10 @@ class NeoMindTelegramBot:
                     found = True
                 break
 
-        # Also accept common aliases
+        # Also accept common aliases (non-DeepSeek only — DeepSeek uses real names)
         _ALIASES = {
             "kimi": ("moonshot", "kimi-k2.5"),
             "glm": ("zai", "glm-5"),
-            "ds": ("deepseek", "deepseek-chat"),
             "local": ("litellm", "local"),
         }
         if not found and model_id in _ALIASES:
@@ -1291,7 +1296,7 @@ class NeoMindTelegramBot:
                 )
             elif val == "reset":
                 self._MODEL_CONTEXT.update({
-                    "deepseek-chat": 128000, "deepseek-reasoner": 128000,
+                    DEFAULT_MODEL: 1000000, PREMIUM_MODEL: 1000000,
                     "glm-5": 205000, "glm-4.5-flash": 128000,
                 })
                 await update.message.reply_text("✅ Context 上限已恢复默认值")
@@ -3733,8 +3738,8 @@ class NeoMindTelegramBot:
 
     # Context window limits per model
     _MODEL_CONTEXT = {
-        "deepseek-chat": 128000,
-        "deepseek-reasoner": 128000,
+        DEFAULT_MODEL: 1000000,
+        PREMIUM_MODEL: 1000000,
         "glm-5": 205000,
         "glm-4.5-flash": 128000,
         "kimi-k2.5": 131072,
@@ -3762,10 +3767,10 @@ class NeoMindTelegramBot:
 
     _ROUTER_DEFAULT_MODELS = {
         "fin": "kimi-k2.5",
-        "coding": "deepseek-chat",
-        "chat": "deepseek-chat",
+        "coding": DEFAULT_MODEL,
+        "chat": DEFAULT_MODEL,
     }
-    _ROUTER_THINKING_MODEL = "deepseek-reasoner"
+    _ROUTER_THINKING_MODEL = THINKING_MODEL
 
     # Per-mode rate-limit fallback model — inserted as a SECOND router
     # entry in the chain so when the primary's upstream 429's we can
@@ -3773,7 +3778,7 @@ class NeoMindTelegramBot:
     # moonshot, fallback=deepseek-chat via deepseek — independent
     # rate-bucket). None means "no rate-limit fallback for this mode".
     _ROUTER_RATE_LIMIT_FALLBACK = {
-        "fin": "deepseek-chat",
+        "fin": DEFAULT_MODEL,
         "coding": "kimi-k2.5",
         "chat": "kimi-k2.5",
     }

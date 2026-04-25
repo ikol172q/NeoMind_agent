@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List, Set, Callable
 from pathlib import Path
 
+from agent.constants.models import DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 
@@ -118,7 +120,7 @@ class SessionState:
     mode: str = "chat"
 
     # Model
-    model: str = "deepseek-chat"
+    model: str = field(default_factory=lambda: DEFAULT_MODEL)
     fallback_model: Optional[str] = None
     thinking_enabled: bool = True
     temperature: float = 0.7

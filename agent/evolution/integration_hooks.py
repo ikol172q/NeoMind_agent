@@ -24,6 +24,8 @@ import logging
 from typing import Dict, Any, Optional, Tuple
 from pathlib import Path
 
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL
+
 logger = logging.getLogger(__name__)
 
 # ── Lazy module singletons ─────────────────────────────────────
@@ -123,7 +125,7 @@ def _get_cost_optimizer():
 def pre_llm_call(
     prompt: str,
     mode: str = "chat",
-    model: str = "deepseek-chat",
+    model: Optional[str] = None,
     max_tokens: int = 4096,
     **kwargs,
 ) -> Dict[str, Any]:
@@ -216,7 +218,7 @@ def post_response(
     prompt: str,
     response: str,
     mode: str = "chat",
-    model: str = "deepseek-chat",
+    model: Optional[str] = None,
     latency_ms: float = 0,
     tokens_used: int = 0,
     cost_usd: float = 0,
@@ -299,7 +301,7 @@ def post_response(
             elif not was_distilled and task_type:
                 # Non-distilled good response from expensive model → store as exemplar
                 quality = _estimate_quality(response, mode)
-                if quality >= 0.8 and model in ("deepseek-reasoner",):
+                if quality >= 0.8 and model == PREMIUM_MODEL:
                     engine.store_exemplar(
                         task_type=task_type,
                         prompt_summary=prompt[:200],

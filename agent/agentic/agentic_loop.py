@@ -36,6 +36,8 @@ import json
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, Any, AsyncIterator, Awaitable
 
+from agent.constants.models import DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 # Lazy import for hooks to avoid circular dependencies
@@ -622,7 +624,7 @@ class AgenticLoop:
                             hooks.pre_llm_call,
                             prompt=combined,
                             mode="chat",
-                            model="deepseek-chat",
+                            model=DEFAULT_MODEL,
                         )
                         if pre_call_result.get("skip_api"):
                             # Degraded to STATIC tier — use fallback
@@ -689,7 +691,7 @@ class AgenticLoop:
                             prompt=combined,
                             response=current_response,
                             mode="chat",
-                            model="deepseek-chat",
+                            model=DEFAULT_MODEL,
                             latency_ms=0,
                             tokens_used=0,
                             cost_usd=0.0,

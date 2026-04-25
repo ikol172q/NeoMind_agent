@@ -21,6 +21,8 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL
+
 
 @dataclass
 class AuditFinding:
@@ -359,7 +361,7 @@ class AuditEngine:
         if not chain:
             findings.append(AuditFinding("high", "provider", "Empty provider chain"))
         chain_think = chain_method(obj, thinking=True)
-        if chain_think and chain_think[0]["model"] not in ("deepseek-reasoner", "glm-5"):
+        if chain_think and chain_think[0]["model"] not in (DEFAULT_MODEL, PREMIUM_MODEL, "glm-5"):
             findings.append(AuditFinding("medium", "provider", f"Thinking model unexpected: {chain_think[0]['model']}"))
         return findings or [AuditFinding("info", "provider", "Provider chain OK")]
 

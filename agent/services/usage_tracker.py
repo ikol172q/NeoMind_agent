@@ -23,6 +23,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL
+
 
 # Default DB path — prefer named volume for performance.
 def _default_usage_db_path() -> str:
@@ -39,8 +41,8 @@ DEFAULT_DB_PATH = _default_usage_db_path()
 # Cost per call estimates (rough, for display only)
 COST_PER_1K_TOKENS = {
     "local": 0,              # MLX local inference = free (was Ollama pre-2026-04)
-    "deepseek-chat": 0.00014,      # $0.14/M input
-    "deepseek-reasoner": 0.00055,   # $0.55/M input
+    DEFAULT_MODEL: 0.00014,    # $0.14/M input
+    PREMIUM_MODEL: 0.00174,    # $1.74/M input
     "glm-4.5-flash": 0.0001,
     "glm-5": 0.0003,
 }

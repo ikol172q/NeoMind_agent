@@ -121,8 +121,8 @@ cost:
   # Model pricing reference (updated manually or via cost_optimizer)
   # Prices are per 1M tokens (input/output)
   model_pricing:
-    deepseek-chat: { input: 0.14, output: 0.28 }
-    deepseek-reasoner: { input: 0.55, output: 2.19 }
+    deepseek-v4-flash: { input: 0.14, output: 0.28 }
+    deepseek-v4-pro: { input: 1.74, output: 3.48 }
     kimi-k2.5: { input: 0.50, output: 2.00 }
     # Add more as needed — NeoMind can self-update this section
 
@@ -214,7 +214,7 @@ compliance:
 
 # === Agent Settings ===
 agent:
-  model: deepseek-chat
+  model: deepseek-v4-flash
   temperature: 0.7
   max_tokens: 8192
   stream: true

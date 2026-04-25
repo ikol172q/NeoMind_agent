@@ -27,12 +27,13 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
+from agent.constants.models import DEFAULT_MODEL
 from agent.finance import agent_audit, investment_projects
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_DEFAULT_MODEL = "deepseek-chat"  # chat model for streaming UX; reasoner has CoT overhead
+_DEFAULT_MODEL = DEFAULT_MODEL
 _MAX_TOKENS = 4096
 _TEMPERATURE = 0.3
 

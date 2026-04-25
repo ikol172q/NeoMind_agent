@@ -36,6 +36,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import httpx
 
+from agent.constants.models import DEFAULT_MODEL
 from agent.finance.lattice import spec
 from agent.finance.lattice.observations import Observation, build_observations
 from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
@@ -43,7 +44,7 @@ from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_NARRATIVE_MODEL = "deepseek-chat"
+_NARRATIVE_MODEL = DEFAULT_MODEL
 _NARRATIVE_TTL_S = 300.0
 _NARRATIVE_TIMEOUT_S = 30.0
 

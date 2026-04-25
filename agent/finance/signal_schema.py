@@ -34,6 +34,8 @@ from typing import List, Literal, Optional, Tuple
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from agent.constants.models import DEFAULT_MODEL
+
 logger = logging.getLogger(__name__)
 
 __all__ = [
@@ -105,7 +107,7 @@ class AnalysisResult(BaseModel):
     symbol: str
     quote: StockQuoteSchema
     analysis: AgentAnalysis
-    model_used: str = "deepseek-reasoner"
+    model_used: str = DEFAULT_MODEL
     project_id: Optional[str] = None
     timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 

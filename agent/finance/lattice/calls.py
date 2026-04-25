@@ -32,13 +32,14 @@ from typing import Any, Dict, List, Optional, Sequence
 
 import httpx
 
+from agent.constants.models import DEFAULT_MODEL
 from agent.finance.lattice import spec
 from agent.finance.lattice.themes import Theme, build_themes
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_CALLS_MODEL = "deepseek-chat"
+_CALLS_MODEL = DEFAULT_MODEL
 _CALLS_TTL_S = 900.0           # 15 min, per plan
 _CALLS_TIMEOUT_S = 45.0
 

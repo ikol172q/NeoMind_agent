@@ -13,6 +13,8 @@ Updated: 2026-03-28 (P3-C — workflow commands + mode/help/context inlined)
 
 from typing import TYPE_CHECKING, Dict, Tuple, Callable, Any
 
+from agent.constants.models import PREMIUM_MODEL
+
 if TYPE_CHECKING:
     pass
 
@@ -170,7 +172,7 @@ class SharedCommandsMixin:
         try:
             original_model = self.core.model
             if "reason" not in original_model.lower():
-                self.core.set_model("deepseek-reasoner")
+                self.core.set_model(PREMIUM_MODEL)
                 response = self.core.generate_completion(messages, temperature=0.3, max_tokens=2000)
                 self.core.set_model(original_model)
             else:

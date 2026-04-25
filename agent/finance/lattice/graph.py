@@ -58,6 +58,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from agent.constants.models import DEFAULT_MODEL
 from agent.finance.lattice import spec
 from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
 
@@ -237,7 +238,7 @@ def build_graph(payload: Dict[str, Any], *, widget_payloads: Optional[Dict[str, 
             "provenance": {
                 "computed_by": narrative_provenance,
                 "method": "tag_intersection_cluster",
-                "model": ("deepseek-chat"
+                "model": (DEFAULT_MODEL
                           if narrative_provenance.startswith("llm") else None),
                 "inputs": member_obs_ids,
             },
@@ -291,7 +292,7 @@ def build_graph(payload: Dict[str, Any], *, widget_payloads: Optional[Dict[str, 
             "provenance": {
                 "computed_by": "llm+mmr",
                 "method": "toulmin_candidate_then_mmr_select",
-                "model": "deepseek-chat",
+                "model": DEFAULT_MODEL,
                 "inputs": list(c.get("grounds") or []),
             },
             "attrs": {

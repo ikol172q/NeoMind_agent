@@ -17,6 +17,8 @@ from __future__ import annotations
 import os
 from typing import Any, Callable, Dict, List, Optional
 
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL
+
 try:
     import requests
 except ImportError:
@@ -29,19 +31,14 @@ except ImportError:
 # default_max  = sensible default for max_tokens in normal requests
 MODEL_SPECS: Dict[str, Dict[str, int]] = {
     # DeepSeek models
-    "deepseek-chat": {
-        "max_context": 131072,   # 128K
-        "max_output": 8192,      # 8K
-        "default_max": 8192,
+    "deepseek-v4-flash": {
+        "max_context": 1048576,  # 1M
+        "max_output": 393216,    # 384K
+        "default_max": 16384,
     },
-    "deepseek-coder": {
-        "max_context": 131072,
-        "max_output": 8192,
-        "default_max": 8192,
-    },
-    "deepseek-reasoner": {
-        "max_context": 131072,   # 128K
-        "max_output": 65536,     # 64K (thinking mode)
+    "deepseek-v4-pro": {
+        "max_context": 1048576,  # 1M
+        "max_output": 393216,    # 384K
         "default_max": 16384,
     },
     # z.ai GLM models
@@ -105,18 +102,10 @@ DEFAULT_SPEC: Dict[str, int] = {
 # Maps friendly/short names to actual model IDs.
 # Allows `/switch opus` or `--model sonnet` style usage.
 MODEL_ALIASES: Dict[str, str] = {
-    # Claude-style aliases → DeepSeek equivalents
-    "opus": "deepseek-reasoner",
-    "sonnet": "deepseek-chat",
-    "haiku": "deepseek-chat",
-    # Short aliases
-    "reasoner": "deepseek-reasoner",
-    "coder": "deepseek-coder",
-    "chat": "deepseek-chat",
-    # GLM aliases
+    # Short aliases for non-DeepSeek providers — same naming family as the
+    # canonical id, just shorter. DeepSeek itself has no aliases: use the
+    # full `deepseek-v4-flash` / `deepseek-v4-pro`.
     "glm": "glm-5",
-    "flash": "glm-4.5-flash",
-    # Moonshot aliases
     "kimi": "kimi-k2.5",
     "moonshot": "moonshot-v1-128k",
 }
@@ -178,8 +167,8 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
             {"id": "mlx-community/Qwen3-30B-A3B-Thinking-2507-4bit",
              "owned_by": "mlx-local"},
             # Cloud via router
-            {"id": "deepseek-chat",     "owned_by": "deepseek-via-router"},
-            {"id": "deepseek-reasoner", "owned_by": "deepseek-via-router"},
+            {"id": "deepseek-v4-flash", "owned_by": "deepseek-via-router"},
+            {"id": "deepseek-v4-pro",   "owned_by": "deepseek-via-router"},
             {"id": "glm-5",             "owned_by": "zai-via-router"},
             {"id": "glm-4.7",           "owned_by": "zai-via-router"},
             {"id": "glm-4.7-flash",     "owned_by": "zai-via-router"},
@@ -197,9 +186,8 @@ PROVIDERS: Dict[str, Dict[str, Any]] = {
         "env_key": "DEEPSEEK_API_KEY",
         "model_prefixes": ["deepseek-"],
         "fallback_models": [
-            {"id": "deepseek-chat", "owned_by": "deepseek"},
-            {"id": "deepseek-coder", "owned_by": "deepseek"},
-            {"id": "deepseek-reasoner", "owned_by": "deepseek"},
+            {"id": "deepseek-v4-flash", "owned_by": "deepseek"},
+            {"id": "deepseek-v4-pro", "owned_by": "deepseek"},
         ],
     },
     "zai": {
@@ -292,12 +280,12 @@ class LLMProviderService:
     def __init__(
         self,
         api_key: str = "",
-        model: str = "deepseek-chat",
+        model: Optional[str] = None,
         config: Any = None,
         status_print: Optional[Callable] = None,
     ):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY", "")
-        self.model = model
+        self.model = model or DEFAULT_MODEL
         self.available_models_cache: Optional[List[Dict[str, Any]]] = None
         self._config = config
         self._status_print = status_print or (lambda msg, level="debug": None)
@@ -322,7 +310,7 @@ class LLMProviderService:
         if litellm_enabled:
             litellm_key = os.getenv("LITELLM_API_KEY", "")
             if litellm_key:
-                litellm_models = ["local", "deepseek-chat", "deepseek-reasoner", "qwen3.5", "qwen-plus"]
+                litellm_models = ["local", DEFAULT_MODEL, PREMIUM_MODEL, "qwen3.5", "qwen-plus"]
                 if model in litellm_models or model.startswith("local") or model.startswith("qwen"):
                     base = os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
                     return {
@@ -524,7 +512,7 @@ class LLMProviderService:
     def set_model(self, model_id: str) -> bool:
         """Switch to a different model (may change provider).
 
-        Supports aliases: 'opus' → 'deepseek-reasoner', 'sonnet' → 'deepseek-chat', etc.
+        Supports aliases: 'opus' → 'deepseek-v4-pro', 'sonnet' → 'deepseek-v4-flash', etc.
         Returns True if model was switched successfully, False otherwise.
         """
         original_id = model_id
@@ -651,13 +639,13 @@ class LLMProviderService:
                     print("Usage: /models switch [agent] <model_id>")
                     print("Examples:")
                     print(
-                        "  /models switch deepseek-reasoner          # Switch to DeepSeek model"
+                        "  /models switch deepseek-v4-flash          # Switch to DeepSeek default"
+                    )
+                    print(
+                        "  /models switch deepseek-v4-pro            # Switch to DeepSeek premium"
                     )
                     print(
                         "  /models switch glm-5                      # Switch to z.ai model"
-                    )
-                    print(
-                        "  /models switch agent deepseek-reasoner    # Switch model (explicit)"
                     )
                     return None
             elif subcommand in ["current", "active"]:

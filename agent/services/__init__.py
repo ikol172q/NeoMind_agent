@@ -12,6 +12,8 @@ from __future__ import annotations
 import os
 from typing import TYPE_CHECKING, Any, Optional
 
+from agent.constants.models import DEFAULT_MODEL
+
 if TYPE_CHECKING:
     pass  # Future: type hints for service classes
 
@@ -301,7 +303,7 @@ class ServiceRegistry:
             try:
                 from agent.services.llm_provider import LLMProviderService
                 api_key = os.getenv("DEEPSEEK_API_KEY", "")
-                model = getattr(self.config, 'model', 'deepseek-chat')
+                model = getattr(self.config, 'model', DEFAULT_MODEL)
                 self._llm_provider = LLMProviderService(
                     api_key=api_key,
                     model=model,
