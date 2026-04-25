@@ -70,6 +70,7 @@ run.sh
 .claude/projects/
 .claude/cache/
 .claude/logs/
+.claude/scheduled_tasks.lock
 .user/
 
 # Safety audit logs
