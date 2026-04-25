@@ -21,14 +21,16 @@ from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional, List, Tuple, Callable
 
+from agent.constants.models import DEFAULT_MODEL, PREMIUM_MODEL
+
 logger = logging.getLogger(__name__)
 
 DB_PATH = Path("/data/neomind/db/cost_tracking.db")
 
 # Approximate pricing per 1M tokens (as of 2026)
 MODEL_PRICING = {
-    "deepseek-chat": {"input": 0.14, "output": 0.28},
-    "deepseek-reasoner": {"input": 0.55, "output": 2.19},
+    DEFAULT_MODEL: {"input": 0.14, "output": 0.28},
+    PREMIUM_MODEL: {"input": 1.74, "output": 3.48},
     "gpt-4o-mini": {"input": 0.15, "output": 0.60},
     "gpt-4o": {"input": 2.50, "output": 10.00},
     "claude-3-haiku": {"input": 0.25, "output": 1.25},
@@ -197,28 +199,28 @@ class CostOptimizer:
             daily_spend = self._get_daily_spend(purpose="evolution")
             if daily_spend >= EVOLUTION_DAILY_BUDGET:
                 logger.info(f"Evolution budget exhausted (${daily_spend:.3f}/${EVOLUTION_DAILY_BUDGET})")
-                return "deepseek-chat"  # Always use cheapest for budget overflow
+                return DEFAULT_MODEL  # Always use cheapest for budget overflow
 
         # RouteLLM adaptive routing: check historical success rates
         if task_complexity in ("simple", "medium"):
             cheap_success_rate = self._get_model_success_rate(
-                "deepseek-chat", mode, days=7
+                DEFAULT_MODEL, mode, days=7
             )
             # If cheap model has >80% success rate, use it
             if cheap_success_rate is None or cheap_success_rate > 0.80:
-                return "deepseek-chat"
+                return DEFAULT_MODEL
             # If cheap model is struggling, escalate
             elif cheap_success_rate < 0.60:
                 logger.info(
                     f"RouteLLM: cheap model success rate {cheap_success_rate:.0%} "
-                    f"in {mode} mode, escalating to reasoner"
+                    f"in {mode} mode, escalating to v4-flash (thinking)"
                 )
-                return "deepseek-reasoner"
+                return DEFAULT_MODEL
             else:
-                return "deepseek-chat"
+                return DEFAULT_MODEL
 
-        # Complex tasks always use reasoner
-        return "deepseek-reasoner"
+        # Complex tasks default to v4-flash (user switches to v4-pro manually)
+        return "deepseek-v4-flash"
 
     def _get_model_success_rate(self, model: str, mode: str,
                                  days: int = 7) -> Optional[float]:
@@ -743,7 +745,7 @@ class CostOptimizer:
                 return False
 
             # Estimate cost at batch discount
-            regular_cost = self._calculate_cost("deepseek-chat", total_tokens, 0)
+            regular_cost = self._calculate_cost(DEFAULT_MODEL, total_tokens, 0)
             batch_cost = regular_cost * self.BATCH_DISCOUNT
             tokens_saved = total_tokens  # Would have cost 2x without batch
 

@@ -40,11 +40,14 @@ DEFAULT_STATE = {
     },
 }
 
+_DEEPSEEK_DEFAULT = "deepseek-v4-flash"
+_DEEPSEEK_THINKING = "deepseek-v4-flash"
+
 DEFAULT_BOT_CONFIG = {
     "provider_mode": "direct",
     "litellm_model": "local",
-    "direct_model": "deepseek-chat",
-    "thinking_model": "deepseek-reasoner",
+    "direct_model": _DEEPSEEK_DEFAULT,
+    "thinking_model": _DEEPSEEK_THINKING,
     "moonshot_model": "moonshot-v1-128k",
     "moonshot_thinking_model": "kimi-k2.5",
     "updated_at": "",
@@ -102,8 +105,8 @@ def cmd_get(args):
         by = bot.get("updated_by", "?")
         print(f"{args[0]}: mode={mode} (by {by} at {updated})")
         # Show model details
-        print(f"  direct_model:    {bot.get('direct_model', 'deepseek-chat')}")
-        print(f"  thinking_model:  {bot.get('thinking_model', 'deepseek-reasoner')}")
+        print(f"  direct_model:    {bot.get('direct_model', _DEEPSEEK_DEFAULT)}")
+        print(f"  thinking_model:  {bot.get('thinking_model', _DEEPSEEK_THINKING)}")
         print(f"  litellm_model:   {bot.get('litellm_model', 'local')}")
         print(f"  moonshot_model:  {bot.get('moonshot_model', 'moonshot-v1-128k')}")
         print(f"  moonshot_think:  {bot.get('moonshot_thinking_model', 'kimi-k2.5')}")

@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Any, Optional, List
 import yaml
 
+from agent.constants.models import DEFAULT_MODEL
+
 
 class AgentConfigManager:
     """Manages agent configuration with split config files.
@@ -222,7 +224,7 @@ class AgentConfigManager:
         mode_model = self._active.get("model")
         if mode_model:
             return mode_model
-        return self._agent.get("model", "deepseek-chat")
+        return self._agent.get("model", DEFAULT_MODEL)
 
     @property
     def fallback_model(self) -> Optional[str]:

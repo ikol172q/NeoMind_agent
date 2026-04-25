@@ -39,10 +39,14 @@ from urllib.parse import urlencode
 
 import httpx
 
+# Bootstrap path so this script can be run standalone (.venv/bin/python tools/eval/lattice_judge.py)
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+from agent.constants.models import DEFAULT_MODEL  # noqa: E402
+
 BASE_URL = os.environ.get("NEOMIND_DASHBOARD_URL", "http://127.0.0.1:8001/")
 PROJECT = os.environ.get("NEOMIND_PROJECT", "fin-core")
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-JUDGE_MODEL = "deepseek-chat"
+JUDGE_MODEL = DEFAULT_MODEL
 
 
 # ── Scenarios — seed controllable L1 state ─────────────

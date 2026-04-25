@@ -23,13 +23,14 @@ from typing import Any, Dict, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from agent.constants.models import DEFAULT_MODEL
 from agent.finance import agent_audit, investment_projects
 from agent.finance.chat_streaming import _SYSTEM_PROMPT, _build_context_block
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_MODEL = "deepseek-chat"
+_MODEL = DEFAULT_MODEL
 _TEMPERATURE = 0.2
 _MAX_TOKENS = 220
 

@@ -2,7 +2,7 @@
 mode: chat
 
 # Model override for this mode (takes priority over base.yaml)
-model: deepseek-chat
+model: deepseek-v4-flash
 
 # === Cross-Mode Intelligence ===
 # Chat is the COMMAND CENTER — it receives intelligence from fin and coding,
@@ -297,7 +297,7 @@ routing:
   # but if MLX server is down the router will return 5xx. Second
   # chain entry points at a cloud model on a different upstream
   # so the fallback has an independent rate-bucket.
-  rate_limit_fallback_model: deepseek-chat
+  rate_limit_fallback_model: deepseek-v4-flash
 
   # When the router path is unavailable and we fall back to direct
   # vendor APIs, promote this provider to the front of the chain.

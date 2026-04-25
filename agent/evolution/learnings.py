@@ -23,6 +23,8 @@ No external dependencies — stdlib only.
 
 import json
 import math
+
+from agent.constants.models import DEFAULT_MODEL
 import struct
 import sqlite3
 import logging
@@ -109,7 +111,7 @@ class LearningsEngine:
             learning_id INTEGER PRIMARY KEY,
             embedding BLOB NOT NULL,
             dimension INTEGER NOT NULL,
-            model TEXT DEFAULT 'deepseek-chat',
+            model TEXT NOT NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY (learning_id) REFERENCES learnings(id) ON DELETE CASCADE
         );
@@ -692,7 +694,7 @@ JSON output only, no explanation:"""
     # ── Vector Search ──────────────────────────────────────────
 
     def store_embedding(self, learning_id: int, embedding: List[float],
-                        model: str = "deepseek-chat") -> bool:
+                        model: Optional[str] = None) -> bool:
         """Store an embedding vector for a learning.
 
         Args:
@@ -715,7 +717,7 @@ JSON output only, no explanation:"""
                 """INSERT OR REPLACE INTO learning_vectors
                    (learning_id, embedding, dimension, model, created_at)
                    VALUES (?, ?, ?, ?, ?)""",
-                (learning_id, blob, len(embedding), model, now)
+                (learning_id, blob, len(embedding), model or DEFAULT_MODEL, now)
             )
             conn.commit()
             conn.close()

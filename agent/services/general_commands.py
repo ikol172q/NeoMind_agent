@@ -239,9 +239,9 @@ def handle_models_command(core, command: str) -> Optional[str]:
             else:
                 print("Usage: /models switch [agent] <model_id>")
                 print("Examples:")
-                print("  /models switch deepseek-reasoner          # Switch to DeepSeek model")
+                print("  /models switch deepseek-v4-flash          # Switch to DeepSeek default")
+                print("  /models switch deepseek-v4-pro            # Switch to DeepSeek premium")
                 print("  /models switch glm-5                      # Switch to z.ai model")
-                print("  /models switch agent deepseek-reasoner    # Switch model (explicit)")
                 return None
         elif subcommand in ["current", "active"]:
             print(f"\nCurrent model: {core.model}")

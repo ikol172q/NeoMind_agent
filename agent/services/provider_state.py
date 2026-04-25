@@ -21,6 +21,8 @@ import time
 import logging
 from datetime import datetime, timezone, timedelta
 
+from agent.constants.models import DEFAULT_MODEL, THINKING_MODEL
+
 # US Pacific Time (UTC-7 PDT / UTC-8 PST)
 try:
     from zoneinfo import ZoneInfo
@@ -52,8 +54,8 @@ DEFAULT_STATE = {
 DEFAULT_BOT_CONFIG = {
     "provider_mode": "direct",       # "litellm" or "direct"
     "litellm_model": "local",        # model name when using litellm
-    "direct_model": "deepseek-chat", # model name when using direct
-    "thinking_model": "deepseek-reasoner",
+    "direct_model": DEFAULT_MODEL,   # model name when using direct
+    "thinking_model": THINKING_MODEL,
     "updated_at": "",
     "updated_by": "system",
     # Per-mode model routing (written by bot on startup, read by xbar)
@@ -315,7 +317,7 @@ class ProviderStateManager:
         Args:
             bot_name: e.g. "neomind"
             mode_models: e.g. {"fin": {"model": "kimi-k2.5", "provider": "moonshot"},
-                               "chat": {"model": "deepseek-chat", "provider": "deepseek"}}
+                               "chat": {"model": DEFAULT_MODEL, "provider": "deepseek"}}
             updated_by: who triggered the update
         """
         state = self._read_state()
@@ -372,7 +374,7 @@ class ProviderStateManager:
                 os.getenv("LITELLM_BASE_URL", "http://host.docker.internal:4000/v1")
             )
             litellm_model = config.get("litellm_model", "local")
-            thinking_model = config.get("thinking_model", "deepseek-reasoner")
+            thinking_model = config.get("thinking_model", THINKING_MODEL)
             providers.append({
                 "name": "litellm",
                 "api_key": litellm_key,
@@ -391,8 +393,8 @@ class ProviderStateManager:
             return direct_url
 
         if ds_key:
-            direct_model = config.get("direct_model", "deepseek-chat")
-            thinking_model = config.get("thinking_model", "deepseek-reasoner")
+            direct_model = config.get("direct_model", DEFAULT_MODEL)
+            thinking_model = config.get("thinking_model", THINKING_MODEL)
             providers.append({
                 "name": "deepseek",
                 "api_key": ds_key,

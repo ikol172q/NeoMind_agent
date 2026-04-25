@@ -17,6 +17,8 @@ from urllib.parse import urlparse
 
 import requests
 
+from agent.constants.models import DEFAULT_MODEL
+
 try:
     from bs4 import BeautifulSoup
     HAS_BS4 = True
@@ -189,7 +191,8 @@ class NeoMindAgent:
         if litellm_enabled:
             litellm_key = os.getenv("LITELLM_API_KEY", "")
             if litellm_key:
-                litellm_models = ["local", "deepseek-chat", "deepseek-reasoner", "qwen3.5", "qwen-plus"]
+                from agent.constants.models import PREMIUM_MODEL as _PREMIUM
+                litellm_models = ["local", DEFAULT_MODEL, _PREMIUM, "qwen3.5", "qwen-plus"]
                 if model in litellm_models or model.startswith("local") or model.startswith("qwen"):
                     base = os.getenv("LITELLM_BASE_URL", "http://localhost:4000/v1")
                     return {
@@ -224,10 +227,10 @@ class NeoMindAgent:
             "api_key": self.api_key,
         }
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "deepseek-chat"):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("DEEPSEEK_API_KEY")
         # CHANGED: Use agent_config instead of hardcoded values
-        self.model = model if model != "deepseek-chat" else agent_config.model
+        self.model = model or agent_config.model or DEFAULT_MODEL
         self.fallback_model = agent_config.fallback_model
         self.thinking_mode = agent_config.thinking_mode
         # Mode configuration

@@ -281,9 +281,9 @@ if STATE_FILE.exists():
         if provider_mode == "litellm":
             alias = bot.get("litellm_model", "local")
         else:
-            alias = bot.get("direct_model", "deepseek-chat")
+            alias = bot.get("direct_model", "deepseek-v4-flash")
         provider_model = resolve_litellm_alias(alias)
-        provider_thinking = resolve_litellm_alias(bot.get("thinking_model", "deepseek-reasoner"))
+        provider_thinking = resolve_litellm_alias(bot.get("thinking_model", "deepseek-v4-flash"))
     except Exception:
         pass
 
@@ -330,8 +330,8 @@ PRICING = {
     "glm-4.5": {"in": 0.60, "out": 2.20},
     "glm-4.5-air": {"in": 0.13, "out": 0.85},
     "local": {"in": 0, "out": 0},
-    "deepseek-chat": {"in": 0.27, "out": 1.10},
-    "deepseek-reasoner": {"in": 0.55, "out": 2.19},
+    "deepseek-v4-flash": {"in": 0.14, "out": 0.28},
+    "deepseek-v4-pro": {"in": 1.74, "out": 3.48},
     "moonshot-v1-128k": {"in": 0.60, "out": 0.60},
     "moonshot-v1-32k": {"in": 0.24, "out": 0.24},
     "kimi-k2.5": {"in": 0.60, "out": 0.60},
@@ -344,7 +344,7 @@ PROVIDER_MAP = {
     "glm-5": "Z.ai", "glm-4.7": "Z.ai", "glm-4.7-flash": "Z.ai",
     "glm-4.6": "Z.ai", "glm-4.6v": "Z.ai", "glm-4.5": "Z.ai", "glm-4.5-air": "Z.ai",
     "local": "Ollama",
-    "deepseek-chat": "DeepSeek", "deepseek-reasoner": "DeepSeek",
+    "deepseek-v4-flash": "DeepSeek", "deepseek-v4-pro": "DeepSeek",
     "moonshot-v1-128k": "Kimi", "moonshot-v1-32k": "Kimi", "kimi-k2.5": "Kimi",
     "gpt-4o": "OpenAI", "gpt-4o-mini": "OpenAI", "o3-mini": "OpenAI",
     "claude-sonnet-4-6": "Anthropic", "claude-haiku-4-5": "Anthropic",
@@ -647,8 +647,8 @@ if ollama_ok and ollama_models:
 p(f"------📥 拉取新模型... | bash={GATEWAY_CLI} param1=pull terminal=true")
 
 p("----☁️ 云端模型 (常用)")
-p(f"------DeepSeek Chat | bash={GATEWAY_CLI} param1=add param2=deepseek-chat param3=deepseek/deepseek-chat terminal=false refresh=true")
-p(f"------DeepSeek Reasoner | bash={GATEWAY_CLI} param1=add param2=deepseek-reasoner param3=deepseek/deepseek-reasoner terminal=false refresh=true")
+p(f"------DeepSeek V4 Flash | bash={GATEWAY_CLI} param1=add param2=deepseek-v4-flash param3=deepseek/deepseek-v4-flash terminal=false refresh=true")
+p(f"------DeepSeek V4 Pro | bash={GATEWAY_CLI} param1=add param2=deepseek-v4-pro param3=deepseek/deepseek-v4-pro terminal=false refresh=true")
 p(f"------Qwen3 235B (Together) | bash={GATEWAY_CLI} param1=add param2=qwen3-235b param3=together_ai/Qwen/Qwen3-235B-A22B terminal=false refresh=true")
 p(f"------Claude Sonnet 4.6 | bash={GATEWAY_CLI} param1=add param2=claude param3=anthropic/claude-sonnet-4-6-20250214 terminal=false refresh=true")
 

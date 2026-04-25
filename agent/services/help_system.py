@@ -62,7 +62,7 @@ class HelpSystem:
                 command="/models",
                 description="List and switch models across all providers.",
                 usage="/models list\n/models switch <model>",
-                examples="/models list\n/models switch deepseek-reasoner"
+                examples="/models list\n/models switch deepseek-v4-pro"
             ),
             "mode": self.formatter.command_help(
                 command="/mode",
@@ -140,7 +140,7 @@ class HelpSystem:
                 command="/switch",
                 description="Switch to a different model.",
                 usage="/switch <model_id>",
-                examples="/switch deepseek-reasoner"
+                examples="/switch deepseek-v4-pro"
             ),
             "summarize": self.formatter.command_help(
                 command="/summarize",

@@ -19,6 +19,7 @@ import requests
 from typing import Optional, List, Dict, Tuple, Any
 
 from agent.code_analyzer import CodeAnalyzer
+from agent.constants.models import PREMIUM_MODEL
 from agent_config import agent_config
 
 try:
@@ -197,7 +198,7 @@ def _code_help(core) -> str:
   • Use relative paths from current directory
   • Changes are grouped and require confirmation
   • Large codebases (>500 files) require specific file targeting
-  • Use /code reason for complex analysis with deepseek-reasoner
+  • Use /code reason for complex analysis with deepseek-v4-pro
     """.strip()
 
 def _code_scan(core, path: str) -> str:
@@ -841,8 +842,8 @@ def _code_reason(core, file_path: str) -> str:
     if not success:
         return core.formatter.error(f"Cannot read file: {message}")
 
-    # Use deepseek-reasoner for deep analysis (temporary switch)
-    reasoner_model = "deepseek-reasoner"
+    # Use premium model for deep analysis (temporary switch)
+    reasoner_model = PREMIUM_MODEL
     model_used = core.model  # default
 
     # Construct prompt for analysis
