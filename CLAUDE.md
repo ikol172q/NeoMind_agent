@@ -41,10 +41,30 @@ mistake is made or a subtle gotcha is discovered.**
 ### Active hooks
 `.claude/settings.json` — Claude Code hook config.
 - PreToolUse:Bash → `tools/hooks/iterm2_safety_hook.py` (blocks iTerm2 window close patterns)
+- PreToolUse:Bash → `tools/hooks/leak_scan_hook.py` (gitleaks before `git commit`/`push`,
+  author-metadata check, blocks force-push to main; bypass with `NEOMIND_ALLOW_LEAKS=1`)
 
 `.git/hooks/pre-commit` → `tools/hooks/pre-commit`  
 (installed via `./tools/hooks/install.sh`; runs
 `tests/integration/cross_mode_boot_smoke.py` when shared paths change)
+
+### 🔺 Truth-first prompt design (mine and NeoMind's)
+`plans/references/` — the design philosophy I use when authoring or
+auditing any prompt in this repo, and the operating manual for my own
+behavior in Claude Code sessions.
+- `karpathy-skills-2026.md` — Karpathy's 4 principles (Think Before /
+  Simplicity / Surgical / Goal-Driven), all converging on falsifiability.
+- `first-principles.md` — when to drop pattern-matching and query the
+  substrate (state / context / live data / "I think I know" signals).
+- `karpathy-2025-12-tweet.md` — "LLMs make wrong assumptions on your
+  behalf and just run along with them without checking." The single
+  most-actionable LLM failure-mode diagnosis.
+- `prompt-design-philosophy.md` — synthesis: pyramid template
+  (pinnacle → 5 failure modes → assumption surfacing → first-principles →
+  pre-response gate → style/tools/persona), shared across NeoMind's
+  chat / coding / fin personalities.
+- The personal version of these as MY operating rules lives in
+  user-level memory `feedback_pyramid_truth_first.md`.
 
 ### User-level memory
 `~/.claude/projects/-Users-paomian-kong-Desktop/memory/` — user-level persistent
