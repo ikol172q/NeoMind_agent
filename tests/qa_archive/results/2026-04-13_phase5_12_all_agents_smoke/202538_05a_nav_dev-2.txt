@@ -1,0 +1,70 @@
+── ↩ leader (main fin session, project=fin-core)
+  (no conversation yet — type below to talk to the main persona, or @agent-name to dispatch a sub-agent)
+  ─── type below to talk to the main persona, ↓ to navigate tags
+[fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓ to navigate tags                                                                          

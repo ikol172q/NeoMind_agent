@@ -1,0 +1,70 @@
+── ➜ @fin-rsrch (fin · worker, project=fin-core)
+  you: In one sentence, research hypothesis for NVDA. Start with 'FIN-RSRCH:'.
+  @fin-rsrch: FIN-RSRCH: NVDA's current valuation is predicated on sustained >50% YoY data center revenue growth through 2025, a hypothesis 
+that will be tested against the pace of AI infrastructure build-out, compe
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+[@fin-rsrch fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓ to navigate tags                                                                          

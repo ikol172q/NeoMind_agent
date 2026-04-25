@@ -1,0 +1,70 @@
+── ➜ @dev-1 (coding · worker, project=fin-core)
+  (no conversation yet — type a message below to send this agent its first task)
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+[@dev-1 coding] > In one sentence, what is a Python decorator? Start with 'DEV-1:'.
+  you: In one sentence, what is a Python decorator? Start with 'DEV-1:'.
+  ⠋ @dev-1 thinking…
+[@dev-1 coding] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit                                                     
+ [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓ to navigate tags                                                                          

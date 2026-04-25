@@ -1,0 +1,70 @@
+── ➜ @fin-rt (fin · worker, project=fin-core)
+  you: In one sentence, buy/hold/sell view on MSFT. Start with 'FIN-RT:'.
+  @fin-rt: FIN-RT: Strong buy — Microsoft's cloud/AI growth trajectory and robust cash flow justify premium valuation with ~15% upside 
+potential over 12 months.
+  ─── type below to send a new task to this agent, ↓ to navigate tags again
+[@fin-rt fin] >
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ 
+ deepseek-chat | fin | think:on | 5% 5,947/131k 3msg  Ctrl+O think  / cmds  Ctrl+D exit  │  [mgr-1]  @fin-rt  @fin-rsrch  @dev-1  @dev-2   ↓

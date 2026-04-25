@@ -1,0 +1,60 @@
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 58s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 60s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 61s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 63s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 64s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] > /fleet status
+Fleet: fin-core  uptime: 66s
+Focus: __leader__
+Tasks: available=4  claimed=0  completed=1  failed=0
+Members:
+  @fin-rt (fin, worker, 2 events)
+  @fin-rsrch (fin, worker, 2 events)
+  @dev-1 (coding, worker, 2 events)
+  @dev-2 (coding, worker, 2 events)
+[fin] >
+ deepseek-chat | fin | think:on | 10% 12,604/131k 7msg | [mgr-1] @fin-rt @fin-rsrch @dev-1 @dev-2  Ctrl+O think  / cmds  Ctrl+D exit        
