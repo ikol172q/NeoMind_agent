@@ -339,8 +339,16 @@ def generate_narrative(
     V6: captures full trace (prompt, raw response, validation result,
     model, duration) into _narrative_trace keyed by theme_id so the
     /api/lattice/trace endpoint can answer 'how was this narrative
-    computed?' with the exact bytes sent and received."""
-    cache_key = _content_hash(theme_id, members)
+    computed?' with the exact bytes sent and received.
+
+    V8: cache key prefixed by the effective output language so both
+    language variants coexist in cache. Toggling the UI language no
+    longer needs to clear the cache — the first toggle misses (LLM
+    called), subsequent toggles between the same pair hit (instant).
+    """
+    from agent.finance.lattice import runtime
+    lang = runtime.get_effective_language()
+    cache_key = f"{lang}::{_content_hash(theme_id, members)}"
     if not fresh:
         cached = _cached_narrative(cache_key)
         if cached is not None:
@@ -531,7 +539,11 @@ def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
     """
     observations = build_observations(project_id, fresh=fresh)
     tax = load_taxonomy()
-    budgets = tax.layer_budgets
+    # V9: budgets come from runtime (which returns the YAML default
+    # when no override is set), so a POST /api/lattice/budgets flips
+    # the pipeline without a restart.
+    from agent.finance.lattice import runtime
+    budgets = runtime.get_effective_budgets()
 
     # V7: apply L1 max_items cap before clustering. Sort by severity
     # then confidence so the least-important obs drop first.
