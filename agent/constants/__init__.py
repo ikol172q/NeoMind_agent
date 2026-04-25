@@ -3,6 +3,8 @@ from agent.constants.models import (
     PREMIUM_MODEL,
     RATE_LIMIT_FALLBACK,
     THINKING_MODEL,
+    get_active_max_context,
+    get_active_max_output,
     get_active_model,
     get_active_personality,
 )
@@ -12,6 +14,8 @@ __all__ = [
     "PREMIUM_MODEL",
     "RATE_LIMIT_FALLBACK",
     "THINKING_MODEL",
+    "get_active_max_context",
+    "get_active_max_output",
     "get_active_model",
     "get_active_personality",
 ]

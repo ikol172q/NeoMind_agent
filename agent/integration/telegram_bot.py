@@ -1460,7 +1460,7 @@ class NeoMindTelegramBot:
                 )
             elif val == "reset":
                 self._MODEL_CONTEXT.update({
-                    DEFAULT_MODEL: 1048576, PREMIUM_MODEL: 1048576,
+                    DEFAULT_MODEL: 1000000, PREMIUM_MODEL: 1000000,
                     "glm-5": 205000, "glm-4.5-flash": 128000,
                 })
                 await update.message.reply_text("✅ Context 上限已恢复默认值")
@@ -3902,8 +3902,8 @@ class NeoMindTelegramBot:
 
     # Context window limits per model
     _MODEL_CONTEXT = {
-        DEFAULT_MODEL: 1048576,    # 1M, matches MODEL_SPECS in llm_provider.py
-        PREMIUM_MODEL: 1048576,    # 1M
+        DEFAULT_MODEL: 1000000,    # 1M, matches DeepSeek docs (decimal)
+        PREMIUM_MODEL: 1000000,    # 1M
         "glm-5": 205000,
         "glm-4.5-flash": 128000,
         "kimi-k2.5": 131072,

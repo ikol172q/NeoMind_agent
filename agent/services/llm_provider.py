@@ -30,15 +30,15 @@ except ImportError:
 # max_output   = hard cap on completion tokens the API will return
 # default_max  = sensible default for max_tokens in normal requests
 MODEL_SPECS: Dict[str, Dict[str, int]] = {
-    # DeepSeek models
+    # DeepSeek models — exact values per https://api-docs.deepseek.com/quick_start/pricing
     "deepseek-v4-flash": {
-        "max_context": 1048576,  # 1M
-        "max_output": 393216,    # 384K
+        "max_context": 1000000,  # 1M (decimal, matches DeepSeek docs)
+        "max_output": 384000,    # 384K (decimal)
         "default_max": 16384,
     },
     "deepseek-v4-pro": {
-        "max_context": 1048576,  # 1M
-        "max_output": 393216,    # 384K
+        "max_context": 1000000,  # 1M (decimal)
+        "max_output": 384000,    # 384K (decimal)
         "default_max": 16384,
     },
     # z.ai GLM models

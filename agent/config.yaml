@@ -32,7 +32,10 @@ agent:
 
     '
   context:
-    max_context_tokens: 131072
+    # max_context_tokens omitted — auto-derived from active model's
+    # MODEL_SPECS.max_context (deepseek-v4-flash → 1,048,576).
+    # Override here only to artificially cap the budget below the
+    # model's real ceiling (e.g., for cost discipline on long chats).
     warning_threshold: 0.61
     break_threshold: 0.8
     compression_strategy: truncate

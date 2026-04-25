@@ -93,10 +93,16 @@ class TokenBudget:
 
     def __init__(
         self,
-        max_context_tokens: int = 131072,
+        max_context_tokens: Optional[int] = None,
         warning_threshold: float = 0.61,
         compact_threshold: float = 0.80,
     ):
+        # None → derive from currently active model's MODEL_SPECS at init.
+        # Keeps the budget aligned with whichever model is selected (v4-flash
+        # has 1M, kimi-k2.5 has 128K, etc.) without hardcoding anything.
+        if max_context_tokens is None:
+            from agent.constants.models import get_active_max_context
+            max_context_tokens = get_active_max_context()
         self.max_context_tokens = max_context_tokens
         self.warning_threshold = warning_threshold
         self.compact_threshold = compact_threshold
@@ -463,9 +469,13 @@ class QueryEngine:
         self.prompt_composer = prompt_composer
         self.llm_caller = llm_caller
 
-        # Token budget
+        # Token budget — context.max_context_tokens left as None / unset
+        # delegates to TokenBudget.__init__'s lookup of the active model's
+        # MODEL_SPECS.max_context (so v4-flash sees 1M, kimi sees 128K).
+        # Set the YAML field to a number only if you want to artificially
+        # cap the budget below what the model actually supports.
         self.budget = TokenBudget(
-            max_context_tokens=self.config.get("context.max_context_tokens", 131072),
+            max_context_tokens=self.config.get("context.max_context_tokens", None),
             warning_threshold=self.config.get("context.warning_threshold", 0.61),
             compact_threshold=self.config.get("context.break_threshold", 0.80),
         )

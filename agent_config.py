@@ -4,12 +4,18 @@ from pathlib import Path
 from typing import Any, Optional, List
 import yaml
 
-from agent.constants.models import DEFAULT_MODEL, get_active_model, get_active_personality
+# IMPORTANT: agent_config.py sits at the bottom of the import graph.
+# Do NOT import from `agent.constants.models` at module level — that triggers
+# `agent/__init__.py` which loads core.py → context_service.py → which then
+# imports back from `agent_config`, breaking with a circular ImportError.
+# All references to DEFAULT_MODEL / get_active_model / get_active_personality
+# are done lazily inside functions/properties below.
 
 
 def _resolve_default_personality() -> str:
     """Read the active personality from provider-state, default to 'fin'."""
     try:
+        from agent.constants.models import get_active_personality
         return get_active_personality()
     except Exception:
         return "fin"
@@ -237,6 +243,7 @@ class AgentConfigManager:
         env_override = os.getenv("DEEPSEEK_MODEL")
         if env_override:
             return env_override
+        from agent.constants.models import get_active_model
         return get_active_model()
 
     @property
@@ -281,7 +288,14 @@ class AgentConfigManager:
 
     @property
     def max_context_tokens(self) -> int:
-        return self.get("context.max_context_tokens", 131072)
+        # YAML override wins if explicitly set; otherwise auto-derive from
+        # the active model's MODEL_SPECS so v4-flash/v4-pro see their full
+        # 1M ceiling instead of the legacy 128K.
+        explicit = self.get("context.max_context_tokens", None)
+        if explicit:
+            return int(explicit)
+        from agent.constants.models import get_active_max_context
+        return get_active_max_context()
 
     @property
     def context_warning_threshold(self) -> float:
