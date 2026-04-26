@@ -23,10 +23,13 @@ import {
 import {
   useFinStrategies,
   useFinStrategiesFit,
+  useFinWidgetCoverage,
   useLatticeCalls,
   type LatticeCall,
   type StrategyEntry,
   type StrategyFitEntry,
+  type StrategyWidgetCoverage,
+  type WidgetMeta,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -77,6 +80,7 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
   const fit = useFinStrategiesFit(projectId)
+  const coverage = useFinWidgetCoverage()
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
   // Default to today_fit sort — answers 'what's relevant right now?'
@@ -127,6 +131,15 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
     }
     return map
   }, [fit.data])
+
+  // Phase 6 Step 4: widget coverage per strategy (forward bidirectional map).
+  const coverageByStrategy = useMemo(() => {
+    const map: Record<string, StrategyWidgetCoverage> = {}
+    for (const c of coverage.data?.strategies ?? []) {
+      map[c.id] = c
+    }
+    return map
+  }, [coverage.data])
 
   const callsTotal = calls.data?.calls?.length ?? 0
   const callsMatched = Object.values(strategyToCalls).reduce(
@@ -357,6 +370,7 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                       latticeCalls={strategyToCalls[s.id] ?? []}
                       todayFit={todayFit}
                       todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
+                      widgetCoverage={coverageByStrategy[s.id]}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -410,6 +424,7 @@ function StrategyCard({
   latticeCalls,
   todayFit,
   todayFitBreakdown,
+  widgetCoverage,
   expanded,
   highlighted,
   registerRef,
@@ -421,6 +436,7 @@ function StrategyCard({
   latticeCalls: LatticeCall[]
   todayFit: number
   todayFitBreakdown?: Record<string, number>
+  widgetCoverage?: StrategyWidgetCoverage
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -587,17 +603,61 @@ function StrategyCard({
               ))}
             </ul>
           </Section>
-          <Section label="数据需求 / Data requirements (provenance)">
-            <ul className="text-[var(--color-dim)] flex flex-wrap gap-1">
-              {s.data_requirements.map((d, i) => (
-                <li
-                  key={i}
-                  className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
-                >
-                  {d}
-                </li>
-              ))}
-            </ul>
+          <Section label="数据需求 / Data requirements (lattice widget mapping)">
+            {widgetCoverage ? (
+              <div className="flex flex-col gap-1">
+                {/* widget chips with status badges */}
+                <div className="flex flex-wrap gap-1">
+                  {widgetCoverage.widgets.map((w) => (
+                    <WidgetChip key={w.id} widget={w} />
+                  ))}
+                </div>
+                {/* coverage summary */}
+                <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
+                  <span className="text-[var(--color-green)]">{widgetCoverage.available_count} available</span>
+                  {' · '}
+                  <span style={{ color: widgetCoverage.planned_count > 0 ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)' }}>
+                    {widgetCoverage.planned_count} planned (gap)
+                  </span>
+                  {widgetCoverage.unresolved.length > 0 && (
+                    <>
+                      {' · '}
+                      <span className="text-[var(--color-red)]">
+                        {widgetCoverage.unresolved.length} unresolved: {widgetCoverage.unresolved.join(', ')}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {/* Free-text equivalent shown as secondary line for human-readable context */}
+                <details className="mt-0.5">
+                  <summary className="text-[8px] uppercase tracking-wider text-[var(--color-dim)] cursor-pointer hover:text-[var(--color-text)]">
+                    show free-text source
+                  </summary>
+                  <ul className="text-[var(--color-dim)] flex flex-wrap gap-1 mt-1">
+                    {widgetCoverage.free_text_requirements.map((d, i) => (
+                      <li
+                        key={i}
+                        className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] italic"
+                      >
+                        {d}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            ) : (
+              // Fallback: data not loaded yet, show free-text
+              <ul className="text-[var(--color-dim)] flex flex-wrap gap-1">
+                {s.data_requirements.map((d, i) => (
+                  <li
+                    key={i}
+                    className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
+                  >
+                    {d}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Section>
           <Section label="税务 / Tax">
             <div className="text-[var(--color-dim)] leading-relaxed">
@@ -663,6 +723,41 @@ function StrategyCard({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * WidgetChip — Phase 6 Step 5. Renders one L0 widget data-requirement
+ * with status icon (✓ available / ⚠ planned / ? unknown), color-coded
+ * border, and tooltip with full description. Click jumps to lattice
+ * graph viewer focused on that widget (Step 6).
+ */
+function WidgetChip({ widget }: { widget: WidgetMeta }) {
+  const statusColor =
+    widget.status === 'available'
+      ? 'var(--color-green)'
+      : widget.status === 'planned'
+        ? 'var(--color-amber,#e5a200)'
+        : 'var(--color-dim)'
+  const icon =
+    widget.status === 'available' ? '✓' : widget.status === 'planned' ? '⚠' : '·'
+  return (
+    <span
+      data-testid={`widget-chip-${widget.id}`}
+      data-widget-id={widget.id}
+      data-source={`/api/lattice/widgets/${widget.id}`}
+      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono cursor-help"
+      style={{ borderColor: statusColor, color: statusColor }}
+      title={
+        `${widget.label_en ?? widget.id}（${widget.label_zh ?? ''}）\n` +
+        `status: ${widget.status}\n` +
+        `widget id: ${widget.id}\n\n` +
+        (widget.description ?? 'no description')
+      }
+    >
+      <span>{icon}</span>
+      <span>{widget.id}</span>
+    </span>
   )
 }
 
