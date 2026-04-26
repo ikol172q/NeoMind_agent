@@ -96,7 +96,8 @@ const ZOOM_MAX = 2.0
 const ZOOM_STEP = 1.18   // 18% per wheel tick
 
 interface ViewTransform { scale: number; tx: number; ty: number }
-const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 0 }
+// Initial view: y=36 to leave the column-header band un-occluded.
+const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 36 }
 
 export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies }: Props) {
   const q = useLatticeGraph(projectId)
@@ -242,9 +243,15 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
     const vpH = vp.clientHeight
     if (vpW === 0 || vpH === 0) return v
     const bbox = lay.contentBox
+    // Reserve a 36px sticky band at the top of the viewport for the
+    // column-header overlay. Without this, the user can pan content
+    // up far enough that node-row 1 ends up under the header strip
+    // (visible only as "half-cut" text). With it, the topmost SVG
+    // row stops at viewport y = HEADER_OFFSET, never deeper.
+    const HEADER_OFFSET = 36
     const a_x = -v.scale * bbox.x
     const b_x = vpW - v.scale * (bbox.x + bbox.width)
-    const a_y = -v.scale * bbox.y
+    const a_y = HEADER_OFFSET - v.scale * bbox.y
     const b_y = vpH - v.scale * (bbox.y + bbox.height)
     const minTx = Math.min(a_x, b_x)
     const maxTx = Math.max(a_x, b_x)
