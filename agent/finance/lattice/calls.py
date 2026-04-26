@@ -625,9 +625,37 @@ def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
         for t in themes_payload["themes"]
     ]
     calls = generate_calls(themes, project_id=project_id, fresh=fresh)
+
+    # Phase 5 V3: tag every L3 call with a best-fit catalog entry from
+    # docs/strategies/strategies.yaml. Deterministic matcher (no LLM
+    # prompt change), so call generation behaviour is unchanged. The
+    # match data is added to the JSON payload as `strategy_match` —
+    # downstream UI can render a "Strategy: X" chip linking to the
+    # catalog. Match is best-effort; null/None when no strategy clears
+    # the score threshold.
+    themes_by_id = {t.id: t for t in themes}
+    try:
+        from agent.finance.lattice.strategy_matcher import match_strategy
+    except Exception as exc:                                       # pragma: no cover
+        logger.debug("strategy_matcher unavailable: %s", exc)
+        match_strategy = None  # type: ignore[assignment]
+
+    enriched_calls: List[Dict[str, Any]] = []
+    for c in calls:
+        d = c.to_dict()
+        if match_strategy is not None:
+            try:
+                m = match_strategy(call=c, themes_by_id=themes_by_id)
+            except Exception as exc:                               # pragma: no cover
+                logger.debug("strategy match failed for call %s: %s", c.id, exc)
+                m = None
+            if m is not None:
+                d["strategy_match"] = m
+        enriched_calls.append(d)
+
     payload = {
         **themes_payload,
-        "calls": [c.to_dict() for c in calls],
+        "calls": enriched_calls,
     }
     # V8: persist the fresh payload as today's snapshot so the
     # historical-view UI can page back. Cache-hits (fresh=False AND
