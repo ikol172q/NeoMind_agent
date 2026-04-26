@@ -15,7 +15,7 @@ other direction.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import yaml
 from fastapi import APIRouter, HTTPException, Query
@@ -43,7 +43,7 @@ def _load_strategies() -> List[Dict[str, Any]]:
 
 
 @router.get("")
-def list_widgets_endpoint(status: str | None = Query(None)) -> Dict[str, Any]:
+def list_widgets_endpoint(status: Optional[str] = Query(None)) -> Dict[str, Any]:
     """Every widget id known to the lattice. Filter by status if given."""
     items = list_widgets(status)
     return {
