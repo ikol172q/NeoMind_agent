@@ -175,6 +175,7 @@ export default function App() {
         )}
         {tab === 'strategies' && (
           <StrategiesTab
+            projectId={projectId}
             onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
             focus={strategyFocus}
           />
