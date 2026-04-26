@@ -684,12 +684,19 @@ function NodeSvg({
     : (overlapping || hoverRoot)
       ? 'var(--color-accent)'
       : sevColor ?? 'var(--color-border)'
-  const strokeWidth = selected ? 2.5 : (overlapping || hoverRoot) ? 2 : focused ? 2 : 1
+  const strokeWidth = selected ? 3.5 : focused ? 3 : (overlapping || hoverRoot) ? 2 : 1
   const fill = dimmed ? 'var(--color-panel)' : 'var(--color-bg)'
   const opacity = dimmed ? 0.35 : 1
   // Soft glow on overlap partners — subtle enough not to overwhelm
-  // severity coloring but unmistakable as a visual link.
-  const glowFilter = (overlapping || hoverRoot) ? 'drop-shadow(0 0 4px var(--color-accent))' : undefined
+  // severity coloring but unmistakable as a visual link. Selected /
+  // deep-link-focused nodes get a stronger glow so the user can spot
+  // the destination after a cross-tab jump (Phase 6 followup).
+  const glowFilter =
+    selected || focused
+      ? 'drop-shadow(0 0 10px var(--color-accent)) drop-shadow(0 0 18px var(--color-accent))'
+      : (overlapping || hoverRoot)
+        ? 'drop-shadow(0 0 4px var(--color-accent))'
+        : undefined
 
   const shapeClass = isDiamond
     ? `node-shape-diamond node-provenance-${prov.replace('+', '-')}`

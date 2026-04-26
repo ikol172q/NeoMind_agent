@@ -171,24 +171,36 @@ export default function App() {
         }}
       />
 
-      {/* Active tab */}
-      <main className="flex-1 overflow-hidden">
-        {tab === 'research' && (
+      {/* Active tab.
+          Research + Strategies are always-mounted (display:none when
+          inactive) so local state — selected lattice node, expanded
+          strategy card, scroll position, mode toggles — survives a
+          tab switch. The user reported losing context after a cross-
+          tab jump; this fixes it. Other tabs are conditionally
+          rendered as before since they don't carry rich local state. */}
+      <main className="flex-1 overflow-hidden flex flex-col">
+        <div
+          className="flex-1 overflow-hidden flex flex-col"
+          style={{ display: tab === 'research' ? 'flex' : 'none' }}
+        >
           <ResearchTab
             projectId={projectId}
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
             onJumpToStrategies={jumpToStrategies}
           />
-        )}
-        {tab === 'strategies' && (
+        </div>
+        <div
+          className="flex-1 overflow-hidden flex flex-col"
+          style={{ display: tab === 'strategies' ? 'flex' : 'none' }}
+        >
           <StrategiesTab
             projectId={projectId}
             onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
             focus={strategyFocus}
             onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
           />
-        )}
+        </div>
         {tab === 'chat'     && (
           <ChatTab
             projectId={projectId}

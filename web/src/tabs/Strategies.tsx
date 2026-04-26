@@ -82,7 +82,10 @@ interface Props {
   onJumpToResearch?: (widgetId: string) => void
 }
 
-const HIGHLIGHT_MS = 2500
+// Increased from 2500ms → 6000ms so the user actually sees where the
+// jump landed (esp. when the destination is not in the initial
+// viewport — the scroll animation eats ~600ms of the original window).
+const HIGHLIGHT_MS = 6000
 
 export function StrategiesTab({ projectId, onJumpToChat, focus, onJumpToResearch }: Props) {
   const q = useFinStrategies()
@@ -509,7 +512,7 @@ function StrategyCard({
       className={cn(
         "border rounded bg-[var(--color-panel)] hover:border-[var(--color-accent)]/50 transition",
         highlighted
-          ? "border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/40"
+          ? "border-[var(--color-accent)] ring-4 ring-[var(--color-accent)]/60 shadow-[0_0_24px_rgba(0,180,255,0.45)] animate-pulse"
           : "border-[var(--color-border)]",
       )}
     >
