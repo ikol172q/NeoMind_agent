@@ -193,6 +193,11 @@ def list_lattice_obs() -> Dict[str, Any]:
         return {"available": False, "reason": str(exc), "obs": []}
 
     obs = gen_fin_compliance_signals(proj={})
+    # build_observations() stamps source.generator from the lambda name
+    # at orchestration time. We're calling the generator directly so we
+    # need to stamp it ourselves — keeps the trace UI honest.
+    for o in obs:
+        o.source.setdefault("generator", "gen_fin_compliance_signals")
     return {
         "available": True,
         "count": len(obs),
