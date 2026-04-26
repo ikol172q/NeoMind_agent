@@ -1236,6 +1236,38 @@ export interface StrategyEntry {
   sources: string[]
 }
 
+// ── Lineage: what L1 obs the fin SQLite store emits into the lattice ──
+
+export interface FinLatticeObs {
+  id: string
+  kind: string
+  text: string
+  numbers: Record<string, number>
+  tags: string[]
+  source: { widget: string; symbol?: string; field?: string; generator?: string }
+  severity: 'info' | 'warn' | 'alert'
+  confidence: number
+}
+
+export interface FinLatticeObsReport {
+  available: boolean
+  count: number
+  obs: FinLatticeObs[]
+  feeds_into: string
+  explanation: string
+  reason?: string
+}
+
+export function useFinLatticeObs(enabled: boolean) {
+  return useQuery({
+    queryKey: ['fin_lattice_obs'],
+    queryFn: () => fetchJSON<FinLatticeObsReport>('/api/db/lattice-obs'),
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
 export function useFinStrategies() {
   return useQuery({
     queryKey: ['fin_strategies'],

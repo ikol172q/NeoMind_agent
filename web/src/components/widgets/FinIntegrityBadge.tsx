@@ -11,13 +11,16 @@ import { Database, ShieldAlert, ShieldCheck } from 'lucide-react'
 import {
   useFinDbHealth,
   useFinIntegrity,
+  useFinLatticeObs,
   type FinIntegrityCheck,
+  type FinLatticeObs,
 } from '@/lib/api'
 
 export function FinIntegrityBadge() {
   const [open, setOpen] = useState(false)
   const q = useFinIntegrity(open)
   const dbHealth = useFinDbHealth()
+  const lineage = useFinLatticeObs(open)
   const checks = q.data?.checks ?? []
   const allPass = q.data?.all_pass
 
@@ -110,6 +113,35 @@ export function FinIntegrityBadge() {
                   <FinCheckRow key={c.name} check={c} />
                 ))}
               </div>
+              {/* Lineage: what L1 obs this store would emit into the
+                  lattice right now. Direct answer to "where does my
+                  recommendation actually come from?". */}
+              {lineage.data && lineage.data.available && (
+                <div
+                  data-testid="fin-lineage-section"
+                  className="border-t border-[var(--color-border)] pt-1.5 flex flex-col gap-1"
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-[9px] uppercase tracking-wider text-[var(--color-dim)]">
+                      → emits {lineage.data.count} L1 obs into lattice (
+                      <span className="text-[var(--color-accent)] font-mono">{lineage.data.feeds_into}</span>
+                      )
+                    </span>
+                  </div>
+                  {lineage.data.obs.length === 0 && (
+                    <div className="text-[9px] italic text-[var(--color-dim)]">
+                      No L1 obs being emitted right now (no recent wash
+                      sales / PDT / near-LT lots in the store).
+                    </div>
+                  )}
+                  {lineage.data.obs.map((o) => (
+                    <FinLineageRow key={o.id} obs={o} />
+                  ))}
+                  <div className="text-[8px] text-[var(--color-dim)] italic leading-[1.4] pt-0.5">
+                    {lineage.data.explanation}
+                  </div>
+                </div>
+              )}
               <div className="text-[9px] text-[var(--color-dim)] border-t border-[var(--color-border)] pt-1.5 leading-[1.4]">
                 Storage-layer guarantees (schema dedup / attribution /
                 temporal consistency / IRS &amp; PDT rule logic).
@@ -118,6 +150,56 @@ export function FinIntegrityBadge() {
               </div>
             </>
           )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+function FinLineageRow({ obs }: { obs: FinLatticeObs }) {
+  const [expand, setExpand] = useState(false)
+  const sevColor =
+    obs.severity === 'alert'
+      ? 'var(--color-red)'
+      : obs.severity === 'warn'
+        ? 'var(--color-amber,#e5a200)'
+        : 'var(--color-dim)'
+  const symbol = obs.source.symbol ?? obs.tags.find((t) => t.startsWith('symbol:'))?.slice(7) ?? ''
+  return (
+    <div
+      data-testid={`fin-lineage-${obs.kind}`}
+      className="rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 px-2 py-1 cursor-pointer"
+      onClick={() => setExpand(!expand)}
+    >
+      <div className="flex items-baseline gap-2 text-[10px]">
+        <span style={{ color: sevColor }} className="font-mono w-3">
+          {obs.severity === 'warn' ? '⚠' : obs.severity === 'alert' ? '✗' : '·'}
+        </span>
+        <span className="font-mono text-[var(--color-text)]">{obs.kind}</span>
+        {symbol && (
+          <span className="text-[var(--color-accent)] font-mono">{symbol}</span>
+        )}
+        <span className="text-[var(--color-dim)] truncate flex-1">
+          {obs.source.widget}
+        </span>
+        <span className="text-[8px] text-[var(--color-dim)]">{expand ? '▾' : '▸'}</span>
+      </div>
+      {expand && (
+        <div className="mt-1 text-[9px] text-[var(--color-dim)] flex flex-col gap-0.5">
+          <div className="leading-[1.4]">{obs.text}</div>
+          <div className="flex flex-wrap gap-1 pt-0.5">
+            {obs.tags.map((t) => (
+              <span
+                key={t}
+                className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
+              >
+                {t}
+              </span>
+            ))}
+          </div>
+          <div className="font-mono text-[8px] pt-0.5">
+            generator: <span className="text-[var(--color-accent)]">{obs.source.generator ?? '?'}</span>
+          </div>
         </div>
       )}
     </div>
