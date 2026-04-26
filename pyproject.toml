@@ -70,6 +70,11 @@ finance = [
     "duckduckgo-search>=4.0.0",
     "python-telegram-bot>=20.0",
     "playwright>=1.40.0",
+    # added 2026-04-25: scheduler for periodic data pulls + analysis
+    # runs (agent/finance/scheduler/). pandas is needed by yfinance
+    # and pulled in transitively but pinned here to make it explicit.
+    "apscheduler>=3.10.0",
+    "pandas>=2.0.0",
 ]
 rag = [
     "faiss-cpu>=1.7.4",

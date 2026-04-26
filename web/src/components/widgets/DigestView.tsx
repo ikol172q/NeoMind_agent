@@ -33,6 +33,9 @@ interface Props {
   /** When provided, the header gets a `config` button that calls this.
    *  Used by Research tab to open the watchlist + portfolio drawer. */
   onOpenConfig?: () => void
+  /** Phase 5 V4: each L3 call's strategy_match chip is clickable —
+   *  route to Strategies tab focused on the matched strategy id. */
+  onJumpToStrategies?: (strategyId: string) => void
 }
 
 type Mode = 'summary' | 'drilldown' | 'flat' | 'trace'
@@ -51,7 +54,7 @@ const CONF_COLOR: Record<string, string> = {
   low: 'var(--color-dim)',
 }
 
-export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig }: Props) {
+export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies }: Props) {
   // V8: when historicalDate is non-null, render that archived day
   // instead of live. Null = live mode.
   const [historicalDate, setHistoricalDate] = useState<string | null>(null)
@@ -99,6 +102,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig }: Pro
     highlightId,
     registerRef: (id, el) => { targetRefs.current[id] = el },
     onJumpToChat,
+    onJumpToStrategies,
   }
 
   return (
@@ -210,6 +214,8 @@ interface DigestCtx {
   highlightId: string | null
   registerRef: (id: string, el: HTMLElement | null) => void
   onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
+  /** Phase 5 V4: route from a call's strategy_match chip to Strategies tab. */
+  onJumpToStrategies?: (strategyId: string) => void
 }
 
 
@@ -1311,6 +1317,34 @@ function CallDrilldown({
       >
         {open ? <ChevronDown size={10} className="mt-1 shrink-0" /> : <ChevronRight size={10} className="mt-1 shrink-0" />}
         <div className="flex-1 text-[12px] text-[var(--color-text)]">{call.claim}</div>
+        {/* Phase 5 V4: catalog reference chip — present iff strategy_matcher
+            found a fit. Clicking jumps to the Strategies tab focused on
+            this strategy. Stop propagation so the click doesn't also
+            toggle the call open/closed. */}
+        {call.strategy_match && (
+          <span
+            data-testid={`call-strategy-${call.strategy_match.strategy_id}`}
+            data-source="lattice.calls[*].strategy_match (deterministic — agent.finance.lattice.strategy_matcher)"
+            onClick={(e) => {
+              e.stopPropagation()
+              ctx.onJumpToStrategies?.(call.strategy_match!.strategy_id)
+            }}
+            className="text-[9px] px-1.5 py-0.5 rounded border shrink-0 cursor-pointer hover:bg-[var(--color-accent)]/10 transition flex items-center gap-1"
+            style={{ borderColor: 'var(--color-accent)', color: 'var(--color-accent)' }}
+            title={
+              `Strategy: ${call.strategy_match.name_en} (${call.strategy_match.name_zh}) — score ${call.strategy_match.score}\n` +
+              `breakdown: ${JSON.stringify(call.strategy_match.score_breakdown)}\n` +
+              `click to open in Strategies tab`
+            }
+          >
+            <span>{call.strategy_match.strategy_id}</span>
+            {call.strategy_match.difficulty != null && (
+              <span className="text-[var(--color-amber,#e5a200)]">
+                {'★'.repeat(call.strategy_match.difficulty)}
+              </span>
+            )}
+          </span>
+        )}
         <span
           className="text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded border shrink-0"
           style={{ borderColor: CONF_COLOR[call.confidence], color: CONF_COLOR[call.confidence] }}

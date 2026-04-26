@@ -7,20 +7,24 @@ import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
 import { LegacyTab } from '@/tabs/Legacy'
+import { StrategiesTab } from '@/tabs/Strategies'
 import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
-import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command } from 'lucide-react'
+import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
+import { PdtCounter } from '@/components/widgets/PdtCounter'
+import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
+type Tab = 'research' | 'strategies' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
-  { id: 'research', label: 'Research', icon: LineChart },
-  { id: 'chat',     label: 'Chat',     icon: MessagesSquare },
-  { id: 'paper',    label: 'Paper',    icon: Wallet },
-  { id: 'audit',    label: 'Audit',    icon: ClipboardList },
-  { id: 'settings', label: 'Settings', icon: SettingsIcon },
+  { id: 'research',   label: 'Research',   icon: LineChart },
+  { id: 'strategies', label: 'Strategies', icon: BookOpen },
+  { id: 'chat',       label: 'Chat',       icon: MessagesSquare },
+  { id: 'paper',      label: 'Paper',      icon: Wallet },
+  { id: 'audit',      label: 'Audit',      icon: ClipboardList },
+  { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
 export default function App() {
@@ -38,6 +42,10 @@ export default function App() {
   const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [digestFocus, setDigestFocus] = useState<DigestFocus | null>(null)
+  // Phase 5 V4: focused strategy id when arriving from a call's
+  // strategy_match chip. Carries a nonce so clicking the same chip
+  // twice re-triggers the focus animation in StrategiesTab.
+  const [strategyFocus, setStrategyFocus] = useState<{ id: string; nonce: number } | null>(null)
   const health = useHealth()
 
   // Global ⌘K / Ctrl+K — command palette. Works from any tab.
@@ -87,6 +95,16 @@ export default function App() {
     setTab('research')
   }
 
+  /**
+   * Phase 5 V4: arrive at the Strategies tab focused on a specific
+   * catalog entry. Used when the user clicks a call's strategy_match
+   * chip in the Research tab — closes the lattice → catalog loop.
+   */
+  function jumpToStrategies(strategyId: string) {
+    setStrategyFocus({ id: strategyId, nonce: Date.now() })
+    setTab('strategies')
+  }
+
   return (
     <div className="h-full flex flex-col">
       {/* Top nav */}
@@ -123,7 +141,9 @@ export default function App() {
           <Command size={10} />
           <span>K</span>
         </button>
-        <div className="flex items-center gap-3 text-[10px] text-[var(--color-dim)]">
+        <div className="flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
+          <PdtCounter />
+          <FinIntegrityBadge />
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
           <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
             ● {health.data ? `healthy · ${health.data.version}` : 'unreachable'}
@@ -150,6 +170,14 @@ export default function App() {
             projectId={projectId}
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
+            onJumpToStrategies={jumpToStrategies}
+          />
+        )}
+        {tab === 'strategies' && (
+          <StrategiesTab
+            projectId={projectId}
+            onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
+            focus={strategyFocus}
           />
         )}
         {tab === 'chat'     && (
