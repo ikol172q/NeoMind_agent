@@ -75,6 +75,9 @@ finance = [
     # and pulled in transitively but pinned here to make it explicit.
     "apscheduler>=3.10.0",
     "pandas>=2.0.0",
+    # added 2026-04-26 (Phase B1): WARC reader/writer for the
+    # content-addressed raw store under agent/finance/raw_store/.
+    "warcio>=1.7",
 ]
 rag = [
     "faiss-cpu>=1.7.4",
