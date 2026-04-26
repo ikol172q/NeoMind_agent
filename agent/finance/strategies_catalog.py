@@ -72,29 +72,45 @@ def list_strategies(
 
 
 @router.get("/lattice-fit")
-def lattice_fit(project_id: str = Query(..., description="lattice project_id")) -> Dict[str, Any]:
-    """For each catalog strategy, score how well it fits today's lattice
+def lattice_fit(
+    project_id: str       = Query(..., description="lattice project_id"),
+    as_of: Optional[str]  = Query(None, description="'live' or YYYY-MM-DD"),
+) -> Dict[str, Any]:
+    """For each catalog strategy, score how well it fits the lattice
     themes — *without* requiring an L3 call. Direct answer to the
     'no calls today, all strategies look like gap' problem.
 
-    Internally: aggregates all L1 obs tags across today's themes, then
-    runs the same deterministic scoring function the L3-call matcher
-    uses, but at each strategy's natural horizon (so horizon_match
-    bonus auto-fires). Returns strategies sorted by score descending.
+    Phase A: ``as_of`` switches the source of truth.
+      - None / 'live' → call build_calls(project_id) live (current)
+      - YYYY-MM-DD    → read snapshot for that date
 
-    The score is the same scale as the L3-call matcher (0-10), and
-    score_breakdown is identical — so the UI can render the same
-    drill-down explanation as for live call matches.
+    Internally: aggregates all L1 obs tags across the relevant themes,
+    runs the deterministic scoring function the L3-call matcher uses,
+    at each strategy's natural horizon (so horizon_match bonus
+    auto-fires). Returns strategies sorted by score descending.
     """
     try:
         from agent.finance.lattice.calls import build_calls
         from agent.finance.lattice.themes import Theme, ThemeMember
         from agent.finance.lattice.strategy_matcher import match_all_against_themes
+        from agent.finance.lattice.snapshots import read_snapshot
     except Exception as exc:
         raise HTTPException(503, f"lattice modules unavailable: {exc}")
 
     try:
-        payload = build_calls(project_id, fresh=False)
+        if as_of is None or as_of == "live":
+            payload = build_calls(project_id, fresh=False)
+        else:
+            envelope = read_snapshot(project_id, as_of)
+            if envelope is None:
+                raise HTTPException(
+                    404,
+                    f"no lattice snapshot for {as_of}; pick a different date "
+                    f"(see /api/lattice/snapshots) or refresh live.",
+                )
+            payload = envelope.get("payload", {}) or {}
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(502, f"lattice build failed: {exc}")
 
@@ -443,33 +459,70 @@ def strategies_time_aware(
 # Both share the project's lattice synthesis so they're always
 # consistent with what the trace panel and Strategies card show.
 
+# ── Helpers for as_of (Phase A: temporal replay) ──────────────────
+#
+# When `as_of` is None or 'live', we run build_themes(project_id)
+# fresh.  When a YYYY-MM-DD date is given, we read the snapshot for
+# that date instead — falling back to 404 if no snapshot exists, so
+# the UI can prompt the user to pick a different date.  The themes
+# inside a snapshot envelope are dicts (not dataclass instances) but
+# strategy_matcher accepts both via duck-typing.
+
+def _themes_as_of(project_id: str, as_of: Optional[str]) -> List[Any]:
+    """Return the theme list for the requested point in time.
+
+    - as_of None / 'live'  → call build_themes(project_id) fresh
+    - as_of YYYY-MM-DD     → read latest snapshot for that date
+    """
+    if as_of is None or as_of == "live":
+        from agent.finance.lattice.themes import build_themes
+        bundle = build_themes(project_id)
+        return list((bundle or {}).get("themes", []))
+
+    # Explicit historical query
+    if not (len(as_of) == 10 and as_of[4] == '-' and as_of[7] == '-'):
+        raise HTTPException(
+            400, f"invalid as_of {as_of!r}; expected 'live' or YYYY-MM-DD",
+        )
+
+    from agent.finance.lattice.snapshots import read_snapshot
+    envelope = read_snapshot(project_id, as_of)
+    if envelope is None:
+        raise HTTPException(
+            404,
+            f"no lattice snapshot for {as_of}; pick a different date "
+            f"(see /api/lattice/snapshots) or refresh live."
+        )
+    payload = envelope.get("payload", {}) or {}
+    return list(payload.get("themes", []))
+
+
 @router.get("/by-theme")
 def strategies_by_theme(
-    project_id: str = Query(...),
-    theme_id: str   = Query(...),
-    top_n: int      = Query(8, ge=1, le=30),
+    project_id: str        = Query(...),
+    theme_id: str          = Query(...),
+    top_n: int             = Query(8, ge=1, le=30),
+    as_of: Optional[str]   = Query(None, description="'live' or YYYY-MM-DD"),
 ) -> Dict[str, Any]:
-    """Top catalog strategies fitting an L2 theme. Used by the lattice
-    trace panel's L2-node inspector ('Top strategies fitting this
-    theme').
+    """Top catalog strategies fitting an L2 theme.  Used by the
+    lattice trace panel's L2-node inspector.  When ``as_of`` is set,
+    the theme is loaded from that day's snapshot instead of live.
     """
     try:
-        from agent.finance.lattice.themes import build_themes
         from agent.finance.lattice.strategy_matcher import (
             match_strategies_against_theme,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"lattice modules unavailable: {exc}")
 
-    bundle = build_themes(project_id)
-    themes = (bundle or {}).get("themes", [])
+    themes = _themes_as_of(project_id, as_of)
     theme = next(
         (t for t in themes
          if (t.id if hasattr(t, "id") else t.get("id")) == theme_id),
         None,
     )
     if theme is None:
-        raise HTTPException(404, f"unknown theme {theme_id!r}")
+        raise HTTPException(404, f"unknown theme {theme_id!r} on {as_of or 'live'}")
 
     strategies = match_strategies_against_theme(theme, top_n=top_n)
     title = (
@@ -479,45 +532,58 @@ def strategies_by_theme(
     return {
         "theme_id":     theme_id,
         "theme_title":  title,
+        "as_of":        as_of or "live",
         "count":        len(strategies),
         "strategies":   strategies,
         "explanation": (
-            f"Strategies scored against the L2 theme {theme_id!r} "
-            f"({title!r}). Score uses the same matcher as today_fit, "
-            f"applied per-theme instead of aggregated."
+            f"Strategies scored against L2 theme {theme_id!r} "
+            f"({title!r}) on {as_of or 'live'}. Same matcher as "
+            f"today_fit, per-theme."
         ),
     }
 
 
-@router.get("/{strategy_id}/themes-today")
-def themes_matching_strategy_today(
+@router.get("/{strategy_id}/themes-as-of")
+def themes_matching_strategy_as_of(
     strategy_id: str,
-    project_id: str = Query(...),
+    project_id: str        = Query(...),
+    as_of: Optional[str]   = Query(None, description="'live' or YYYY-MM-DD"),
 ) -> Dict[str, Any]:
-    """Reverse: which of today's L2 themes score >= 1 against this
-    strategy? Used by the Strategies card 'TODAY MATCHING THEMES'
-    section to give the user a click-jump path strategy → lattice."""
+    """Reverse map: which L2 themes (live or as-of a given date)
+    score >=1 against this strategy?  Used by the Strategies card
+    "TODAY MATCHING THEMES" / "MATCHING THEMES (snapshot date)"
+    section to give the user a click-jump path strategy → lattice.
+    """
     try:
-        from agent.finance.lattice.themes import build_themes
         from agent.finance.lattice.strategy_matcher import (
             themes_matching_strategy,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"lattice modules unavailable: {exc}")
 
-    bundle = build_themes(project_id)
-    themes = (bundle or {}).get("themes", [])
+    themes = _themes_as_of(project_id, as_of)
     matches = themes_matching_strategy(strategy_id, themes)
     return {
         "strategy_id":  strategy_id,
+        "as_of":        as_of or "live",
         "count":        len(matches),
         "themes":       matches,
         "explanation": (
-            f"L2 themes from today's lattice that score >=1 against "
-            f"strategy {strategy_id!r}. Click any theme_id to jump "
-            f"to the lattice graph focused on that L2 node."
+            f"L2 themes from {as_of or 'live'} lattice that score >=1 "
+            f"against strategy {strategy_id!r}. Click any theme_id "
+            f"to jump to the lattice graph focused on that L2 node."
         ),
     }
+
+
+# Legacy alias — keeps the old `/{strategy_id}/themes-today` URL
+# working while frontend rolls forward to the new `/themes-as-of`.
+@router.get("/{strategy_id}/themes-today")
+def themes_matching_strategy_today(
+    strategy_id: str,
+    project_id: str = Query(...),
+) -> Dict[str, Any]:
+    return themes_matching_strategy_as_of(strategy_id, project_id, as_of=None)
 
 
 @router.get("/{strategy_id}")

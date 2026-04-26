@@ -1388,9 +1388,9 @@ export function useWidgetStrategies(widgetId: string | null | undefined) {
   })
 }
 
-export function useFinStrategiesFit(projectId: string) {
+export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
   return useQuery({
-    queryKey: ['fin_strategies_fit', projectId],
+    queryKey: ['fin_strategies_fit', projectId, asOf ?? 'live'],
     queryFn: () => fetchJSON<{
       project_id: string
       themes_count: number
@@ -1398,7 +1398,10 @@ export function useFinStrategiesFit(projectId: string) {
       strategies_count: number
       fit: StrategyFitEntry[]
       explanation: string
-    }>(`/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}`),
+    }>(
+      `/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}` +
+      (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
+    ),
     enabled: !!projectId,
     staleTime: 60_000,
     retry: false,
@@ -1505,13 +1508,15 @@ export interface StrategiesByTheme {
 export function useStrategiesByTheme(
   projectId: string | null | undefined,
   themeId: string | null | undefined,
+  asOf?: string | null,
 ) {
   return useQuery({
-    queryKey: ['strategies_by_theme', projectId, themeId],
+    queryKey: ['strategies_by_theme', projectId, themeId, asOf ?? 'live'],
     queryFn: () =>
       fetchJSON<StrategiesByTheme>(
         `/api/strategies/by-theme?project_id=${encodeURIComponent(projectId!)}` +
-        `&theme_id=${encodeURIComponent(themeId!)}`,
+        `&theme_id=${encodeURIComponent(themeId!)}` +
+        (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
       ),
     enabled: !!projectId && !!themeId,
     staleTime: 60_000,
@@ -1534,13 +1539,18 @@ export interface StrategyThemesToday {
   explanation: string
 }
 
-export function useStrategyThemesToday(strategyId: string | null | undefined, projectId: string) {
+export function useStrategyThemesToday(
+  strategyId: string | null | undefined,
+  projectId: string,
+  asOf?: string | null,
+) {
   return useQuery({
-    queryKey: ['strategy_themes_today', strategyId, projectId],
+    queryKey: ['strategy_themes_as_of', strategyId, projectId, asOf ?? 'live'],
     queryFn: () =>
       fetchJSON<StrategyThemesToday>(
-        `/api/strategies/${encodeURIComponent(strategyId!)}/themes-today` +
-        `?project_id=${encodeURIComponent(projectId)}`,
+        `/api/strategies/${encodeURIComponent(strategyId!)}/themes-as-of` +
+        `?project_id=${encodeURIComponent(projectId)}` +
+        (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
       ),
     enabled: !!strategyId && !!projectId,
     staleTime: 60_000,

@@ -12,6 +12,7 @@ import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
+import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
@@ -46,6 +47,18 @@ export default function App() {
   // strategy_match chip. Carries a nonce so clicking the same chip
   // twice re-triggers the focus animation in StrategiesTab.
   const [strategyFocus, setStrategyFocus] = useState<{ id: string; nonce: number } | null>(null)
+  // Phase A (temporal replay): global as_of value. 'live' (default)
+  // means use current lattice synth; YYYY-MM-DD reads the snapshot
+  // for that date. Threaded into Research + Strategies tabs so they
+  // stay time-coherent. See docs/design/2026-04-26_temporal-replay-architecture.md
+  const [appAsOf, setAppAsOf] = useState<string>(
+    () => localStorage.getItem('neomind.as_of') ?? 'live',
+  )
+  function setAsOfPersist(next: string) {
+    setAppAsOf(next)
+    if (next === 'live') localStorage.removeItem('neomind.as_of')
+    else localStorage.setItem('neomind.as_of', next)
+  }
   const health = useHealth()
 
   // Global ⌘K / Ctrl+K — command palette. Works from any tab.
@@ -151,6 +164,7 @@ export default function App() {
           <span>K</span>
         </button>
         <div className="flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
+          <AsOfPicker projectId={projectId} value={appAsOf} onChange={setAsOfPersist} />
           <PdtCounter />
           <FinIntegrityBadge />
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
@@ -189,6 +203,7 @@ export default function App() {
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
             onJumpToStrategies={jumpToStrategies}
+            asOf={appAsOf}
           />
         </div>
         <div
@@ -201,6 +216,7 @@ export default function App() {
             focus={strategyFocus}
             onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
             onJumpToResearchNode={(nodeId) => jumpToResearch({ nodeId })}
+            asOf={appAsOf}
           />
         </div>
         {tab === 'chat'     && (
