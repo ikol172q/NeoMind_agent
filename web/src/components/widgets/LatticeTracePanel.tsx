@@ -22,6 +22,9 @@ interface Props {
   /** Phase 6 followup: callback to jump to Strategies tab from
    *  reverse-map chips on L0 widget nodes. */
   onJumpToStrategies?: (strategyId: string) => void
+  /** Phase A (temporal replay): forwarded to ThemeStrategiesSection
+   *  so the L2 inspector reads strategies from the picked snapshot. */
+  asOf?: string
 }
 
 const PROVENANCE_LABEL: Record<string, string> = {
@@ -33,7 +36,7 @@ const PROVENANCE_LABEL: Record<string, string> = {
 }
 
 export function LatticeTracePanel({
-  selection, graph, projectId, onClose, onSelectNodeById, onJumpToStrategies,
+  selection, graph, projectId, onClose, onSelectNodeById, onJumpToStrategies, asOf,
 }: Props) {
   if (!selection) {
     return (
@@ -66,7 +69,7 @@ export function LatticeTracePanel({
       <div className="flex-1 overflow-y-auto p-3 text-[11px] text-[var(--color-text)] leading-[1.55]">
         {selection.type === 'node'
           ? <>
-              <NodeDetail node={selection.node} projectId={projectId} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} />
+              <NodeDetail node={selection.node} projectId={projectId} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} asOf={asOf} />
               <DeepTraceSection node={selection.node} projectId={projectId} />
             </>
           : <EdgeDetail edge={selection.edge} graph={graph} onSelectNodeById={onSelectNodeById} />
@@ -80,12 +83,13 @@ export function LatticeTracePanel({
 // ── Node detail ────────────────────────────────────────
 
 function NodeDetail({
-  node, projectId, onSelectNodeById, onJumpToStrategies,
+  node, projectId, onSelectNodeById, onJumpToStrategies, asOf,
 }: {
   node: LatticeGraphNode
   projectId: string
   onSelectNodeById: (id: string) => void
   onJumpToStrategies?: (strategyId: string) => void
+  asOf?: string
 }) {
   const prov = node.provenance
   const attrs = node.attrs as Record<string, unknown>
@@ -176,6 +180,7 @@ function NodeDetail({
           themeId={node.id}
           themeLabel={node.label}
           projectId={projectId}
+          asOf={asOf}
           onJumpToStrategies={onJumpToStrategies}
         />
       )}
@@ -370,14 +375,16 @@ function ThemeStrategiesSection({
   themeId,
   themeLabel,
   projectId,
+  asOf,
   onJumpToStrategies,
 }: {
   themeId: string
   themeLabel: string
   projectId: string
+  asOf?: string
   onJumpToStrategies?: (strategyId: string) => void
 }) {
-  const q = useStrategiesByTheme(projectId, themeId)
+  const q = useStrategiesByTheme(projectId, themeId, asOf)
   if (q.isLoading) {
     return (
       <div className="text-[10px] italic text-[var(--color-dim)]">

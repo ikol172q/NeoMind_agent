@@ -14,6 +14,10 @@ interface Props {
   /** Phase 6 followup: callback to jump to Strategies tab from
    *  reverse-strategy chips on L0 widget nodes. */
   onJumpToStrategies?: (strategyId: string) => void
+  /** Phase A (temporal replay): forwarded into LatticeTracePanel so
+   *  L2 ThemeStrategiesSection reads strategies from the same
+   *  snapshot the user picked. */
+  asOf?: string
 }
 
 // Exported for test harness inspection — keeps the visual-encoding
@@ -99,7 +103,7 @@ interface ViewTransform { scale: number; tx: number; ty: number }
 // Initial view: y=36 to leave the column-header band un-occluded.
 const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 36 }
 
-export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies }: Props) {
+export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies, asOf }: Props) {
   const q = useLatticeGraph(projectId)
   const [selection, setSelection] = useState<TraceSelection>(null)
 
@@ -569,6 +573,7 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           if (node) setSelection({ type: 'node', node })
         }}
         onJumpToStrategies={onJumpToStrategies}
+        asOf={asOf}
       />
     </div>
   )

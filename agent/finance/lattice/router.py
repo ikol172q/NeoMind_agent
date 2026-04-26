@@ -21,7 +21,7 @@ from agent.finance.lattice.calls import build_calls, get_call_trace, get_call_po
 from agent.finance.lattice.graph import build_graph
 from agent.finance.lattice.observations import build_observations
 from agent.finance.lattice.selfcheck import run_selfcheck
-from agent.finance.lattice.snapshots import list_snapshots, read_snapshot
+from agent.finance.lattice.snapshots import list_runs_for_date, list_snapshots, read_snapshot
 from agent.finance.lattice.taxonomy import load_taxonomy
 from agent.finance.lattice.themes import build_themes, get_narrative_trace
 
@@ -363,23 +363,46 @@ def build_lattice_router() -> APIRouter:
     def get_snapshot(
         project_id: str = Query(...),
         date: str = Query(..., description="YYYY-MM-DD"),
+        run_id: Optional[str] = Query(
+            None, description="optional — when omitted, returns the latest run for that date",
+        ),
     ) -> Dict[str, Any]:
-        """V8: return the archived lattice for a specific day.
-        404 when no snapshot exists for that date (the UI should
-        offer to run a live refresh instead)."""
+        """V8.1: return the archived lattice for a specific day, or
+        a specific RUN within a day. 404 when the date has no
+        snapshots, or when run_id is given but doesn't match.
+        """
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
-        envelope = read_snapshot(project_id, date)
+        envelope = read_snapshot(project_id, date, run_id=run_id)
         if envelope is None:
-            raise HTTPException(404, f"no lattice snapshot for {date}")
-        # Return the stored payload plus a `historical` marker so the
-        # UI can render a banner without having to diff against live.
-        envelope["payload"]["historical"] = True
-        envelope["payload"]["snapshot_date"] = date
-        envelope["payload"]["recorded_at"] = (
-            envelope.get("snapshot_meta", {}).get("recorded_at")
-        )
+            who = f"{date} run_id={run_id}" if run_id else date
+            raise HTTPException(404, f"no lattice snapshot for {who}")
+        # Decorate the payload with historical markers so the UI can
+        # render a banner without diffing against live state.
+        envelope["payload"]["historical"]      = True
+        envelope["payload"]["snapshot_date"]   = date
+        meta = envelope.get("snapshot_meta", {}) or {}
+        envelope["payload"]["recorded_at"]     = meta.get("recorded_at")
+        envelope["payload"]["snapshot_run_id"] = meta.get("run_id")
         return envelope["payload"]
+
+    @router.get("/api/lattice/runs-for-date")
+    def list_runs_for_one_date(
+        project_id: str = Query(...),
+        date: str       = Query(..., description="YYYY-MM-DD"),
+    ) -> Dict[str, Any]:
+        """V8.1: every snapshot run we have for one date, newest first.
+        Powers the per-date 'version dropdown' so the operator can
+        pick a specific re-run instead of just 'latest'."""
+        if project_id not in investment_projects.list_projects():
+            raise HTTPException(404, f"project {project_id!r} is not registered")
+        runs = list_runs_for_date(project_id, date)
+        return {
+            "project_id": project_id,
+            "date":       date,
+            "count":      len(runs),
+            "runs":       runs,
+        }
 
     @router.get("/api/lattice/calls")
     def list_calls(

@@ -39,6 +39,10 @@ interface Props {
   /** When this changes, DigestView flips to flat mode, scrolls to
    *  nodes matching `symbol`, and applies a transient highlight. */
   focus?: DigestFocus | null
+  /** Phase A (temporal replay): 'live' or YYYY-MM-DD. Forwarded to
+   *  LatticeGraphView and downstream so the L2 inspector's
+   *  "Top N strategies" reads from the same time slice. */
+  asOf?: string
   /** When provided, the header gets a `config` button that calls this.
    *  Used by Research tab to open the watchlist + portfolio drawer. */
   onOpenConfig?: () => void
@@ -63,7 +67,7 @@ const CONF_COLOR: Record<string, string> = {
   low: 'var(--color-dim)',
 }
 
-export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies }: Props) {
+export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies, asOf }: Props) {
   // V8: when historicalDate is non-null, render that archived day
   // instead of live. Null = live mode.
   const [historicalDate, setHistoricalDate] = useState<string | null>(null)
@@ -222,6 +226,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
               focus?.nodeId ?? (focus?.widgetId ? `widget:${focus.widgetId}` : undefined)
             }
             onJumpToStrategies={onJumpToStrategies}
+            asOf={asOf}
           />
         )}
       </div>

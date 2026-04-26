@@ -84,6 +84,10 @@ interface Props {
   /** Phase 6 followup (L2): clicking a 'today matching theme' chip
    *  jumps to Research → Trace mode focused on that L2 theme node. */
   onJumpToResearchNode?: (nodeId: string) => void
+  /** Phase A (temporal replay): 'live' or YYYY-MM-DD. Threads into
+   *  every lattice-derived fetch so the tab stays time-coherent
+   *  with Research. */
+  asOf?: string
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -97,10 +101,11 @@ export function StrategiesTab({
   focus,
   onJumpToResearch,
   onJumpToResearchNode,
+  asOf,
 }: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
-  const fit = useFinStrategiesFit(projectId)
+  const fit = useFinStrategiesFit(projectId, asOf)
   const coverage = useFinWidgetCoverage()
   // Phase 6 followup #2: time-aware events per strategy (FOMC,
   // quad-witching, Russell rebal, earnings season).
@@ -413,6 +418,7 @@ export function StrategiesTab({
                       onJumpToResearch={onJumpToResearch}
                       onJumpToResearchNode={onJumpToResearchNode}
                       projectId={projectId}
+                      asOf={asOf}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -447,6 +453,7 @@ export function StrategiesTab({
                 onJumpToResearch={onJumpToResearch}
                 onJumpToResearchNode={onJumpToResearchNode}
                 projectId={projectId}
+                asOf={asOf}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -478,6 +485,7 @@ function StrategyCard({
   onJumpToResearch,
   onJumpToResearchNode,
   projectId,
+  asOf,
   expanded,
   highlighted,
   registerRef,
@@ -495,6 +503,7 @@ function StrategyCard({
   onJumpToResearch?: (widgetId: string) => void
   onJumpToResearchNode?: (nodeId: string) => void
   projectId: string
+  asOf?: string
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -684,10 +693,15 @@ function StrategyCard({
               this strategy, click to jump back to the lattice graph
               focused on that theme node. Mirror of the L2 inspector's
               ThemeStrategiesSection. */}
-          <Section label="今日命中主题 / Today matching themes">
+          <Section label={
+            asOf && asOf !== 'live'
+              ? `${asOf} 命中主题 / Themes on ${asOf}`
+              : '今日命中主题 / Today matching themes'
+          }>
             <StrategyMatchingThemes
               strategyId={s.id}
               projectId={projectId}
+              asOf={asOf}
               onJumpToResearchNode={onJumpToResearchNode}
             />
           </Section>
@@ -1000,13 +1014,15 @@ function TimeAwareChip({
 function StrategyMatchingThemes({
   strategyId,
   projectId,
+  asOf,
   onJumpToResearchNode,
 }: {
   strategyId: string
   projectId: string
+  asOf?: string
   onJumpToResearchNode?: (nodeId: string) => void
 }) {
-  const q = useStrategyThemesToday(strategyId, projectId)
+  const q = useStrategyThemesToday(strategyId, projectId, asOf)
   if (q.isLoading) {
     return (
       <span className="text-[10px] italic text-[var(--color-dim)]">
