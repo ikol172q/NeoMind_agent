@@ -399,6 +399,7 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                 latticeCalls={strategyToCalls[s.id] ?? []}
                 todayFit={todayFit}
                 todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
+                widgetCoverage={coverageByStrategy[s.id]}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
