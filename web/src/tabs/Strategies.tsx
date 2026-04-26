@@ -23,15 +23,20 @@ import {
 import {
   useFinStrategies,
   useFinStrategiesFit,
+  useFinStrategiesTimeAware,
   useFinWidgetCoverage,
   useLatticeCalls,
+  useLatticeLanguage,
+  useWidgetStrategies,
   type LatticeCall,
   type StrategyEntry,
   type StrategyFitEntry,
+  type StrategyTimeAware,
   type StrategyWidgetCoverage,
   type WidgetMeta,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { HoverPopover } from '@/components/widgets/HoverPopover'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -81,6 +86,13 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
   const calls = useLatticeCalls(projectId)
   const fit = useFinStrategiesFit(projectId)
   const coverage = useFinWidgetCoverage()
+  // Phase 6 followup #2: time-aware events per strategy (FOMC,
+  // quad-witching, Russell rebal, earnings season).
+  const timeAware = useFinStrategiesTimeAware(projectId)
+  // Phase 6 followup #3: bilingual one-button — pick lang for
+  // every name_en / name_zh render below based on global toggle.
+  const lang = useLatticeLanguage()
+  const activeLang = lang.data?.active
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
   // Default to today_fit sort — answers 'what's relevant right now?'
@@ -131,6 +143,15 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
     }
     return map
   }, [fit.data])
+
+  // Phase 6 followup #2: time-aware events per strategy.
+  const timeAwareById = useMemo(() => {
+    const map: Record<string, StrategyTimeAware> = {}
+    for (const t of timeAware.data?.entries ?? []) {
+      map[t.id] = t
+    }
+    return map
+  }, [timeAware.data])
 
   // Phase 6 Step 4: widget coverage per strategy (forward bidirectional map).
   const coverageByStrategy = useMemo(() => {
@@ -371,6 +392,8 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                       todayFit={todayFit}
                       todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
                       widgetCoverage={coverageByStrategy[s.id]}
+                      timeAware={timeAwareById[s.id]}
+                      activeLang={activeLang}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -400,6 +423,8 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                 todayFit={todayFit}
                 todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
                 widgetCoverage={coverageByStrategy[s.id]}
+                timeAware={timeAwareById[s.id]}
+                activeLang={activeLang}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -426,6 +451,8 @@ function StrategyCard({
   todayFit,
   todayFitBreakdown,
   widgetCoverage,
+  timeAware,
+  activeLang,
   expanded,
   highlighted,
   registerRef,
@@ -438,6 +465,8 @@ function StrategyCard({
   todayFit: number
   todayFitBreakdown?: Record<string, number>
   widgetCoverage?: StrategyWidgetCoverage
+  timeAware?: StrategyTimeAware
+  activeLang?: 'en' | 'zh-CN-mixed'
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -486,8 +515,26 @@ function StrategyCard({
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
-            <span className="text-[10px] text-[var(--color-dim)] truncate">{s.name_en}</span>
+            {/* Phase 6 followup #3: bilingual one-button switch — when
+                active is en, show only EN; when zh, show only ZH; when
+                undefined (loading) show both like before. */}
+            {activeLang === 'en' ? (
+              <span className="text-[var(--color-text)] font-medium">{s.name_en}</span>
+            ) : activeLang === 'zh-CN-mixed' ? (
+              <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
+            ) : (
+              <>
+                <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
+                <span className="text-[10px] text-[var(--color-dim)] truncate">{s.name_en}</span>
+              </>
+            )}
+            {/* Phase 6 followup #2: time-aware urgency chip — fires for
+                event-driven strategies (FOMC, quad witching, Russell
+                rebal, earnings season). Always-on strategies have no
+                chip. Color escalates as event approaches. */}
+            {timeAware?.days_until != null && timeAware.event_label && (
+              <TimeAwareChip ta={timeAware} activeLang={activeLang} />
+            )}
             {/* Today's fit chip — same matcher, score against today's
                 themes. Always present (even on no-L3-call days). */}
             <span
@@ -742,23 +789,151 @@ function WidgetChip({ widget }: { widget: WidgetMeta }) {
         : 'var(--color-dim)'
   const icon =
     widget.status === 'available' ? '✓' : widget.status === 'planned' ? '⚠' : '·'
+
+  // Phase 6 followup #6: hover-to-drill — replace the bare native
+  // tooltip with a rich popover that shows the description AND the
+  // reverse map ('also used by N other strategies'). Closes the
+  // 'click chip → switch tab → look at it' instruction loop.
   return (
-    <span
-      data-testid={`widget-chip-${widget.id}`}
-      data-widget-id={widget.id}
-      data-source={`/api/lattice/widgets/${widget.id}`}
-      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono cursor-help"
-      style={{ borderColor: statusColor, color: statusColor }}
-      title={
-        `${widget.label_en ?? widget.id}（${widget.label_zh ?? ''}）\n` +
-        `status: ${widget.status}\n` +
-        `widget id: ${widget.id}\n\n` +
-        (widget.description ?? 'no description')
-      }
+    <HoverPopover
+      width={320}
+      delay={300}
+      dataTestid={`widget-chip-${widget.id}`}
+      content={() => <WidgetChipPopover widget={widget} />}
     >
-      <span>{icon}</span>
-      <span>{widget.id}</span>
-    </span>
+      <span
+        data-widget-id={widget.id}
+        data-source={`/api/lattice/widgets/${widget.id}`}
+        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono cursor-help"
+        style={{ borderColor: statusColor, color: statusColor }}
+      >
+        <span>{icon}</span>
+        <span>{widget.id}</span>
+      </span>
+    </HoverPopover>
+  )
+}
+
+
+/** Popover body for WidgetChip — fetches the reverse map lazily on
+ *  first hover, so we don't fire 50× /strategies queries on tab open. */
+function WidgetChipPopover({ widget }: { widget: WidgetMeta }) {
+  const reverse = useWidgetStrategies(widget.id)
+  const statusColor =
+    widget.status === 'available'
+      ? 'var(--color-green)'
+      : widget.status === 'planned'
+        ? 'var(--color-amber,#e5a200)'
+        : 'var(--color-dim)'
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span
+          className="px-1 rounded font-mono text-[9px]"
+          style={{ borderColor: statusColor, color: statusColor, border: `1px solid ${statusColor}` }}
+        >
+          {widget.status}
+        </span>
+        <span className="font-mono text-[10px] text-[var(--color-text)]">{widget.id}</span>
+      </div>
+      <div className="text-[10px] text-[var(--color-text)]">
+        {widget.label_en ?? widget.id}
+        {widget.label_zh ? <span className="text-[var(--color-dim)]"> · {widget.label_zh}</span> : null}
+      </div>
+      {widget.description && (
+        <div className="text-[9.5px] text-[var(--color-dim)] leading-snug">
+          {widget.description}
+        </div>
+      )}
+      <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
+        {reverse.isLoading ? (
+          <span className="italic">checking other strategies…</span>
+        ) : reverse.data ? (
+          <>
+            Also needed by{' '}
+            <span className="text-[var(--color-text)]">{reverse.data.strategy_count}</span>
+            {' '}other catalog{' '}
+            {reverse.data.strategy_count === 1 ? 'strategy' : 'strategies'}.
+            {reverse.data.strategy_count > 0 && (
+              <div className="flex flex-wrap gap-0.5 mt-1">
+                {reverse.data.strategies.slice(0, 6).map((s) => (
+                  <span
+                    key={s.id}
+                    className="font-mono text-[8.5px] px-1 rounded border border-[var(--color-border)]"
+                  >
+                    {s.id}
+                  </span>
+                ))}
+                {reverse.data.strategy_count > 6 && (
+                  <span className="text-[var(--color-dim)] italic">
+                    …+{reverse.data.strategy_count - 6}
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <span className="italic">reverse map unavailable</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+/** Phase 6 followup #2: time-aware chip rendered on the strategy
+ *  card header. Color escalates with proximity to the event. */
+function TimeAwareChip({
+  ta,
+  activeLang,
+}: {
+  ta: StrategyTimeAware & { event_label_zh?: string | null }
+  activeLang?: 'en' | 'zh-CN-mixed'
+}) {
+  const days = ta.days_until ?? 0
+  const cfg = {
+    imminent: { color: 'var(--color-red,#f06060)', label_en: 'fires in', icon: '🔥' },
+    soon:     { color: 'var(--color-amber,#e5a200)', label_en: 'in', icon: '⏳' },
+    upcoming: { color: 'var(--color-accent)', label_en: 'in', icon: '📅' },
+    distant:  { color: 'var(--color-dim)', label_en: 'in', icon: '·' },
+    none:     { color: 'var(--color-dim)', label_en: '', icon: '·' },
+  }[ta.urgency] ?? { color: 'var(--color-dim)', label_en: 'in', icon: '·' }
+
+  const evtLabel =
+    activeLang === 'zh-CN-mixed'
+      ? (ta as { event_label_zh?: string | null }).event_label_zh ?? ta.event_label
+      : ta.event_label
+
+  const inWord = activeLang === 'zh-CN-mixed' ? `${days}天后` : `${cfg.label_en} ${days}d`
+  return (
+    <HoverPopover
+      width={260}
+      delay={200}
+      dataTestid={`time-aware-${ta.id}`}
+      content={() => (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span style={{ color: cfg.color }}>{cfg.icon}</span>
+            <span className="text-[10px] text-[var(--color-text)]">{evtLabel}</span>
+          </div>
+          <div className="text-[9px] text-[var(--color-dim)]">
+            {ta.event_date} · {days} days from today · urgency: <span style={{ color: cfg.color }}>{ta.urgency}</span>
+          </div>
+          <div className="text-[9px] text-[var(--color-dim)] italic leading-snug">
+            Strategies tied to deterministic calendar events get this chip.
+            Always-on strategies (DCA, factor tilts) don't.
+          </div>
+        </div>
+      )}
+    >
+      <span
+        className="text-[8.5px] px-1.5 py-0.5 rounded border font-mono"
+        style={{ borderColor: cfg.color, color: cfg.color }}
+        data-urgency={ta.urgency}
+      >
+        {cfg.icon} {inWord}
+      </span>
+    </HoverPopover>
   )
 }
 

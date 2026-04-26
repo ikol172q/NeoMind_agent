@@ -9,6 +9,7 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
 import { LatticeGraphView } from './LatticeGraphView'
+import { ReasoningText } from './ReasoningText'
 import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
 import {
   Sparkles, RefreshCw, ChevronRight, ChevronDown, Languages,
@@ -1039,7 +1040,10 @@ function CallChipRow({
       <div className="flex items-start gap-2">
         <Target size={12} className="mt-0.5 shrink-0" style={{ color: CONF_COLOR[call.confidence] }} />
         <div className="flex-1 text-[12px] text-[var(--color-text)] leading-[1.5]">
-          {call.claim}
+          {/* Phase 6 followup #4: reasoning hyperlinks — recognised
+              tokens (tickers / percentages / layer-ids) become hover
+              chips that explain themselves. */}
+          <ReasoningText text={call.claim} />
         </div>
         <div className="flex items-center gap-1 shrink-0 text-[9px] uppercase tracking-wider">
           <span className="px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)]">
@@ -1105,16 +1109,16 @@ function CallChipRow({
             ))
           )}
           <div className="text-[10px] text-[var(--color-dim)] pt-1">
-            <b>Warrant:</b> {call.warrant}
+            <b>Warrant:</b> <ReasoningText text={call.warrant} />
           </div>
         </div>
       )}
       {expanded === 'unless' && (
         <div className="pl-5 pt-1 flex flex-col gap-1" data-testid={`expand-unless-${call.id}`}>
           <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">Rebuttal (falsifier)</div>
-          <div className="text-[11px] text-[var(--color-text)]">{call.rebuttal}</div>
+          <div className="text-[11px] text-[var(--color-text)]"><ReasoningText text={call.rebuttal} /></div>
           <div className="text-[10px] text-[var(--color-dim)] pt-1">
-            <b>Qualifier:</b> {call.qualifier}
+            <b>Qualifier:</b> <ReasoningText text={call.qualifier} />
           </div>
         </div>
       )}
@@ -1316,7 +1320,7 @@ function CallDrilldown({
         className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[var(--color-bg)]/40"
       >
         {open ? <ChevronDown size={10} className="mt-1 shrink-0" /> : <ChevronRight size={10} className="mt-1 shrink-0" />}
-        <div className="flex-1 text-[12px] text-[var(--color-text)]">{call.claim}</div>
+        <div className="flex-1 text-[12px] text-[var(--color-text)]"><ReasoningText text={call.claim} /></div>
         {/* Phase 5 V4: catalog reference chip — present iff strategy_matcher
             found a fit. Clicking jumps to the Strategies tab focused on
             this strategy. Stop propagation so the click doesn't also
@@ -1354,9 +1358,9 @@ function CallDrilldown({
       </button>
       {open && (
         <div className="px-6 pb-2 flex flex-col gap-1 text-[11px]">
-          <div><b className="text-[var(--color-dim)]">Warrant:</b> {call.warrant}</div>
-          <div><b className="text-[var(--color-dim)]">Qualifier:</b> {call.qualifier}</div>
-          <div><b className="text-[var(--color-dim)]">Rebuttal:</b> {call.rebuttal}</div>
+          <div><b className="text-[var(--color-dim)]">Warrant:</b> <ReasoningText text={call.warrant} /></div>
+          <div><b className="text-[var(--color-dim)]">Qualifier:</b> <ReasoningText text={call.qualifier} /></div>
+          <div><b className="text-[var(--color-dim)]">Rebuttal:</b> <ReasoningText text={call.rebuttal} /></div>
           <div className="pt-1">
             <b className="text-[var(--color-dim)]">Grounds ({themes.length}):</b>
             <div className="pl-3 pt-1 flex flex-col gap-1.5">
