@@ -835,19 +835,23 @@ export interface LatticeGraphPayload {
   }
 }
 
-export function useLatticeGraph(project_id: string) {
+export function useLatticeGraph(project_id: string, asOf?: string | null) {
   const lang = useLatticeLanguage()
   const active = lang.data?.active
   const budgets = useLatticeBudgets()
   const bh = budgets.data?.effective_hash
+  const historical = !!asOf && asOf !== 'live'
   return useQuery({
-    queryKey: ['lattice_graph', project_id, active, bh],
+    queryKey: historical
+      ? ['lattice_graph_snapshot', project_id, asOf]
+      : ['lattice_graph', project_id, active, bh],
     queryFn: () => fetchJSON<LatticeGraphPayload>(
-      `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}`,
+      `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}` +
+      (historical ? `&as_of=${encodeURIComponent(asOf!)}` : ''),
     ),
-    enabled: !!project_id && !!active && !!bh,
-    staleTime: 10 * 60_000,
-    refetchInterval: 15 * 60_000,
+    enabled: !!project_id && (historical || (!!active && !!bh)),
+    staleTime: historical ? Infinity : 10 * 60_000,
+    refetchInterval: historical ? false : 15 * 60_000,
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   })

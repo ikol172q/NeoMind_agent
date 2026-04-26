@@ -70,8 +70,13 @@ const CONF_COLOR: Record<string, string> = {
 export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies, asOf }: Props) {
   // V8: when historicalDate is non-null, render that archived day
   // instead of live. Null = live mode.
+  // Phase A: the global asOf picker takes priority over the local
+  // 'past' button. When asOf is set to a date, every useLatticeCalls
+  // call site flips to historical-snapshot mode for that date so
+  // Research stays time-coherent with Strategies.
   const [historicalDate, setHistoricalDate] = useState<string | null>(null)
-  const q = useLatticeCalls(projectId, historicalDate)
+  const effectiveDate = (asOf && asOf !== 'live') ? asOf : historicalDate
+  const q = useLatticeCalls(projectId, effectiveDate)
   const anomalies = useAnomalies(projectId)
   const wl = useWatchlist(projectId)
   const pos = usePaperPositions(projectId)

@@ -104,7 +104,7 @@ interface ViewTransform { scale: number; tx: number; ty: number }
 const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 36 }
 
 export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies, asOf }: Props) {
-  const q = useLatticeGraph(projectId)
+  const q = useLatticeGraph(projectId, asOf)
   const [selection, setSelection] = useState<TraceSelection>(null)
 
   // Phase 6 followup: when arriving with a deep-link from Strategies
