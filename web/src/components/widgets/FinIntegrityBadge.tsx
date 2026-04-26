@@ -8,11 +8,16 @@
  */
 import { useState } from 'react'
 import { Database, ShieldAlert, ShieldCheck } from 'lucide-react'
-import { useFinIntegrity, type FinIntegrityCheck } from '@/lib/api'
+import {
+  useFinDbHealth,
+  useFinIntegrity,
+  type FinIntegrityCheck,
+} from '@/lib/api'
 
 export function FinIntegrityBadge() {
   const [open, setOpen] = useState(false)
   const q = useFinIntegrity(open)
+  const dbHealth = useFinDbHealth()
   const checks = q.data?.checks ?? []
   const allPass = q.data?.all_pass
 
@@ -60,6 +65,7 @@ export function FinIntegrityBadge() {
             <button
               onClick={() => {
                 q.refetch()
+                dbHealth.refetch()
               }}
               disabled={q.isFetching}
               className="text-[var(--color-dim)] hover:text-[var(--color-text)] text-[9px]"
@@ -68,6 +74,21 @@ export function FinIntegrityBadge() {
               {q.isFetching ? 'running…' : 'refresh'}
             </button>
           </div>
+          {/* Top stats row — table counts so the user can see how
+              much data is in the store at a glance. */}
+          {dbHealth.data && (
+            <div
+              data-testid="fin-integrity-counts"
+              className="flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-[var(--color-dim)] border-b border-[var(--color-border)] pb-1.5"
+            >
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.market_data_daily}</b> bars</span>
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.tickers_universe}</b> tickers</span>
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.tax_lots}</b> lots</span>
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.wash_sale_events}</b> wash sales</span>
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.pdt_round_trips}</b> PDT round-trips</span>
+              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.analysis_runs}</b> runs</span>
+            </div>
+          )}
           {q.isLoading && (
             <div className="italic text-[var(--color-dim)]">running checks…</div>
           )}

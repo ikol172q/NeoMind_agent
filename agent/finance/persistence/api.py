@@ -119,6 +119,81 @@ def list_runs(
     return {"count": len(out), "runs": out}
 
 
+@router.get("/lots")
+def list_lots(
+    open_only: bool = Query(False, description="filter to lots not yet closed"),
+    limit: int = Query(100, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Tax lots with their compliance state attached.
+
+    Each lot is augmented with:
+      - ``has_wash_sale_event``: any wash_sale_events row references this lot
+      - ``latest_holding_period``: most recent snapshot row (open lots only)
+
+    Used by the upcoming Portfolio tab; for V1 the fin integrity
+    badge's drill-down also surfaces top-level counts.
+    """
+    ensure_schema()
+    with connect() as conn:
+        sql = """
+            SELECT t.*,
+                   EXISTS (
+                       SELECT 1 FROM wash_sale_events w
+                       WHERE w.sell_lot_id = t.lot_id
+                          OR w.replacement_lot_id = t.lot_id
+                   ) AS has_wash_sale_event
+            FROM tax_lots t
+        """
+        if open_only:
+            sql += " WHERE t.close_date IS NULL"
+        sql += " ORDER BY t.open_date DESC LIMIT ?"
+        rows = list(conn.execute(sql, (limit,)))
+
+        # attach the latest holding-period snapshot for open lots
+        hp_map: Dict[int, Dict[str, Any]] = {}
+        for r in conn.execute(
+            """
+            SELECT h.lot_id, h.snapshot_date, h.days_held, h.days_to_long_term, h.qualified_today
+            FROM holding_period_snapshots h
+            JOIN (
+                SELECT lot_id, MAX(snapshot_date) AS d FROM holding_period_snapshots GROUP BY lot_id
+            ) x ON x.lot_id = h.lot_id AND x.d = h.snapshot_date
+            """
+        ):
+            hp_map[r["lot_id"]] = _row_to_dict(r)
+
+    out: List[Dict[str, Any]] = []
+    for r in rows:
+        d = _row_to_dict(r)
+        d["is_simulated"] = bool(d.get("is_simulated"))
+        d["has_wash_sale_event"] = bool(d.get("has_wash_sale_event"))
+        d["latest_holding_period"] = hp_map.get(d["lot_id"])
+        out.append(d)
+    return {"count": len(out), "lots": out}
+
+
+@router.get("/wash-sales")
+def list_wash_sales(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
+    """All detected wash_sale_events, joined with both linked lots."""
+    ensure_schema()
+    with connect() as conn:
+        rows = list(conn.execute(
+            """
+            SELECT w.*,
+                   s.symbol AS sell_symbol, s.close_date AS sell_close_date,
+                   s.open_price AS sell_open_price, s.close_price AS sell_close_price,
+                   r.open_date AS replacement_open_date,
+                   r.open_price AS replacement_open_price
+            FROM wash_sale_events w
+            JOIN tax_lots s ON s.lot_id = w.sell_lot_id
+            JOIN tax_lots r ON r.lot_id = w.replacement_lot_id
+            ORDER BY w.detected_at DESC LIMIT ?
+            """,
+            (limit,),
+        ))
+    return {"count": len(rows), "events": [_row_to_dict(r) for r in rows]}
+
+
 @router.get("/signals")
 def list_signals(
     symbol: Optional[str] = None,
