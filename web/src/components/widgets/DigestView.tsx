@@ -9,6 +9,7 @@ import {
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
 import { LatticeGraphView } from './LatticeGraphView'
+import { ReasoningText } from './ReasoningText'
 import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
 import {
   Sparkles, RefreshCw, ChevronRight, ChevronDown, Languages,
@@ -19,6 +20,14 @@ import {
 
 export interface DigestFocus {
   symbol?: string
+  /** Phase 6 followup: deep-link from Strategies tab into the lattice
+   *  graph focused on a specific L0 widget node. Triggers trace mode
+   *  + auto-selects `widget:{widgetId}` in the trace panel. */
+  widgetId?: string
+  /** Phase 6 followup: generic node-id deep-link. Used for L2 theme
+   *  jumps (e.g. `theme_near_highs`) and any other layer. Takes
+   *  precedence over `widgetId` if both are set. */
+  nodeId?: string
   /** Monotonic counter — bump to re-trigger the highlight even when
    *  the symbol is unchanged (e.g. clicking the same cite twice). */
   nonce?: number
@@ -30,6 +39,10 @@ interface Props {
   /** When this changes, DigestView flips to flat mode, scrolls to
    *  nodes matching `symbol`, and applies a transient highlight. */
   focus?: DigestFocus | null
+  /** Phase A (temporal replay): 'live' or YYYY-MM-DD. Forwarded to
+   *  LatticeGraphView and downstream so the L2 inspector's
+   *  "Top N strategies" reads from the same time slice. */
+  asOf?: string
   /** When provided, the header gets a `config` button that calls this.
    *  Used by Research tab to open the watchlist + portfolio drawer. */
   onOpenConfig?: () => void
@@ -54,11 +67,16 @@ const CONF_COLOR: Record<string, string> = {
   low: 'var(--color-dim)',
 }
 
-export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies }: Props) {
+export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJumpToStrategies, asOf }: Props) {
   // V8: when historicalDate is non-null, render that archived day
   // instead of live. Null = live mode.
+  // Phase A: the global asOf picker takes priority over the local
+  // 'past' button. When asOf is set to a date, every useLatticeCalls
+  // call site flips to historical-snapshot mode for that date so
+  // Research stays time-coherent with Strategies.
   const [historicalDate, setHistoricalDate] = useState<string | null>(null)
-  const q = useLatticeCalls(projectId, historicalDate)
+  const effectiveDate = (asOf && asOf !== 'live') ? asOf : historicalDate
+  const q = useLatticeCalls(projectId, effectiveDate)
   const anomalies = useAnomalies(projectId)
   const wl = useWatchlist(projectId)
   const pos = usePaperPositions(projectId)
@@ -97,6 +115,13 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
     }, 60)
     return () => window.clearTimeout(t)
   }, [focus?.symbol, focus?.nonce, calls, themes, observations])
+
+  // Phase 6 followup: deep-link from Strategies → Research focused on
+  // an L0 widget OR L2 theme. Switch to trace mode and let
+  // LatticeGraphView pick up initialFocusNodeId.
+  useEffect(() => {
+    if (focus?.widgetId || focus?.nodeId) setMode('trace')
+  }, [focus?.widgetId, focus?.nodeId, focus?.nonce])
 
   const ctx: DigestCtx = {
     highlightId,
@@ -200,7 +225,14 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
             not gated on /calls loading; let LatticeGraphView render
             its own loading/empty/error state. */}
         {mode === 'trace' && !isFreshInstall && (
-          <LatticeGraphView projectId={projectId} />
+          <LatticeGraphView
+            projectId={projectId}
+            initialFocusNodeId={
+              focus?.nodeId ?? (focus?.widgetId ? `widget:${focus.widgetId}` : undefined)
+            }
+            onJumpToStrategies={onJumpToStrategies}
+            asOf={asOf}
+          />
         )}
       </div>
     </div>
@@ -1039,7 +1071,10 @@ function CallChipRow({
       <div className="flex items-start gap-2">
         <Target size={12} className="mt-0.5 shrink-0" style={{ color: CONF_COLOR[call.confidence] }} />
         <div className="flex-1 text-[12px] text-[var(--color-text)] leading-[1.5]">
-          {call.claim}
+          {/* Phase 6 followup #4: reasoning hyperlinks — recognised
+              tokens (tickers / percentages / layer-ids) become hover
+              chips that explain themselves. */}
+          <ReasoningText text={call.claim} />
         </div>
         <div className="flex items-center gap-1 shrink-0 text-[9px] uppercase tracking-wider">
           <span className="px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)]">
@@ -1105,16 +1140,16 @@ function CallChipRow({
             ))
           )}
           <div className="text-[10px] text-[var(--color-dim)] pt-1">
-            <b>Warrant:</b> {call.warrant}
+            <b>Warrant:</b> <ReasoningText text={call.warrant} />
           </div>
         </div>
       )}
       {expanded === 'unless' && (
         <div className="pl-5 pt-1 flex flex-col gap-1" data-testid={`expand-unless-${call.id}`}>
           <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">Rebuttal (falsifier)</div>
-          <div className="text-[11px] text-[var(--color-text)]">{call.rebuttal}</div>
+          <div className="text-[11px] text-[var(--color-text)]"><ReasoningText text={call.rebuttal} /></div>
           <div className="text-[10px] text-[var(--color-dim)] pt-1">
-            <b>Qualifier:</b> {call.qualifier}
+            <b>Qualifier:</b> <ReasoningText text={call.qualifier} />
           </div>
         </div>
       )}
@@ -1316,7 +1351,7 @@ function CallDrilldown({
         className="w-full flex items-start gap-2 px-3 py-2 text-left hover:bg-[var(--color-bg)]/40"
       >
         {open ? <ChevronDown size={10} className="mt-1 shrink-0" /> : <ChevronRight size={10} className="mt-1 shrink-0" />}
-        <div className="flex-1 text-[12px] text-[var(--color-text)]">{call.claim}</div>
+        <div className="flex-1 text-[12px] text-[var(--color-text)]"><ReasoningText text={call.claim} /></div>
         {/* Phase 5 V4: catalog reference chip — present iff strategy_matcher
             found a fit. Clicking jumps to the Strategies tab focused on
             this strategy. Stop propagation so the click doesn't also
@@ -1354,9 +1389,9 @@ function CallDrilldown({
       </button>
       {open && (
         <div className="px-6 pb-2 flex flex-col gap-1 text-[11px]">
-          <div><b className="text-[var(--color-dim)]">Warrant:</b> {call.warrant}</div>
-          <div><b className="text-[var(--color-dim)]">Qualifier:</b> {call.qualifier}</div>
-          <div><b className="text-[var(--color-dim)]">Rebuttal:</b> {call.rebuttal}</div>
+          <div><b className="text-[var(--color-dim)]">Warrant:</b> <ReasoningText text={call.warrant} /></div>
+          <div><b className="text-[var(--color-dim)]">Qualifier:</b> <ReasoningText text={call.qualifier} /></div>
+          <div><b className="text-[var(--color-dim)]">Rebuttal:</b> <ReasoningText text={call.rebuttal} /></div>
           <div className="pt-1">
             <b className="text-[var(--color-dim)]">Grounds ({themes.length}):</b>
             <div className="pl-3 pt-1 flex flex-col gap-1.5">

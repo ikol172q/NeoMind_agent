@@ -11,6 +11,13 @@ interface Props {
   projectId: string
   /** When set, scroll to and highlight a node/edge. */
   initialFocusNodeId?: string | null
+  /** Phase 6 followup: callback to jump to Strategies tab from
+   *  reverse-strategy chips on L0 widget nodes. */
+  onJumpToStrategies?: (strategyId: string) => void
+  /** Phase A (temporal replay): forwarded into LatticeTracePanel so
+   *  L2 ThemeStrategiesSection reads strategies from the same
+   *  snapshot the user picked. */
+  asOf?: string
 }
 
 // Exported for test harness inspection — keeps the visual-encoding
@@ -93,11 +100,23 @@ const ZOOM_MAX = 2.0
 const ZOOM_STEP = 1.18   // 18% per wheel tick
 
 interface ViewTransform { scale: number; tx: number; ty: number }
-const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 0 }
+// Initial view: y=36 to leave the column-header band un-occluded.
+const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 36 }
 
-export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
-  const q = useLatticeGraph(projectId)
+export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies, asOf }: Props) {
+  const q = useLatticeGraph(projectId, asOf)
   const [selection, setSelection] = useState<TraceSelection>(null)
+
+  // Phase 6 followup: when arriving with a deep-link from Strategies
+  // tab (`initialFocusNodeId="widget:chart"`), auto-select that node
+  // so the right inspector pre-fills with its reverse map without
+  // requiring a click.
+  useEffect(() => {
+    if (!initialFocusNodeId || !q.data) return
+    const node = q.data.nodes.find((n) => n.id === initialFocusNodeId)
+    if (node) setSelection({ type: 'node', node })
+  }, [initialFocusNodeId, q.data])
+
   const [view, setView] = useState<ViewTransform>(IDENTITY)
   const [isPanning, setIsPanning] = useState(false)
   // Refs: wrapper = the element that receives CSS transform; viewport
@@ -228,9 +247,15 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
     const vpH = vp.clientHeight
     if (vpW === 0 || vpH === 0) return v
     const bbox = lay.contentBox
+    // Reserve a 36px sticky band at the top of the viewport for the
+    // column-header overlay. Without this, the user can pan content
+    // up far enough that node-row 1 ends up under the header strip
+    // (visible only as "half-cut" text). With it, the topmost SVG
+    // row stops at viewport y = HEADER_OFFSET, never deeper.
+    const HEADER_OFFSET = 36
     const a_x = -v.scale * bbox.x
     const b_x = vpW - v.scale * (bbox.x + bbox.width)
-    const a_y = -v.scale * bbox.y
+    const a_y = HEADER_OFFSET - v.scale * bbox.y
     const b_y = vpH - v.scale * (bbox.y + bbox.height)
     const minTx = Math.min(a_x, b_x)
     const maxTx = Math.max(a_x, b_x)
@@ -367,23 +392,6 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
         >{Math.round(view.scale * 100)}%</div>
       </div>
 
-      {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
-          viewport top, always accessible regardless of zoom/pan. */}
-      <div
-        className="absolute top-2 right-2 z-10 flex items-center gap-1 pointer-events-none"
-        data-testid="lattice-layer-help-strip"
-      >
-        {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
-          <LayerHelpButton
-            key={layer}
-            layer={layer}
-            open={explainLayer === layer}
-            onToggle={() => setExplainLayer(l => l === layer ? null : layer)}
-            onClose={() => setExplainLayer(null)}
-          />
-        ))}
-      </div>
-
       <div
         ref={bindViewport}
         className="flex-1 min-w-0 overflow-hidden relative"
@@ -395,6 +403,93 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           userSelect: 'none',
         }}
       >
+        {/* Sticky column-header overlay. Each label is positioned at
+            its column's screen-x (after pan + zoom) but CLAMPED to
+            the viewport bounds so the label is always visible even
+            when its column is panned off-screen — Excel-style frozen
+            panes. When clamped, a ◀ / ▶ marker hints the column is
+            offscreen in that direction. Reserved 32px on the right
+            so labels never overlap the layer-help (?) strip. */}
+        <div
+          data-testid="lattice-column-headers"
+          className="absolute top-0 left-0 pointer-events-none"
+          style={{
+            right: 180,  // leave room for the layer-help-strip on the right
+            height: 32,
+            zIndex: 25,  // above SVG (z=auto/0), below layer-help-strip (z=30)
+            // Solid background so labels and the gaps BETWEEN labels
+            // both fully occlude any SVG content rising into the band.
+            // Earlier gradient bottom ~40% was transparent → user saw
+            // L1/L1.5/L3 nodes "bleeding through" between labels.
+            background:    'var(--color-bg)',
+            borderBottom:  '1px solid var(--color-border)',
+            boxShadow:     '0 2px 8px rgba(0,0,0,0.55)',
+          }}
+        >
+          {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
+            const naturalX = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
+            const screenX  = naturalX * view.scale + view.tx
+            const vpW      = viewportEl?.clientWidth ?? 1200
+            // Reserve right margin so the legend (?L0...?L3) doesn't get covered
+            const RIGHT_RESERVED = 180
+            // Clamp half-label margin so the centered label stays
+            // wholly visible. 60px ≈ widest label "L1.5 · SUB-THEMES".
+            const halfW    = 60
+            const minX     = halfW + 6
+            const maxX     = Math.max(minX, vpW - RIGHT_RESERVED - halfW - 4)
+            const clamped  = Math.max(minX, Math.min(maxX, screenX))
+            const offLeft  = screenX < minX
+            const offRight = screenX > maxX
+            const dim      = offLeft || offRight
+            return (
+              <span
+                key={layer}
+                data-testid={`lattice-column-header-${layer}`}
+                data-clamped={dim ? 'true' : undefined}
+                style={{
+                  position:       'absolute',
+                  left:           clamped,
+                  top:            6,
+                  transform:      'translateX(-50%)',
+                  fontSize:       10,
+                  fontFamily:     'ui-monospace, monospace',
+                  letterSpacing:  '0.05em',
+                  color:          dim ? 'var(--color-dim)' : 'var(--color-text)',
+                  opacity:        dim ? 0.6 : 1,
+                  textTransform:  'uppercase',
+                  whiteSpace:     'nowrap',
+                  background:     'var(--color-bg)',
+                  padding:        '2px 6px',
+                  borderRadius:   3,
+                  border:         '1px solid var(--color-border)',
+                  boxShadow:      '0 1px 4px rgba(0,0,0,0.5)',
+                }}
+              >
+                {offLeft ? '◀ ' : ''}{LAYER_LABELS[layer].toUpperCase()}{offRight ? ' ▶' : ''}
+              </span>
+            )
+          })}
+        </div>
+
+        {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
+            graph viewport top-right, always above the SVG / pan
+            region. Lives INSIDE the viewport (not the wrap) so the
+            trace-panel sibling never covers it. z-30 keeps it above
+            the column-header strip (z=25). */}
+        <div
+          className="absolute top-2 right-2 z-30 flex items-center gap-1 pointer-events-none"
+          data-testid="lattice-layer-help-strip"
+        >
+          {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
+            <LayerHelpButton
+              key={layer}
+              layer={layer}
+              open={explainLayer === layer}
+              onToggle={() => setExplainLayer(l => l === layer ? null : layer)}
+              onClose={() => setExplainLayer(null)}
+            />
+          ))}
+        </div>
         <div
           ref={wrapperRef}
           data-testid="lattice-svg-viewport"
@@ -417,7 +512,9 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           style={{ display: 'block' }}
         >
           <g>
-            {/* Column headers */}
+            {/* Column headers — kept in SVG for export/print fidelity
+                but visually covered by the HTML overlay (which is
+                always-visible and pan/zoom-aware via clamping). */}
             {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
               const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
               return (
@@ -426,7 +523,7 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
                   x={x} y={18}
                   textAnchor="middle"
                   className="fill-[var(--color-dim)]"
-                  style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em' }}
+                  style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em', opacity: 0 }}
                 >
                   {LAYER_LABELS[layer].toUpperCase()}
                 </text>
@@ -475,6 +572,8 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           const node = q.data!.nodes.find((n) => n.id === id)
           if (node) setSelection({ type: 'node', node })
         }}
+        onJumpToStrategies={onJumpToStrategies}
+        asOf={asOf}
       />
     </div>
   )
@@ -669,12 +768,19 @@ function NodeSvg({
     : (overlapping || hoverRoot)
       ? 'var(--color-accent)'
       : sevColor ?? 'var(--color-border)'
-  const strokeWidth = selected ? 2.5 : (overlapping || hoverRoot) ? 2 : focused ? 2 : 1
+  const strokeWidth = selected ? 3.5 : focused ? 3 : (overlapping || hoverRoot) ? 2 : 1
   const fill = dimmed ? 'var(--color-panel)' : 'var(--color-bg)'
   const opacity = dimmed ? 0.35 : 1
   // Soft glow on overlap partners — subtle enough not to overwhelm
-  // severity coloring but unmistakable as a visual link.
-  const glowFilter = (overlapping || hoverRoot) ? 'drop-shadow(0 0 4px var(--color-accent))' : undefined
+  // severity coloring but unmistakable as a visual link. Selected /
+  // deep-link-focused nodes get a stronger glow so the user can spot
+  // the destination after a cross-tab jump (Phase 6 followup).
+  const glowFilter =
+    selected || focused
+      ? 'drop-shadow(0 0 10px var(--color-accent)) drop-shadow(0 0 18px var(--color-accent))'
+      : (overlapping || hoverRoot)
+        ? 'drop-shadow(0 0 4px var(--color-accent))'
+        : undefined
 
   const shapeClass = isDiamond
     ? `node-shape-diamond node-provenance-${prov.replace('+', '-')}`

@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { fmtTs } from '@/lib/utils'
 import { ChevronDown, ChevronRight, RefreshCw, X, Copy, Check } from 'lucide-react'
+import { PastRunsView } from '@/components/widgets/PastRunsView'
 
 type KindFilter = '' | 'request' | 'response' | 'error'
 
@@ -114,24 +115,34 @@ export function AuditTab({ initialReqFilter, onConsumeFilter }: Props) {
         </Button>
       </div>
 
-      {/* List */}
-      <div className="flex-1 overflow-y-auto p-3 flex flex-col gap-2" data-testid="audit-list">
-        {recent.isLoading && <div className="text-[var(--color-dim)] text-xs">loading…</div>}
-        {recent.isError && <div className="text-[var(--color-red)] text-xs">{(recent.error as Error).message}</div>}
-        {filtered.length === 0 && !recent.isLoading && (
-          <div className="text-[var(--color-dim)] italic text-center p-8 text-xs">
-            no entries match current filters
-          </div>
-        )}
-        {filtered.map((e, i) => (
-          <div key={entryKey(e, i)} className="shrink-0">
-            <AuditEntryCard
-              entry={e}
-              open={expanded.has(entryKey(e, i))}
-              onToggle={() => toggle(entryKey(e, i))}
-            />
-          </div>
-        ))}
+      {/* Phase 6 followup #1 + scroll-fix: wrap PastRunsView AND
+          audit entries in a single overflow-y-auto so they scroll
+          together. (Earlier the PastRunsView lived OUTSIDE the
+          scroller and pushed audit entries past the viewport.) */}
+      <div className="flex-1 overflow-y-auto" data-testid="audit-scroll-root">
+        <div className="px-3 pt-3">
+          <PastRunsView title="Past runs (scheduler + manual)" />
+        </div>
+
+        {/* List */}
+        <div className="p-3 flex flex-col gap-2" data-testid="audit-list">
+          {recent.isLoading && <div className="text-[var(--color-dim)] text-xs">loading…</div>}
+          {recent.isError && <div className="text-[var(--color-red)] text-xs">{(recent.error as Error).message}</div>}
+          {filtered.length === 0 && !recent.isLoading && (
+            <div className="text-[var(--color-dim)] italic text-center p-8 text-xs">
+              no entries match current filters
+            </div>
+          )}
+          {filtered.map((e, i) => (
+            <div key={entryKey(e, i)} className="shrink-0">
+              <AuditEntryCard
+                entry={e}
+                open={expanded.has(entryKey(e, i))}
+                onToggle={() => toggle(entryKey(e, i))}
+              />
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

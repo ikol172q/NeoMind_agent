@@ -23,12 +23,21 @@ import {
 import {
   useFinStrategies,
   useFinStrategiesFit,
+  useFinStrategiesTimeAware,
+  useFinWidgetCoverage,
   useLatticeCalls,
+  useLatticeLanguage,
+  useStrategyThemesToday,
+  useWidgetStrategies,
   type LatticeCall,
   type StrategyEntry,
   type StrategyFitEntry,
+  type StrategyTimeAware,
+  type StrategyWidgetCoverage,
+  type WidgetMeta,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { HoverPopover } from '@/components/widgets/HoverPopover'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -69,14 +78,42 @@ interface Props {
   /** Phase 5 V4: when set, auto-expand & scroll to the matching
    *  strategy card. Nonce re-triggers the highlight on repeat clicks. */
   focus?: { id: string; nonce: number } | null
+  /** Phase 6 followup: clicking a widget chip on a strategy card
+   *  jumps to Research → Trace mode focused on that L0 widget node. */
+  onJumpToResearch?: (widgetId: string) => void
+  /** Phase 6 followup (L2): clicking a 'today matching theme' chip
+   *  jumps to Research → Trace mode focused on that L2 theme node. */
+  onJumpToResearchNode?: (nodeId: string) => void
+  /** Phase A (temporal replay): 'live' or YYYY-MM-DD. Threads into
+   *  every lattice-derived fetch so the tab stays time-coherent
+   *  with Research. */
+  asOf?: string
 }
 
-const HIGHLIGHT_MS = 2500
+// Increased from 2500ms → 6000ms so the user actually sees where the
+// jump landed (esp. when the destination is not in the initial
+// viewport — the scroll animation eats ~600ms of the original window).
+const HIGHLIGHT_MS = 6000
 
-export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
+export function StrategiesTab({
+  projectId,
+  onJumpToChat,
+  focus,
+  onJumpToResearch,
+  onJumpToResearchNode,
+  asOf,
+}: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
-  const fit = useFinStrategiesFit(projectId)
+  const fit = useFinStrategiesFit(projectId, asOf)
+  const coverage = useFinWidgetCoverage()
+  // Phase 6 followup #2: time-aware events per strategy (FOMC,
+  // quad-witching, Russell rebal, earnings season).
+  const timeAware = useFinStrategiesTimeAware(projectId)
+  // Phase 6 followup #3: bilingual one-button — pick lang for
+  // every name_en / name_zh render below based on global toggle.
+  const lang = useLatticeLanguage()
+  const activeLang = lang.data?.active
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
   // Default to today_fit sort — answers 'what's relevant right now?'
@@ -127,6 +164,24 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
     }
     return map
   }, [fit.data])
+
+  // Phase 6 followup #2: time-aware events per strategy.
+  const timeAwareById = useMemo(() => {
+    const map: Record<string, StrategyTimeAware> = {}
+    for (const t of timeAware.data?.entries ?? []) {
+      map[t.id] = t
+    }
+    return map
+  }, [timeAware.data])
+
+  // Phase 6 Step 4: widget coverage per strategy (forward bidirectional map).
+  const coverageByStrategy = useMemo(() => {
+    const map: Record<string, StrategyWidgetCoverage> = {}
+    for (const c of coverage.data?.strategies ?? []) {
+      map[c.id] = c
+    }
+    return map
+  }, [coverage.data])
 
   const callsTotal = calls.data?.calls?.length ?? 0
   const callsMatched = Object.values(strategyToCalls).reduce(
@@ -357,6 +412,13 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                       latticeCalls={strategyToCalls[s.id] ?? []}
                       todayFit={todayFit}
                       todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
+                      widgetCoverage={coverageByStrategy[s.id]}
+                      timeAware={timeAwareById[s.id]}
+                      activeLang={activeLang}
+                      onJumpToResearch={onJumpToResearch}
+                      onJumpToResearchNode={onJumpToResearchNode}
+                      projectId={projectId}
+                      asOf={asOf}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -385,6 +447,13 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                 latticeCalls={strategyToCalls[s.id] ?? []}
                 todayFit={todayFit}
                 todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
+                widgetCoverage={coverageByStrategy[s.id]}
+                timeAware={timeAwareById[s.id]}
+                activeLang={activeLang}
+                onJumpToResearch={onJumpToResearch}
+                onJumpToResearchNode={onJumpToResearchNode}
+                projectId={projectId}
+                asOf={asOf}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -410,6 +479,13 @@ function StrategyCard({
   latticeCalls,
   todayFit,
   todayFitBreakdown,
+  widgetCoverage,
+  timeAware,
+  activeLang,
+  onJumpToResearch,
+  onJumpToResearchNode,
+  projectId,
+  asOf,
   expanded,
   highlighted,
   registerRef,
@@ -421,6 +497,13 @@ function StrategyCard({
   latticeCalls: LatticeCall[]
   todayFit: number
   todayFitBreakdown?: Record<string, number>
+  widgetCoverage?: StrategyWidgetCoverage
+  timeAware?: StrategyTimeAware
+  activeLang?: 'en' | 'zh-CN-mixed'
+  onJumpToResearch?: (widgetId: string) => void
+  onJumpToResearchNode?: (nodeId: string) => void
+  projectId: string
+  asOf?: string
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -456,7 +539,7 @@ function StrategyCard({
       className={cn(
         "border rounded bg-[var(--color-panel)] hover:border-[var(--color-accent)]/50 transition",
         highlighted
-          ? "border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/40"
+          ? "border-[var(--color-accent)] ring-4 ring-[var(--color-accent)]/60 shadow-[0_0_24px_rgba(0,180,255,0.45)] animate-pulse"
           : "border-[var(--color-border)]",
       )}
     >
@@ -469,8 +552,26 @@ function StrategyCard({
         </span>
         <div className="flex-1 min-w-0">
           <div className="flex items-baseline gap-2 flex-wrap">
-            <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
-            <span className="text-[10px] text-[var(--color-dim)] truncate">{s.name_en}</span>
+            {/* Phase 6 followup #3: bilingual one-button switch — when
+                active is en, show only EN; when zh, show only ZH; when
+                undefined (loading) show both like before. */}
+            {activeLang === 'en' ? (
+              <span className="text-[var(--color-text)] font-medium">{s.name_en}</span>
+            ) : activeLang === 'zh-CN-mixed' ? (
+              <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
+            ) : (
+              <>
+                <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
+                <span className="text-[10px] text-[var(--color-dim)] truncate">{s.name_en}</span>
+              </>
+            )}
+            {/* Phase 6 followup #2: time-aware urgency chip — fires for
+                event-driven strategies (FOMC, quad witching, Russell
+                rebal, earnings season). Always-on strategies have no
+                chip. Color escalates as event approaches. */}
+            {timeAware?.days_until != null && timeAware.event_label && (
+              <TimeAwareChip ta={timeAware} activeLang={activeLang} />
+            )}
             {/* Today's fit chip — same matcher, score against today's
                 themes. Always present (even on no-L3-call days). */}
             <span
@@ -587,17 +688,78 @@ function StrategyCard({
               ))}
             </ul>
           </Section>
-          <Section label="数据需求 / Data requirements (provenance)">
-            <ul className="text-[var(--color-dim)] flex flex-wrap gap-1">
-              {s.data_requirements.map((d, i) => (
-                <li
-                  key={i}
-                  className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
-                >
-                  {d}
-                </li>
-              ))}
-            </ul>
+          {/* Phase 6 followup: L2 ↔ Strategy reverse map. Lists every
+              L2 theme from today's lattice that scores ≥1 against
+              this strategy, click to jump back to the lattice graph
+              focused on that theme node. Mirror of the L2 inspector's
+              ThemeStrategiesSection. */}
+          <Section label={
+            asOf && asOf !== 'live'
+              ? `${asOf} 命中主题 / Themes on ${asOf}`
+              : '今日命中主题 / Today matching themes'
+          }>
+            <StrategyMatchingThemes
+              strategyId={s.id}
+              projectId={projectId}
+              asOf={asOf}
+              onJumpToResearchNode={onJumpToResearchNode}
+            />
+          </Section>
+          <Section label="数据需求 / Data requirements (lattice widget mapping)">
+            {widgetCoverage ? (
+              <div className="flex flex-col gap-1">
+                {/* widget chips with status badges */}
+                <div className="flex flex-wrap gap-1">
+                  {widgetCoverage.widgets.map((w) => (
+                    <WidgetChip key={w.id} widget={w} onJumpToResearch={onJumpToResearch} />
+                  ))}
+                </div>
+                {/* coverage summary */}
+                <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
+                  <span className="text-[var(--color-green)]">{widgetCoverage.available_count} available</span>
+                  {' · '}
+                  <span style={{ color: widgetCoverage.planned_count > 0 ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)' }}>
+                    {widgetCoverage.planned_count} planned (gap)
+                  </span>
+                  {widgetCoverage.unresolved.length > 0 && (
+                    <>
+                      {' · '}
+                      <span className="text-[var(--color-red)]">
+                        {widgetCoverage.unresolved.length} unresolved: {widgetCoverage.unresolved.join(', ')}
+                      </span>
+                    </>
+                  )}
+                </div>
+                {/* Free-text equivalent shown as secondary line for human-readable context */}
+                <details className="mt-0.5">
+                  <summary className="text-[8px] uppercase tracking-wider text-[var(--color-dim)] cursor-pointer hover:text-[var(--color-text)]">
+                    show free-text source
+                  </summary>
+                  <ul className="text-[var(--color-dim)] flex flex-wrap gap-1 mt-1">
+                    {widgetCoverage.free_text_requirements.map((d, i) => (
+                      <li
+                        key={i}
+                        className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)] italic"
+                      >
+                        {d}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              </div>
+            ) : (
+              // Fallback: data not loaded yet, show free-text
+              <ul className="text-[var(--color-dim)] flex flex-wrap gap-1">
+                {s.data_requirements.map((d, i) => (
+                  <li
+                    key={i}
+                    className="font-mono text-[8px] px-1 rounded bg-[var(--color-bg)] border border-[var(--color-border)]"
+                  >
+                    {d}
+                  </li>
+                ))}
+              </ul>
+            )}
           </Section>
           <Section label="税务 / Tax">
             <div className="text-[var(--color-dim)] leading-relaxed">
@@ -665,6 +827,278 @@ function StrategyCard({
     </div>
   )
 }
+
+/**
+ * WidgetChip — Phase 6 Step 5. Renders one L0 widget data-requirement
+ * with status icon (✓ available / ⚠ planned / ? unknown), color-coded
+ * border, and tooltip with full description. Click jumps to lattice
+ * graph viewer focused on that widget (Step 6).
+ */
+function WidgetChip({
+  widget,
+  onJumpToResearch,
+}: {
+  widget: WidgetMeta
+  onJumpToResearch?: (widgetId: string) => void
+}) {
+  const statusColor =
+    widget.status === 'available'
+      ? 'var(--color-green)'
+      : widget.status === 'planned'
+        ? 'var(--color-amber,#e5a200)'
+        : 'var(--color-dim)'
+  const icon =
+    widget.status === 'available' ? '✓' : widget.status === 'planned' ? '⚠' : '·'
+
+  // Phase 6 followup #6 + bidirectional nav: rich hover popover +
+  // click-to-jump. Hover shows description + reverse map; click
+  // jumps to Research → Trace mode focused on the L0 widget node.
+  // Only available widgets are click-jumpable (planned widgets
+  // aren't actually present in the lattice graph yet).
+  const canJump = onJumpToResearch != null && widget.status === 'available'
+  const cursorClass = canJump ? 'cursor-pointer' : 'cursor-help'
+  return (
+    <HoverPopover
+      width={320}
+      delay={300}
+      dataTestid={`widget-chip-${widget.id}`}
+      content={() => <WidgetChipPopover widget={widget} canJump={canJump} />}
+    >
+      <span
+        data-widget-id={widget.id}
+        data-source={`/api/lattice/widgets/${widget.id}`}
+        onClick={canJump ? () => onJumpToResearch!(widget.id) : undefined}
+        role={canJump ? 'button' : undefined}
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono ${cursorClass} ${canJump ? 'hover:bg-[var(--color-accent)]/10' : ''}`}
+        style={{ borderColor: statusColor, color: statusColor }}
+      >
+        <span>{icon}</span>
+        <span>{widget.id}</span>
+      </span>
+    </HoverPopover>
+  )
+}
+
+
+/** Popover body for WidgetChip — fetches the reverse map lazily on
+ *  first hover, so we don't fire 50× /strategies queries on tab open. */
+function WidgetChipPopover({ widget, canJump }: { widget: WidgetMeta; canJump?: boolean }) {
+  const reverse = useWidgetStrategies(widget.id)
+  const statusColor =
+    widget.status === 'available'
+      ? 'var(--color-green)'
+      : widget.status === 'planned'
+        ? 'var(--color-amber,#e5a200)'
+        : 'var(--color-dim)'
+  return (
+    <div className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span
+          className="px-1 rounded font-mono text-[9px]"
+          style={{ borderColor: statusColor, color: statusColor, border: `1px solid ${statusColor}` }}
+        >
+          {widget.status}
+        </span>
+        <span className="font-mono text-[10px] text-[var(--color-text)]">{widget.id}</span>
+      </div>
+      <div className="text-[10px] text-[var(--color-text)]">
+        {widget.label_en ?? widget.id}
+        {widget.label_zh ? <span className="text-[var(--color-dim)]"> · {widget.label_zh}</span> : null}
+      </div>
+      {widget.description && (
+        <div className="text-[9.5px] text-[var(--color-dim)] leading-snug">
+          {widget.description}
+        </div>
+      )}
+      {canJump && (
+        <div className="text-[9px] text-[var(--color-accent)] mt-0.5">
+          → click to open in Research / Lattice graph
+        </div>
+      )}
+      <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
+        {reverse.isLoading ? (
+          <span className="italic">checking other strategies…</span>
+        ) : reverse.data ? (
+          <>
+            Also needed by{' '}
+            <span className="text-[var(--color-text)]">{reverse.data.strategy_count}</span>
+            {' '}other catalog{' '}
+            {reverse.data.strategy_count === 1 ? 'strategy' : 'strategies'}.
+            {reverse.data.strategy_count > 0 && (
+              <div className="flex flex-wrap gap-0.5 mt-1">
+                {reverse.data.strategies.slice(0, 6).map((s) => (
+                  <span
+                    key={s.id}
+                    className="font-mono text-[8.5px] px-1 rounded border border-[var(--color-border)]"
+                  >
+                    {s.id}
+                  </span>
+                ))}
+                {reverse.data.strategy_count > 6 && (
+                  <span className="text-[var(--color-dim)] italic">
+                    …+{reverse.data.strategy_count - 6}
+                  </span>
+                )}
+              </div>
+            )}
+          </>
+        ) : (
+          <span className="italic">reverse map unavailable</span>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+/** Phase 6 followup #2: time-aware chip rendered on the strategy
+ *  card header. Color escalates with proximity to the event. */
+function TimeAwareChip({
+  ta,
+  activeLang,
+}: {
+  ta: StrategyTimeAware & { event_label_zh?: string | null }
+  activeLang?: 'en' | 'zh-CN-mixed'
+}) {
+  const days = ta.days_until ?? 0
+  const cfg = {
+    imminent: { color: 'var(--color-red,#f06060)', label_en: 'fires in', icon: '🔥' },
+    soon:     { color: 'var(--color-amber,#e5a200)', label_en: 'in', icon: '⏳' },
+    upcoming: { color: 'var(--color-accent)', label_en: 'in', icon: '📅' },
+    distant:  { color: 'var(--color-dim)', label_en: 'in', icon: '·' },
+    none:     { color: 'var(--color-dim)', label_en: '', icon: '·' },
+  }[ta.urgency] ?? { color: 'var(--color-dim)', label_en: 'in', icon: '·' }
+
+  const evtLabel =
+    activeLang === 'zh-CN-mixed'
+      ? (ta as { event_label_zh?: string | null }).event_label_zh ?? ta.event_label
+      : ta.event_label
+
+  const inWord = activeLang === 'zh-CN-mixed' ? `${days}天后` : `${cfg.label_en} ${days}d`
+  return (
+    <HoverPopover
+      width={260}
+      delay={200}
+      dataTestid={`time-aware-${ta.id}`}
+      content={() => (
+        <div className="flex flex-col gap-1">
+          <div className="flex items-center gap-2">
+            <span style={{ color: cfg.color }}>{cfg.icon}</span>
+            <span className="text-[10px] text-[var(--color-text)]">{evtLabel}</span>
+          </div>
+          <div className="text-[9px] text-[var(--color-dim)]">
+            {ta.event_date} · {days} days from today · urgency: <span style={{ color: cfg.color }}>{ta.urgency}</span>
+          </div>
+          <div className="text-[9px] text-[var(--color-dim)] italic leading-snug">
+            Strategies tied to deterministic calendar events get this chip.
+            Always-on strategies (DCA, factor tilts) don't.
+          </div>
+        </div>
+      )}
+    >
+      <span
+        className="text-[8.5px] px-1.5 py-0.5 rounded border font-mono"
+        style={{ borderColor: cfg.color, color: cfg.color }}
+        data-urgency={ta.urgency}
+      >
+        {cfg.icon} {inWord}
+      </span>
+    </HoverPopover>
+  )
+}
+
+/** Phase 6 followup: Strategy → today's matching L2 themes (reverse).
+ *  Mirror of LatticeTracePanel's ThemeStrategiesSection. Lists every
+ *  L2 theme that scores ≥1 against this strategy; click jumps to the
+ *  lattice graph focused on that theme. */
+function StrategyMatchingThemes({
+  strategyId,
+  projectId,
+  asOf,
+  onJumpToResearchNode,
+}: {
+  strategyId: string
+  projectId: string
+  asOf?: string
+  onJumpToResearchNode?: (nodeId: string) => void
+}) {
+  const q = useStrategyThemesToday(strategyId, projectId, asOf)
+  if (q.isLoading) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-dim)]">
+        scoring against today's themes…
+      </span>
+    )
+  }
+  if (q.isError) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-red,#f06060)]">
+        scoring failed: {(q.error as Error).message}
+      </span>
+    )
+  }
+  const themes = q.data?.themes ?? []
+  if (themes.length === 0) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-dim)] leading-relaxed">
+        No L2 theme in today's lattice scores ≥1 against this strategy.
+        Today's market data doesn't strongly support its setup.
+      </span>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        {themes.map((t) => {
+          const color =
+            t.score >= 5 ? 'var(--color-green)'
+            : t.score >= 3 ? 'var(--color-accent)'
+            : 'var(--color-dim)'
+          const tooltip =
+            `theme: ${t.theme_title}\n` +
+            `score: ${t.score}\n` +
+            `breakdown: ${JSON.stringify(t.score_breakdown)}` +
+            (onJumpToResearchNode ? '\n→ click to open in Research / Lattice graph' : '')
+          const baseClass =
+            'px-1.5 py-0.5 rounded border text-[9.5px] font-mono transition flex items-center gap-1'
+          if (onJumpToResearchNode) {
+            return (
+              <button
+                key={t.theme_id}
+                data-testid={`strategy-theme-${t.theme_id}`}
+                data-theme-id={t.theme_id}
+                onClick={() => onJumpToResearchNode(t.theme_id)}
+                className={`${baseClass} cursor-pointer hover:bg-[var(--color-accent)]/10`}
+                style={{ borderColor: color, color }}
+                title={tooltip}
+              >
+                <span>{t.theme_title}</span>
+                <span className="text-[8.5px] opacity-70">{t.score}</span>
+              </button>
+            )
+          }
+          return (
+            <span
+              key={t.theme_id}
+              data-testid={`strategy-theme-${t.theme_id}`}
+              className={`${baseClass} cursor-help`}
+              style={{ borderColor: color, color }}
+              title={tooltip}
+            >
+              <span>{t.theme_title}</span>
+              <span className="text-[8.5px] opacity-70">{t.score}</span>
+            </span>
+          )
+        })}
+      </div>
+      <div className="text-[8.5px] italic text-[var(--color-dim)] leading-snug">
+        L2 themes from today's lattice that score ≥1 against this strategy.
+        Color: green ≥5 · accent ≥3 · dim &lt;3.
+      </div>
+    </div>
+  )
+}
+
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (

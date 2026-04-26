@@ -835,19 +835,23 @@ export interface LatticeGraphPayload {
   }
 }
 
-export function useLatticeGraph(project_id: string) {
+export function useLatticeGraph(project_id: string, asOf?: string | null) {
   const lang = useLatticeLanguage()
   const active = lang.data?.active
   const budgets = useLatticeBudgets()
   const bh = budgets.data?.effective_hash
+  const historical = !!asOf && asOf !== 'live'
   return useQuery({
-    queryKey: ['lattice_graph', project_id, active, bh],
+    queryKey: historical
+      ? ['lattice_graph_snapshot', project_id, asOf]
+      : ['lattice_graph', project_id, active, bh],
     queryFn: () => fetchJSON<LatticeGraphPayload>(
-      `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}`,
+      `/api/lattice/graph?project_id=${encodeURIComponent(project_id)}` +
+      (historical ? `&as_of=${encodeURIComponent(asOf!)}` : ''),
     ),
-    enabled: !!project_id && !!active && !!bh,
-    staleTime: 10 * 60_000,
-    refetchInterval: 15 * 60_000,
+    enabled: !!project_id && (historical || (!!active && !!bh)),
+    staleTime: historical ? Infinity : 10 * 60_000,
+    refetchInterval: historical ? false : 15 * 60_000,
     refetchOnWindowFocus: false,
     placeholderData: keepPreviousData,
   })
@@ -1313,9 +1317,84 @@ export interface StrategyFitEntry {
   score_breakdown: Record<string, number>
 }
 
-export function useFinStrategiesFit(projectId: string) {
+// ── Phase 6 Step 4: bidirectional widget index ───────────
+
+export interface WidgetMeta {
+  id: string
+  status: 'available' | 'planned' | 'deprecated'
+  label_en: string | null
+  label_zh: string | null
+  description: string | null
+}
+
+export interface StrategyWidgetCoverage {
+  id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  widgets: WidgetMeta[]
+  available_count: number
+  planned_count: number
+  unresolved: string[]
+  free_text_requirements: string[]
+}
+
+export interface WidgetCoverageReport {
+  strategies: StrategyWidgetCoverage[]
+  summary: {
+    total_strategies: number
+    fully_available: number
+    has_planned_gaps: number
+    has_unresolved: number
+  }
+  explanation: string
+}
+
+export function useFinWidgetCoverage() {
   return useQuery({
-    queryKey: ['fin_strategies_fit', projectId],
+    queryKey: ['fin_widget_coverage'],
+    queryFn: () => fetchJSON<WidgetCoverageReport>('/api/strategies/widget-coverage'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+// Reverse map: widget id → strategies that need it. Phase 6 Step 6.
+// Used by LatticeTracePanel to render 'Powered by N strategies' on L0
+// widget nodes — closes the audit loop the other direction.
+
+export interface WidgetReverseStrategy {
+  id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  difficulty: number | null
+  feasible_at_10k: boolean | null
+}
+
+export interface WidgetReverseReport {
+  widget: WidgetMeta & { fields?: string[]; description?: string }
+  strategy_count: number
+  strategies: WidgetReverseStrategy[]
+  explanation: string
+}
+
+export function useWidgetStrategies(widgetId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['widget_strategies', widgetId],
+    queryFn: () =>
+      fetchJSON<WidgetReverseReport>(
+        `/api/lattice/widgets/${encodeURIComponent(widgetId!)}/strategies`,
+      ),
+    enabled: !!widgetId,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
+  return useQuery({
+    queryKey: ['fin_strategies_fit', projectId, asOf ?? 'live'],
     queryFn: () => fetchJSON<{
       project_id: string
       themes_count: number
@@ -1323,9 +1402,214 @@ export function useFinStrategiesFit(projectId: string) {
       strategies_count: number
       fit: StrategyFitEntry[]
       explanation: string
-    }>(`/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}`),
+    }>(
+      `/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}` +
+      (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
+    ),
     enabled: !!projectId,
     staleTime: 60_000,
     retry: false,
   })
+}
+
+
+// ── Phase 6 followup #1: detailed past run log ───────────────────
+//
+// /api/db/runs (already exists in agent/finance/persistence/api.py)
+// returns the full analysis_runs history — every scheduler tick or
+// manual run leaves a row.  UI surfaces this as a timeline view so
+// the user can audit "what did the agent actually do, when, and
+// did it succeed?".
+
+export interface FinPastRun {
+  run_id: string
+  run_type: 'scheduled' | 'manual' | 'force_rerun' | 'backfill' | string
+  job_name: string
+  started_at: string
+  completed_at: string | null
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | string
+  error_message: string | null
+  universe_size: number | null
+  rows_written: number | null
+  duration_seconds: number | null
+  metadata_json?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+export function useFinPastRuns(opts?: { jobName?: string; limit?: number }) {
+  const job = opts?.jobName
+  const limit = opts?.limit ?? 50
+  return useQuery({
+    queryKey: ['fin_past_runs', job ?? null, limit],
+    queryFn: () =>
+      fetchJSON<{ count: number; runs: FinPastRun[] }>(
+        `/api/db/runs?limit=${limit}${job ? `&job_name=${encodeURIComponent(job)}` : ''}`,
+      ),
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+}
+
+
+export interface FinRunRows {
+  run: FinPastRun
+  total_rows: number
+  by_table: Record<string, {
+    count: number
+    rows: Array<Record<string, unknown>>
+    error?: string
+    match_method?: string
+  }>
+  explanation: string
+}
+
+/** Phase 6 followup: drill-down into the actual rows written by one
+ *  run. Fired only when a row is expanded — keeps closed rows free. */
+export function useFinRunRows(runId: string | null | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['fin_run_rows', runId],
+    queryFn: () =>
+      fetchJSON<FinRunRows>(
+        `/api/db/runs/${encodeURIComponent(runId!)}/rows?limit=100`,
+      ),
+    enabled: !!runId && enabled,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Phase 6 followup: L2 ↔ Strategy bidirectional ─────────────────
+//
+// Forward (theme → strategies):  /api/strategies/by-theme?theme_id=X
+//   Used by lattice trace inspector for L2 nodes.
+//
+// Reverse (strategy → today's themes):  /api/strategies/{id}/themes-today
+//   Used by Strategies card 'TODAY MATCHING THEMES' section.
+
+export interface ThemeMatchingStrategy {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string
+  difficulty: number | null
+  asset_class: string | null
+  defined_risk: boolean | null
+  pdt_relevant: boolean | null
+  feasible_at_10k: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export interface StrategiesByTheme {
+  theme_id: string
+  theme_title: string | null
+  count: number
+  strategies: ThemeMatchingStrategy[]
+  explanation: string
+}
+
+export function useStrategiesByTheme(
+  projectId: string | null | undefined,
+  themeId: string | null | undefined,
+  asOf?: string | null,
+) {
+  return useQuery({
+    queryKey: ['strategies_by_theme', projectId, themeId, asOf ?? 'live'],
+    queryFn: () =>
+      fetchJSON<StrategiesByTheme>(
+        `/api/strategies/by-theme?project_id=${encodeURIComponent(projectId!)}` +
+        `&theme_id=${encodeURIComponent(themeId!)}` +
+        (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
+      ),
+    enabled: !!projectId && !!themeId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+export interface StrategyTheme {
+  theme_id: string
+  theme_title: string | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export interface StrategyThemesToday {
+  strategy_id: string
+  count: number
+  themes: StrategyTheme[]
+  explanation: string
+}
+
+export function useStrategyThemesToday(
+  strategyId: string | null | undefined,
+  projectId: string,
+  asOf?: string | null,
+) {
+  return useQuery({
+    queryKey: ['strategy_themes_as_of', strategyId, projectId, asOf ?? 'live'],
+    queryFn: () =>
+      fetchJSON<StrategyThemesToday>(
+        `/api/strategies/${encodeURIComponent(strategyId!)}/themes-as-of` +
+        `?project_id=${encodeURIComponent(projectId)}` +
+        (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
+      ),
+    enabled: !!strategyId && !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Phase 6 followup #2: time-aware Strategies ──────────────────
+//
+// /api/strategies/time-aware returns days-until-next-event for each
+// catalog strategy that's event-driven (FOMC, quad witching, Russell
+// rebalance, earnings season, etc).  Strategies without a calendar
+// trigger get null — they're "always-on" (DCA, factor tilts, …).
+
+export interface StrategyTimeAware {
+  id: string
+  days_until: number | null
+  event_label: string | null
+  event_date: string | null   // ISO yyyy-mm-dd
+  urgency: 'imminent' | 'soon' | 'upcoming' | 'distant' | 'none'
+}
+
+export function useFinStrategiesTimeAware(projectId: string) {
+  return useQuery({
+    queryKey: ['fin_strategies_time_aware', projectId],
+    queryFn: () =>
+      fetchJSON<{ count: number; entries: StrategyTimeAware[]; computed_at: string }>(
+        `/api/strategies/time-aware?project_id=${encodeURIComponent(projectId)}`,
+      ),
+    enabled: !!projectId,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Phase 6 followup #3: bilingual one-button switch helper ─────
+//
+// Existing `useLatticeLanguage()` already exposes the active mode
+// ('en' | 'zh-CN-mixed') and `setLatticeLanguage()` flips it
+// globally.  This helper picks the right side of any bilingual
+// `(en, zh)` pair so renders stay in sync with the toggle.
+
+export function pickLang(
+  en: string | null | undefined,
+  zh: string | null | undefined,
+  active: 'en' | 'zh-CN-mixed' | undefined,
+): string {
+  // bilingual fallback — if one side is missing, show the other
+  const enS = (en ?? '').trim()
+  const zhS = (zh ?? '').trim()
+  if (active === 'en') return enS || zhS
+  if (active === 'zh-CN-mixed') return zhS || enS
+  // unknown / loading — show both, "zh / en"
+  if (zhS && enS) return `${zhS} / ${enS}`
+  return zhS || enS
 }

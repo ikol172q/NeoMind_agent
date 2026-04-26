@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import {
   useLatticeTrace,
+  useWidgetStrategies,
+  useStrategiesByTheme,
   type LatticeGraphNode, type LatticeGraphEdge, type LatticeGraphPayload,
   type MembershipComputationDetail,
 } from '@/lib/api'
-import { X, ChevronRight, ChevronDown, ExternalLink } from 'lucide-react'
+import { X, ChevronRight, ChevronDown, ExternalLink, BookOpen, Target } from 'lucide-react'
 
 export type TraceSelection =
   | { type: 'node'; node: LatticeGraphNode }
@@ -17,6 +19,12 @@ interface Props {
   projectId: string
   onClose: () => void
   onSelectNodeById: (id: string) => void
+  /** Phase 6 followup: callback to jump to Strategies tab from
+   *  reverse-map chips on L0 widget nodes. */
+  onJumpToStrategies?: (strategyId: string) => void
+  /** Phase A (temporal replay): forwarded to ThemeStrategiesSection
+   *  so the L2 inspector reads strategies from the picked snapshot. */
+  asOf?: string
 }
 
 const PROVENANCE_LABEL: Record<string, string> = {
@@ -28,7 +36,7 @@ const PROVENANCE_LABEL: Record<string, string> = {
 }
 
 export function LatticeTracePanel({
-  selection, graph, projectId, onClose, onSelectNodeById,
+  selection, graph, projectId, onClose, onSelectNodeById, onJumpToStrategies, asOf,
 }: Props) {
   if (!selection) {
     return (
@@ -61,7 +69,7 @@ export function LatticeTracePanel({
       <div className="flex-1 overflow-y-auto p-3 text-[11px] text-[var(--color-text)] leading-[1.55]">
         {selection.type === 'node'
           ? <>
-              <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} />
+              <NodeDetail node={selection.node} projectId={projectId} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} asOf={asOf} />
               <DeepTraceSection node={selection.node} projectId={projectId} />
             </>
           : <EdgeDetail edge={selection.edge} graph={graph} onSelectNodeById={onSelectNodeById} />
@@ -75,10 +83,13 @@ export function LatticeTracePanel({
 // ── Node detail ────────────────────────────────────────
 
 function NodeDetail({
-  node, onSelectNodeById,
+  node, projectId, onSelectNodeById, onJumpToStrategies, asOf,
 }: {
   node: LatticeGraphNode
+  projectId: string
   onSelectNodeById: (id: string) => void
+  onJumpToStrategies?: (strategyId: string) => void
+  asOf?: string
 }) {
   const prov = node.provenance
   const attrs = node.attrs as Record<string, unknown>
@@ -152,6 +163,28 @@ function NodeDetail({
         <ExternalLinksSection widget={attrs.widget} />
       )}
 
+      {/* Phase 6 Step 6: reverse map — which catalog strategies declare
+          this L0 widget as a data dependency. Closes the audit loop:
+          from a widget node in the graph, see *all strategies that
+          depend on it*. */}
+      {node.layer === 'L0' && typeof attrs.widget === 'string' && (
+        <WidgetStrategiesSection widgetId={attrs.widget} onJumpToStrategies={onJumpToStrategies} />
+      )}
+
+      {/* Phase 6 followup: explicit L2 ↔ Strategy bidirectional.
+          For an L2 theme node, surface the catalog strategies that
+          score best against this theme's tags. Click chip → jump to
+          Strategies tab focused on that catalog entry. */}
+      {node.layer === 'L2' && (
+        <ThemeStrategiesSection
+          themeId={node.id}
+          themeLabel={node.label}
+          projectId={projectId}
+          asOf={asOf}
+          onJumpToStrategies={onJumpToStrategies}
+        />
+      )}
+
       <Section title="Attributes">
         {Object.entries(attrs).map(([k, v]) => (
           <KV key={k} k={k} v={formatAttr(v)} />
@@ -188,6 +221,104 @@ function RawPayloadSection({ payload }: { payload: unknown }) {
       <div className="text-[9px] text-[var(--color-dim)] italic leading-[1.4]">
         This is exactly what fed the L1 generators this cycle. Every
         L1 observation originates from a field in this blob.
+      </div>
+    </div>
+  )
+}
+
+
+/**
+ * WidgetStrategiesSection — Phase 6 Step 6 (reverse map).
+ *
+ * For an L0 widget node in the lattice graph, list every catalog
+ * strategy that declares this widget as a data dependency. Closes
+ * the audit loop: from "this widget" → "every strategy that needs
+ * it" → click any to drill into the strategy.
+ *
+ * Renders only when the API call succeeds AND there's ≥1 strategy.
+ * Quietly hides on 404 (some L0 widgets — like fin_db.* — aren't
+ * declared as data_requirements anywhere because they're "checks"
+ * not "data feeds").
+ */
+function WidgetStrategiesSection({ widgetId, onJumpToStrategies }: { widgetId: string; onJumpToStrategies?: (strategyId: string) => void }) {
+  const q = useWidgetStrategies(widgetId)
+
+  if (!q.data) {
+    if (q.isLoading) {
+      return (
+        <div data-testid="widget-strategies-loading"
+             className="text-[10px] italic text-[var(--color-dim)]">
+          checking strategy dependencies…
+        </div>
+      )
+    }
+    return null
+  }
+
+  const { strategy_count, strategies, widget } = q.data
+
+  return (
+    <div
+      data-testid={`widget-strategies-${widgetId}`}
+      data-source={`/api/lattice/widgets/${widgetId}/strategies`}
+      className="flex flex-col gap-1"
+    >
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+        <BookOpen size={9} />
+        <span>Powered by {strategy_count} strateg{strategy_count === 1 ? 'y' : 'ies'}</span>
+      </div>
+
+      {strategy_count === 0 ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] leading-[1.4]">
+          No catalog strategy currently declares this widget as a data
+          requirement. {widget.status === 'planned'
+            ? 'This widget is planned but not yet exposed in any strategy — likely a curation gap (an upcoming strategy will use it).'
+            : 'This widget is referenced by lattice but no strategy has declared a hard dependency on it. Often true for compliance widgets (wash sale / PDT) which are checks, not data feeds.'}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {strategies.map((s) => {
+            const tooltipText =
+              `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
+              `horizon: ${s.horizon} · difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
+              `${s.feasible_at_10k ? '✓ feasible at $10k' : '⚠ requires more capital'}` +
+              (onJumpToStrategies ? '\n→ click to open in Strategies tab' : '')
+            const baseClass = 'px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[9.5px] font-mono transition'
+            if (onJumpToStrategies) {
+              return (
+                <button
+                  key={s.id}
+                  data-testid={`reverse-strategy-${s.id}`}
+                  data-strategy-id={s.id}
+                  onClick={() => onJumpToStrategies(s.id)}
+                  className={`${baseClass} cursor-pointer text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:border-[var(--color-accent)]`}
+                  title={tooltipText}
+                >
+                  {s.id}
+                </button>
+              )
+            }
+            return (
+              <span
+                key={s.id}
+                data-testid={`reverse-strategy-${s.id}`}
+                data-strategy-id={s.id}
+                className={`${baseClass} cursor-help hover:border-[var(--color-accent)]/60`}
+                title={tooltipText}
+              >
+                {s.id}
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="text-[9px] italic text-[var(--color-dim)] leading-[1.4]">
+        {widget.status === 'available'
+          ? 'This widget is ✓ available — actively emitting L1 obs.'
+          : widget.status === 'planned'
+            ? '⚠ This widget is "planned" — referenced by strategies but no L1 generator yet (real data gap).'
+            : 'Status: deprecated.'}
       </div>
     </div>
   )
@@ -234,6 +365,109 @@ const WIDGET_EXTERNAL_LINKS: Record<string, Array<{ label: string; url: string; 
     { label: 'Yahoo Portfolio', url: 'https://finance.yahoo.com/portfolios/', note: 'manage there too' },
   ],
 }
+
+/** Phase 6 followup: L2 theme → top fitting strategies. Mirror of
+ *  WidgetStrategiesSection (L0) for the L2 layer. Lists every catalog
+ *  strategy whose strategy_matcher score >= 1 against this theme's
+ *  aggregate member-obs tags. Chips are clickable when
+ *  onJumpToStrategies is provided. */
+function ThemeStrategiesSection({
+  themeId,
+  themeLabel,
+  projectId,
+  asOf,
+  onJumpToStrategies,
+}: {
+  themeId: string
+  themeLabel: string
+  projectId: string
+  asOf?: string
+  onJumpToStrategies?: (strategyId: string) => void
+}) {
+  const q = useStrategiesByTheme(projectId, themeId, asOf)
+  if (q.isLoading) {
+    return (
+      <div className="text-[10px] italic text-[var(--color-dim)]">
+        scoring strategies against this theme…
+      </div>
+    )
+  }
+  if (!q.data) return null
+  const { count, strategies } = q.data
+
+  return (
+    <div
+      data-testid={`theme-strategies-${themeId}`}
+      data-source={`/api/strategies/by-theme?theme_id=${themeId}`}
+      className="flex flex-col gap-1"
+    >
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+        <Target size={9} />
+        <span>Top {count} strateg{count === 1 ? 'y' : 'ies'} fitting "{themeLabel}"</span>
+      </div>
+
+      {count === 0 ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] leading-[1.4]">
+          No catalog strategy scores ≥1 against this theme today. The
+          theme's member-obs tags don't match any strategy's
+          horizon / asset class / event signature.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {strategies.map((s) => {
+            const tooltip =
+              `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
+              `score: ${s.score} · horizon: ${s.horizon} · ` +
+              `difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
+              `breakdown: ${JSON.stringify(s.score_breakdown)}` +
+              (onJumpToStrategies ? '\n→ click to open in Strategies tab' : '')
+            const baseClass =
+              'px-1.5 py-0.5 rounded border text-[9.5px] font-mono transition flex items-center gap-1'
+            // Score-tier color: ≥5 green, ≥3 amber accent, <3 dim
+            const color =
+              s.score >= 5 ? 'var(--color-green)'
+              : s.score >= 3 ? 'var(--color-accent)'
+              : 'var(--color-dim)'
+            if (onJumpToStrategies) {
+              return (
+                <button
+                  key={s.strategy_id}
+                  data-testid={`theme-strategy-${s.strategy_id}`}
+                  data-strategy-id={s.strategy_id}
+                  onClick={() => onJumpToStrategies(s.strategy_id)}
+                  className={`${baseClass} cursor-pointer hover:bg-[var(--color-accent)]/10`}
+                  style={{ borderColor: color, color }}
+                  title={tooltip}
+                >
+                  <span>{s.strategy_id}</span>
+                  <span className="text-[8.5px] opacity-70">{s.score}</span>
+                </button>
+              )
+            }
+            return (
+              <span
+                key={s.strategy_id}
+                data-testid={`theme-strategy-${s.strategy_id}`}
+                className={`${baseClass} cursor-help`}
+                style={{ borderColor: color, color }}
+                title={tooltip}
+              >
+                <span>{s.strategy_id}</span>
+                <span className="text-[8.5px] opacity-70">{s.score}</span>
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="text-[9px] italic text-[var(--color-dim)] leading-[1.4]">
+        Score uses the same matcher as today_fit on Strategies tab,
+        applied per-theme. Chip color: green ≥5 · accent ≥3 · dim &lt;3.
+      </div>
+    </div>
+  )
+}
+
 
 function ExternalLinksSection({ widget }: { widget: string }) {
   const links = WIDGET_EXTERNAL_LINKS[widget]
