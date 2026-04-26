@@ -401,10 +401,11 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
             so labels never overlap the layer-help (?) strip. */}
         <div
           data-testid="lattice-column-headers"
-          className="absolute top-0 left-0 z-15 pointer-events-none"
+          className="absolute top-0 left-0 pointer-events-none"
           style={{
             right: 180,  // leave room for the layer-help-strip on the right
             height: 28,
+            zIndex: 25,  // above SVG (z=auto/0), below layer-help-strip (z=20 → bumped)
             background: 'linear-gradient(to bottom, var(--color-bg) 60%, transparent)',
           }}
         >
@@ -456,9 +457,10 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
         {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
             graph viewport top-right, always above the SVG / pan
             region. Lives INSIDE the viewport (not the wrap) so the
-            trace-panel sibling never covers it. */}
+            trace-panel sibling never covers it. z-30 keeps it above
+            the column-header strip (z=25). */}
         <div
-          className="absolute top-2 right-2 z-20 flex items-center gap-1 pointer-events-none"
+          className="absolute top-2 right-2 z-30 flex items-center gap-1 pointer-events-none"
           data-testid="lattice-layer-help-strip"
         >
           {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
