@@ -67,6 +67,9 @@ def _collect_checks() -> List[CheckTuple]:
         check_lot_dates,
         check_run_durations,
     )
+    from agent.finance.integrity.checks.viz import (
+        check_ui_data_sources_resolvable,
+    )
 
     return [
         # ── Schema layer ──
@@ -103,6 +106,14 @@ def _collect_checks() -> List[CheckTuple]:
          "compliance", check_pdt_window),
         ("holding_period_classification","Closed lots' holding_period_qualified matches close_date - open_date",
          "compliance", check_holding_period),
+
+        # ── Visualization layer (Task 15) ──
+        # Closes the audit loop on the UI side: every documented
+        # data-source in a UI component must resolve to a real value.
+        # See agent/finance/integrity/checks/viz.py for the manifest.
+        ("ui_data_sources_resolvable",
+         "Every UI data-source attribute resolves to a real backend value",
+         "viz", check_ui_data_sources_resolvable),
     ]
 
 

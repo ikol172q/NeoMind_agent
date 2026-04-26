@@ -42,6 +42,10 @@ export default function App() {
   const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [digestFocus, setDigestFocus] = useState<DigestFocus | null>(null)
+  // Phase 5 V4: focused strategy id when arriving from a call's
+  // strategy_match chip. Carries a nonce so clicking the same chip
+  // twice re-triggers the focus animation in StrategiesTab.
+  const [strategyFocus, setStrategyFocus] = useState<{ id: string; nonce: number } | null>(null)
   const health = useHealth()
 
   // Global ⌘K / Ctrl+K — command palette. Works from any tab.
@@ -89,6 +93,16 @@ export default function App() {
   function jumpToResearch(focus: { symbol?: string }) {
     setDigestFocus({ symbol: focus.symbol, nonce: Date.now() })
     setTab('research')
+  }
+
+  /**
+   * Phase 5 V4: arrive at the Strategies tab focused on a specific
+   * catalog entry. Used when the user clicks a call's strategy_match
+   * chip in the Research tab — closes the lattice → catalog loop.
+   */
+  function jumpToStrategies(strategyId: string) {
+    setStrategyFocus({ id: strategyId, nonce: Date.now() })
+    setTab('strategies')
   }
 
   return (
@@ -156,10 +170,14 @@ export default function App() {
             projectId={projectId}
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
+            onJumpToStrategies={jumpToStrategies}
           />
         )}
         {tab === 'strategies' && (
-          <StrategiesTab onJumpToChat={(p, ctx) => jumpToChat(p, ctx)} />
+          <StrategiesTab
+            onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
+            focus={strategyFocus}
+          />
         )}
         {tab === 'chat'     && (
           <ChatTab
