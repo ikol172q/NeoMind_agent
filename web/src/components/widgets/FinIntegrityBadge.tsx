@@ -206,9 +206,42 @@ function FinLineageRow({ obs }: { obs: FinLatticeObs }) {
   )
 }
 
+// What each invariant *means* in plain language. Shown when the user
+// expands a check row — even passing rows expand, with explanation
+// instead of offenders. The keys match check.name from the backend.
+const CHECK_DESCRIPTIONS: Record<string, string> = {
+  schema_version_matches:
+    "Refuses to operate on a future-version DB. Prevents silent data corruption when running an old code build against a newer schema.",
+  signal_dedup_keys_unique:
+    "strategy_signals.dedup_key is a content hash of (symbol, strategy_id, horizon, signal_type, target_price, stop_loss). Repeated runs of the same job MUST collapse to one row + bumped seen_count, not duplicate.",
+  lot_idempotency_keys_unique:
+    "tax_lots.idempotency_key is set when ingesting from CSV / broker statements; lets re-imports be no-ops. UNIQUE only when not NULL (paper trades / manual entry skip the key).",
+  market_data_pk_unique:
+    "Composite PK (symbol, market, trade_date) on market_data_daily — same bar from yfinance must REPLACE, not append. INSERT OR REPLACE in DAO.",
+  market_data_has_source:
+    "Storage-layer enforcement of response_validator's Rule 3 (every data point has source + timestamp). Same convention as VerifiedDataPoint in data_hub.py.",
+  signals_have_run_ref:
+    "Every strategy_signal.run_id either points at a real analysis_runs row, or is NULL. FK enforces this on insert; this check verifies the invariant against bulk-imported data too.",
+  scheduler_jobs_match_registry:
+    "Every job in DEFAULT_JOBS has a row in scheduler_jobs (and vice versa). Catches the brief inconsistency between adding a new job and the next scheduler tick mirroring it.",
+  runs_temporally_consistent:
+    "completed_at >= started_at AND duration_seconds >= 0. A negative duration almost always means clock skew or a buggy stamping path.",
+  lots_temporally_consistent:
+    "close_date >= open_date for every closed lot. Trivially impossible to violate via DAO, but bulk imports could.",
+  run_durations_match_timestamps:
+    "duration_seconds equals (completed_at - started_at) within 1.5s tolerance. Catches the case where the runner stamps a duration from a different clock than the timestamps.",
+  wash_sale_within_window:
+    "IRS § 1091: |sell_date - replacement_date| ≤ 30 days. Verified against the lots' actual dates, not just the stored days_between value.",
+  pdt_within_5_trading_days:
+    "FINRA PDT: detected round-trips reference trades within 9 calendar days (≈ 5 trading days + weekends + ~2 holidays upper bound).",
+  holding_period_classification:
+    "IRS Pub 544/550: closed lots' holding_period_qualified ('long_term' iff days_held > 365). Boundary tested at 365 → short_term, 366 → long_term.",
+}
+
 function FinCheckRow({ check }: { check: FinIntegrityCheck }) {
   const [expand, setExpand] = useState(false)
   const hasOffenders = !!check.offenders && check.offenders.length > 0
+  const description = CHECK_DESCRIPTIONS[check.name]
   const layerColor: Record<string, string> = {
     data: 'var(--color-blue,#5fa8ff)',
     compute: 'var(--color-purple,#b07eff)',
@@ -220,15 +253,15 @@ function FinCheckRow({ check }: { check: FinIntegrityCheck }) {
       data-testid={`fin-integrity-check-${check.name}`}
       data-integrity-pass={check.pass ? 'true' : 'false'}
       className={
-        'rounded border px-2 py-1.5 ' +
+        'rounded border px-2 py-1.5 transition ' +
         (check.pass
-          ? 'border-[var(--color-border)] bg-[var(--color-bg)]/40'
+          ? 'border-[var(--color-border)] bg-[var(--color-bg)]/40 hover:border-[var(--color-accent)]/50'
           : 'border-[var(--color-amber,#e5a200)] bg-[var(--color-bg)]/40')
       }
     >
       <div
         className="flex items-start gap-1.5 cursor-pointer"
-        onClick={() => hasOffenders && setExpand(!expand)}
+        onClick={() => setExpand(!expand)}
       >
         <span style={{ color: check.pass ? 'var(--color-green)' : 'var(--color-amber,#e5a200)' }}>
           {check.pass ? '✓' : '⚠'}
@@ -248,14 +281,30 @@ function FinCheckRow({ check }: { check: FinIntegrityCheck }) {
             <div className="text-[var(--color-red)] mt-0.5">{check.error}</div>
           )}
         </div>
-        {hasOffenders && (
-          <span className="text-[var(--color-dim)] text-[9px]">{expand ? '▾' : '▸'}</span>
-        )}
+        <span className="text-[var(--color-dim)] text-[9px]">{expand ? '▾' : '▸'}</span>
       </div>
-      {expand && hasOffenders && (
-        <pre className="mt-1.5 text-[9px] leading-[1.3] text-[var(--color-dim)] bg-[var(--color-bg)] rounded p-1 overflow-x-auto">
-          {JSON.stringify(check.offenders, null, 2)}
-        </pre>
+      {expand && (
+        <div className="mt-1.5 flex flex-col gap-1 text-[9px]">
+          {description && (
+            <div className="text-[var(--color-dim)] leading-[1.4] italic">
+              {description}
+            </div>
+          )}
+          <div className="font-mono text-[8px] text-[var(--color-dim)]">
+            check_name: <span className="text-[var(--color-accent)]">{check.name}</span>
+            {' · '}layer: <span className="text-[var(--color-accent)]">{check.layer}</span>
+          </div>
+          {hasOffenders && (
+            <>
+              <div className="text-[var(--color-amber,#e5a200)]">
+                {check.offenders!.length} offending row{check.offenders!.length === 1 ? '' : 's'}:
+              </div>
+              <pre className="leading-[1.3] text-[var(--color-dim)] bg-[var(--color-bg)] rounded p-1 overflow-x-auto">
+                {JSON.stringify(check.offenders, null, 2)}
+              </pre>
+            </>
+          )}
+        </div>
       )}
     </div>
   )
