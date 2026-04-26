@@ -94,10 +94,11 @@ export default function App() {
    * tab can deep-link into the lattice graph focused on a specific
    * L0 widget node (closing the strategy → widget → lattice loop).
    */
-  function jumpToResearch(focus: { symbol?: string; widgetId?: string }) {
+  function jumpToResearch(focus: { symbol?: string; widgetId?: string; nodeId?: string }) {
     setDigestFocus({
       symbol:   focus.symbol,
       widgetId: focus.widgetId,
+      nodeId:   focus.nodeId,
       nonce:    Date.now(),
     })
     setTab('research')
@@ -199,6 +200,7 @@ export default function App() {
             onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
             focus={strategyFocus}
             onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
+            onJumpToResearchNode={(nodeId) => jumpToResearch({ nodeId })}
           />
         </div>
         {tab === 'chat'     && (

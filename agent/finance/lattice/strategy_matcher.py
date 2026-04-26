@@ -314,3 +314,140 @@ def match_strategy(
         "score":           top_score,
         "score_breakdown": top_bd,
     }
+
+
+# ── L2 / L3 explicit bidirectional support ─────────────────────────
+#
+# Phase 6 followup: extend the bidirectional map beyond L0 widgets.
+# - For an L2 theme: which catalog strategies are most relevant?
+#   Score every strategy against the theme's aggregate member-obs
+#   tags + theme-level tags, return top-N. Used by the lattice trace
+#   panel ('Top strategies fitting this theme' section).
+
+
+def match_strategies_against_theme(
+    theme: Any,
+    *,
+    top_n: int = 8,
+    min_score: int = 1,
+) -> List[Dict[str, Any]]:
+    """Score every catalog strategy against ONE L2 theme's tags.
+
+    Theme arg accepts the same shapes as match_all_against_themes:
+    dataclass with .members/.tags, dict with same keys.
+
+    Returns a sorted list (highest score first), filtered to scores
+    >= min_score so we don't surface strategies with zero signal.
+    """
+    strategies = _load_strategies()
+    if not strategies:
+        return []
+
+    # Aggregate the theme's member tags + theme-level tags
+    member_tags: List[str] = []
+    members = (
+        theme.members if hasattr(theme, "members")
+        else (theme.get("members", []) if isinstance(theme, dict) else [])
+    )
+    for m in members:
+        tags = (
+            m.tags if hasattr(m, "tags")
+            else (m.get("tags", []) if isinstance(m, dict) else [])
+        )
+        if tags:
+            member_tags.extend(tags)
+    theme_tags = (
+        theme.tags if hasattr(theme, "tags")
+        else (theme.get("tags", []) if isinstance(theme, dict) else [])
+    )
+    member_tags.extend(theme_tags or [])
+
+    out: List[Dict[str, Any]] = []
+    for s in strategies:
+        s_horizon = s.get("horizon", "weeks")
+        call_horizon = _REVERSE_HORIZON_MAP.get(s_horizon, "weeks")
+        score, bd = _score_strategy(
+            s, call_horizon=call_horizon, member_tags=member_tags,
+        )
+        if score < min_score:
+            continue
+        out.append({
+            "strategy_id":     s["id"],
+            "name_en":         s.get("name_en"),
+            "name_zh":         s.get("name_zh"),
+            "horizon":         s_horizon,
+            "difficulty":      s.get("difficulty"),
+            "asset_class":     s.get("asset_class"),
+            "defined_risk":    s.get("defined_risk"),
+            "pdt_relevant":    s.get("pdt_relevant"),
+            "feasible_at_10k": s.get("feasible_at_10k"),
+            "score":           score,
+            "score_breakdown": bd,
+        })
+
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out[:top_n]
+
+
+def themes_matching_strategy(
+    strategy_id: str,
+    themes: List[Any],
+    *,
+    min_score: int = 1,
+) -> List[Dict[str, Any]]:
+    """Reverse: given a strategy id + today's themes, which themes
+    score >= min_score against this strategy?  Used by the Strategies
+    card 'TODAY MATCHING THEMES' section so the user can drill from
+    a strategy directly into the L2 nodes that make it relevant
+    today.
+    """
+    strategies = _load_strategies()
+    s = next((x for x in strategies if x.get("id") == strategy_id), None)
+    if s is None:
+        return []
+    s_horizon = s.get("horizon", "weeks")
+    call_horizon = _REVERSE_HORIZON_MAP.get(s_horizon, "weeks")
+
+    out: List[Dict[str, Any]] = []
+    for t in themes:
+        # Per-theme tags (NOT aggregated across themes)
+        member_tags: List[str] = []
+        members = (
+            t.members if hasattr(t, "members")
+            else (t.get("members", []) if isinstance(t, dict) else [])
+        )
+        for m in members:
+            tags = (
+                m.tags if hasattr(m, "tags")
+                else (m.get("tags", []) if isinstance(m, dict) else [])
+            )
+            if tags:
+                member_tags.extend(tags)
+        theme_tags = (
+            t.tags if hasattr(t, "tags")
+            else (t.get("tags", []) if isinstance(t, dict) else [])
+        )
+        member_tags.extend(theme_tags or [])
+
+        score, bd = _score_strategy(
+            s, call_horizon=call_horizon, member_tags=member_tags,
+        )
+        if score < min_score:
+            continue
+        theme_id = (
+            t.id if hasattr(t, "id")
+            else (t.get("id") if isinstance(t, dict) else None)
+        )
+        title = (
+            t.title if hasattr(t, "title")
+            else (t.get("title") if isinstance(t, dict) else None)
+        )
+        out.append({
+            "theme_id":         theme_id,
+            "theme_title":      title,
+            "score":            score,
+            "score_breakdown":  bd,
+        })
+
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out

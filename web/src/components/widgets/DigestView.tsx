@@ -24,6 +24,10 @@ export interface DigestFocus {
    *  graph focused on a specific L0 widget node. Triggers trace mode
    *  + auto-selects `widget:{widgetId}` in the trace panel. */
   widgetId?: string
+  /** Phase 6 followup: generic node-id deep-link. Used for L2 theme
+   *  jumps (e.g. `theme_near_highs`) and any other layer. Takes
+   *  precedence over `widgetId` if both are set. */
+  nodeId?: string
   /** Monotonic counter — bump to re-trigger the highlight even when
    *  the symbol is unchanged (e.g. clicking the same cite twice). */
   nonce?: number
@@ -104,10 +108,11 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
   }, [focus?.symbol, focus?.nonce, calls, themes, observations])
 
   // Phase 6 followup: deep-link from Strategies → Research focused on
-  // an L0 widget. Switch to trace mode + pass widget node id down.
+  // an L0 widget OR L2 theme. Switch to trace mode and let
+  // LatticeGraphView pick up initialFocusNodeId.
   useEffect(() => {
-    if (focus?.widgetId) setMode('trace')
-  }, [focus?.widgetId, focus?.nonce])
+    if (focus?.widgetId || focus?.nodeId) setMode('trace')
+  }, [focus?.widgetId, focus?.nodeId, focus?.nonce])
 
   const ctx: DigestCtx = {
     highlightId,
@@ -213,7 +218,9 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
         {mode === 'trace' && !isFreshInstall && (
           <LatticeGraphView
             projectId={projectId}
-            initialFocusNodeId={focus?.widgetId ? `widget:${focus.widgetId}` : undefined}
+            initialFocusNodeId={
+              focus?.nodeId ?? (focus?.widgetId ? `widget:${focus.widgetId}` : undefined)
+            }
             onJumpToStrategies={onJumpToStrategies}
           />
         )}

@@ -1472,6 +1472,83 @@ export function useFinRunRows(runId: string | null | undefined, enabled: boolean
 }
 
 
+// ── Phase 6 followup: L2 ↔ Strategy bidirectional ─────────────────
+//
+// Forward (theme → strategies):  /api/strategies/by-theme?theme_id=X
+//   Used by lattice trace inspector for L2 nodes.
+//
+// Reverse (strategy → today's themes):  /api/strategies/{id}/themes-today
+//   Used by Strategies card 'TODAY MATCHING THEMES' section.
+
+export interface ThemeMatchingStrategy {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string
+  difficulty: number | null
+  asset_class: string | null
+  defined_risk: boolean | null
+  pdt_relevant: boolean | null
+  feasible_at_10k: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export interface StrategiesByTheme {
+  theme_id: string
+  theme_title: string | null
+  count: number
+  strategies: ThemeMatchingStrategy[]
+  explanation: string
+}
+
+export function useStrategiesByTheme(
+  projectId: string | null | undefined,
+  themeId: string | null | undefined,
+) {
+  return useQuery({
+    queryKey: ['strategies_by_theme', projectId, themeId],
+    queryFn: () =>
+      fetchJSON<StrategiesByTheme>(
+        `/api/strategies/by-theme?project_id=${encodeURIComponent(projectId!)}` +
+        `&theme_id=${encodeURIComponent(themeId!)}`,
+      ),
+    enabled: !!projectId && !!themeId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+export interface StrategyTheme {
+  theme_id: string
+  theme_title: string | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export interface StrategyThemesToday {
+  strategy_id: string
+  count: number
+  themes: StrategyTheme[]
+  explanation: string
+}
+
+export function useStrategyThemesToday(strategyId: string | null | undefined, projectId: string) {
+  return useQuery({
+    queryKey: ['strategy_themes_today', strategyId, projectId],
+    queryFn: () =>
+      fetchJSON<StrategyThemesToday>(
+        `/api/strategies/${encodeURIComponent(strategyId!)}/themes-today` +
+        `?project_id=${encodeURIComponent(projectId)}`,
+      ),
+    enabled: !!strategyId && !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
 // ── Phase 6 followup #2: time-aware Strategies ──────────────────
 //
 // /api/strategies/time-aware returns days-until-next-event for each

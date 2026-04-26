@@ -434,6 +434,92 @@ def strategies_time_aware(
     }
 
 
+# ── L2 / L3 explicit bidirectional ────────────────────────────────
+#
+# Phase 6 followup: lattice <-> Strategies map for the L2 layer.
+#   forward (theme -> strategies):  /api/strategies/by-theme?project_id=&theme_id=
+#   reverse (strategy -> themes):   /api/strategies/{strategy_id}/themes-today?project_id=
+#
+# Both share the project's lattice synthesis so they're always
+# consistent with what the trace panel and Strategies card show.
+
+@router.get("/by-theme")
+def strategies_by_theme(
+    project_id: str = Query(...),
+    theme_id: str   = Query(...),
+    top_n: int      = Query(8, ge=1, le=30),
+) -> Dict[str, Any]:
+    """Top catalog strategies fitting an L2 theme. Used by the lattice
+    trace panel's L2-node inspector ('Top strategies fitting this
+    theme').
+    """
+    try:
+        from agent.finance.lattice.synth import synthesise_lattice
+        from agent.finance.lattice.strategy_matcher import (
+            match_strategies_against_theme,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"lattice modules unavailable: {exc}")
+
+    bundle = synthesise_lattice(project_id=project_id)
+    themes = (bundle or {}).get("themes", [])
+    theme = next(
+        (t for t in themes
+         if (t.id if hasattr(t, "id") else t.get("id")) == theme_id),
+        None,
+    )
+    if theme is None:
+        raise HTTPException(404, f"unknown theme {theme_id!r}")
+
+    strategies = match_strategies_against_theme(theme, top_n=top_n)
+    title = (
+        theme.title if hasattr(theme, "title")
+        else (theme.get("title") if isinstance(theme, dict) else None)
+    )
+    return {
+        "theme_id":     theme_id,
+        "theme_title":  title,
+        "count":        len(strategies),
+        "strategies":   strategies,
+        "explanation": (
+            f"Strategies scored against the L2 theme {theme_id!r} "
+            f"({title!r}). Score uses the same matcher as today_fit, "
+            f"applied per-theme instead of aggregated."
+        ),
+    }
+
+
+@router.get("/{strategy_id}/themes-today")
+def themes_matching_strategy_today(
+    strategy_id: str,
+    project_id: str = Query(...),
+) -> Dict[str, Any]:
+    """Reverse: which of today's L2 themes score >= 1 against this
+    strategy? Used by the Strategies card 'TODAY MATCHING THEMES'
+    section to give the user a click-jump path strategy → lattice."""
+    try:
+        from agent.finance.lattice.synth import synthesise_lattice
+        from agent.finance.lattice.strategy_matcher import (
+            themes_matching_strategy,
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(503, f"lattice modules unavailable: {exc}")
+
+    bundle = synthesise_lattice(project_id=project_id)
+    themes = (bundle or {}).get("themes", [])
+    matches = themes_matching_strategy(strategy_id, themes)
+    return {
+        "strategy_id":  strategy_id,
+        "count":        len(matches),
+        "themes":       matches,
+        "explanation": (
+            f"L2 themes from today's lattice that score >=1 against "
+            f"strategy {strategy_id!r}. Click any theme_id to jump "
+            f"to the lattice graph focused on that L2 node."
+        ),
+    }
+
+
 @router.get("/{strategy_id}")
 def get_strategy(strategy_id: str) -> Dict[str, Any]:
     """Return one strategy's YAML row + its full markdown body."""

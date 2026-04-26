@@ -2,10 +2,11 @@ import { useState } from 'react'
 import {
   useLatticeTrace,
   useWidgetStrategies,
+  useStrategiesByTheme,
   type LatticeGraphNode, type LatticeGraphEdge, type LatticeGraphPayload,
   type MembershipComputationDetail,
 } from '@/lib/api'
-import { X, ChevronRight, ChevronDown, ExternalLink, BookOpen } from 'lucide-react'
+import { X, ChevronRight, ChevronDown, ExternalLink, BookOpen, Target } from 'lucide-react'
 
 export type TraceSelection =
   | { type: 'node'; node: LatticeGraphNode }
@@ -163,6 +164,19 @@ function NodeDetail({
           depend on it*. */}
       {node.layer === 'L0' && typeof attrs.widget === 'string' && (
         <WidgetStrategiesSection widgetId={attrs.widget} onJumpToStrategies={onJumpToStrategies} />
+      )}
+
+      {/* Phase 6 followup: explicit L2 ↔ Strategy bidirectional.
+          For an L2 theme node, surface the catalog strategies that
+          score best against this theme's tags. Click chip → jump to
+          Strategies tab focused on that catalog entry. */}
+      {node.layer === 'L2' && (
+        <ThemeStrategiesSection
+          themeId={node.id}
+          themeLabel={node.label}
+          projectId={projectId}
+          onJumpToStrategies={onJumpToStrategies}
+        />
       )}
 
       <Section title="Attributes">
@@ -345,6 +359,107 @@ const WIDGET_EXTERNAL_LINKS: Record<string, Array<{ label: string; url: string; 
     { label: 'Yahoo Portfolio', url: 'https://finance.yahoo.com/portfolios/', note: 'manage there too' },
   ],
 }
+
+/** Phase 6 followup: L2 theme → top fitting strategies. Mirror of
+ *  WidgetStrategiesSection (L0) for the L2 layer. Lists every catalog
+ *  strategy whose strategy_matcher score >= 1 against this theme's
+ *  aggregate member-obs tags. Chips are clickable when
+ *  onJumpToStrategies is provided. */
+function ThemeStrategiesSection({
+  themeId,
+  themeLabel,
+  projectId,
+  onJumpToStrategies,
+}: {
+  themeId: string
+  themeLabel: string
+  projectId: string
+  onJumpToStrategies?: (strategyId: string) => void
+}) {
+  const q = useStrategiesByTheme(projectId, themeId)
+  if (q.isLoading) {
+    return (
+      <div className="text-[10px] italic text-[var(--color-dim)]">
+        scoring strategies against this theme…
+      </div>
+    )
+  }
+  if (!q.data) return null
+  const { count, strategies } = q.data
+
+  return (
+    <div
+      data-testid={`theme-strategies-${themeId}`}
+      data-source={`/api/strategies/by-theme?theme_id=${themeId}`}
+      className="flex flex-col gap-1"
+    >
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+        <Target size={9} />
+        <span>Top {count} strateg{count === 1 ? 'y' : 'ies'} fitting "{themeLabel}"</span>
+      </div>
+
+      {count === 0 ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] leading-[1.4]">
+          No catalog strategy scores ≥1 against this theme today. The
+          theme's member-obs tags don't match any strategy's
+          horizon / asset class / event signature.
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {strategies.map((s) => {
+            const tooltip =
+              `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
+              `score: ${s.score} · horizon: ${s.horizon} · ` +
+              `difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
+              `breakdown: ${JSON.stringify(s.score_breakdown)}` +
+              (onJumpToStrategies ? '\n→ click to open in Strategies tab' : '')
+            const baseClass =
+              'px-1.5 py-0.5 rounded border text-[9.5px] font-mono transition flex items-center gap-1'
+            // Score-tier color: ≥5 green, ≥3 amber accent, <3 dim
+            const color =
+              s.score >= 5 ? 'var(--color-green)'
+              : s.score >= 3 ? 'var(--color-accent)'
+              : 'var(--color-dim)'
+            if (onJumpToStrategies) {
+              return (
+                <button
+                  key={s.strategy_id}
+                  data-testid={`theme-strategy-${s.strategy_id}`}
+                  data-strategy-id={s.strategy_id}
+                  onClick={() => onJumpToStrategies(s.strategy_id)}
+                  className={`${baseClass} cursor-pointer hover:bg-[var(--color-accent)]/10`}
+                  style={{ borderColor: color, color }}
+                  title={tooltip}
+                >
+                  <span>{s.strategy_id}</span>
+                  <span className="text-[8.5px] opacity-70">{s.score}</span>
+                </button>
+              )
+            }
+            return (
+              <span
+                key={s.strategy_id}
+                data-testid={`theme-strategy-${s.strategy_id}`}
+                className={`${baseClass} cursor-help`}
+                style={{ borderColor: color, color }}
+                title={tooltip}
+              >
+                <span>{s.strategy_id}</span>
+                <span className="text-[8.5px] opacity-70">{s.score}</span>
+              </span>
+            )
+          })}
+        </div>
+      )}
+
+      <div className="text-[9px] italic text-[var(--color-dim)] leading-[1.4]">
+        Score uses the same matcher as today_fit on Strategies tab,
+        applied per-theme. Chip color: green ≥5 · accent ≥3 · dim &lt;3.
+      </div>
+    </div>
+  )
+}
+
 
 function ExternalLinksSection({ widget }: { widget: string }) {
   const links = WIDGET_EXTERNAL_LINKS[widget]

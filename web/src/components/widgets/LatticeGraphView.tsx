@@ -392,6 +392,51 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           userSelect: 'none',
         }}
       >
+        {/* Sticky column-header overlay. Tracks horizontal pan/zoom
+            via view.tx + view.scale on translateX so labels stay
+            aligned with their columns, but stays pinned at the top
+            of the viewport regardless of vertical pan. The SVG also
+            renders headers at y=18 (kept for export consistency);
+            this HTML layer covers them visually so user always sees
+            'L0 · SOURCE' etc. even after panning down. */}
+        <div
+          data-testid="lattice-column-headers"
+          className="absolute top-0 left-0 right-0 h-7 z-10 pointer-events-none bg-gradient-to-b from-[var(--color-bg)] to-transparent"
+        >
+          <div
+            style={{
+              position: 'absolute',
+              top: 4,
+              left: 0,
+              transform: `translateX(${view.tx}px) scale(${view.scale}, 1)`,
+              transformOrigin: '0 0',
+              whiteSpace: 'nowrap',
+            }}
+          >
+            {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
+              const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
+              return (
+                <span
+                  key={layer}
+                  style={{
+                    position: 'absolute',
+                    left: x,
+                    transform: `translateX(-50%) scale(${1 / view.scale}, 1)`,
+                    transformOrigin: 'center',
+                    fontSize: 10,
+                    fontFamily: 'ui-monospace, monospace',
+                    letterSpacing: '0.05em',
+                    color: 'var(--color-dim)',
+                    textTransform: 'uppercase',
+                  }}
+                >
+                  {LAYER_LABELS[layer].toUpperCase()}
+                </span>
+              )
+            })}
+          </div>
+        </div>
+
         {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
             graph viewport top-right, always above the SVG / pan
             region. Lives INSIDE the viewport (not the wrap) so the

@@ -27,6 +27,7 @@ import {
   useFinWidgetCoverage,
   useLatticeCalls,
   useLatticeLanguage,
+  useStrategyThemesToday,
   useWidgetStrategies,
   type LatticeCall,
   type StrategyEntry,
@@ -80,6 +81,9 @@ interface Props {
   /** Phase 6 followup: clicking a widget chip on a strategy card
    *  jumps to Research → Trace mode focused on that L0 widget node. */
   onJumpToResearch?: (widgetId: string) => void
+  /** Phase 6 followup (L2): clicking a 'today matching theme' chip
+   *  jumps to Research → Trace mode focused on that L2 theme node. */
+  onJumpToResearchNode?: (nodeId: string) => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -87,7 +91,13 @@ interface Props {
 // viewport — the scroll animation eats ~600ms of the original window).
 const HIGHLIGHT_MS = 6000
 
-export function StrategiesTab({ projectId, onJumpToChat, focus, onJumpToResearch }: Props) {
+export function StrategiesTab({
+  projectId,
+  onJumpToChat,
+  focus,
+  onJumpToResearch,
+  onJumpToResearchNode,
+}: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
   const fit = useFinStrategiesFit(projectId)
@@ -401,6 +411,8 @@ export function StrategiesTab({ projectId, onJumpToChat, focus, onJumpToResearch
                       timeAware={timeAwareById[s.id]}
                       activeLang={activeLang}
                       onJumpToResearch={onJumpToResearch}
+                      onJumpToResearchNode={onJumpToResearchNode}
+                      projectId={projectId}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -433,6 +445,8 @@ export function StrategiesTab({ projectId, onJumpToChat, focus, onJumpToResearch
                 timeAware={timeAwareById[s.id]}
                 activeLang={activeLang}
                 onJumpToResearch={onJumpToResearch}
+                onJumpToResearchNode={onJumpToResearchNode}
+                projectId={projectId}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -462,6 +476,8 @@ function StrategyCard({
   timeAware,
   activeLang,
   onJumpToResearch,
+  onJumpToResearchNode,
+  projectId,
   expanded,
   highlighted,
   registerRef,
@@ -477,6 +493,8 @@ function StrategyCard({
   timeAware?: StrategyTimeAware
   activeLang?: 'en' | 'zh-CN-mixed'
   onJumpToResearch?: (widgetId: string) => void
+  onJumpToResearchNode?: (nodeId: string) => void
+  projectId: string
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -660,6 +678,18 @@ function StrategyCard({
                 <li key={i}>{r}</li>
               ))}
             </ul>
+          </Section>
+          {/* Phase 6 followup: L2 ↔ Strategy reverse map. Lists every
+              L2 theme from today's lattice that scores ≥1 against
+              this strategy, click to jump back to the lattice graph
+              focused on that theme node. Mirror of the L2 inspector's
+              ThemeStrategiesSection. */}
+          <Section label="今日命中主题 / Today matching themes">
+            <StrategyMatchingThemes
+              strategyId={s.id}
+              projectId={projectId}
+              onJumpToResearchNode={onJumpToResearchNode}
+            />
           </Section>
           <Section label="数据需求 / Data requirements (lattice widget mapping)">
             {widgetCoverage ? (
@@ -962,6 +992,97 @@ function TimeAwareChip({
     </HoverPopover>
   )
 }
+
+/** Phase 6 followup: Strategy → today's matching L2 themes (reverse).
+ *  Mirror of LatticeTracePanel's ThemeStrategiesSection. Lists every
+ *  L2 theme that scores ≥1 against this strategy; click jumps to the
+ *  lattice graph focused on that theme. */
+function StrategyMatchingThemes({
+  strategyId,
+  projectId,
+  onJumpToResearchNode,
+}: {
+  strategyId: string
+  projectId: string
+  onJumpToResearchNode?: (nodeId: string) => void
+}) {
+  const q = useStrategyThemesToday(strategyId, projectId)
+  if (q.isLoading) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-dim)]">
+        scoring against today's themes…
+      </span>
+    )
+  }
+  if (q.isError) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-red,#f06060)]">
+        scoring failed: {(q.error as Error).message}
+      </span>
+    )
+  }
+  const themes = q.data?.themes ?? []
+  if (themes.length === 0) {
+    return (
+      <span className="text-[10px] italic text-[var(--color-dim)] leading-relaxed">
+        No L2 theme in today's lattice scores ≥1 against this strategy.
+        Today's market data doesn't strongly support its setup.
+      </span>
+    )
+  }
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex flex-wrap gap-1">
+        {themes.map((t) => {
+          const color =
+            t.score >= 5 ? 'var(--color-green)'
+            : t.score >= 3 ? 'var(--color-accent)'
+            : 'var(--color-dim)'
+          const tooltip =
+            `theme: ${t.theme_title}\n` +
+            `score: ${t.score}\n` +
+            `breakdown: ${JSON.stringify(t.score_breakdown)}` +
+            (onJumpToResearchNode ? '\n→ click to open in Research / Lattice graph' : '')
+          const baseClass =
+            'px-1.5 py-0.5 rounded border text-[9.5px] font-mono transition flex items-center gap-1'
+          if (onJumpToResearchNode) {
+            return (
+              <button
+                key={t.theme_id}
+                data-testid={`strategy-theme-${t.theme_id}`}
+                data-theme-id={t.theme_id}
+                onClick={() => onJumpToResearchNode(t.theme_id)}
+                className={`${baseClass} cursor-pointer hover:bg-[var(--color-accent)]/10`}
+                style={{ borderColor: color, color }}
+                title={tooltip}
+              >
+                <span>{t.theme_title}</span>
+                <span className="text-[8.5px] opacity-70">{t.score}</span>
+              </button>
+            )
+          }
+          return (
+            <span
+              key={t.theme_id}
+              data-testid={`strategy-theme-${t.theme_id}`}
+              className={`${baseClass} cursor-help`}
+              style={{ borderColor: color, color }}
+              title={tooltip}
+            >
+              <span>{t.theme_title}</span>
+              <span className="text-[8.5px] opacity-70">{t.score}</span>
+            </span>
+          )
+        })}
+      </div>
+      <div className="text-[8.5px] italic text-[var(--color-dim)] leading-snug">
+        L2 themes from today's lattice that score ≥1 against this strategy.
+        Color: green ≥5 · accent ≥3 · dim &lt;3.
+      </div>
+    </div>
+  )
+}
+
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
   return (
