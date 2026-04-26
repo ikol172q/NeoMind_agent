@@ -1296,3 +1296,36 @@ export function useFinStrategies() {
     retry: false,
   })
 }
+
+// Per-strategy "fit" against today's lattice themes — answers
+// 'no L3 calls today, what's relevant?' Used by Strategies tab to
+// show a fit score on every card even when no real call exists.
+export interface StrategyFitEntry {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string
+  difficulty: number | null
+  asset_class: string | null
+  defined_risk: boolean | null
+  pdt_relevant: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export function useFinStrategiesFit(projectId: string) {
+  return useQuery({
+    queryKey: ['fin_strategies_fit', projectId],
+    queryFn: () => fetchJSON<{
+      project_id: string
+      themes_count: number
+      calls_count: number
+      strategies_count: number
+      fit: StrategyFitEntry[]
+      explanation: string
+    }>(`/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}`),
+    enabled: !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}

@@ -22,9 +22,11 @@ import {
 } from 'lucide-react'
 import {
   useFinStrategies,
+  useFinStrategiesFit,
   useLatticeCalls,
   type LatticeCall,
   type StrategyEntry,
+  type StrategyFitEntry,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 
@@ -46,13 +48,19 @@ const HORIZON_LABEL: Record<StrategyEntry['horizon'], string> = {
   intraday: '日内 / Intraday',
 }
 
-type SortKey = 'horizon' | 'difficulty_asc' | 'min_capital_asc' | 'lattice_activity'
+type SortKey =
+  | 'today_fit'
+  | 'horizon'
+  | 'difficulty_asc'
+  | 'min_capital_asc'
+  | 'lattice_activity'
 
 const SORT_LABELS: Record<SortKey, string> = {
-  horizon: '按时间维度分组 (default)',
+  today_fit: '按今日相关度 (recommended when no L3 calls)',
+  horizon: '按时间维度分组',
   difficulty_asc: '按难度升序',
   min_capital_asc: '按最低资金升序',
-  lattice_activity: '按 lattice 当下活跃度',
+  lattice_activity: '按 lattice L3-call 引用数',
 }
 
 interface Props {
@@ -68,9 +76,12 @@ const HIGHLIGHT_MS = 2500
 export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
+  const fit = useFinStrategiesFit(projectId)
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
-  const [sortKey, setSortKey] = useState<SortKey>('horizon')
+  // Default to today_fit sort — answers 'what's relevant right now?'
+  // even on days the lattice produces zero L3 calls.
+  const [sortKey, setSortKey] = useState<SortKey>('today_fit')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [highlight, setHighlight] = useState<string | null>(null)
   const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
@@ -106,6 +117,17 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
     return map
   }, [calls.data])
 
+  // Theme-level fit score per strategy (0-10). Same matcher logic as
+  // L3-call tagging, but run against today's L2 themes' aggregate tags
+  // — so we have a signal even on no-L3-calls days.
+  const fitByStrategy = useMemo(() => {
+    const map: Record<string, StrategyFitEntry> = {}
+    for (const f of fit.data?.fit ?? []) {
+      map[f.strategy_id] = f
+    }
+    return map
+  }, [fit.data])
+
   const callsTotal = calls.data?.calls?.length ?? 0
   const callsMatched = Object.values(strategyToCalls).reduce(
     (n, arr) => n + arr.length,
@@ -121,10 +143,11 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
       return true
     })
 
-    // Build (strategy, latticeUses) tuples
+    // Build (strategy, latticeUses, todayFit) tuples
     const tuples = filtered.map((s) => ({
       strategy: s,
       latticeUses: strategyToCalls[s.id]?.length ?? 0,
+      todayFit: fitByStrategy[s.id]?.score ?? 0,
     }))
 
     if (sortKey === 'horizon') {
@@ -164,9 +187,17 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
           a.strategy.difficulty - b.strategy.difficulty ||
           a.strategy.id.localeCompare(b.strategy.id),
       )
+    } else if (sortKey === 'today_fit') {
+      sorted.sort(
+        (a, b) =>
+          b.todayFit - a.todayFit ||
+          b.latticeUses - a.latticeUses ||
+          a.strategy.difficulty - b.strategy.difficulty ||
+          a.strategy.id.localeCompare(b.strategy.id),
+      )
     }
     return { mode: 'flat' as const, items: sorted }
-  }, [q.data, diffFilter, feasibleOnly, sortKey, strategyToCalls])
+  }, [q.data, diffFilter, feasibleOnly, sortKey, strategyToCalls, fitByStrategy])
 
   return (
     <div className="h-full overflow-y-auto p-4 text-[12px]">
@@ -199,17 +230,37 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
               ). When a strategy scores ≥3, it appears as a chip on the
               call. Click any chip → land here, on the focused card.
               <div className="mt-1 font-mono text-[var(--color-text)]">
-                Today: <b>{callsTotal}</b> calls · <b>{callsMatched}</b> matched ·{' '}
+                Today: <b>{callsTotal}</b> L3 calls · <b>{callsMatched}</b> matched ·{' '}
                 <b>{strategiesUsed} / {q.data?.count ?? 0}</b> strategies referenced.
+                {callsTotal === 0 && (
+                  <span className="text-[var(--color-amber,#e5a200)] ml-2">
+                    → No L3 calls today (lattice didn't reach high-conviction
+                    threshold). Even so, the matcher scored every strategy
+                    against today's themes — see <i>Today's relevance</i>{' '}
+                    column / sort for which strategies DO align with today's
+                    data.
+                  </span>
+                )}
                 {strategiesUsed === 0 && callsTotal > 0 && (
                   <span className="text-[var(--color-amber,#e5a200)] ml-2">
-                    → No matches today. Either today's themes don't fit any
-                    catalog entry well (matcher threshold ≥ 3), or you
-                    need more strategies of this kind. Sort by{' '}
-                    <i>lattice activity</i> to see which entries DO get used.
+                    → No L3 call passed the matcher's score-≥3 threshold.
+                    Sort by 'today_fit' to see weakly-aligned strategies anyway.
                   </span>
                 )}
               </div>
+              {fit.data && (
+                <div className="mt-1.5 text-[10px] text-[var(--color-dim)]">
+                  Top 5 by today's themes fit:{' '}
+                  {fit.data.fit.slice(0, 5).map((f, i) => (
+                    <span key={f.strategy_id} className="font-mono">
+                      {i > 0 && <span className="text-[var(--color-border)]"> · </span>}
+                      <span style={{ color: f.score >= 5 ? 'var(--color-green)' : f.score >= 1 ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)' }}>
+                        {f.strategy_id} ({f.score})
+                      </span>
+                    </span>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -298,12 +349,14 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                   </span>
                 </div>
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-                  {filteredAndSorted.buckets[h].map(({ strategy: s, latticeUses }) => (
+                  {filteredAndSorted.buckets[h].map(({ strategy: s, latticeUses, todayFit }) => (
                     <StrategyCard
                       key={s.id}
                       strategy={s}
                       latticeUses={latticeUses}
                       latticeCalls={strategyToCalls[s.id] ?? []}
+                      todayFit={todayFit}
+                      todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -324,12 +377,14 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
 
         {q.data && filteredAndSorted.mode === 'flat' && (
           <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-            {filteredAndSorted.items.map(({ strategy: s, latticeUses }) => (
+            {filteredAndSorted.items.map(({ strategy: s, latticeUses, todayFit }) => (
               <StrategyCard
                 key={s.id}
                 strategy={s}
                 latticeUses={latticeUses}
                 latticeCalls={strategyToCalls[s.id] ?? []}
+                todayFit={todayFit}
+                todayFitBreakdown={fitByStrategy[s.id]?.score_breakdown}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -353,6 +408,8 @@ function StrategyCard({
   strategy: s,
   latticeUses,
   latticeCalls,
+  todayFit,
+  todayFitBreakdown,
   expanded,
   highlighted,
   registerRef,
@@ -362,6 +419,8 @@ function StrategyCard({
   strategy: StrategyEntry
   latticeUses: number
   latticeCalls: LatticeCall[]
+  todayFit: number
+  todayFitBreakdown?: Record<string, number>
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -412,20 +471,42 @@ function StrategyCard({
           <div className="flex items-baseline gap-2 flex-wrap">
             <span className="text-[var(--color-text)] font-medium">{s.name_zh}</span>
             <span className="text-[10px] text-[var(--color-dim)] truncate">{s.name_en}</span>
+            {/* Today's fit chip — same matcher, score against today's
+                themes. Always present (even on no-L3-call days). */}
             <span
-              data-testid={`lattice-usage-${s.id}`}
-              data-source="/api/lattice/calls.calls[?].strategy_match.strategy_id"
+              data-testid={`today-fit-${s.id}`}
+              data-source="/api/strategies/lattice-fit.fit[?].score"
               className="ml-auto text-[8px] px-1.5 py-0.5 rounded border font-mono shrink-0"
-              style={{ borderColor: usageColor, color: usageColor }}
+              style={{
+                borderColor: todayFit >= 5 ? 'var(--color-green)' : todayFit >= 1 ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)',
+                color: todayFit >= 5 ? 'var(--color-green)' : todayFit >= 1 ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)',
+              }}
               title={
-                latticeUses > 0
-                  ? `Calls referencing this strategy in today's lattice:\n` +
-                    latticeCalls.map((c) => `  · ${c.id}: ${c.claim.slice(0, 80)}`).join('\n')
-                  : `No L3 call in today's lattice has strategy_match.strategy_id == "${s.id}". This may be a gap (data not feeding into a relevant call) or just that today's themes don't trigger this strategy.`
+                `Today's theme-level fit score (0-10): ${todayFit}\n` +
+                (todayFitBreakdown
+                  ? `breakdown: ${JSON.stringify(todayFitBreakdown)}\n`
+                  : '') +
+                `Same matcher as the L3-call chip, run against today's L2 themes' aggregate tags. ` +
+                `Refreshes when the lattice rebuilds.`
               }
             >
-              {latticeUses > 0 ? `↳ ${latticeUses} live` : 'gap'}
+              fit {todayFit}/10
             </span>
+            {/* L3-call usage chip — only present when ≥1 real call grounds in this strategy. */}
+            {latticeUses > 0 && (
+              <span
+                data-testid={`lattice-usage-${s.id}`}
+                data-source="/api/lattice/calls.calls[?].strategy_match.strategy_id"
+                className="text-[8px] px-1.5 py-0.5 rounded border font-mono shrink-0"
+                style={{ borderColor: usageColor, color: usageColor }}
+                title={
+                  `Calls referencing this strategy in today's lattice:\n` +
+                  latticeCalls.map((c) => `  · ${c.id}: ${c.claim.slice(0, 80)}`).join('\n')
+                }
+              >
+                ↳ {latticeUses} live
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-2 mt-1 text-[9px] text-[var(--color-dim)] flex-wrap">
             <span className="text-[var(--color-amber,#e5a200)]">{stars}</span>

@@ -179,6 +179,83 @@ def _score_strategy(
     return sum(breakdown.values()), breakdown
 
 
+# Reverse map: catalog horizon → ("call.time_horizon" the matcher accepts)
+# Used when scoring strategies WITHOUT a real call (theme-level relevance).
+_REVERSE_HORIZON_MAP: Dict[str, str] = {
+    "intraday":  "intraday",
+    "days":      "days",
+    "weeks":     "weeks",
+    "swing":     "weeks",
+    "months":    "quarter",
+    "long_term": "long",
+}
+
+
+def match_all_against_themes(themes: List[Any]) -> List[Dict[str, Any]]:
+    """Score every catalog strategy against today's L2 themes' aggregate
+    tag context — *without* requiring a real L3 call.
+
+    This is the "no L3 call today" fallback the user explicitly asked
+    for: when the lattice doesn't produce any high-conviction calls,
+    the Strategies tab can still surface "which strategies are most
+    aligned with what today's data is showing?" by pulling tags off
+    every theme's member observations.
+
+    Returns sorted list (highest score first); no threshold filter,
+    so even score=0 strategies are present (UI can sort/filter).
+
+    Each strategy gets scored at its OWN horizon (so horizon_match
+    fires automatically — we want to see how the OTHER signals like
+    options-coupling / earnings / compliance light up).
+    """
+    strategies = _load_strategies()
+    if not strategies:
+        return []
+
+    # Aggregate every observation tag across all themes
+    all_tags: List[str] = []
+    for t in themes:
+        members = (
+            t.members if hasattr(t, "members")
+            else (t.get("members", []) if isinstance(t, dict) else [])
+        )
+        for m in members:
+            tags = (
+                m.tags if hasattr(m, "tags")
+                else (m.get("tags", []) if isinstance(m, dict) else [])
+            )
+            if tags:
+                all_tags.extend(tags)
+        theme_tags = (
+            t.tags if hasattr(t, "tags")
+            else (t.get("tags", []) if isinstance(t, dict) else [])
+        )
+        all_tags.extend(theme_tags or [])
+
+    out: List[Dict[str, Any]] = []
+    for s in strategies:
+        s_horizon = s.get("horizon", "weeks")
+        call_horizon = _REVERSE_HORIZON_MAP.get(s_horizon, "weeks")
+        score, bd = _score_strategy(
+            s, call_horizon=call_horizon, member_tags=all_tags,
+        )
+        out.append({
+            "strategy_id":     s["id"],
+            "name_en":         s.get("name_en"),
+            "name_zh":         s.get("name_zh"),
+            "horizon":         s_horizon,
+            "difficulty":      s.get("difficulty"),
+            "asset_class":     s.get("asset_class"),
+            "defined_risk":    s.get("defined_risk"),
+            "pdt_relevant":    s.get("pdt_relevant"),
+            "score":           score,
+            "score_breakdown": bd,
+        })
+
+    out.sort(key=lambda x: x["score"], reverse=True)
+    return out
+
+
 def match_strategy(
     *,
     call: Any,                              # Call dataclass or dict
