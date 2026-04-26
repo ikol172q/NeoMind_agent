@@ -66,7 +66,7 @@ export function LatticeTracePanel({
       <div className="flex-1 overflow-y-auto p-3 text-[11px] text-[var(--color-text)] leading-[1.55]">
         {selection.type === 'node'
           ? <>
-              <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} />
+              <NodeDetail node={selection.node} projectId={projectId} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} />
               <DeepTraceSection node={selection.node} projectId={projectId} />
             </>
           : <EdgeDetail edge={selection.edge} graph={graph} onSelectNodeById={onSelectNodeById} />
@@ -80,9 +80,10 @@ export function LatticeTracePanel({
 // ── Node detail ────────────────────────────────────────
 
 function NodeDetail({
-  node, onSelectNodeById, onJumpToStrategies,
+  node, projectId, onSelectNodeById, onJumpToStrategies,
 }: {
   node: LatticeGraphNode
+  projectId: string
   onSelectNodeById: (id: string) => void
   onJumpToStrategies?: (strategyId: string) => void
 }) {
