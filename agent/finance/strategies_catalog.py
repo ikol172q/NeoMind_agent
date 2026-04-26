@@ -454,14 +454,14 @@ def strategies_by_theme(
     theme').
     """
     try:
-        from agent.finance.lattice.synth import synthesise_lattice
+        from agent.finance.lattice.themes import build_themes
         from agent.finance.lattice.strategy_matcher import (
             match_strategies_against_theme,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"lattice modules unavailable: {exc}")
 
-    bundle = synthesise_lattice(project_id=project_id)
+    bundle = build_themes(project_id)
     themes = (bundle or {}).get("themes", [])
     theme = next(
         (t for t in themes
@@ -498,14 +498,14 @@ def themes_matching_strategy_today(
     strategy? Used by the Strategies card 'TODAY MATCHING THEMES'
     section to give the user a click-jump path strategy → lattice."""
     try:
-        from agent.finance.lattice.synth import synthesise_lattice
+        from agent.finance.lattice.themes import build_themes
         from agent.finance.lattice.strategy_matcher import (
             themes_matching_strategy,
         )
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(503, f"lattice modules unavailable: {exc}")
 
-    bundle = synthesise_lattice(project_id=project_id)
+    bundle = build_themes(project_id)
     themes = (bundle or {}).get("themes", [])
     matches = themes_matching_strategy(strategy_id, themes)
     return {
