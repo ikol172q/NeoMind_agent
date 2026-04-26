@@ -167,26 +167,24 @@ def list_rows_for_run(
         # daily_market_pull writes to market_data_daily but the table
         # doesn't carry run_id (composite PK is symbol+trade_date and
         # we want it idempotent across runs). Approximate the "rows
-        # written by this run" by joining on the run's started_at.
+        # written by this run" by joining on the run's window via
+        # the table's `fetched_at` column.
         if run.get("job_name") == "daily_market_pull" and run.get("started_at"):
-            # Match symbols with `updated_at` falling within the run's
-            # 5-second window (looser than equal because the writer
-            # batches multiple symbols within one run).
             try:
                 start = run["started_at"]
                 end   = run["completed_at"] or start
                 rs = conn.execute(
-                    "SELECT symbol, market, trade_date, close, updated_at "
-                    "FROM market_data_daily WHERE updated_at BETWEEN ? AND ? "
+                    "SELECT symbol, market, trade_date, close, volume, source, fetched_at "
+                    "FROM market_data_daily WHERE fetched_at BETWEEN ? AND ? "
                     "ORDER BY symbol, trade_date DESC LIMIT ?",
                     (start, end, limit),
                 ).fetchall()
             except Exception:  # noqa: BLE001
                 rs = []
             sources["market_data_daily"] = {
-                "count":      len(rs),
-                "rows":       [_row_to_dict(r) for r in rs],
-                "match_method": "approx_by_updated_at_in_run_window",
+                "count":        len(rs),
+                "rows":         [_row_to_dict(r) for r in rs],
+                "match_method": "approx_by_fetched_at_in_run_window",
             }
 
     total = sum(s.get("count", 0) for s in sources.values())
