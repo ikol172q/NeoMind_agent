@@ -392,49 +392,55 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           userSelect: 'none',
         }}
       >
-        {/* Sticky column-header overlay. Tracks horizontal pan/zoom
-            via view.tx + view.scale on translateX so labels stay
-            aligned with their columns, but stays pinned at the top
-            of the viewport regardless of vertical pan. The SVG also
-            renders headers at y=18 (kept for export consistency);
-            this HTML layer covers them visually so user always sees
-            'L0 · SOURCE' etc. even after panning down. */}
+        {/* Sticky column-header overlay. Each label is positioned at
+            its column's screen-x (after pan + zoom) but CLAMPED to
+            the viewport bounds so the label is always visible even
+            when its column is panned off-screen — Excel-style frozen
+            panes. When clamped, a ◀ / ▶ marker hints the column is
+            offscreen in that direction. */}
         <div
           data-testid="lattice-column-headers"
           className="absolute top-0 left-0 right-0 h-7 z-10 pointer-events-none bg-gradient-to-b from-[var(--color-bg)] to-transparent"
         >
-          <div
-            style={{
-              position: 'absolute',
-              top: 4,
-              left: 0,
-              transform: `translateX(${view.tx}px) scale(${view.scale}, 1)`,
-              transformOrigin: '0 0',
-              whiteSpace: 'nowrap',
-            }}
-          >
-            {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
-              const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
-              return (
-                <span
-                  key={layer}
-                  style={{
-                    position: 'absolute',
-                    left: x,
-                    transform: `translateX(-50%) scale(${1 / view.scale}, 1)`,
-                    transformOrigin: 'center',
-                    fontSize: 10,
-                    fontFamily: 'ui-monospace, monospace',
-                    letterSpacing: '0.05em',
-                    color: 'var(--color-dim)',
-                    textTransform: 'uppercase',
-                  }}
-                >
-                  {LAYER_LABELS[layer].toUpperCase()}
-                </span>
-              )
-            })}
-          </div>
+          {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
+            const naturalX = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
+            const screenX  = naturalX * view.scale + view.tx
+            const vpW      = viewportEl?.clientWidth ?? 1200
+            // Clamp half-label margin so the centered label stays
+            // wholly visible. 50px ≈ widest label "L1.5 · SUB-THEMES".
+            const halfW    = 60
+            const minX     = halfW + 4
+            const maxX     = Math.max(minX, vpW - halfW - 4)
+            const clamped  = Math.max(minX, Math.min(maxX, screenX))
+            const offLeft  = screenX < minX
+            const offRight = screenX > maxX
+            const dim      = offLeft || offRight
+            return (
+              <span
+                key={layer}
+                data-testid={`lattice-column-header-${layer}`}
+                data-clamped={dim ? 'true' : undefined}
+                style={{
+                  position:       'absolute',
+                  left:           clamped,
+                  top:            6,
+                  transform:      'translateX(-50%)',
+                  fontSize:       10,
+                  fontFamily:     'ui-monospace, monospace',
+                  letterSpacing:  '0.05em',
+                  color:          dim ? 'var(--color-dim)' : 'var(--color-text)',
+                  opacity:        dim ? 0.55 : 1,
+                  textTransform:  'uppercase',
+                  whiteSpace:     'nowrap',
+                  background:     'var(--color-bg)',
+                  padding:        '1px 4px',
+                  borderRadius:   2,
+                }}
+              >
+                {offLeft ? '◀ ' : ''}{LAYER_LABELS[layer].toUpperCase()}{offRight ? ' ▶' : ''}
+              </span>
+            )
+          })}
         </div>
 
         {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
