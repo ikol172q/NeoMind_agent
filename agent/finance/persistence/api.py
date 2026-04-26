@@ -172,6 +172,43 @@ def list_lots(
     return {"count": len(out), "lots": out}
 
 
+@router.get("/lattice-obs")
+def list_lattice_obs() -> Dict[str, Any]:
+    """Return the L1 observations the fin SQLite store would emit into
+    the lattice graph right now.
+
+    This is the **lineage view**: clicking the fin integrity badge
+    shows not just "13/13 pass" but also "and here's the 2 L1 obs we
+    just synthesised from these tables — they'll appear in the
+    lattice graph under sub-theme subtheme_tax_compliance, and any
+    L3 call grounded in that sub-theme has these as direct evidence."
+
+    Calls ``gen_fin_compliance_signals`` directly (no synth project,
+    no LLMs) so it's cheap and side-effect-free. Returns the raw
+    Observation dicts.
+    """
+    try:
+        from agent.finance.lattice.observations import gen_fin_compliance_signals
+    except Exception as exc:
+        return {"available": False, "reason": str(exc), "obs": []}
+
+    obs = gen_fin_compliance_signals(proj={})
+    return {
+        "available": True,
+        "count": len(obs),
+        "obs": [o.to_dict() for o in obs],
+        "feeds_into": "subtheme_tax_compliance",
+        "explanation": (
+            "These observations are emitted by gen_fin_compliance_signals "
+            "into the lattice every time build_observations runs. They cluster "
+            "into the L2 sub-theme `subtheme_tax_compliance`, which any L3 "
+            "call can ground in — making the wash sale / PDT / holding-"
+            "period reasoning chain fully traceable from SQLite row to "
+            "LLM recommendation."
+        ),
+    }
+
+
 @router.get("/wash-sales")
 def list_wash_sales(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
     """All detected wash_sale_events, joined with both linked lots."""
