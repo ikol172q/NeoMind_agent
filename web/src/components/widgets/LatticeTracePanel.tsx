@@ -1,10 +1,11 @@
 import { useState } from 'react'
 import {
   useLatticeTrace,
+  useWidgetStrategies,
   type LatticeGraphNode, type LatticeGraphEdge, type LatticeGraphPayload,
   type MembershipComputationDetail,
 } from '@/lib/api'
-import { X, ChevronRight, ChevronDown, ExternalLink } from 'lucide-react'
+import { X, ChevronRight, ChevronDown, ExternalLink, BookOpen } from 'lucide-react'
 
 export type TraceSelection =
   | { type: 'node'; node: LatticeGraphNode }
@@ -152,6 +153,14 @@ function NodeDetail({
         <ExternalLinksSection widget={attrs.widget} />
       )}
 
+      {/* Phase 6 Step 6: reverse map — which catalog strategies declare
+          this L0 widget as a data dependency. Closes the audit loop:
+          from a widget node in the graph, see *all strategies that
+          depend on it*. */}
+      {node.layer === 'L0' && typeof attrs.widget === 'string' && (
+        <WidgetStrategiesSection widgetId={attrs.widget} />
+      )}
+
       <Section title="Attributes">
         {Object.entries(attrs).map(([k, v]) => (
           <KV key={k} k={k} v={formatAttr(v)} />
@@ -188,6 +197,86 @@ function RawPayloadSection({ payload }: { payload: unknown }) {
       <div className="text-[9px] text-[var(--color-dim)] italic leading-[1.4]">
         This is exactly what fed the L1 generators this cycle. Every
         L1 observation originates from a field in this blob.
+      </div>
+    </div>
+  )
+}
+
+
+/**
+ * WidgetStrategiesSection — Phase 6 Step 6 (reverse map).
+ *
+ * For an L0 widget node in the lattice graph, list every catalog
+ * strategy that declares this widget as a data dependency. Closes
+ * the audit loop: from "this widget" → "every strategy that needs
+ * it" → click any to drill into the strategy.
+ *
+ * Renders only when the API call succeeds AND there's ≥1 strategy.
+ * Quietly hides on 404 (some L0 widgets — like fin_db.* — aren't
+ * declared as data_requirements anywhere because they're "checks"
+ * not "data feeds").
+ */
+function WidgetStrategiesSection({ widgetId }: { widgetId: string }) {
+  const q = useWidgetStrategies(widgetId)
+
+  if (!q.data) {
+    if (q.isLoading) {
+      return (
+        <div data-testid="widget-strategies-loading"
+             className="text-[10px] italic text-[var(--color-dim)]">
+          checking strategy dependencies…
+        </div>
+      )
+    }
+    return null
+  }
+
+  const { strategy_count, strategies, widget } = q.data
+
+  return (
+    <div
+      data-testid={`widget-strategies-${widgetId}`}
+      data-source={`/api/lattice/widgets/${widgetId}/strategies`}
+      className="flex flex-col gap-1"
+    >
+      <div className="flex items-center gap-1 text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
+        <BookOpen size={9} />
+        <span>Powered by {strategy_count} strateg{strategy_count === 1 ? 'y' : 'ies'}</span>
+      </div>
+
+      {strategy_count === 0 ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] leading-[1.4]">
+          No catalog strategy currently declares this widget as a data
+          requirement. {widget.status === 'planned'
+            ? 'This widget is planned but not yet exposed in any strategy — likely a curation gap (an upcoming strategy will use it).'
+            : 'This widget is referenced by lattice but no strategy has declared a hard dependency on it. Often true for compliance widgets (wash sale / PDT) which are checks, not data feeds.'}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-1">
+          {strategies.map((s) => (
+            <span
+              key={s.id}
+              data-testid={`reverse-strategy-${s.id}`}
+              data-strategy-id={s.id}
+              className="px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[9.5px] font-mono cursor-help hover:border-[var(--color-accent)]/60 transition"
+              title={
+                `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
+                `horizon: ${s.horizon} · difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
+                `${s.feasible_at_10k ? '✓ feasible at $10k' : '⚠ requires more capital'}`
+              }
+            >
+              {s.id}
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div className="text-[9px] italic text-[var(--color-dim)] leading-[1.4]">
+        {widget.status === 'available'
+          ? 'This widget is ✓ available — actively emitting L1 obs.'
+          : widget.status === 'planned'
+            ? '⚠ This widget is "planned" — referenced by strategies but no L1 generator yet (real data gap).'
+            : 'Status: deprecated.'}
       </div>
     </div>
   )
