@@ -6,6 +6,9 @@ interface Props {
   projectId: string
   onJumpToChat?: (prompt: string, ctx?: { symbol?: string; project?: boolean }) => void
   digestFocus?: DigestFocus | null
+  /** Phase 5 V4: forward strategy_match chip clicks to App so it can
+   *  switch tabs to Strategies and focus the matched card. */
+  onJumpToStrategies?: (strategyId: string) => void
 }
 
 // V11: Research is now lattice-focused. The widget grid (Watchlist,
@@ -20,7 +23,7 @@ interface Props {
 // the natural toolbar row, not absolutely-positioned overlapping
 // past/check/budgets/lang) opens a drawer for editing watchlist +
 // portfolio (the inputs that feed L0).
-export function ResearchTab({ projectId, onJumpToChat, digestFocus }: Props) {
+export function ResearchTab({ projectId, onJumpToChat, digestFocus, onJumpToStrategies }: Props) {
   const [configOpen, setConfigOpen] = useState(false)
 
   return (
@@ -33,6 +36,7 @@ export function ResearchTab({ projectId, onJumpToChat, digestFocus }: Props) {
         onJumpToChat={onJumpToChat}
         focus={digestFocus}
         onOpenConfig={() => setConfigOpen(true)}
+        onJumpToStrategies={onJumpToStrategies}
       />
 
       <ResearchConfigDrawer

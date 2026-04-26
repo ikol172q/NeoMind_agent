@@ -648,6 +648,155 @@ def gen_news_signals(
     return out
 
 
+# ── Fin data platform compliance signals (Phase 5) ──────
+#
+# This generator pulls L1 observations from the SQLite store
+# (``agent/finance/persistence/``). It makes the wash sale detector,
+# PDT counter, and holding-period tracker output flow through the
+# lattice graph as L1 nodes — so every tax / compliance warning has
+# an L0 widget node and a generator stamp that the trace panel can
+# show. The Phase 1-4 fin platform is no longer parallel to the
+# lattice; it's an additional set of L0 widgets feeding L1.
+#
+# Source widget IDs (queryable in the lattice graph):
+#   - "fin_db.wash_sale_detector"     — detected wash sale events
+#   - "fin_db.pdt_counter"            — PDT round-trips in 5d window
+#   - "fin_db.holding_period_tracker" — near-LT-qualification warnings
+
+
+def gen_fin_compliance_signals(proj: Dict[str, Any]) -> List[Observation]:
+    """L1 observations from the fin SQLite compliance tables.
+
+    Reads at most a few hundred rows; cheap. Silently returns [] if
+    the persistence layer can't be loaded (e.g., yaml missing) or the
+    DB hasn't been initialised — same defensive pattern as
+    ``gen_anomaly_signals`` and ``gen_news_signals``.
+    """
+    out: List[Observation] = []
+
+    try:
+        from agent.finance.persistence import connect, ensure_schema
+    except Exception as exc:
+        logger.debug("fin_db generator: persistence not importable: %s", exc)
+        return out
+
+    try:
+        ensure_schema()
+        with connect() as c:
+            # ── Wash sale events (last 90 days) ─────────────
+            for r in c.execute("""
+                SELECT w.disallowed_loss, w.days_between,
+                       s.symbol AS symbol,
+                       s.close_date AS sell_date,
+                       r2.open_date AS replacement_date
+                FROM wash_sale_events w
+                JOIN tax_lots s  ON s.lot_id  = w.sell_lot_id
+                JOIN tax_lots r2 ON r2.lot_id = w.replacement_lot_id
+                WHERE w.detected_at > datetime('now', '-90 days')
+                ORDER BY w.detected_at DESC LIMIT 20
+            """):
+                sym = r["symbol"]
+                loss = float(r["disallowed_loss"])
+                days = int(r["days_between"])
+                out.append(Observation(
+                    id=_next_id("fin_wash_sale"),
+                    kind="fin_wash_sale",
+                    text=(
+                        f"{sym} wash sale: ${loss:.2f} disallowed loss, "
+                        f"{days}d between sell ({r['sell_date']}) and rebuy "
+                        f"({r['replacement_date']}). Loss adds to replacement "
+                        f"basis, holding period combines."
+                    ),
+                    numbers={"disallowed_loss": loss, "days_between": float(days)},
+                    tags=[
+                        f"symbol:{sym}", "market:US",
+                        "risk:wash_sale", "pnl:negative",
+                        "compliance:tax_inefficiency",
+                    ],
+                    source={
+                        "widget": "fin_db.wash_sale_detector",
+                        "symbol": sym, "field": "disallowed_loss",
+                    },
+                    severity="warn",
+                    confidence=0.95,
+                ))
+
+            # ── PDT round-trips in last ~5 trading days ─────
+            # 9 cal days ≈ 5 trading days + 2 weekends + holidays
+            for r in c.execute("""
+                SELECT symbol, trade_date FROM pdt_round_trips
+                WHERE trade_date > date('now', '-9 days')
+                ORDER BY trade_date DESC LIMIT 10
+            """):
+                sym = r["symbol"]
+                out.append(Observation(
+                    id=_next_id("fin_pdt_round_trip"),
+                    kind="fin_pdt_round_trip",
+                    text=(
+                        f"{sym} same-day round-trip on {r['trade_date']} — "
+                        f"counts toward FINRA PDT 5-trading-day rolling limit. "
+                        f"<$25k accounts max 3 round-trips per 5 business days."
+                    ),
+                    numbers={},
+                    tags=[
+                        f"symbol:{sym}", "market:US",
+                        "risk:pdt_breach", "timescale:short",
+                    ],
+                    source={
+                        "widget": "fin_db.pdt_counter",
+                        "symbol": sym, "field": "trade_date",
+                    },
+                    severity="warn",
+                    confidence=1.0,
+                ))
+
+            # ── Open lots within 30 days of long-term qualification ─
+            for r in c.execute("""
+                SELECT t.symbol, h.days_held, h.days_to_long_term
+                FROM holding_period_snapshots h
+                JOIN tax_lots t ON t.lot_id = h.lot_id
+                JOIN (
+                    SELECT lot_id, MAX(snapshot_date) AS d
+                    FROM holding_period_snapshots GROUP BY lot_id
+                ) x ON x.lot_id = h.lot_id AND x.d = h.snapshot_date
+                WHERE t.close_date IS NULL
+                  AND h.days_to_long_term BETWEEN 1 AND 30
+                ORDER BY h.days_to_long_term ASC LIMIT 10
+            """):
+                sym = r["symbol"]
+                d2lt = int(r["days_to_long_term"])
+                held = int(r["days_held"])
+                out.append(Observation(
+                    id=_next_id("fin_near_long_term"),
+                    kind="fin_near_long_term",
+                    text=(
+                        f"{sym} position is {d2lt} days from long-term "
+                        f"capital-gains qualification (currently held {held}d). "
+                        f"Selling before then is short-term ordinary-income tax."
+                    ),
+                    numbers={
+                        "days_to_long_term": float(d2lt),
+                        "days_held": float(held),
+                    },
+                    tags=[
+                        f"symbol:{sym}", "market:US",
+                        "compliance:near_long_term", "timescale:medium",
+                    ],
+                    source={
+                        "widget": "fin_db.holding_period_tracker",
+                        "symbol": sym, "field": "days_to_long_term",
+                    },
+                    severity="info",
+                    confidence=1.0,
+                ))
+    except Exception as exc:
+        # Don't propagate — empty list is the documented fallback for
+        # all generators in this module. Log at debug.
+        logger.debug("fin_db generator failed (non-fatal): %s", exc)
+
+    return out
+
+
 # ── Engine ─────────────────────────────────────────────
 
 def build_observations(
@@ -737,6 +886,11 @@ def build_observations(
         ("gen_sector_signals",    lambda: gen_sector_signals(proj)),
         ("gen_sentiment_signals", lambda: gen_sentiment_signals(proj)),
         ("gen_anomaly_signals",   lambda: gen_anomaly_signals(anomaly_payload)),
+        # Phase 5: fin SQLite store flows into the lattice as L1 obs.
+        # Wash sale events / PDT round-trips / near-LT lots become
+        # nodes in the graph that L2 themes can cluster and L3 calls
+        # can ground in — same audit trail as every other generator.
+        ("gen_fin_compliance_signals", lambda: gen_fin_compliance_signals(proj)),
         ("gen_news_signals",
             lambda: gen_news_signals(news_entries, watchlist_syms, position_syms)),
     ]:

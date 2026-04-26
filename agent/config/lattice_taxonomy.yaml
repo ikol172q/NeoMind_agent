@@ -81,6 +81,8 @@ dimensions:
       - macro        # rates, inflation, geopolitics spilling down
       - concentration  # portfolio / sector concentration
       - drawdown     # position is below stop threshold
+      - wash_sale    # IRS § 1091: loss disallowed by 30-day rebuy
+      - pdt_breach   # FINRA PDT: <$25k account exceeded 3 round-trips/5d
     example: "risk:earnings"
 
   technical:
@@ -103,6 +105,18 @@ dimensions:
     description: P&L direction or magnitude qualifier.
     valid_values: [positive, negative, flat, large_gain, large_loss]
     example: "pnl:large_gain"
+
+  compliance:
+    description: Tax / regulatory compliance state attached to a position
+      or to a closed transaction. Driven by the fin SQLite store
+      (Phase 5 — see agent/finance/lattice/observations.py
+      gen_fin_compliance_signals).
+    valid_values:
+      - near_long_term        # open lot within 30 days of LT qualification
+      - holding_long_term     # already qualified (>365d)
+      - holding_short_term    # currently short-term
+      - tax_inefficiency      # wash sale / basis-impacting event
+    example: "compliance:near_long_term"
 
   position:
     description: Marks an observation tied to an actual held position.
@@ -244,4 +258,19 @@ sub_themes:
     title: "Book stress signals"
     signature:
       any_of: ["pnl:large_loss", "risk:drawdown"]
+    min_members: 1
+
+  # Phase 5: tax & compliance facts cluster as their own sub-theme so
+  # the lattice surfaces "tax decisions are pending" alongside the
+  # technical / event-risk / book-stress sub-themes. An L3 call that
+  # recommends selling something near LT qualification will ground in
+  # this sub-theme via the underlying L1 obs from the fin DB.
+  - id: subtheme_tax_compliance
+    title: "Tax & PDT compliance"
+    signature:
+      any_of:
+        - "risk:wash_sale"
+        - "risk:pdt_breach"
+        - "compliance:near_long_term"
+        - "compliance:tax_inefficiency"
     min_members: 1

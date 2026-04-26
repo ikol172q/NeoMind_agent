@@ -648,6 +648,18 @@ export interface LatticeTheme {
   cited_numbers?: string[]
 }
 
+export interface LatticeStrategyMatch {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  difficulty: number | null
+  defined_risk: boolean | null
+  pdt_relevant?: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
 export interface LatticeCall {
   id: string
   claim: string
@@ -657,6 +669,10 @@ export interface LatticeCall {
   rebuttal: string
   confidence: 'high' | 'medium' | 'low'
   time_horizon: 'intraday' | 'days' | 'weeks' | 'quarter'
+  /** Phase 5 V3 — best-fit catalog entry from docs/strategies/strategies.yaml.
+   *  Attached deterministically by agent.finance.lattice.strategy_matcher
+   *  in build_calls. Null when no strategy clears the score threshold. */
+  strategy_match?: LatticeStrategyMatch | null
 }
 
 export interface LatticePayload {
@@ -1131,5 +1147,185 @@ export function useChart(symbol: string | null, period = '3mo', interval = '1d')
     ),
     enabled: !!symbol,
     staleTime: 60_000,
+  })
+}
+
+// ── Fin Data Platform (Phase 1+) ──────────────────────────
+//
+// Hooks for the SQLite store + scheduler + integrity check + strategy
+// catalog. Same shape as the lattice selfcheck so the UI badge
+// pattern is reusable.
+
+export interface FinIntegrityCheck {
+  name: string
+  label: string
+  layer: string
+  pass: boolean
+  detail: string
+  offenders?: unknown[]
+  error?: string
+}
+
+export interface FinIntegrityReport {
+  summary: string
+  all_pass: boolean
+  timestamp: string
+  checks: FinIntegrityCheck[]
+}
+
+export function useFinIntegrity(enabled: boolean) {
+  return useQuery({
+    queryKey: ['fin_integrity'],
+    queryFn: () => fetchJSON<FinIntegrityReport>('/api/integrity/check'),
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
+export interface FinDbHealth {
+  ok: boolean
+  schema_version: number
+  db_path: string
+  counts: Record<string, number>
+}
+
+export function useFinDbHealth() {
+  return useQuery({
+    queryKey: ['fin_db_health'],
+    queryFn: () => fetchJSON<FinDbHealth>('/api/db/health'),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+export interface FinSchedulerJob {
+  name: string
+  description: string
+  default_cron: string
+  cron_expression: string
+  enabled: boolean
+  last_run_id: string | null
+  last_run_at: string | null
+  last_run_status: 'completed' | 'failed' | 'cancelled' | null
+  consecutive_failures: number
+  next_run_at: string | null
+}
+
+export function useFinSchedulerJobs() {
+  return useQuery({
+    queryKey: ['fin_scheduler_jobs'],
+    queryFn: () => fetchJSON<{ count: number; jobs: FinSchedulerJob[] }>('/api/scheduler/jobs'),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+// ── Strategies catalog (Phase 3 subagent output) ──────────
+
+export interface StrategyTaxTreatment {
+  qualifies_long_term: boolean
+  wash_sale_risk: 'low' | 'medium' | 'high'
+  section_1256: boolean
+  notes: string
+}
+
+export interface StrategyEntry {
+  id: string
+  name_en: string
+  name_zh: string
+  horizon: 'long_term' | 'months' | 'weeks' | 'swing' | 'days' | 'intraday'
+  difficulty: 1 | 2 | 3 | 4 | 5
+  min_capital_usd: number
+  asset_class: 'stock' | 'etf' | 'options' | 'crypto' | 'adr' | 'mixed'
+  market: 'us' | 'cn_via_adr' | 'crypto' | 'global'
+  defined_risk: boolean
+  max_loss: string
+  pdt_relevant: boolean
+  tax_treatment: StrategyTaxTreatment
+  data_requirements: string[]
+  typical_win_rate: string
+  feasible_at_10k: boolean
+  feasible_at_10k_reason: string
+  starter_step: string
+  key_risks: string[]
+  sources: string[]
+}
+
+// ── Lineage: what L1 obs the fin SQLite store emits into the lattice ──
+
+export interface FinLatticeObs {
+  id: string
+  kind: string
+  text: string
+  numbers: Record<string, number>
+  tags: string[]
+  source: { widget: string; symbol?: string; field?: string; generator?: string }
+  severity: 'info' | 'warn' | 'alert'
+  confidence: number
+}
+
+export interface FinLatticeObsReport {
+  available: boolean
+  count: number
+  obs: FinLatticeObs[]
+  feeds_into: string
+  explanation: string
+  reason?: string
+}
+
+export function useFinLatticeObs(enabled: boolean) {
+  return useQuery({
+    queryKey: ['fin_lattice_obs'],
+    queryFn: () => fetchJSON<FinLatticeObsReport>('/api/db/lattice-obs'),
+    enabled,
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
+export function useFinStrategies() {
+  return useQuery({
+    queryKey: ['fin_strategies'],
+    queryFn: () => fetchJSON<{
+      count: number
+      strategies: StrategyEntry[]
+      by_horizon: Record<string, number>
+    }>('/api/strategies'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+// Per-strategy "fit" against today's lattice themes — answers
+// 'no L3 calls today, what's relevant?' Used by Strategies tab to
+// show a fit score on every card even when no real call exists.
+export interface StrategyFitEntry {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string
+  difficulty: number | null
+  asset_class: string | null
+  defined_risk: boolean | null
+  pdt_relevant: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
+export function useFinStrategiesFit(projectId: string) {
+  return useQuery({
+    queryKey: ['fin_strategies_fit', projectId],
+    queryFn: () => fetchJSON<{
+      project_id: string
+      themes_count: number
+      calls_count: number
+      strategies_count: number
+      fit: StrategyFitEntry[]
+      explanation: string
+    }>(`/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}`),
+    enabled: !!projectId,
+    staleTime: 60_000,
+    retry: false,
   })
 }
