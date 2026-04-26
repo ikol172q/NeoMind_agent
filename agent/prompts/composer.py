@@ -10,11 +10,13 @@ Builds the system prompt from independent sections with:
 Sections:
   1. Base identity & rules (cacheable)
   2. Tool descriptions (auto-generated)
-  3. Dynamic boundary marker
-  4. Context (git status, OS, date)
-  5. Memory (selected relevant memories)
-  6. Output style (user-customized format)
-  7. Coordinator/agent-specific overrides
+  3. Session guidance (mode-specific behavioral rules)
+  4. Dynamic boundary marker
+  5. Context (git status, OS, date)
+  6. Memory (selected relevant memories)
+  7. Output style (user-customized format)
+  8. Output efficiency (communication style)
+  9. Coordinator/agent-specific overrides
 """
 
 import os
@@ -119,6 +121,25 @@ class PromptComposer:
         """Set the output style section."""
         if style_text:
             self.set_section('output_style', style_text, cacheable=False, priority=80)
+
+    def set_output_efficiency(self, content: str):
+        """Set the output efficiency section (communication style rules).
+
+        This is a cacheable section that enforces concise-but-thorough
+        communication. Placed after output_style but before dynamic boundary.
+        """
+        if content:
+            self.set_section('output_efficiency', content, cacheable=True, priority=85)
+
+    def set_session_guidance(self, content: str):
+        """Set session-specific behavioral guidance.
+
+        Injected early (after tools) to provide mode-specific rules about
+        how the agent should behave in the current session. Cacheable
+        because it's static per mode activation.
+        """
+        if content:
+            self.set_section('session_guidance', content, cacheable=True, priority=25)
 
     def set_override_prompt(self, prompt: str):
         """Set the highest-priority override (replaces everything except append)."""

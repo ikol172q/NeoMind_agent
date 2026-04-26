@@ -34,6 +34,10 @@ try:
 except ImportError:
     HAS_SPRINT = False
 
+# Module-level dedup state — persists across stream_response calls
+# so the agentic loop's multi-call turns don't echo the same line.
+_last_displayed_line = ""
+
 
 class StreamSanitizer:
     """Stateful sanitizer that:
@@ -50,7 +54,6 @@ class StreamSanitizer:
 
     def __init__(self):
         self._buf = ""
-        self._last_line = ""
 
     def feed(self, chunk: str) -> str:
         if not chunk:
@@ -89,6 +92,9 @@ class StreamSanitizer:
         # Fix 1: normalize fences
         text = self._FENCE_RE.sub(r'```\1\n\2', text)
         # Fix 2: skip consecutive duplicate non-blank, non-XML lines
+        # Uses module-level _last_displayed_line so dedup spans across
+        # multiple stream_response calls within the same agent loop turn.
+        global _last_displayed_line
         out_lines = []
         for line in text.split("\n"):
             line = self._collapse_repeats(line)  # NEW: collapse intra-line repeats
@@ -101,13 +107,13 @@ class StreamSanitizer:
                 or "tool_call" in stripped
                 or "tool_result" in stripped
             )
-            if stripped and not is_xml and stripped == self._last_line:
+            if stripped and not is_xml and stripped == _last_displayed_line:
                 continue
             if stripped and not is_xml:
-                self._last_line = stripped
+                _last_displayed_line = stripped
             # Reset last_line when we see XML so subsequent prose doesn't skip
             if is_xml:
-                self._last_line = ""
+                _last_displayed_line = ""
             out_lines.append(line)
         return "\n".join(out_lines)
 
@@ -1205,6 +1211,18 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
     spec = core._get_model_spec(core.model)
     total_tokens = core.context_manager.count_conversation_tokens()
     max_context = spec["max_context"]
+
+    # Inject beta/experimental headers for LLM features
+    try:
+        from agent.services.beta_headers import inject_beta_headers
+        headers = inject_beta_headers(
+            headers,
+            model=core.model,
+            provider=provider.get('name', ''),
+            max_context=max_context,
+        )
+    except ImportError:
+        pass
     actual_max_tokens = max_tokens or spec["default_max"]
     # Clamp to model's hard output limit
     actual_max_tokens = min(actual_max_tokens, spec["max_output"])

@@ -1209,7 +1209,7 @@ class NeoMindInterface:
 
         # Check if command is allowed in current mode
         allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "plugin", "plugins", "fleet"):
+        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "fleet"):
             self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
             if self.chat.mode == "chat":
                 self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
@@ -1772,10 +1772,11 @@ class NeoMindInterface:
 
         _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
         _TOOL_CALL_OPEN_RE = re.compile(r'<tool_call>\s*')
-        _TOOL_CALL_CLOSE = '</tool_call>'
-        _TOOL_CALL_CLOSE_ALT = '</tool_result>'  # LLM sometimes hallucinates this
+        # LLM sometimes hallucinates closing tags: </tool_result>, </tool_report>,
+        # or truncated </tool_re, </tool_r, etc. Match all with one regex.
+        _TOOL_CALL_CLOSE_RE = re.compile(r'</tool_(?:call|result|report|re)\s*>')
         # Orphan closing tags that may leak without a matching opener
-        _ORPHAN_CLOSE_RE = re.compile(r'\s*</tool_(?:call|result)>\s*')
+        _ORPHAN_CLOSE_RE = re.compile(r'\s*</tool_(?:call|result|report|re)\s*>\s*')
 
         def __init__(self):
             self._buf = ""
@@ -1806,24 +1807,18 @@ class NeoMindInterface:
                         self._buf = rest
                         continue
                     elif self._suppress_type == "tool_call":
-                        # Check both </tool_call> and </tool_result> (LLM hallucination)
-                        idx = self._buf.find(self._TOOL_CALL_CLOSE)
-                        idx_alt = self._buf.find(self._TOOL_CALL_CLOSE_ALT)
-                        # Pick the earliest match
-                        close_tag_len = len(self._TOOL_CALL_CLOSE)
-                        if idx_alt != -1 and (idx == -1 or idx_alt < idx):
-                            idx = idx_alt
-                            close_tag_len = len(self._TOOL_CALL_CLOSE_ALT)
-                        if idx == -1:
-                            # Keep tail for partial match
-                            max_close_len = max(len(self._TOOL_CALL_CLOSE), len(self._TOOL_CALL_CLOSE_ALT))
+                        # Check all LLM-hallucinated closing tag variants
+                        m_close = self._TOOL_CALL_CLOSE_RE.search(self._buf)
+                        if not m_close:
+                            # Keep tail for partial match (enough for longest close tag)
+                            max_close_len = 18  # </tool_report> is longest
                             if len(self._buf) > max_close_len:
                                 self._buf = self._buf[-max_close_len:]
                             break
                         # Found closing tag — skip past it
                         self._suppressing = False
                         self._suppress_type = None
-                        rest = self._buf[idx + close_tag_len:]
+                        rest = self._buf[m_close.end():]
                         if rest.startswith('\n'):
                             rest = rest[1:]
                         self._buf = rest

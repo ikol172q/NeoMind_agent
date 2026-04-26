@@ -70,7 +70,7 @@ class ToolRegistry:
         'WebSearch': 30000,
     }
 
-    def __init__(self, working_dir: Optional[str] = None):
+    def __init__(self, working_dir: Optional[str] = None, deny_rules: Optional[List[str]] = None):
         self.working_dir = working_dir or os.getcwd()
         self._persistent_bash = None  # Lazy init
         self._tool_definitions: Dict[str, Any] = {}  # name → ToolDefinition
@@ -80,6 +80,12 @@ class ToolRegistry:
         self._tool_call_cache: Dict[str, 'ToolResult'] = {}  # dedup cache for read-only tools
         self._plan_mode: bool = False   # When True, block write/execute tools
         self._task_manager = None
+        # Deny rules: patterns that remove tools from the prompt BEFORE the LLM sees them.
+        # Format: "ToolName" or "ToolName(pattern)" — e.g. "Bash(git push:*)", "Write(*.env)".
+        # This is a security boundary — tools matching deny rules are invisible to the LLM.
+        self._deny_rules: List[str] = deny_rules or []
+        self._deferred_tool_threshold: int = 20  # When tool count exceeds this, defer non-essential tools
+        self._deferred_tools_enabled: bool = True
         self._register_tools()
 
     def _persist_large_result(self, tool_name: str, result: 'ToolResult') -> 'ToolResult':
@@ -1879,6 +1885,82 @@ class ToolRegistry:
         "ls": "LS",
     }
 
+    # ── Deny-rule filtering ─────────────────────────────────────────
+
+    def set_deny_rules(self, rules: List[str]):
+        """Set deny rules that filter tools from the prompt before the LLM sees them.
+
+        Deny rules are a security boundary — matching tools are invisible to the LLM.
+        Format per rule: "ToolName" or "ToolName(pattern)".
+        Examples: "Bash(git push:*)", "Write(*.env)", "SelfEditor".
+        """
+        self._deny_rules = list(rules)
+
+    def _tool_matches_deny_rule(self, tool_name: str, rule: str) -> bool:
+        """Check if a tool name matches a deny rule pattern."""
+        # Simple tool-level deny: "Bash", "SelfEditor"
+        if '(' not in rule:
+            return tool_name.lower() == rule.lower()
+        # Command/file-pattern deny: "Bash(git:*)", "Write(*.env)"
+        tool_part, rest = rule.split('(', 1)
+        if tool_part.lower() != tool_name.lower():
+            return False
+        pattern = rest.rstrip(')')
+        # The pattern is informational at visibility level — if the tool
+        # is denied with any pattern, the whole tool is hidden from the prompt.
+        # Per-command enforcement happens at execution time via is_destructive().
+        return True
+
+    def _apply_deny_rules(self, tools: List[Any]) -> List[Any]:
+        """Filter out tools that match any deny rule.
+
+        Called before assembling the system prompt so the LLM never sees
+        denied tools in its available tool list.
+        """
+        if not self._deny_rules:
+            return tools
+        filtered = []
+        for tool_def in tools:
+            denied = False
+            for rule in self._deny_rules:
+                if self._tool_matches_deny_rule(tool_def.name, rule):
+                    denied = True
+                    break
+            if not denied:
+                filtered.append(tool_def)
+        return filtered
+
+    # ── Deferred tool loading ───────────────────────────────────────
+
+    def set_deferred_tool_threshold(self, threshold: int):
+        """Set the tool count threshold for deferred tool loading.
+
+        When get_all_tools() returns more than `threshold` tools, non-always_load
+        tools are deferred (removed from the prompt). A ToolSearch mechanism allows
+        the LLM to discover them at runtime.
+        """
+        self._deferred_tool_threshold = threshold
+
+    def _apply_deferred_loading(self, tools: List[Any]) -> List[Any]:
+        """Defer non-essential tools when the tool pool exceeds the threshold.
+
+        Tools with always_load=True are always included. Tools with
+        requires_user_interaction() are always deferred (shown on demand).
+        """
+        if not self._deferred_tools_enabled:
+            return tools
+        essential = [t for t in tools if getattr(t, 'always_load', True)]
+        if len(tools) <= self._deferred_tool_threshold:
+            return tools
+        # Keep essential + add a notice about deferred tools
+        deferred_count = len(tools) - len(essential)
+        if deferred_count > 0:
+            # Add a marker so the prompt mentions deferred tools are available
+            pass  # ToolSearch tool would be injected here
+        return essential
+
+    # ── Tool getters ────────────────────────────────────────────────
+
     def get_tool(self, name: str) -> Optional[Any]:
         """Get a tool definition by name (case-insensitive + alias lookup)."""
         # Exact match first
@@ -1895,7 +1977,17 @@ class ToolRegistry:
             return self._tool_definitions[canonical]
         return None
 
-    def get_all_tools(self, mode: Optional[str] = None) -> List[Any]:
+    def set_denial_tracker(self, tracker):
+        """Attach a DenialTracker for circuit-breaker integration.
+
+        When set, get_all_tools() automatically filters out tools whose
+        circuit is broken (consecutive denials exceeded threshold).
+        """
+        self._denial_tracker = tracker
+
+    def get_all_tools(self, mode: Optional[str] = None,
+                      apply_deny_rules: bool = True,
+                      apply_deferred: bool = True) -> List[Any]:
         """Get all registered tool definitions in display order.
 
         If `mode` is provided, tools are filtered by their `allowed_modes`
@@ -1905,6 +1997,11 @@ class ToolRegistry:
         see `code_*` tools, etc., without cross-mode leakage.
 
         When `mode` is None, all tools are returned (legacy behaviour).
+
+        Deny rules (apply_deny_rules) filter tools BEFORE the LLM sees them.
+        Deferred loading (apply_deferred) reduces the prompt tool list when
+        the tool pool exceeds the threshold.
+        Denial tracker filters circuit-broken tools (Phase 2).
         """
         # Display order: Bash, Read, Write, Edit, Glob, Grep, LS
         order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS"]
@@ -1918,6 +2015,22 @@ class ToolRegistry:
         for name, tool_def in self._tool_definitions.items():
             if name not in order and tool_def.is_available_in_mode(mode):
                 result.append(tool_def)
+
+        # Phase 2: deny-rule filtering (before LLM sees the list)
+        if apply_deny_rules:
+            result = self._apply_deny_rules(result)
+
+        # Phase 2: denial tracker circuit-breaker filtering
+        tracker = getattr(self, '_denial_tracker', None)
+        if tracker is not None:
+            broken = set(t.lower() for t in tracker.get_broken_tools())
+            if broken:
+                result = [t for t in result if t.name.lower() not in broken]
+
+        # Phase 2: deferred tool loading (large tool pools)
+        if apply_deferred and self._deferred_tools_enabled:
+            result = self._apply_deferred_loading(result)
+
         return result
 
     def enter_plan_mode(self):

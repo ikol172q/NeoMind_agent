@@ -1333,38 +1333,43 @@ def _build_builtin_commands() -> List[Command]:
         return CommandResult(text=f"Checkpoint '{arg}' not found.")
 
     def _cmd_flags(args: str, agent=None, **kw) -> CommandResult:
-        """Show or toggle feature flags."""
+        """Show or toggle feature flags. Shows tier, experiment info."""
         try:
-            from agent.services.feature_flags import get_feature_flags
-            ff = get_feature_flags()
+            from agent.agentic.feature_gate_registry import get_gate_registry
+            reg = get_gate_registry()
         except ImportError:
-            return CommandResult(text="Feature flags not available.")
+            return CommandResult(text="Feature gate registry not available.")
 
         arg = args.strip()
         if not arg:
-            # List all flags
-            flags = ff.list_flags()
-            lines = ["Feature Flags:"]
-            for name, info in flags.items():
-                status = "✓" if info['enabled'] else "✗"
-                lines.append(f"  {status} {name}: {info['description']} [{info['source']}]")
+            # List all flags grouped by tier
+            lines = ["Feature Gates:"]
+            for tier in ['stable', 'beta', 'experimental', 'internal']:
+                tier_gates = reg.list_by_tier_str(tier)
+                if not tier_gates:
+                    continue
+                lines.append(f"\n── {tier.upper()} ──")
+                for name, info in reg.list_all().items():
+                    if info['tier'] != tier:
+                        continue
+                    status = "✓" if info['enabled'] else "✗"
+                    exp = f" [exp:{info['experiment_id']}]" if info.get('experiment_id') else ""
+                    lines.append(f"  {status} {name}: {info['description']} [{info['source']}]{exp}")
             return CommandResult(text="\n".join(lines))
 
-        # Toggle: /flags FEATURE_NAME [on|off]  OR  /flags toggle FEATURE_NAME
+        # Toggle: /flags FEATURE_NAME [on|off]
         parts = arg.split()
-        # Handle "/flags toggle FLAGNAME" format
         if parts[0].lower() == 'toggle' and len(parts) > 1:
             flag_name = parts[1].upper()
-            value = not ff.is_enabled(flag_name)
+            value = not reg.is_enabled(flag_name)
         else:
             flag_name = parts[0].upper()
             if len(parts) > 1:
                 value = parts[1].lower() in ('on', 'true', '1', 'yes')
             else:
-                # Toggle current value
-                value = not ff.is_enabled(flag_name)
+                value = not reg.is_enabled(flag_name)
 
-        ff.set_flag(flag_name, value, persist=True)
+        reg.set_value(flag_name, value, persist=True)
         status = "enabled" if value else "disabled"
         return CommandResult(text=f"✓ {flag_name} {status}")
 

@@ -1110,6 +1110,16 @@ Remember: Always ask for permission before making changes!
             "Content-Type": "application/json",
             "Authorization": f"Bearer {provider['api_key'] or self.api_key}"
         }
+        # Inject beta/experimental headers
+        try:
+            from agent.services.beta_headers import inject_beta_headers
+            headers = inject_beta_headers(
+                headers, model=self.model,
+                provider=provider.get('name', ''),
+                max_context=spec.get('max_context', 0),
+            )
+        except ImportError:
+            pass
         # Clamp max_tokens to model's hard output limit
         max_tokens = min(max_tokens, spec["max_output"])
         # Context validation using model-specific context window
