@@ -11,6 +11,9 @@ interface Props {
   projectId: string
   /** When set, scroll to and highlight a node/edge. */
   initialFocusNodeId?: string | null
+  /** Phase 6 followup: callback to jump to Strategies tab from
+   *  reverse-strategy chips on L0 widget nodes. */
+  onJumpToStrategies?: (strategyId: string) => void
 }
 
 // Exported for test harness inspection — keeps the visual-encoding
@@ -95,9 +98,20 @@ const ZOOM_STEP = 1.18   // 18% per wheel tick
 interface ViewTransform { scale: number; tx: number; ty: number }
 const IDENTITY: ViewTransform = { scale: 1, tx: 0, ty: 0 }
 
-export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
+export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrategies }: Props) {
   const q = useLatticeGraph(projectId)
   const [selection, setSelection] = useState<TraceSelection>(null)
+
+  // Phase 6 followup: when arriving with a deep-link from Strategies
+  // tab (`initialFocusNodeId="widget:chart"`), auto-select that node
+  // so the right inspector pre-fills with its reverse map without
+  // requiring a click.
+  useEffect(() => {
+    if (!initialFocusNodeId || !q.data) return
+    const node = q.data.nodes.find((n) => n.id === initialFocusNodeId)
+    if (node) setSelection({ type: 'node', node })
+  }, [initialFocusNodeId, q.data])
+
   const [view, setView] = useState<ViewTransform>(IDENTITY)
   const [isPanning, setIsPanning] = useState(false)
   // Refs: wrapper = the element that receives CSS transform; viewport
@@ -475,6 +489,7 @@ export function LatticeGraphView({ projectId, initialFocusNodeId }: Props) {
           const node = q.data!.nodes.find((n) => n.id === id)
           if (node) setSelection({ type: 'node', node })
         }}
+        onJumpToStrategies={onJumpToStrategies}
       />
     </div>
   )

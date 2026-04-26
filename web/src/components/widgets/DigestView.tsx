@@ -20,6 +20,10 @@ import {
 
 export interface DigestFocus {
   symbol?: string
+  /** Phase 6 followup: deep-link from Strategies tab into the lattice
+   *  graph focused on a specific L0 widget node. Triggers trace mode
+   *  + auto-selects `widget:{widgetId}` in the trace panel. */
+  widgetId?: string
   /** Monotonic counter — bump to re-trigger the highlight even when
    *  the symbol is unchanged (e.g. clicking the same cite twice). */
   nonce?: number
@@ -98,6 +102,12 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
     }, 60)
     return () => window.clearTimeout(t)
   }, [focus?.symbol, focus?.nonce, calls, themes, observations])
+
+  // Phase 6 followup: deep-link from Strategies → Research focused on
+  // an L0 widget. Switch to trace mode + pass widget node id down.
+  useEffect(() => {
+    if (focus?.widgetId) setMode('trace')
+  }, [focus?.widgetId, focus?.nonce])
 
   const ctx: DigestCtx = {
     highlightId,
@@ -201,7 +211,11 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
             not gated on /calls loading; let LatticeGraphView render
             its own loading/empty/error state. */}
         {mode === 'trace' && !isFreshInstall && (
-          <LatticeGraphView projectId={projectId} />
+          <LatticeGraphView
+            projectId={projectId}
+            initialFocusNodeId={focus?.widgetId ? `widget:${focus.widgetId}` : undefined}
+            onJumpToStrategies={onJumpToStrategies}
+          />
         )}
       </div>
     </div>

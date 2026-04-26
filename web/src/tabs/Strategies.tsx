@@ -77,11 +77,14 @@ interface Props {
   /** Phase 5 V4: when set, auto-expand & scroll to the matching
    *  strategy card. Nonce re-triggers the highlight on repeat clicks. */
   focus?: { id: string; nonce: number } | null
+  /** Phase 6 followup: clicking a widget chip on a strategy card
+   *  jumps to Research → Trace mode focused on that L0 widget node. */
+  onJumpToResearch?: (widgetId: string) => void
 }
 
 const HIGHLIGHT_MS = 2500
 
-export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
+export function StrategiesTab({ projectId, onJumpToChat, focus, onJumpToResearch }: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
   const fit = useFinStrategiesFit(projectId)
@@ -394,6 +397,7 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                       widgetCoverage={coverageByStrategy[s.id]}
                       timeAware={timeAwareById[s.id]}
                       activeLang={activeLang}
+                      onJumpToResearch={onJumpToResearch}
                       expanded={expanded === s.id}
                       highlighted={highlight === s.id}
                       registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -425,6 +429,7 @@ export function StrategiesTab({ projectId, onJumpToChat, focus }: Props) {
                 widgetCoverage={coverageByStrategy[s.id]}
                 timeAware={timeAwareById[s.id]}
                 activeLang={activeLang}
+                onJumpToResearch={onJumpToResearch}
                 expanded={expanded === s.id}
                 highlighted={highlight === s.id}
                 registerRef={(el) => { cardRefs.current[s.id] = el }}
@@ -453,6 +458,7 @@ function StrategyCard({
   widgetCoverage,
   timeAware,
   activeLang,
+  onJumpToResearch,
   expanded,
   highlighted,
   registerRef,
@@ -467,6 +473,7 @@ function StrategyCard({
   widgetCoverage?: StrategyWidgetCoverage
   timeAware?: StrategyTimeAware
   activeLang?: 'en' | 'zh-CN-mixed'
+  onJumpToResearch?: (widgetId: string) => void
   expanded: boolean
   highlighted?: boolean
   registerRef?: (el: HTMLDivElement | null) => void
@@ -657,7 +664,7 @@ function StrategyCard({
                 {/* widget chips with status badges */}
                 <div className="flex flex-wrap gap-1">
                   {widgetCoverage.widgets.map((w) => (
-                    <WidgetChip key={w.id} widget={w} />
+                    <WidgetChip key={w.id} widget={w} onJumpToResearch={onJumpToResearch} />
                   ))}
                 </div>
                 {/* coverage summary */}
@@ -780,7 +787,13 @@ function StrategyCard({
  * border, and tooltip with full description. Click jumps to lattice
  * graph viewer focused on that widget (Step 6).
  */
-function WidgetChip({ widget }: { widget: WidgetMeta }) {
+function WidgetChip({
+  widget,
+  onJumpToResearch,
+}: {
+  widget: WidgetMeta
+  onJumpToResearch?: (widgetId: string) => void
+}) {
   const statusColor =
     widget.status === 'available'
       ? 'var(--color-green)'
@@ -790,21 +803,26 @@ function WidgetChip({ widget }: { widget: WidgetMeta }) {
   const icon =
     widget.status === 'available' ? '✓' : widget.status === 'planned' ? '⚠' : '·'
 
-  // Phase 6 followup #6: hover-to-drill — replace the bare native
-  // tooltip with a rich popover that shows the description AND the
-  // reverse map ('also used by N other strategies'). Closes the
-  // 'click chip → switch tab → look at it' instruction loop.
+  // Phase 6 followup #6 + bidirectional nav: rich hover popover +
+  // click-to-jump. Hover shows description + reverse map; click
+  // jumps to Research → Trace mode focused on the L0 widget node.
+  // Only available widgets are click-jumpable (planned widgets
+  // aren't actually present in the lattice graph yet).
+  const canJump = onJumpToResearch != null && widget.status === 'available'
+  const cursorClass = canJump ? 'cursor-pointer' : 'cursor-help'
   return (
     <HoverPopover
       width={320}
       delay={300}
       dataTestid={`widget-chip-${widget.id}`}
-      content={() => <WidgetChipPopover widget={widget} />}
+      content={() => <WidgetChipPopover widget={widget} canJump={canJump} />}
     >
       <span
         data-widget-id={widget.id}
         data-source={`/api/lattice/widgets/${widget.id}`}
-        className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono cursor-help"
+        onClick={canJump ? () => onJumpToResearch!(widget.id) : undefined}
+        role={canJump ? 'button' : undefined}
+        className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded border text-[8px] font-mono ${cursorClass} ${canJump ? 'hover:bg-[var(--color-accent)]/10' : ''}`}
         style={{ borderColor: statusColor, color: statusColor }}
       >
         <span>{icon}</span>
@@ -817,7 +835,7 @@ function WidgetChip({ widget }: { widget: WidgetMeta }) {
 
 /** Popover body for WidgetChip — fetches the reverse map lazily on
  *  first hover, so we don't fire 50× /strategies queries on tab open. */
-function WidgetChipPopover({ widget }: { widget: WidgetMeta }) {
+function WidgetChipPopover({ widget, canJump }: { widget: WidgetMeta; canJump?: boolean }) {
   const reverse = useWidgetStrategies(widget.id)
   const statusColor =
     widget.status === 'available'
@@ -843,6 +861,11 @@ function WidgetChipPopover({ widget }: { widget: WidgetMeta }) {
       {widget.description && (
         <div className="text-[9.5px] text-[var(--color-dim)] leading-snug">
           {widget.description}
+        </div>
+      )}
+      {canJump && (
+        <div className="text-[9px] text-[var(--color-accent)] mt-0.5">
+          → click to open in Research / Lattice graph
         </div>
       )}
       <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
