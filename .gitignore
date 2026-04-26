@@ -175,3 +175,4 @@ FIX_LOG.md
 # Phase D / canary-deploy host-side evolution state (2026-04-11)
 .host_evolution_data/
 .mycontext
+.venv-host/

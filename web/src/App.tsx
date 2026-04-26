@@ -12,6 +12,7 @@ import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
+import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
@@ -46,6 +47,18 @@ export default function App() {
   // strategy_match chip. Carries a nonce so clicking the same chip
   // twice re-triggers the focus animation in StrategiesTab.
   const [strategyFocus, setStrategyFocus] = useState<{ id: string; nonce: number } | null>(null)
+  // Phase A (temporal replay): global as_of value. 'live' (default)
+  // means use current lattice synth; YYYY-MM-DD reads the snapshot
+  // for that date. Threaded into Research + Strategies tabs so they
+  // stay time-coherent. See docs/design/2026-04-26_temporal-replay-architecture.md
+  const [appAsOf, setAppAsOf] = useState<string>(
+    () => localStorage.getItem('neomind.as_of') ?? 'live',
+  )
+  function setAsOfPersist(next: string) {
+    setAppAsOf(next)
+    if (next === 'live') localStorage.removeItem('neomind.as_of')
+    else localStorage.setItem('neomind.as_of', next)
+  }
   const health = useHealth()
 
   // Global ⌘K / Ctrl+K — command palette. Works from any tab.
@@ -89,9 +102,18 @@ export default function App() {
    * to Research and light up the evidence rows for `symbol`.
    * Nonce bumps every call so clicking the same cite twice still
    * re-triggers the highlight animation.
+   *
+   * Phase 6 followup: also accepts a `widgetId` so the Strategies
+   * tab can deep-link into the lattice graph focused on a specific
+   * L0 widget node (closing the strategy → widget → lattice loop).
    */
-  function jumpToResearch(focus: { symbol?: string }) {
-    setDigestFocus({ symbol: focus.symbol, nonce: Date.now() })
+  function jumpToResearch(focus: { symbol?: string; widgetId?: string; nodeId?: string }) {
+    setDigestFocus({
+      symbol:   focus.symbol,
+      widgetId: focus.widgetId,
+      nodeId:   focus.nodeId,
+      nonce:    Date.now(),
+    })
     setTab('research')
   }
 
@@ -142,6 +164,7 @@ export default function App() {
           <span>K</span>
         </button>
         <div className="flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
+          <AsOfPicker projectId={projectId} value={appAsOf} onChange={setAsOfPersist} />
           <PdtCounter />
           <FinIntegrityBadge />
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
@@ -163,23 +186,39 @@ export default function App() {
         }}
       />
 
-      {/* Active tab */}
-      <main className="flex-1 overflow-hidden">
-        {tab === 'research' && (
+      {/* Active tab.
+          Research + Strategies are always-mounted (display:none when
+          inactive) so local state — selected lattice node, expanded
+          strategy card, scroll position, mode toggles — survives a
+          tab switch. The user reported losing context after a cross-
+          tab jump; this fixes it. Other tabs are conditionally
+          rendered as before since they don't carry rich local state. */}
+      <main className="flex-1 overflow-hidden flex flex-col">
+        <div
+          className="flex-1 overflow-hidden flex flex-col"
+          style={{ display: tab === 'research' ? 'flex' : 'none' }}
+        >
           <ResearchTab
             projectId={projectId}
             onJumpToChat={jumpToChat}
             digestFocus={digestFocus}
             onJumpToStrategies={jumpToStrategies}
+            asOf={appAsOf}
           />
-        )}
-        {tab === 'strategies' && (
+        </div>
+        <div
+          className="flex-1 overflow-hidden flex flex-col"
+          style={{ display: tab === 'strategies' ? 'flex' : 'none' }}
+        >
           <StrategiesTab
             projectId={projectId}
             onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
             focus={strategyFocus}
+            onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
+            onJumpToResearchNode={(nodeId) => jumpToResearch({ nodeId })}
+            asOf={appAsOf}
           />
-        )}
+        </div>
         {tab === 'chat'     && (
           <ChatTab
             projectId={projectId}
