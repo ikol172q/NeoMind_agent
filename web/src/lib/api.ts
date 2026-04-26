@@ -1404,3 +1404,93 @@ export function useFinStrategiesFit(projectId: string) {
     retry: false,
   })
 }
+
+
+// ── Phase 6 followup #1: detailed past run log ───────────────────
+//
+// /api/db/runs (already exists in agent/finance/persistence/api.py)
+// returns the full analysis_runs history — every scheduler tick or
+// manual run leaves a row.  UI surfaces this as a timeline view so
+// the user can audit "what did the agent actually do, when, and
+// did it succeed?".
+
+export interface FinPastRun {
+  run_id: string
+  run_type: 'scheduled' | 'manual' | 'force_rerun' | 'backfill' | string
+  job_name: string
+  started_at: string
+  completed_at: string | null
+  status: 'running' | 'completed' | 'failed' | 'cancelled' | string
+  error_message: string | null
+  universe_size: number | null
+  rows_written: number | null
+  duration_seconds: number | null
+  metadata_json?: string | null
+  metadata?: Record<string, unknown> | null
+}
+
+export function useFinPastRuns(opts?: { jobName?: string; limit?: number }) {
+  const job = opts?.jobName
+  const limit = opts?.limit ?? 50
+  return useQuery({
+    queryKey: ['fin_past_runs', job ?? null, limit],
+    queryFn: () =>
+      fetchJSON<{ count: number; runs: FinPastRun[] }>(
+        `/api/db/runs?limit=${limit}${job ? `&job_name=${encodeURIComponent(job)}` : ''}`,
+      ),
+    refetchInterval: 30_000,
+    staleTime: 10_000,
+  })
+}
+
+
+// ── Phase 6 followup #2: time-aware Strategies ──────────────────
+//
+// /api/strategies/time-aware returns days-until-next-event for each
+// catalog strategy that's event-driven (FOMC, quad witching, Russell
+// rebalance, earnings season, etc).  Strategies without a calendar
+// trigger get null — they're "always-on" (DCA, factor tilts, …).
+
+export interface StrategyTimeAware {
+  id: string
+  days_until: number | null
+  event_label: string | null
+  event_date: string | null   // ISO yyyy-mm-dd
+  urgency: 'imminent' | 'soon' | 'upcoming' | 'distant' | 'none'
+}
+
+export function useFinStrategiesTimeAware(projectId: string) {
+  return useQuery({
+    queryKey: ['fin_strategies_time_aware', projectId],
+    queryFn: () =>
+      fetchJSON<{ count: number; entries: StrategyTimeAware[]; computed_at: string }>(
+        `/api/strategies/time-aware?project_id=${encodeURIComponent(projectId)}`,
+      ),
+    enabled: !!projectId,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Phase 6 followup #3: bilingual one-button switch helper ─────
+//
+// Existing `useLatticeLanguage()` already exposes the active mode
+// ('en' | 'zh-CN-mixed') and `setLatticeLanguage()` flips it
+// globally.  This helper picks the right side of any bilingual
+// `(en, zh)` pair so renders stay in sync with the toggle.
+
+export function pickLang(
+  en: string | null | undefined,
+  zh: string | null | undefined,
+  active: 'en' | 'zh-CN-mixed' | undefined,
+): string {
+  // bilingual fallback — if one side is missing, show the other
+  const enS = (en ?? '').trim()
+  const zhS = (zh ?? '').trim()
+  if (active === 'en') return enS || zhS
+  if (active === 'zh-CN-mixed') return zhS || enS
+  // unknown / loading — show both, "zh / en"
+  if (zhS && enS) return `${zhS} / ${enS}`
+  return zhS || enS
+}

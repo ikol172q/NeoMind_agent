@@ -5,6 +5,7 @@ import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { fmtTs } from '@/lib/utils'
 import { ChevronDown, ChevronRight, RefreshCw, X, Copy, Check } from 'lucide-react'
+import { PastRunsView } from '@/components/widgets/PastRunsView'
 
 type KindFilter = '' | 'request' | 'response' | 'error'
 
@@ -112,6 +113,14 @@ export function AuditTab({ initialReqFilter, onConsumeFilter }: Props) {
         <Button variant="ghost" size="sm" onClick={() => recent.refetch()}>
           <RefreshCw size={11} className={recent.isFetching ? 'animate-spin' : ''} />
         </Button>
+      </div>
+
+      {/* Phase 6 followup #1: detailed past run log — scheduler /
+          analysis_runs history. Lives at top of Audit so the user
+          sees data-side activity (who ran, when, status) right next
+          to LLM-side activity (audit entries below). */}
+      <div className="px-3 pt-3">
+        <PastRunsView title="Past runs (scheduler + manual)" />
       </div>
 
       {/* List */}
