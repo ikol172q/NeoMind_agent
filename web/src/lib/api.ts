@@ -1355,6 +1355,39 @@ export function useFinWidgetCoverage() {
   })
 }
 
+// Reverse map: widget id → strategies that need it. Phase 6 Step 6.
+// Used by LatticeTracePanel to render 'Powered by N strategies' on L0
+// widget nodes — closes the audit loop the other direction.
+
+export interface WidgetReverseStrategy {
+  id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  difficulty: number | null
+  feasible_at_10k: boolean | null
+}
+
+export interface WidgetReverseReport {
+  widget: WidgetMeta & { fields?: string[]; description?: string }
+  strategy_count: number
+  strategies: WidgetReverseStrategy[]
+  explanation: string
+}
+
+export function useWidgetStrategies(widgetId: string | null | undefined) {
+  return useQuery({
+    queryKey: ['widget_strategies', widgetId],
+    queryFn: () =>
+      fetchJSON<WidgetReverseReport>(
+        `/api/lattice/widgets/${encodeURIComponent(widgetId!)}/strategies`,
+      ),
+    enabled: !!widgetId,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
 export function useFinStrategiesFit(projectId: string) {
   return useQuery({
     queryKey: ['fin_strategies_fit', projectId],
