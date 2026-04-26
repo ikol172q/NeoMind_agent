@@ -130,6 +130,131 @@ def lattice_fit(project_id: str = Query(..., description="lattice project_id")) 
     }
 
 
+@router.get("/widget-coverage")
+def widget_coverage() -> Dict[str, Any]:
+    """Matrix view: every (strategy, widget) pairing for audit.
+
+    Returns:
+        {
+          "strategies": [{
+              "id": "covered_call_etf",
+              "name_en": "...", "name_zh": "...",
+              "widgets": [{"id": "options_chain", "status": "planned",
+                            "label_en": "...", "label_zh": "..."}, ...],
+              "available_count": 1, "planned_count": 2,
+          }, ...],
+          "summary": {"total_strategies": 36, "fully_available": 2,
+                       "has_planned_gaps": 34, ...}
+        }
+
+    The cornerstone of Phase 6 Req #5 — the user can audit which
+    strategies are actually backed by current lattice widgets and
+    which are documented-but-not-implemented gaps.
+    """
+    try:
+        from agent.finance.lattice.widget_registry import get_widget, STATUS_AVAILABLE, STATUS_PLANNED
+    except Exception as exc:
+        raise HTTPException(503, f"widget_registry unavailable: {exc}")
+
+    items = _load_catalog()
+    out_strategies: List[Dict[str, Any]] = []
+    fully_available = 0
+    has_planned = 0
+    has_unresolved = 0
+
+    for s in items:
+        widget_ids: List[str] = list(s.get("data_requirement_widgets", []) or [])
+        widgets_meta: List[Dict[str, Any]] = []
+        avail = 0
+        plan = 0
+        unresolved: List[str] = []
+        for wid in widget_ids:
+            w = get_widget(wid)
+            if w is None:
+                unresolved.append(wid)
+                continue
+            widgets_meta.append({
+                "id": w["id"],
+                "status": w["status"],
+                "label_en": w.get("label_en"),
+                "label_zh": w.get("label_zh"),
+                "description": w.get("description"),
+            })
+            if w["status"] == STATUS_AVAILABLE:
+                avail += 1
+            elif w["status"] == STATUS_PLANNED:
+                plan += 1
+
+        if plan == 0 and unresolved == [] and avail > 0:
+            fully_available += 1
+        if plan > 0:
+            has_planned += 1
+        if unresolved:
+            has_unresolved += 1
+
+        out_strategies.append({
+            "id":             s["id"],
+            "name_en":        s.get("name_en"),
+            "name_zh":        s.get("name_zh"),
+            "horizon":        s.get("horizon"),
+            "widgets":        widgets_meta,
+            "available_count": avail,
+            "planned_count":   plan,
+            "unresolved":      unresolved,
+            "free_text_requirements": s.get("data_requirements", []),
+        })
+
+    return {
+        "strategies": out_strategies,
+        "summary": {
+            "total_strategies":  len(items),
+            "fully_available":   fully_available,
+            "has_planned_gaps":  has_planned,
+            "has_unresolved":    has_unresolved,
+        },
+        "explanation": (
+            "Bidirectional knowledge-graph audit (Phase 6 Step 4). "
+            "Each strategy lists its declared widget requirements, with "
+            "status per widget. 'available' = lattice currently emits L1 "
+            "obs from this widget; 'planned' = referenced by ≥1 strategy "
+            "but no generator yet (explicit data gap). UI Strategy card "
+            "can render this as ✓/⚠ chips."
+        ),
+    }
+
+
+@router.get("/{strategy_id}/widget-status")
+def strategy_widget_status(strategy_id: str) -> Dict[str, Any]:
+    """Forward map for a single strategy: id → widget statuses."""
+    try:
+        from agent.finance.lattice.widget_registry import get_widget
+    except Exception as exc:
+        raise HTTPException(503, f"widget_registry unavailable: {exc}")
+
+    match = next((s for s in _load_catalog() if s.get("id") == strategy_id), None)
+    if match is None:
+        raise HTTPException(404, f"unknown strategy {strategy_id!r}")
+
+    widget_ids: List[str] = list(match.get("data_requirement_widgets", []) or [])
+    widgets_meta = [
+        {
+            "id":          w["id"] if (w := get_widget(wid)) else wid,
+            "status":      (get_widget(wid) or {}).get("status", "unknown"),
+            "label_en":    (get_widget(wid) or {}).get("label_en"),
+            "label_zh":    (get_widget(wid) or {}).get("label_zh"),
+            "description": (get_widget(wid) or {}).get("description"),
+        }
+        for wid in widget_ids
+    ]
+    return {
+        "strategy_id":              strategy_id,
+        "name_en":                  match.get("name_en"),
+        "name_zh":                  match.get("name_zh"),
+        "free_text_requirements":   match.get("data_requirements", []),
+        "widgets":                  widgets_meta,
+    }
+
+
 @router.get("/{strategy_id}")
 def get_strategy(strategy_id: str) -> Dict[str, Any]:
     """Return one strategy's YAML row + its full markdown body."""
