@@ -404,9 +404,15 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           className="absolute top-0 left-0 pointer-events-none"
           style={{
             right: 180,  // leave room for the layer-help-strip on the right
-            height: 28,
-            zIndex: 25,  // above SVG (z=auto/0), below layer-help-strip (z=20 → bumped)
-            background: 'linear-gradient(to bottom, var(--color-bg) 60%, transparent)',
+            height: 32,
+            zIndex: 25,  // above SVG (z=auto/0), below layer-help-strip (z=30)
+            // Solid background so labels and the gaps BETWEEN labels
+            // both fully occlude any SVG content rising into the band.
+            // Earlier gradient bottom ~40% was transparent → user saw
+            // L1/L1.5/L3 nodes "bleeding through" between labels.
+            background:    'var(--color-bg)',
+            borderBottom:  '1px solid var(--color-border)',
+            boxShadow:     '0 2px 8px rgba(0,0,0,0.55)',
           }}
         >
           {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
