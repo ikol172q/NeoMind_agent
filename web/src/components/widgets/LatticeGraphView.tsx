@@ -381,23 +381,6 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
         >{Math.round(view.scale * 100)}%</div>
       </div>
 
-      {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
-          viewport top, always accessible regardless of zoom/pan. */}
-      <div
-        className="absolute top-2 right-2 z-10 flex items-center gap-1 pointer-events-none"
-        data-testid="lattice-layer-help-strip"
-      >
-        {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
-          <LayerHelpButton
-            key={layer}
-            layer={layer}
-            open={explainLayer === layer}
-            onToggle={() => setExplainLayer(l => l === layer ? null : layer)}
-            onClose={() => setExplainLayer(null)}
-          />
-        ))}
-      </div>
-
       <div
         ref={bindViewport}
         className="flex-1 min-w-0 overflow-hidden relative"
@@ -409,6 +392,24 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           userSelect: 'none',
         }}
       >
+        {/* V10·A1: layer explainer strip — 5 `?` buttons fixed at
+            graph viewport top-right, always above the SVG / pan
+            region. Lives INSIDE the viewport (not the wrap) so the
+            trace-panel sibling never covers it. */}
+        <div
+          className="absolute top-2 right-2 z-20 flex items-center gap-1 pointer-events-none"
+          data-testid="lattice-layer-help-strip"
+        >
+          {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => (
+            <LayerHelpButton
+              key={layer}
+              layer={layer}
+              open={explainLayer === layer}
+              onToggle={() => setExplainLayer(l => l === layer ? null : layer)}
+              onClose={() => setExplainLayer(null)}
+            />
+          ))}
+        </div>
         <div
           ref={wrapperRef}
           data-testid="lattice-svg-viewport"
