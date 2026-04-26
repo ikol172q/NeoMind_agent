@@ -122,9 +122,10 @@ class TestParseStructuredEdgeCases(unittest.TestCase):
 
     def test_empty_params_dict(self):
         """Empty params dict should work."""
-        response = '<tool_call>\n{"tool": "LS", "params": {}}\n</tool_call>'
+        response = '<tool_call>\n{"tool": "SomeTool", "params": {}}\n</tool_call>'
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)
+        self.assertEqual(tc.tool_name, "SomeTool")
         self.assertEqual(tc.params, {})
 
     def test_boolean_params(self):
@@ -822,10 +823,10 @@ class TestMismatchedClosingTag(unittest.TestCase):
 
     def test_structured_with_tool_result_closing(self):
         """<tool_call>...JSON...</tool_result> should still parse."""
-        response = '<tool_call>\n{"tool": "LS", "params": {}}\n</tool_result>'
+        response = '<tool_call>\n{"tool": "SomeTool", "params": {}}\n</tool_result>'
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)
-        self.assertEqual(tc.tool_name, "LS")
+        self.assertEqual(tc.tool_name, "SomeTool")
         self.assertEqual(tc.params, {})
 
     def test_structured_read_with_tool_result_closing(self):
@@ -844,28 +845,28 @@ class TestMismatchedClosingTag(unittest.TestCase):
 
     def test_normal_tool_call_closing_still_works(self):
         """Regular </tool_call> closing must still work."""
-        response = '<tool_call>\n{"tool": "LS", "params": {}}\n</tool_call>'
+        response = '<tool_call>\n{"tool": "SomeTool", "params": {}}\n</tool_call>'
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)
-        self.assertEqual(tc.tool_name, "LS")
+        self.assertEqual(tc.tool_name, "SomeTool")
 
     def test_mismatched_tag_with_surrounding_text(self):
         """Full response with prose + mismatched closing."""
         response = (
             "我来查看整个文件夹的结构和内容，然后分析架构。\n\n"
             "<tool_call>\n"
-            '{"tool": "LS", "params": {}}\n'
+            '{"tool": "SomeTool", "params": {}}\n'
             "</tool_result>"
         )
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)
-        self.assertEqual(tc.tool_name, "LS")
+        self.assertEqual(tc.tool_name, "SomeTool")
 
     def test_strip_mismatched_tag(self):
         """strip_tool_call should work with mismatched closing tag."""
         response = (
             "我来查看。\n\n"
-            '<tool_call>\n{"tool": "LS", "params": {}}\n</tool_result>'
+            '<tool_call>\n{"tool": "SomeTool", "params": {}}\n</tool_result>'
         )
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)

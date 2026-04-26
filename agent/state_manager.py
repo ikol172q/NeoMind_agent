@@ -184,8 +184,11 @@ class StateManager:
             compact_enabled=self.config.get("compact.enabled", True),
         )
 
-        # Feature flags
-        self.features = FeatureFlags()
+        # Feature gates — unified registry (replaces FeatureFlags + FeatureFlagService)
+        from agent.agentic.feature_gate_registry import get_gate_registry
+        self.gates = get_gate_registry()
+        # Backward compat: old code referencing self.features.is_enabled()
+        self.features = self.gates
 
         # State change listeners
         self._listeners: List[Callable[[str, Any], None]] = []
@@ -297,5 +300,5 @@ class StateManager:
                 "elapsed": self.session.elapsed_display(),
                 "cost": f"${self.session.total_cost_usd:.4f}",
             },
-            "features": self.features.get_all(),
+            "features": self.gates.list_all(),
         }

@@ -366,19 +366,16 @@ class AgenticLoop:
             tool_call = parser.parse(current_response)
             if not tool_call:
                 if '<tool_call>' in current_response:
-                    # Log full response for debugging PARSE FAILED issues
-                    logger.error(
-                        f"[agentic] Response contains <tool_call> but parser returned None! "
-                        f"Response snippet: {current_response[:300]}"
+                    # Log a terse diagnostic — NEVER expose raw LLM output
+                    # to the terminal. The raw content leaks through stderr
+                    # when the root logger has a console handler.
+                    logger.info(
+                        f"[agentic] tool_call tag found but parser returned None "
+                        f"(response_len={len(current_response)}). "
+                        f"Likely malformed JSON — inspect debug log for details."
                     )
-                    logger.error(
-                        f"[agentic] PARSE FAILED full output ({len(current_response)} chars): "
-                        f"{current_response[:1000]}"
-                    )
-                    # Internal diagnostic — never expose to the user terminal.
                     logger.debug(
-                        f"[agentic] tool_call tag present but PARSE FAILED. "
-                        f"Snippet: {current_response[:200]}"
+                        f"[agentic] Parse failure — response: {current_response[:500]}"
                     )
                 yield AgenticEvent(type="done", iteration=iteration)
                 return

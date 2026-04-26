@@ -88,9 +88,11 @@ class ToolCallParser:
     }
 
     # Structured format: <tool_call>{"tool": "X", "params": {...}}</tool_call>
-    # Tolerates mismatched closing tags like </tool_result> (LLM hallucination)
+    # Tolerates mismatched closing tags (LLM hallucination: </tool_result>,
+    # </tool_report>, truncated </tool_re, etc.)
+    # Uses greedy .* to match outermost braces when JSON has nested objects.
     _STRUCTURED_RE = re.compile(
-        r'<tool_call>\s*(\{.*?\})\s*</tool_(?:call|result)>',
+        r'<tool_call>\s*(\{.*\})\s*</tool_(?:call|result|report|re)?>?\s*',
         re.DOTALL,
     )
 
@@ -341,6 +343,58 @@ class ToolCallParser:
             result.append(ch)
         return ''.join(result)
 
+    @staticmethod
+    def _fix_json_quotes(raw_json: str) -> str:
+        """Fix unescaped double quotes inside JSON string values.
+
+        LLMs often write shell commands with double quotes inside JSON
+        strings, e.g. {"command": "python3 -c "import x""} instead of
+        escaping or using single quotes. This breaks json.loads().
+
+        Heuristic: scan character by character, tracking string state.
+        When we see a quote inside a string, peek at the next non-space
+        char. If it's JSON syntax (, : } ]) or end-of-string, this is
+        the closing quote — don't escape it. Otherwise escape it.
+        """
+        result = []
+        in_string = False
+        escape_next = False
+        i = 0
+        while i < len(raw_json):
+            ch = raw_json[i]
+            if escape_next:
+                result.append(ch)
+                escape_next = False
+                i += 1
+                continue
+            if ch == '\\':
+                result.append(ch)
+                escape_next = True
+                i += 1
+                continue
+            if ch == '"':
+                if in_string:
+                    # Peek at next non-whitespace char
+                    j = i + 1
+                    while j < len(raw_json) and raw_json[j] in ' \t\n\r':
+                        j += 1
+                    next_ch = raw_json[j] if j < len(raw_json) else ''
+                    if next_ch in ('', ',', ':', '}', ']'):
+                        # Structural quote — closes the string
+                        in_string = False
+                        result.append(ch)
+                    else:
+                        # Content quote — escape it
+                        result.append('\\"')
+                else:
+                    in_string = True
+                    result.append(ch)
+                i += 1
+                continue
+            result.append(ch)
+            i += 1
+        return ''.join(result)
+
     def _parse_structured(self, match: re.Match) -> Optional[ToolCall]:
         """Parse a <tool_call> JSON block.
 
@@ -361,7 +415,17 @@ class ToolCallParser:
             try:
                 data = json.loads(self._fix_json_newlines(raw))
             except json.JSONDecodeError:
-                return None
+                # Retry with quoted-string repair (LLM sometimes puts
+                # unescaped double quotes inside JSON string values,
+                # e.g. "command": "python3 -c "import x"" )
+                try:
+                    data = json.loads(self._fix_json_quotes(raw))
+                except json.JSONDecodeError:
+                    # Last resort: fix both newlines AND quotes
+                    try:
+                        data = json.loads(self._fix_json_quotes(self._fix_json_newlines(raw)))
+                    except json.JSONDecodeError:
+                        return None
 
         if not isinstance(data, dict):
             return None

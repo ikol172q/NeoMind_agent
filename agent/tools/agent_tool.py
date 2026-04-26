@@ -255,6 +255,51 @@ class AgentTool:
 
         return final_results
 
+    def spawn_with_type(
+        self,
+        description: str,
+        builtin_type,  # BuiltinAgentType from agent.agentic.builtin_agents
+        timeout: Optional[float] = None,
+        context: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Spawn a task using a built-in agent type (Explore, Plan, Verify).
+
+        The built-in type's tool allowlist, recommended model, and permission
+        mode are stored in task metadata so the caller can configure the
+        sub-agent session accordingly.
+
+        Args:
+            description: Task description
+            builtin_type: BuiltinAgentType instance (e.g. EXPLORE_AGENT)
+            timeout: Override default timeout
+            context: Additional context
+
+        Returns:
+            Task ID
+        """
+        task_id = str(uuid.uuid4())[:8]
+
+        task = AgentTask(
+            id=task_id,
+            description=description,
+            status=AgentTaskStatus.PENDING,
+            metadata={
+                'type': builtin_type.agent_type,
+                'timeout': timeout or self.default_timeout,
+                'context': context or {},
+                'agent_type': builtin_type.agent_type,
+                'tool_allowlist': list(builtin_type.tool_allowlist),
+                'recommended_model': builtin_type.recommended_model,
+                'permission_mode': builtin_type.permission_mode,
+                'system_prompt_addition': builtin_type.system_prompt_addition,
+                'max_turns': builtin_type.max_turns,
+                'is_background': builtin_type.is_background,
+            }
+        )
+
+        self._tasks[task_id] = task
+        return task_id
+
     def get_task(self, task_id: str) -> Optional[AgentTask]:
         """Get task by ID."""
         return self._tasks.get(task_id)

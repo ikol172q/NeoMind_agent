@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 
 __all__ = [
     "CoordinatorPhase",
+    "WorkerType",
     "WorkerTask",
     "PhaseResult",
     "CoordinationResult",
@@ -104,6 +105,23 @@ class CoordinatorPhase(Enum):
     VERIFICATION = "verification"
 
 
+class WorkerType(Enum):
+    """Specialized worker classification for tool allowlisting.
+
+    Each worker type gets a specific tool set matching its role:
+      - EXPLORE: Read-only investigation (Read, Grep, Glob, LS, WebSearch)
+      - PLAN: Architecture planning (same as EXPLORE + Scratchpad writes)
+      - IMPLEMENT: Code changes (Read, Write, Edit, Bash, Git)
+      - VERIFY: Test/validation (Read, Bash for tests, Grep)
+      - GENERAL: Full access minus excluded tools
+    """
+    EXPLORE = "explore"
+    PLAN = "plan"
+    IMPLEMENT = "implement"
+    VERIFY = "verify"
+    GENERAL = "general"
+
+
 @dataclass
 class WorkerTask:
     """A unit of work dispatched to a worker agent."""
@@ -160,16 +178,53 @@ class Coordinator:
         single phase.
     """
 
+    # ── Per-worker-type tool allowlists ────────────────────────────────
+    # Mirrors Claude Code's ASYNC_AGENT_ALLOWED_TOOLS + per-built-in-type sets.
+
     # Tools that workers CANNOT use (prevents recursion, system destabilization)
-    WORKER_EXCLUDED_TOOLS = {
+    WORKER_EXCLUDED_TOOLS = frozenset({
         'TeamCreate', 'TeamDelete', 'SendMessage', 'SyntheticOutput',
         'SelfEditor', 'EnterPlanMode', 'ExitPlanMode',
+        'TaskOutput', 'AskUserQuestion', 'CronCreate', 'CronDelete',
+    })
+
+    # Read-only tools for EXPLORE workers
+    EXPLORE_TOOLS = frozenset({
+        'Read', 'Grep', 'Glob', 'LS', 'WebSearch', 'WebFetch',
+        'ListMcpResources', 'ReadMcpResource',
+    })
+
+    # Plan workers get explore tools + scratchpad write access
+    PLAN_TOOLS = frozenset(EXPLORE_TOOLS | {
+        'Write',  # For scratchpad spec writing
+    })
+
+    # Implementation workers get full write access
+    IMPLEMENT_TOOLS = frozenset(EXPLORE_TOOLS | {
+        'Write', 'Edit', 'Bash', 'NotebookEdit', 'Skill',
+        'TaskCreate', 'TaskUpdate', 'TaskList', 'TaskGet',
+    })
+
+    # Verification workers: read + test execution
+    VERIFY_TOOLS = frozenset({
+        'Read', 'Grep', 'Glob', 'LS', 'Bash', 'WebFetch',
+        'TaskCreate', 'TaskUpdate',
+    })
+
+    # General workers: all except excluded
+    GENERAL_EXCLUDED = WORKER_EXCLUDED_TOOLS
+
+    # Map WorkerType -> tool set
+    WORKER_TYPE_TOOLS: Dict[WorkerType, frozenset] = {
+        WorkerType.EXPLORE: EXPLORE_TOOLS,
+        WorkerType.PLAN: PLAN_TOOLS,
+        WorkerType.IMPLEMENT: IMPLEMENT_TOOLS,
+        WorkerType.VERIFY: VERIFY_TOOLS,
+        WorkerType.GENERAL: None,  # None = all minus WORKER_EXCLUDED_TOOLS
     }
 
-    # In simple mode, workers only get these tools
-    SIMPLE_MODE_TOOLS = {
-        'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS',
-    }
+    # Backward compat — legacy simple_mode tool set
+    SIMPLE_MODE_TOOLS = frozenset({'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS'})
 
     # Max messages per worker to prevent OOM (whale session: 292 agents → 36GB RSS)
     MAX_WORKER_MESSAGES = 500
@@ -193,35 +248,49 @@ class Coordinator:
     # Worker Tool Filtering & Message Caps
     # ------------------------------------------------------------------
 
-    def get_worker_allowed_tools(self, simple_mode: bool = False) -> set:
-        """Get the set of tool names a worker is allowed to use.
+    @classmethod
+    def get_allowed_tools(cls, worker_type: WorkerType = WorkerType.GENERAL,
+                          simple_mode: bool = False) -> Optional[frozenset]:
+        """Get the set of tool names a worker of given type is allowed to use.
 
         Args:
-            simple_mode: If True, workers only get basic file/shell tools.
-                         If False, workers get all tools except excluded ones.
+            worker_type: Classification of worker (EXPLORE, PLAN, IMPLEMENT, VERIFY, GENERAL)
+            simple_mode: If True, force minimal tool set (Bash + Read + Edit)
+
+        Returns:
+            frozenset of tool names, or None if "allow all minus excluded."
         """
         if simple_mode:
-            return set(self.SIMPLE_MODE_TOOLS)
-        # Full mode: return None to mean "all except excluded"
-        # Caller should filter their tool registry
-        return None  # Signals "use all minus WORKER_EXCLUDED_TOOLS"
+            return frozenset({'Read', 'Write', 'Edit', 'Bash', 'Grep', 'Glob', 'LS'})
+        allowed = cls.WORKER_TYPE_TOOLS.get(worker_type)
+        if allowed is not None:
+            return allowed
+        # GENERAL or unknown: return None (caller filters via WORKER_EXCLUDED_TOOLS)
+        return None
 
-    def filter_worker_tools(self, all_tools: Dict[str, Any],
+    def get_worker_allowed_tools(self, simple_mode: bool = False) -> Optional[frozenset]:
+        """Legacy wrapper — use get_allowed_tools(worker_type) instead."""
+        return self.get_allowed_tools(WorkerType.GENERAL, simple_mode=simple_mode)
+
+    @classmethod
+    def filter_worker_tools(cls, all_tools: Dict[str, Any],
+                            worker_type: WorkerType = WorkerType.GENERAL,
                             simple_mode: bool = False) -> Dict[str, Any]:
-        """Filter a tool registry dict for worker use.
+        """Filter a tool registry for worker use based on worker type.
 
         Args:
             all_tools: Dict of tool_name → ToolDefinition
-            simple_mode: If True, only allow SIMPLE_MODE_TOOLS
+            worker_type: Worker classification determining tool access
+            simple_mode: If True, force minimal tool set
 
         Returns:
-            Filtered dict with excluded tools removed.
+            Filtered dict with unauthorized tools removed.
         """
-        if simple_mode:
-            return {k: v for k, v in all_tools.items()
-                    if k in self.SIMPLE_MODE_TOOLS}
+        allowed = cls.get_allowed_tools(worker_type, simple_mode=simple_mode)
+        if allowed is not None:
+            return {k: v for k, v in all_tools.items() if k in allowed}
         return {k: v for k, v in all_tools.items()
-                if k not in self.WORKER_EXCLUDED_TOOLS}
+                if k not in cls.WORKER_EXCLUDED_TOOLS}
 
     @staticmethod
     def cap_worker_messages(messages: List[Dict[str, Any]],
@@ -261,8 +330,99 @@ class Coordinator:
     # Scratchpad — shared temp directory for cross-worker knowledge
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def is_scratchpad_gate_enabled() -> bool:
+        """Check if the scratchpad feature gate is enabled.
+
+        The scratchpad gate (SCRATCHPAD) controls whether workers can share
+        findings via a shared directory. When disabled, workers communicate
+        only through the coordinator.
+        """
+        try:
+            from agent.agentic.feature_gate_registry import gates
+            return gates.is_enabled('SCRATCHPAD', default=True)
+        except ImportError:
+            return True  # If registry unavailable, default to enabled
+
+    @classmethod
+    def is_coordinator_mode(cls) -> bool:
+        """Check if coordinator mode is active (via env var + feature gate)."""
+        try:
+            from agent.agentic.feature_gate_registry import gates
+            if not gates.is_enabled('COORDINATOR_MODE', default=True):
+                return False
+        except ImportError:
+            pass
+        return os.environ.get('NEOMIND_COORDINATOR_MODE', '') == '1'
+
+    @classmethod
+    def match_session_mode(cls, session_mode: Optional[str]) -> Optional[str]:
+        """Ensure coordinator mode matches a resumed session's stored mode.
+
+        If the current coordinator mode doesn't match the session, flip the
+        environment variable so is_coordinator_mode() returns the correct value.
+
+        Returns:
+            Warning message if mode was switched, or None.
+        """
+        if session_mode is None:
+            return None
+
+        current = cls.is_coordinator_mode()
+        session_is_coordinator = session_mode == 'coordinator'
+
+        if current == session_is_coordinator:
+            return None
+
+        if session_is_coordinator:
+            os.environ['NEOMIND_COORDINATOR_MODE'] = '1'
+            return 'Entered coordinator mode to match resumed session.'
+        else:
+            os.environ.pop('NEOMIND_COORDINATOR_MODE', None)
+            return 'Exited coordinator mode to match resumed session.'
+
+    @classmethod
+    def get_worker_context(cls, worker_type: WorkerType = WorkerType.GENERAL,
+                           scratchpad_dir: Optional[str] = None,
+                           mcp_server_names: Optional[List[str]] = None) -> str:
+        """Build a context string describing what tools a worker has access to.
+
+        Args:
+            worker_type: Worker classification
+            scratchpad_dir: If provided and scratchpad gate enabled, include path
+            mcp_server_names: If provided, list of MCP server names
+
+        Returns:
+            Context string for injection into worker system prompt.
+        """
+        allowed = cls.get_allowed_tools(worker_type)
+        if allowed is not None:
+            tool_names = sorted(allowed)
+        else:
+            tool_names = ['all tools except'] + sorted(cls.WORKER_EXCLUDED_TOOLS)
+
+        parts = [f"Worker ({worker_type.value}) has access to: {', '.join(tool_names)}"]
+
+        if mcp_server_names:
+            parts.append(f"MCP servers: {', '.join(mcp_server_names)}")
+
+        if scratchpad_dir and cls.is_scratchpad_gate_enabled():
+            parts.append(
+                f"Scratchpad directory: {scratchpad_dir} — "
+                "workers can read and write here without permission prompts"
+            )
+
+        return '\n'.join(parts)
+
     def _create_scratchpad(self) -> str:
-        """Create a temporary scratchpad directory for this coordination run."""
+        """Create a temporary scratchpad directory for this coordination run.
+
+        Only creates if the scratchpad gate is enabled.
+        """
+        if not self.is_scratchpad_gate_enabled():
+            logger.info("Coordinator: scratchpad gate disabled, skipping creation")
+            self._scratchpad_dir = None
+            return None
         self._scratchpad_dir = tempfile.mkdtemp(prefix='neomind_scratch_')
         logger.info("Coordinator: scratchpad created at %s", self._scratchpad_dir)
         return self._scratchpad_dir

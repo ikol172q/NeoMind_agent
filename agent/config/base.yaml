@@ -231,3 +231,13 @@ agent:
     compression_strategy: truncate
     keep_system_messages: true
     keep_recent_messages: 5
+  # Gate-controlled features — maps to FeatureGateRegistry.is_enabled(name)
+  # Resolution: env → runtime → config file → YAML (here) → default
+  features:
+    COORDINATOR_MODE: true
+    EVOLUTION: true
+    SCRATCHPAD: true
+    SESSION_CHECKPOINT: true
+    DEFERRED_TOOL_LOADING: true
+    DENIAL_TRACKING: true
+    BUILTIN_AGENTS: true

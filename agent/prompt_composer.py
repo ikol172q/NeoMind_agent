@@ -72,6 +72,25 @@ class DynamicPromptComposer:
         self._cached_static: Optional[str] = None
         self._cache_dirty = True
 
+        # Default output efficiency section (like Claude Code's getOutputEfficiencySection)
+        self.set_static(
+            "output_efficiency",
+            "# Output efficiency\n\n"
+            "IMPORTANT: Go straight to the point. Try the simplest approach first "
+            "without going in circles. Do not overdo it. Be extra concise.\n\n"
+            "Keep your text output brief and direct. Lead with the answer or action, "
+            "not the reasoning. Skip filler words, preamble, and unnecessary transitions. "
+            "Do not restate what the user said — just do it.\n\n"
+            "Focus text output on:\n"
+            "- Decisions that need the user's input\n"
+            "- High-level status updates at natural milestones\n"
+            "- Errors or blockers that change the plan\n\n"
+            "If you can say it in one sentence, don't use three. "
+            "Prefer short, direct sentences over long explanations. "
+            "This does not apply to code or tool calls.",
+            priority=95,  # Near the end but before budget_status
+        )
+
     # ── Static section management ──────────────────────────────────────
 
     def set_static(self, name: str, content: str, priority: int = 50):
