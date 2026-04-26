@@ -16,8 +16,8 @@
  */
 
 import { useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Clock, AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react'
-import { useFinPastRuns, type FinPastRun } from '@/lib/api'
+import { ChevronDown, ChevronRight, Clock, AlertTriangle, CheckCircle2, RefreshCw, Database } from 'lucide-react'
+import { useFinPastRuns, useFinRunRows, type FinPastRun } from '@/lib/api'
 
 
 function formatDuration(secs: number | null): string {
@@ -115,7 +115,83 @@ function PastRunRow({ row }: { row: FinPastRun }) {
               </pre>
             </details>
           )}
+          {/* Phase 6 followup: drill-down into the actual rows this
+              run wrote, grouped by target table. Lazy-fetched only on
+              expand. */}
+          <RunRowsDrilldown runId={row.run_id} jobName={row.job_name} />
         </div>
+      )}
+    </div>
+  )
+}
+
+
+/** Drill-down: what rows did this run actually write?
+ *  Lazy-fetches /api/db/runs/{run_id}/rows on first render. */
+function RunRowsDrilldown({ runId, jobName }: { runId: string; jobName: string }) {
+  const q = useFinRunRows(runId, true)
+  if (q.isLoading) return (
+    <div className="mt-1 italic">loading rows written by this run…</div>
+  )
+  if (q.isError) return (
+    <div className="mt-1 text-[var(--color-red,#f06060)]">
+      drill-down failed: {(q.error as Error).message}
+    </div>
+  )
+  const data = q.data
+  if (!data) return null
+  const tables = Object.entries(data.by_table).filter(([, t]) => (t.count ?? 0) > 0)
+
+  return (
+    <div className="mt-1.5 flex flex-col gap-1">
+      <div className="flex items-center gap-1 text-[9.5px] uppercase tracking-wider text-[var(--color-dim)]">
+        <Database size={9} />
+        <span>Rows written ({data.total_rows} total)</span>
+      </div>
+      {tables.length === 0 ? (
+        <div className="italic text-[8.5px]">
+          This run produced 0 persistent rows.
+          {jobName === 'compliance_check' && ' (Normal — no wash sale / PDT events to detect.)'}
+        </div>
+      ) : (
+        tables.map(([tbl, info]) => (
+          <details key={tbl} className="border border-[var(--color-border)] rounded">
+            <summary className="cursor-pointer px-1.5 py-0.5 text-[9px] hover:bg-[var(--color-bg)]/40 flex items-center gap-1">
+              <span className="font-mono text-[var(--color-text)]">{tbl}</span>
+              <span className="text-[var(--color-accent)]">+{info.count}</span>
+              {info.match_method && (
+                <span className="italic text-[8px]">({info.match_method})</span>
+              )}
+            </summary>
+            {info.rows.length > 0 && (
+              <div className="px-1.5 pb-1 overflow-x-auto">
+                <table className="text-[8.5px] border-collapse w-full font-mono">
+                  <thead>
+                    <tr className="text-[var(--color-dim)]">
+                      {Object.keys(info.rows[0]).slice(0, 8).map((k) => (
+                        <th key={k} className="text-left pr-2 pb-0.5 border-b border-[var(--color-border)]">{k}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {info.rows.slice(0, 20).map((r, i) => (
+                      <tr key={i} className="text-[var(--color-text)]">
+                        {Object.keys(info.rows[0]).slice(0, 8).map((k) => (
+                          <td key={k} className="pr-2 py-0 truncate max-w-[140px]" title={String(r[k] ?? '')}>
+                            {String(r[k] ?? '—')}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                {info.rows.length > 20 && (
+                  <div className="text-[8px] italic mt-0.5">…+{info.rows.length - 20} more</div>
+                )}
+              </div>
+            )}
+          </details>
+        ))
       )}
     </div>
   )

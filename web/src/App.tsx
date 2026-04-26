@@ -89,9 +89,17 @@ export default function App() {
    * to Research and light up the evidence rows for `symbol`.
    * Nonce bumps every call so clicking the same cite twice still
    * re-triggers the highlight animation.
+   *
+   * Phase 6 followup: also accepts a `widgetId` so the Strategies
+   * tab can deep-link into the lattice graph focused on a specific
+   * L0 widget node (closing the strategy → widget → lattice loop).
    */
-  function jumpToResearch(focus: { symbol?: string }) {
-    setDigestFocus({ symbol: focus.symbol, nonce: Date.now() })
+  function jumpToResearch(focus: { symbol?: string; widgetId?: string }) {
+    setDigestFocus({
+      symbol:   focus.symbol,
+      widgetId: focus.widgetId,
+      nonce:    Date.now(),
+    })
     setTab('research')
   }
 
@@ -178,6 +186,7 @@ export default function App() {
             projectId={projectId}
             onJumpToChat={(p, ctx) => jumpToChat(p, ctx)}
             focus={strategyFocus}
+            onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
           />
         )}
         {tab === 'chat'     && (

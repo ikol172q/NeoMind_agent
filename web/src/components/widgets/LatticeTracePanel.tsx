@@ -18,6 +18,9 @@ interface Props {
   projectId: string
   onClose: () => void
   onSelectNodeById: (id: string) => void
+  /** Phase 6 followup: callback to jump to Strategies tab from
+   *  reverse-map chips on L0 widget nodes. */
+  onJumpToStrategies?: (strategyId: string) => void
 }
 
 const PROVENANCE_LABEL: Record<string, string> = {
@@ -29,7 +32,7 @@ const PROVENANCE_LABEL: Record<string, string> = {
 }
 
 export function LatticeTracePanel({
-  selection, graph, projectId, onClose, onSelectNodeById,
+  selection, graph, projectId, onClose, onSelectNodeById, onJumpToStrategies,
 }: Props) {
   if (!selection) {
     return (
@@ -62,7 +65,7 @@ export function LatticeTracePanel({
       <div className="flex-1 overflow-y-auto p-3 text-[11px] text-[var(--color-text)] leading-[1.55]">
         {selection.type === 'node'
           ? <>
-              <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} />
+              <NodeDetail node={selection.node} onSelectNodeById={onSelectNodeById} onJumpToStrategies={onJumpToStrategies} />
               <DeepTraceSection node={selection.node} projectId={projectId} />
             </>
           : <EdgeDetail edge={selection.edge} graph={graph} onSelectNodeById={onSelectNodeById} />
@@ -76,10 +79,11 @@ export function LatticeTracePanel({
 // ── Node detail ────────────────────────────────────────
 
 function NodeDetail({
-  node, onSelectNodeById,
+  node, onSelectNodeById, onJumpToStrategies,
 }: {
   node: LatticeGraphNode
   onSelectNodeById: (id: string) => void
+  onJumpToStrategies?: (strategyId: string) => void
 }) {
   const prov = node.provenance
   const attrs = node.attrs as Record<string, unknown>
@@ -158,7 +162,7 @@ function NodeDetail({
           from a widget node in the graph, see *all strategies that
           depend on it*. */}
       {node.layer === 'L0' && typeof attrs.widget === 'string' && (
-        <WidgetStrategiesSection widgetId={attrs.widget} />
+        <WidgetStrategiesSection widgetId={attrs.widget} onJumpToStrategies={onJumpToStrategies} />
       )}
 
       <Section title="Attributes">
@@ -216,7 +220,7 @@ function RawPayloadSection({ payload }: { payload: unknown }) {
  * declared as data_requirements anywhere because they're "checks"
  * not "data feeds").
  */
-function WidgetStrategiesSection({ widgetId }: { widgetId: string }) {
+function WidgetStrategiesSection({ widgetId, onJumpToStrategies }: { widgetId: string; onJumpToStrategies?: (strategyId: string) => void }) {
   const q = useWidgetStrategies(widgetId)
 
   if (!q.data) {
@@ -253,21 +257,39 @@ function WidgetStrategiesSection({ widgetId }: { widgetId: string }) {
         </div>
       ) : (
         <div className="flex flex-wrap gap-1">
-          {strategies.map((s) => (
-            <span
-              key={s.id}
-              data-testid={`reverse-strategy-${s.id}`}
-              data-strategy-id={s.id}
-              className="px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[9.5px] font-mono cursor-help hover:border-[var(--color-accent)]/60 transition"
-              title={
-                `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
-                `horizon: ${s.horizon} · difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
-                `${s.feasible_at_10k ? '✓ feasible at $10k' : '⚠ requires more capital'}`
-              }
-            >
-              {s.id}
-            </span>
-          ))}
+          {strategies.map((s) => {
+            const tooltipText =
+              `${s.name_en ?? ''} — ${s.name_zh ?? ''}\n` +
+              `horizon: ${s.horizon} · difficulty: ${'★'.repeat(s.difficulty ?? 0)}\n` +
+              `${s.feasible_at_10k ? '✓ feasible at $10k' : '⚠ requires more capital'}` +
+              (onJumpToStrategies ? '\n→ click to open in Strategies tab' : '')
+            const baseClass = 'px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[9.5px] font-mono transition'
+            if (onJumpToStrategies) {
+              return (
+                <button
+                  key={s.id}
+                  data-testid={`reverse-strategy-${s.id}`}
+                  data-strategy-id={s.id}
+                  onClick={() => onJumpToStrategies(s.id)}
+                  className={`${baseClass} cursor-pointer text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 hover:border-[var(--color-accent)]`}
+                  title={tooltipText}
+                >
+                  {s.id}
+                </button>
+              )
+            }
+            return (
+              <span
+                key={s.id}
+                data-testid={`reverse-strategy-${s.id}`}
+                data-strategy-id={s.id}
+                className={`${baseClass} cursor-help hover:border-[var(--color-accent)]/60`}
+                title={tooltipText}
+              >
+                {s.id}
+              </span>
+            )
+          })}
         </div>
       )}
 

@@ -1444,6 +1444,34 @@ export function useFinPastRuns(opts?: { jobName?: string; limit?: number }) {
 }
 
 
+export interface FinRunRows {
+  run: FinPastRun
+  total_rows: number
+  by_table: Record<string, {
+    count: number
+    rows: Array<Record<string, unknown>>
+    error?: string
+    match_method?: string
+  }>
+  explanation: string
+}
+
+/** Phase 6 followup: drill-down into the actual rows written by one
+ *  run. Fired only when a row is expanded — keeps closed rows free. */
+export function useFinRunRows(runId: string | null | undefined, enabled: boolean) {
+  return useQuery({
+    queryKey: ['fin_run_rows', runId],
+    queryFn: () =>
+      fetchJSON<FinRunRows>(
+        `/api/db/runs/${encodeURIComponent(runId!)}/rows?limit=100`,
+      ),
+    enabled: !!runId && enabled,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
 // ── Phase 6 followup #2: time-aware Strategies ──────────────────
 //
 // /api/strategies/time-aware returns days-until-next-event for each

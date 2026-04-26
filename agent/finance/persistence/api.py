@@ -119,6 +119,90 @@ def list_runs(
     return {"count": len(out), "runs": out}
 
 
+@router.get("/runs/{run_id}/rows")
+def list_rows_for_run(
+    run_id: str,
+    limit: int = Query(50, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Phase 6 followup: drill-down — what rows did this run actually
+    write?  Different jobs touch different tables, so we union across
+    every table that carries a run_id FK and tag each row with its
+    source table.
+    """
+    ensure_schema()
+    with connect() as conn:
+        # Run-level metadata
+        run_row = conn.execute(
+            "SELECT * FROM analysis_runs WHERE run_id = ?", (run_id,),
+        ).fetchone()
+        if run_row is None:
+            raise HTTPException(404, f"unknown run {run_id!r}")
+        run = _row_to_dict(run_row)
+
+        # Each table that references analysis_runs.run_id via FK.
+        # Schema-driven: keep this list mirror of FOREIGN KEY rows in
+        # schema.sql (run_id refs).
+        sources: Dict[str, Dict[str, Any]] = {}
+        for table, label in [
+            ("strategy_signals",      "strategy_signals"),
+            ("wash_sale_events",      "wash_sale_events"),
+            ("pdt_round_trips",       "pdt_round_trips"),
+            ("holding_period_snapshots", "holding_period_snapshots"),
+        ]:
+            try:
+                rs = conn.execute(
+                    f"SELECT * FROM {table} WHERE run_id = ? LIMIT {limit}",
+                    (run_id,),
+                ).fetchall()
+            except Exception as exc:  # noqa: BLE001
+                # Schema mismatch (e.g., older tables without run_id):
+                # report 0 rows but don't crash the endpoint.
+                sources[label] = {"count": 0, "rows": [], "error": str(exc)}
+                continue
+            sources[label] = {
+                "count": len(rs),
+                "rows":  [_row_to_dict(r) for r in rs],
+            }
+
+        # daily_market_pull writes to market_data_daily but the table
+        # doesn't carry run_id (composite PK is symbol+trade_date and
+        # we want it idempotent across runs). Approximate the "rows
+        # written by this run" by joining on the run's started_at.
+        if run.get("job_name") == "daily_market_pull" and run.get("started_at"):
+            # Match symbols with `updated_at` falling within the run's
+            # 5-second window (looser than equal because the writer
+            # batches multiple symbols within one run).
+            try:
+                start = run["started_at"]
+                end   = run["completed_at"] or start
+                rs = conn.execute(
+                    "SELECT symbol, market, trade_date, close, updated_at "
+                    "FROM market_data_daily WHERE updated_at BETWEEN ? AND ? "
+                    "ORDER BY symbol, trade_date DESC LIMIT ?",
+                    (start, end, limit),
+                ).fetchall()
+            except Exception:  # noqa: BLE001
+                rs = []
+            sources["market_data_daily"] = {
+                "count":      len(rs),
+                "rows":       [_row_to_dict(r) for r in rs],
+                "match_method": "approx_by_updated_at_in_run_window",
+            }
+
+    total = sum(s.get("count", 0) for s in sources.values())
+    return {
+        "run":         run,
+        "total_rows":  total,
+        "by_table":    sources,
+        "explanation": (
+            f"All rows written by analysis_run {run_id!r}, grouped by "
+            f"target table. Each table that carries a run_id FK is "
+            f"queried directly; market_data_daily is matched by "
+            f"updated_at falling inside the run's time window."
+        ),
+    }
+
+
 @router.get("/lots")
 def list_lots(
     open_only: bool = Query(False, description="filter to lots not yet closed"),
