@@ -1313,6 +1313,48 @@ export interface StrategyFitEntry {
   score_breakdown: Record<string, number>
 }
 
+// ── Phase 6 Step 4: bidirectional widget index ───────────
+
+export interface WidgetMeta {
+  id: string
+  status: 'available' | 'planned' | 'deprecated'
+  label_en: string | null
+  label_zh: string | null
+  description: string | null
+}
+
+export interface StrategyWidgetCoverage {
+  id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  widgets: WidgetMeta[]
+  available_count: number
+  planned_count: number
+  unresolved: string[]
+  free_text_requirements: string[]
+}
+
+export interface WidgetCoverageReport {
+  strategies: StrategyWidgetCoverage[]
+  summary: {
+    total_strategies: number
+    fully_available: number
+    has_planned_gaps: number
+    has_unresolved: number
+  }
+  explanation: string
+}
+
+export function useFinWidgetCoverage() {
+  return useQuery({
+    queryKey: ['fin_widget_coverage'],
+    queryFn: () => fetchJSON<WidgetCoverageReport>('/api/strategies/widget-coverage'),
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
 export function useFinStrategiesFit(projectId: string) {
   return useQuery({
     queryKey: ['fin_strategies_fit', projectId],
