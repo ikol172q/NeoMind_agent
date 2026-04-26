@@ -10,7 +10,7 @@
  * key risks, tax notes, and an "ask the agent" button that drops a
  * pre-filled prompt into Chat.
  */
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronDown, ChevronRight, Filter, Sparkles } from 'lucide-react'
 import { useFinStrategies, type StrategyEntry } from '@/lib/api'
 import { cn } from '@/lib/utils'
@@ -35,13 +35,41 @@ const HORIZON_LABEL: Record<StrategyEntry['horizon'], string> = {
 
 interface Props {
   onJumpToChat?: (prompt: string, ctx?: { project?: boolean }) => void
+  /** Phase 5 V4: when set, auto-expand & scroll to the matching
+   *  strategy card. Nonce re-triggers the highlight on repeat clicks. */
+  focus?: { id: string; nonce: number } | null
 }
 
-export function StrategiesTab({ onJumpToChat }: Props) {
+const HIGHLIGHT_MS = 2500
+
+export function StrategiesTab({ onJumpToChat, focus }: Props) {
   const q = useFinStrategies()
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [highlight, setHighlight] = useState<string | null>(null)
+  const cardRefs = useRef<Record<string, HTMLDivElement | null>>({})
+
+  // External focus (from a call's strategy_match chip): expand the
+  // matching card, scroll it into view, transient highlight ring.
+  useEffect(() => {
+    if (!focus?.id) return
+    setExpanded(focus.id)
+    setHighlight(focus.id)
+    // Filters might be hiding the focused strategy — relax them so
+    // the user actually sees the card they navigated to.
+    setDiffFilter(null)
+    setFeasibleOnly(false)
+    const t = window.setTimeout(() => {
+      const el = cardRefs.current[focus.id]
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    }, 80)
+    const t2 = window.setTimeout(() => setHighlight(null), HIGHLIGHT_MS)
+    return () => {
+      window.clearTimeout(t)
+      window.clearTimeout(t2)
+    }
+  }, [focus?.id, focus?.nonce])
 
   const grouped = useMemo(() => {
     const items = q.data?.strategies ?? []
@@ -147,6 +175,8 @@ export function StrategiesTab({ onJumpToChat }: Props) {
                       key={s.id}
                       strategy={s}
                       expanded={expanded === s.id}
+                      highlighted={highlight === s.id}
+                      registerRef={(el) => { cardRefs.current[s.id] = el }}
                       onToggle={() => setExpanded(expanded === s.id ? null : s.id)}
                       onAsk={() =>
                         onJumpToChat?.(
@@ -169,11 +199,15 @@ export function StrategiesTab({ onJumpToChat }: Props) {
 function StrategyCard({
   strategy: s,
   expanded,
+  highlighted,
+  registerRef,
   onToggle,
   onAsk,
 }: {
   strategy: StrategyEntry
   expanded: boolean
+  highlighted?: boolean
+  registerRef?: (el: HTMLDivElement | null) => void
   onToggle: () => void
   onAsk: () => void
 }) {
@@ -185,8 +219,15 @@ function StrategyCard({
   }[s.tax_treatment.wash_sale_risk]
   return (
     <div
+      ref={registerRef}
       data-testid={`strategy-card-${s.id}`}
-      className="border border-[var(--color-border)] rounded bg-[var(--color-panel)] hover:border-[var(--color-accent)]/50 transition"
+      data-highlighted={highlighted ? 'true' : undefined}
+      className={cn(
+        "border rounded bg-[var(--color-panel)] hover:border-[var(--color-accent)]/50 transition",
+        highlighted
+          ? "border-[var(--color-accent)] ring-2 ring-[var(--color-accent)]/40"
+          : "border-[var(--color-border)]",
+      )}
     >
       <button
         onClick={onToggle}

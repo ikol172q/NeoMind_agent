@@ -648,6 +648,18 @@ export interface LatticeTheme {
   cited_numbers?: string[]
 }
 
+export interface LatticeStrategyMatch {
+  strategy_id: string
+  name_en: string | null
+  name_zh: string | null
+  horizon: string | null
+  difficulty: number | null
+  defined_risk: boolean | null
+  pdt_relevant?: boolean | null
+  score: number
+  score_breakdown: Record<string, number>
+}
+
 export interface LatticeCall {
   id: string
   claim: string
@@ -657,6 +669,10 @@ export interface LatticeCall {
   rebuttal: string
   confidence: 'high' | 'medium' | 'low'
   time_horizon: 'intraday' | 'days' | 'weeks' | 'quarter'
+  /** Phase 5 V3 — best-fit catalog entry from docs/strategies/strategies.yaml.
+   *  Attached deterministically by agent.finance.lattice.strategy_matcher
+   *  in build_calls. Null when no strategy clears the score threshold. */
+  strategy_match?: LatticeStrategyMatch | null
 }
 
 export interface LatticePayload {

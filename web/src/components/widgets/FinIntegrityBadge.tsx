@@ -78,18 +78,21 @@ export function FinIntegrityBadge() {
             </button>
           </div>
           {/* Top stats row — table counts so the user can see how
-              much data is in the store at a glance. */}
+              much data is in the store at a glance. Each number's
+              data-source attribute documents which SQL row count
+              it represents (audit trail in DOM). */}
           {dbHealth.data && (
             <div
               data-testid="fin-integrity-counts"
+              data-source="GET /api/db/health → counts.*"
               className="flex flex-wrap gap-x-3 gap-y-1 text-[9px] text-[var(--color-dim)] border-b border-[var(--color-border)] pb-1.5"
             >
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.market_data_daily}</b> bars</span>
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.tickers_universe}</b> tickers</span>
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.tax_lots}</b> lots</span>
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.wash_sale_events}</b> wash sales</span>
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.pdt_round_trips}</b> PDT round-trips</span>
-              <span><b className="text-[var(--color-text)]">{dbHealth.data.counts.analysis_runs}</b> runs</span>
+              <span data-source="counts.market_data_daily"><b className="text-[var(--color-text)]">{dbHealth.data.counts.market_data_daily}</b> bars</span>
+              <span data-source="counts.tickers_universe"><b className="text-[var(--color-text)]">{dbHealth.data.counts.tickers_universe}</b> tickers</span>
+              <span data-source="counts.tax_lots"><b className="text-[var(--color-text)]">{dbHealth.data.counts.tax_lots}</b> lots</span>
+              <span data-source="counts.wash_sale_events"><b className="text-[var(--color-text)]">{dbHealth.data.counts.wash_sale_events}</b> wash sales</span>
+              <span data-source="counts.pdt_round_trips"><b className="text-[var(--color-text)]">{dbHealth.data.counts.pdt_round_trips}</b> PDT round-trips</span>
+              <span data-source="counts.analysis_runs"><b className="text-[var(--color-text)]">{dbHealth.data.counts.analysis_runs}</b> runs</span>
             </div>
           )}
           {q.isLoading && (
@@ -236,6 +239,8 @@ const CHECK_DESCRIPTIONS: Record<string, string> = {
     "FINRA PDT: detected round-trips reference trades within 9 calendar days (≈ 5 trading days + weekends + ~2 holidays upper bound).",
   holding_period_classification:
     "IRS Pub 544/550: closed lots' holding_period_qualified ('long_term' iff days_held > 365). Boundary tested at 365 → short_term, 366 → long_term.",
+  ui_data_sources_resolvable:
+    "Every UI element with a data-source attribute (PDT counter, fin badge counts row) must resolve to a real backend value — not a fabricated, stale, or detached display. Manifest in agent/finance/integrity/checks/viz.py. Inspect the data-source attrs in DevTools to see the audit trail in the DOM.",
 }
 
 function FinCheckRow({ check }: { check: FinIntegrityCheck }) {
@@ -248,6 +253,7 @@ function FinCheckRow({ check }: { check: FinIntegrityCheck }) {
     compliance: 'var(--color-amber,#e5a200)',
     viz: 'var(--color-pink,#ff6fbb)',
   }
+  void layerColor // referenced from rows below — silences unused-var when imported standalone
   return (
     <div
       data-testid={`fin-integrity-check-${check.name}`}

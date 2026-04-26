@@ -42,6 +42,7 @@ export function PdtCounter() {
     <div
       data-testid="pdt-counter"
       data-pdt-status={danger ? 'breach' : warn ? 'warn' : 'ok'}
+      data-source="GET /api/db/health → counts.pdt_round_trips"
       className="inline-flex items-center gap-1 px-2 py-0.5 rounded border text-[10px] font-mono"
       style={{ borderColor: color, color }}
       title={
