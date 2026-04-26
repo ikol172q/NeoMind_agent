@@ -397,20 +397,28 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
             the viewport bounds so the label is always visible even
             when its column is panned off-screen — Excel-style frozen
             panes. When clamped, a ◀ / ▶ marker hints the column is
-            offscreen in that direction. */}
+            offscreen in that direction. Reserved 32px on the right
+            so labels never overlap the layer-help (?) strip. */}
         <div
           data-testid="lattice-column-headers"
-          className="absolute top-0 left-0 right-0 h-7 z-10 pointer-events-none bg-gradient-to-b from-[var(--color-bg)] to-transparent"
+          className="absolute top-0 left-0 z-15 pointer-events-none"
+          style={{
+            right: 180,  // leave room for the layer-help-strip on the right
+            height: 28,
+            background: 'linear-gradient(to bottom, var(--color-bg) 60%, transparent)',
+          }}
         >
           {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
             const naturalX = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
             const screenX  = naturalX * view.scale + view.tx
             const vpW      = viewportEl?.clientWidth ?? 1200
+            // Reserve right margin so the legend (?L0...?L3) doesn't get covered
+            const RIGHT_RESERVED = 180
             // Clamp half-label margin so the centered label stays
-            // wholly visible. 50px ≈ widest label "L1.5 · SUB-THEMES".
+            // wholly visible. 60px ≈ widest label "L1.5 · SUB-THEMES".
             const halfW    = 60
-            const minX     = halfW + 4
-            const maxX     = Math.max(minX, vpW - halfW - 4)
+            const minX     = halfW + 6
+            const maxX     = Math.max(minX, vpW - RIGHT_RESERVED - halfW - 4)
             const clamped  = Math.max(minX, Math.min(maxX, screenX))
             const offLeft  = screenX < minX
             const offRight = screenX > maxX
@@ -429,12 +437,14 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
                   fontFamily:     'ui-monospace, monospace',
                   letterSpacing:  '0.05em',
                   color:          dim ? 'var(--color-dim)' : 'var(--color-text)',
-                  opacity:        dim ? 0.55 : 1,
+                  opacity:        dim ? 0.6 : 1,
                   textTransform:  'uppercase',
                   whiteSpace:     'nowrap',
                   background:     'var(--color-bg)',
-                  padding:        '1px 4px',
-                  borderRadius:   2,
+                  padding:        '2px 6px',
+                  borderRadius:   3,
+                  border:         '1px solid var(--color-border)',
+                  boxShadow:      '0 1px 4px rgba(0,0,0,0.5)',
                 }}
               >
                 {offLeft ? '◀ ' : ''}{LAYER_LABELS[layer].toUpperCase()}{offRight ? ' ▶' : ''}
@@ -483,7 +493,9 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
           style={{ display: 'block' }}
         >
           <g>
-            {/* Column headers */}
+            {/* Column headers — kept in SVG for export/print fidelity
+                but visually covered by the HTML overlay (which is
+                always-visible and pan/zoom-aware via clamping). */}
             {(Object.keys(LAYER_LABELS) as LatticeLayer[]).map((layer) => {
               const x = SIDE_MARGIN + LAYER_COLS[layer] * (COL_WIDTH + COL_GAP) + NODE_W / 2
               return (
@@ -492,7 +504,7 @@ export function LatticeGraphView({ projectId, initialFocusNodeId, onJumpToStrate
                   x={x} y={18}
                   textAnchor="middle"
                   className="fill-[var(--color-dim)]"
-                  style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em' }}
+                  style={{ fontSize: 10, fontFamily: 'ui-monospace, monospace', letterSpacing: '0.05em', opacity: 0 }}
                 >
                   {LAYER_LABELS[layer].toUpperCase()}
                 </text>
