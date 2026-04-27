@@ -611,7 +611,12 @@ CALLS_PROMPT_TEMPLATE_VERSION = "v1"
 
 # Bumped whenever the L3 pipeline shape (generate → MMR → strategy_match)
 # changes how it serialises.
-CALLS_PIPELINE_VERSION = "v1"
+#
+# v2 (2026-04-27): strategy_matcher now default-filters out unverified
+# strategies (anti-hallucination Layer 3). Calls cached with v1 may
+# carry strategy_match chips pointing at unverified entries — bumping
+# invalidates those caches so the next call re-enriches without them.
+CALLS_PIPELINE_VERSION = "v2"
 
 
 def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
