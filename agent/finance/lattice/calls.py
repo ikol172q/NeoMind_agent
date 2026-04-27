@@ -656,6 +656,9 @@ def build_calls_run(
         compute_dep_hash,
         get_code_git_sha,
         open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        llm_checks_for_calls,
     )
     from agent.finance.compute.cache import _utcnow_iso
     from agent.finance.lattice.themes import build_themes_run, ThemeMember
@@ -682,7 +685,10 @@ def build_calls_run(
 
     cache = open_dep_cache(project_id)
 
-    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str, completed_at: Optional[str]) -> Dict[str, Any]:
+    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str,
+                    completed_at: Optional[str],
+                    validation_state: str = "unknown",
+                    validation_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
             "dep_hash":                dep_hash,
             "compute_run_id":          compute_run_id,
@@ -703,6 +709,8 @@ def build_calls_run(
             "obs_dep_hash":            themes_meta.get("obs_dep_hash"),
             "obs_compute_run_id":      themes_meta.get("obs_compute_run_id"),
             "obs_cache_hit":           themes_meta.get("obs_cache_hit"),
+            "validation_state":        validation_state,
+            "validation_summary":      validation_summary or {},
         }
 
     # ── CACHE HIT path ──
@@ -716,11 +724,28 @@ def build_calls_run(
                 logger.warning("calls cache read failed (%s) — falling through", exc)
                 cached = None
             if cached is not None:
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("calls validation read on hit failed: %s", exc)
                 meta = _build_meta(
                     hit=True,
                     compute_run_id=hit.compute_run_id,
                     started_at=hit.started_at,
                     completed_at=hit.completed_at,
+                    validation_state=vstate,
+                    validation_summary=vsumm,
                 )
                 return cached, meta
 
@@ -806,11 +831,52 @@ def build_calls_run(
         except Exception as exc:   # pragma: no cover
             logger.warning("lattice snapshot write failed: %s", exc)
 
+    # ── B7: persist LLM-step validation checks ──
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {}
+    if compute_run_id is not None:
+        try:
+            # Resolve grounds: each call's grounds is a list of strings.
+            # We don't have ground→theme mapping here, so for V1 we
+            # treat empty grounds as unresolved (LLM omitted citations)
+            # and any non-empty list as resolved.  Future B7+ will
+            # cross-check each ground against theme.id and observation.id.
+            n_calls = len(enriched_calls)
+            n_resolved = 0
+            n_unresolved = 0
+            for c in enriched_calls:
+                grounds = c.get("grounds") or []
+                for g in grounds:
+                    if isinstance(g, str) and g.strip():
+                        n_resolved += 1
+                    else:
+                        n_unresolved += 1
+            checks = llm_checks_for_calls(
+                n_calls=n_calls,
+                n_grounds_resolved=n_resolved,
+                n_grounds_unresolved=n_unresolved,
+            )
+            vs = ValidationStore.for_dep_cache(cache)
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("calls validation persist failed (%s)", exc)
+
     meta = _build_meta(
         hit=False,
         compute_run_id=compute_run_id,
         started_at=started_at_iso,
         completed_at=completed_at,
+        validation_state=validation_state,
+        validation_summary=validation_summary,
     )
     return payload, meta
     return payload

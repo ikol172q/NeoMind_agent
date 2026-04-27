@@ -152,6 +152,36 @@ export function FreshnessBar({ meta, pipelineLabel, onOpenRun }: Props) {
         </span>
       )}
 
+      {/* B7: validation badge */}
+      {meta.validation_state && (
+        <span
+          className="px-1.5 py-[1px] rounded text-[9.5px] uppercase tracking-wide"
+          style={{
+            background:
+              meta.validation_state === 'fail'
+                ? 'var(--color-red, #f44336)'
+                : meta.validation_state === 'warn'
+                  ? 'var(--color-amber, #ff9800)'
+                  : meta.validation_state === 'pass'
+                    ? 'var(--color-green, #4caf50)'
+                    : 'var(--color-dim, #888)',
+            color: 'var(--color-bg, #000)',
+            opacity: 0.85,
+          }}
+          title={
+            (meta.validation_summary
+              ? `pass=${meta.validation_summary.n_pass ?? 0} ` +
+                `warn=${meta.validation_summary.n_warn ?? 0} ` +
+                `fail=${meta.validation_summary.n_fail ?? 0} ` +
+                `unknown=${meta.validation_summary.n_unknown ?? 0}`
+              : '') +
+            ` — fail does NOT block the result; this badge only surfaces it`
+          }
+        >
+          ✓ {meta.validation_summary?.n_pass ?? 0}/{meta.validation_summary?.n_total ?? 0}
+        </span>
+      )}
+
       {/* Inputs summary (when present) */}
       {meta.inputs_summary && (
         <span className="text-[var(--color-dim)]">
