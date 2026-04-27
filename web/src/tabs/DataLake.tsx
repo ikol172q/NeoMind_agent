@@ -134,7 +134,7 @@ function CacheStatsPane({ projectId }: { projectId: string }) {
               </tr>
             </thead>
             <tbody>
-              {s.top_steps.map((row) => (
+              {s.top_steps.map((row: { step: string; n: number }) => (
                 <tr key={row.step} className="border-t border-[var(--color-border)]">
                   <td className="py-1 font-mono">{row.step}</td>
                   <td className="py-1 font-mono">{row.n}</td>
@@ -221,13 +221,15 @@ function CrawlRunsPane({ projectId }: { projectId: string }) {
             </tr>
           </thead>
           <tbody>
-            {runs.map((r) => (
+            {runs.map((r: CrawlRunRow) => (
               <RunRow
                 key={r.crawl_run_id}
                 row={r}
                 expanded={openId === r.crawl_run_id}
                 onToggle={() =>
-                  setOpenId((cur) => (cur === r.crawl_run_id ? null : r.crawl_run_id))
+                  setOpenId((cur: string | null) =>
+                    cur === r.crawl_run_id ? null : r.crawl_run_id,
+                  )
                 }
                 projectId={projectId}
               />
@@ -321,7 +323,7 @@ function CrawlRunDetail({ row, projectId }: { row: CrawlRunRow; projectId: strin
                 <span className="text-[var(--color-dim)] italic">none</span>
               ) : (
                 <ul className="list-disc ml-4 text-[var(--color-amber,#ff9800)]">
-                  {(q.data.report!.anomaly_alerts ?? []).map((a, i) => (
+                  {(q.data.report!.anomaly_alerts ?? []).map((a: string, i: number) => (
                     <li key={i}>{a}</li>
                   ))}
                 </ul>
@@ -342,14 +344,16 @@ function CrawlRunDetail({ row, projectId }: { row: CrawlRunRow; projectId: strin
                     </tr>
                   </thead>
                   <tbody>
-                    {(q.data.manifest!.superseded_versions ?? []).slice(0, 10).map((s, i) => (
-                      <tr key={i}>
-                        <td className="pr-3 truncate max-w-[400px]">{s.url}</td>
-                        <td className="pr-3">
-                          {s.old_hash.slice(0, 8)} → {s.new_hash.slice(0, 8)}
-                        </td>
-                      </tr>
-                    ))}
+                    {(q.data.manifest!.superseded_versions ?? []).slice(0, 10).map(
+                      (s: { url: string; old_hash: string; new_hash: string }, i: number) => (
+                        <tr key={i}>
+                          <td className="pr-3 truncate max-w-[400px]">{s.url}</td>
+                          <td className="pr-3">
+                            {s.old_hash.slice(0, 8)} → {s.new_hash.slice(0, 8)}
+                          </td>
+                        </tr>
+                      ),
+                    )}
                   </tbody>
                 </table>
               )}
@@ -432,13 +436,15 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
               </tr>
             </thead>
             <tbody>
-              {(q.data.runs ?? []).map((r) => (
+              {(q.data.runs ?? []).map((r: ComputeRunRow) => (
                 <ComputeRunRowEl
                   key={r.compute_run_id}
                   row={r}
                   expanded={openId === r.compute_run_id}
                   onToggle={() =>
-                    setOpenId((cur) => (cur === r.compute_run_id ? null : r.compute_run_id))
+                    setOpenId((cur: string | null) =>
+                      cur === r.compute_run_id ? null : r.compute_run_id,
+                    )
                   }
                   projectId={projectId}
                 />
