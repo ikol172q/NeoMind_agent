@@ -114,13 +114,47 @@ def get_run(
     project_id:     str = Query(...),
     compute_run_id: str = "",
 ) -> Dict[str, Any]:
-    """Single compute run — full row including ``params``."""
+    """Single compute run — full row including ``params`` and (B7)
+    the persisted validation report."""
     _check_project(project_id)
     cache = open_dep_cache(project_id)
     row = cache.get_by_id(compute_run_id)
     if row is None:
         raise HTTPException(404, f"compute_run {compute_run_id!r} not found")
-    return {"project_id": project_id, "run": row}
+
+    # B7: attach the validation report when present.
+    from .validation import ValidationStore
+    try:
+        vs = ValidationStore.for_dep_cache(cache)
+        rep = vs.get_report(compute_run_id)
+        validation = rep.to_dict() if rep is not None else None
+    except Exception:
+        validation = None
+
+    return {"project_id": project_id, "run": row, "validation": validation}
+
+
+@router.get("/validations")
+def list_validations(
+    project_id: str           = Query(...),
+    step:       Optional[str] = Query(None, description="filter by step"),
+    limit:      int           = Query(50, ge=1, le=500),
+) -> Dict[str, Any]:
+    """B7: cross-run aggregation of warn + fail validation checks.
+    Backs the operator dashboard answering 'what's broken?'.
+    """
+    _check_project(project_id)
+    cache = open_dep_cache(project_id)
+    from .validation import ValidationStore
+    vs = ValidationStore.for_dep_cache(cache)
+    rows = vs.list_failing(step=step, limit=limit)
+    summary = vs.aggregate_by_step()
+    return {
+        "project_id":  project_id,
+        "count":       len(rows),
+        "checks":      rows,
+        "by_step":     summary,
+    }
 
 
 # ── Hash diagnostics ─────────────────────────────────────────────
