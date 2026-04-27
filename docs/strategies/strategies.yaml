@@ -1,3 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────
+# Strategies catalog
+#
+# IMPORTANT — NO HALLUCINATED CONTENT
+#
+# When adding entries (manually or via subagent research):
+#
+#   * sources: MUST be empty []  OR  reference RawStore blob hashes
+#     (`raw://<sha256>`).  Do NOT paste general-web URLs unless you
+#     have personally fetched them, the page returned 200, and the
+#     body actually backs the claim.  Phase 3's subagent put
+#     108 hallucinated URLs in this file before this rule existed —
+#     all removed 2026-04-27.
+#
+#   * starter_step / key_risks / typical_win_rate / max_loss /
+#     feasible_at_10k_reason / tax_treatment.notes — every numeric
+#     claim ("~70-80% expire worthless", "max drawdown ~55%") must
+#     be verifiable.  If you cannot cite a RawStore blob or a
+#     recognised reference, write the field in qualitative terms
+#     only ("most expire worthless under typical conditions") —
+#     never invent a specific percentage.
+#
+#   * If unsure, leave the field blank.  An empty field is honest;
+#     an invented number is a trust violation.
+#
+# B7 followup #66 will add a validation check that flags any
+# strategy where sources contains a general-web URL or where free-
+# text fields contain numeric claims without a citation.
+# ─────────────────────────────────────────────────────────────────────
 strategies:
 - id: dollar_cost_averaging_index
   name_en: Dollar-Cost Averaging into a Total-Market Index
@@ -26,10 +55,10 @@ strategies:
   - 'Sequence risk: a long bear market early in the journey extends time-to-breakeven'
   - 'Behavioral: many investors stop contributing at the bottom'
   - Inflation can erode real returns even when nominal is positive
-  sources:
-  - https://www.investopedia.com/terms/d/dollarcostaveraging.asp
-  - https://www.bogleheads.org/wiki/Dollar_cost_averaging
-  - https://investor.vanguard.com/investor-resources-education/news/dollar-cost-averaging-just-means-taking-risk-later
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - dividend_schedule
@@ -61,10 +90,10 @@ strategies:
   - 'Dividend traps: high yield can signal distress (e.g., regional banks 2023)'
   - Sector concentration in financials/staples — underperforms in tech-led rallies
   - Tax drag in a taxable account vs. growth ETF in same risk bucket
-  sources:
-  - https://www.investopedia.com/terms/d/dividendetf.asp
-  - https://www.schwab.com/research/etfs/quotes/summary/schd
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - dividend_schedule
   - expense_ratio
@@ -95,10 +124,10 @@ strategies:
   - Glidepath may not match your true risk tolerance
   - Capital-gains distributions create tax drag in taxable accounts
   - All-in-one means you can't tax-loss harvest the components
-  sources:
-  - https://www.investopedia.com/terms/t/target-date_fund.asp
-  - https://www.bogleheads.org/wiki/Target_date_retirement_funds
-  - https://investor.vanguard.com/investment-products/mutual-funds/target-retirement-funds
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - allocation_state
   - expense_ratio
@@ -129,10 +158,10 @@ strategies:
   - Bonds + stocks both fell in 2022 — diversification can fail in inflation regimes
   - International underperformance for a decade is possible (and happened 2010-2020)
   - 'Behavioral: rebalancing requires selling winners — psychologically hard'
-  sources:
-  - https://www.bogleheads.org/wiki/Three-fund_portfolio
-  - https://www.investopedia.com/three-fund-portfolio-7484274
-  - https://www.bogleheads.org/wiki/Lazy_portfolios
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - allocation_state
 - id: permanent_portfolio
@@ -162,10 +191,10 @@ strategies:
   - Severely lags equity in long bull markets (2010s)
   - Bonds + stocks both fell in 2022, breaking the model
   - GLD collectibles tax rate can surprise filers
-  sources:
-  - https://www.investopedia.com/articles/investing/110813/permanent-portfolio-bulletproof-investment-strategy.asp
-  - https://www.bogleheads.org/wiki/Permanent_Portfolio
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - allocation_state
 - id: bond_ladder_treasury
@@ -195,10 +224,10 @@ strategies:
   - Reinvestment risk if rates fall when rungs mature
   - Real (after-inflation) returns can be negative — 2021-2022 was severe
   - 'Liquidity: selling pre-maturity may realize MTM loss'
-  sources:
-  - https://www.investopedia.com/terms/b/bondladder.asp
-  - https://www.treasurydirect.gov/marketable-securities/treasury-bills/
-  - https://www.bogleheads.org/wiki/Treasury_securities
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - yield_curve
 - id: sector_rotation
@@ -228,10 +257,10 @@ strategies:
   - Mistimed regime calls — late-cycle in 2022 saw energy lead, then crash
   - Whipsaws produce many short-term-gains taxable events
   - PDT applicable if rotating frequently with $10k
-  sources:
-  - https://www.investopedia.com/terms/s/sectorrotation.asp
-  - https://www.fidelity.com/learning-center/trading-investing/markets-sectors/business-cycle-update
-  - https://www.ssga.com/us/en/individual/etfs/select-sector-spdr-etfs
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - macro_pmi_inflation
   - yield_curve
@@ -264,10 +293,10 @@ strategies:
   - Momentum crashes after market bottoms (April 2009, March 2020)
   - High turnover = high taxes in taxable account
   - DIY version uses 24+ round trips/year — PDT-relevant
-  sources:
-  - https://www.investopedia.com/terms/m/momentum_investing.asp
-  - https://www.ishares.com/us/products/251614/ishares-msci-usa-momentum-factor-etf
-  - https://onlinelibrary.wiley.com/doi/10.1111/j.1540-6261.1993.tb04702.x
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - allocation_state
@@ -299,10 +328,10 @@ strategies:
   - Value can underperform for 10+ years (2010-2020)
   - '''Value trap'' stocks dominate cheap deciles'
   - Factor crowding may have eroded the premium
-  sources:
-  - https://www.investopedia.com/terms/v/valuefund.asp
-  - https://www.ishares.com/us/products/251616/ishares-msci-usa-value-factor-etf
-  - https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - fundamentals_value
   - factor_exposure
@@ -333,10 +362,10 @@ strategies:
   - Lags hard in risk-on rallies (2020 H2)
   - Sector concentration in utilities/staples = interest-rate sensitivity
   - 'Crowded trade: factor degraded post-2017'
-  sources:
-  - https://www.investopedia.com/terms/l/low-volatility-stocks.asp
-  - https://www.ishares.com/us/products/239695/ishares-msci-usa-minimum-volatility-etf
-  - https://www.spglobal.com/spdji/en/indices/strategy/sp-500-low-volatility-index/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - factor_exposure
@@ -369,10 +398,10 @@ strategies:
   - Choppy markets (2015, mid-2022) produce repeated stop-outs
   - 'PDT: at $10k you cannot exceed 3 round trips/5 business days'
   - Slippage on gappers can blow through stops
-  sources:
-  - https://www.investopedia.com/terms/s/swingtrading.asp
-  - https://www.investors.com/how-to-invest/investors-corner/the-52-week-high-rule/
-  - https://www.finra.org/investors/learn-to-invest/advanced-investing/day-trading-margin-requirements-know-rules
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
 - id: mean_reversion_oversold
@@ -403,10 +432,10 @@ strategies:
   - Trends crush mean-reversion (Q4 2018, March 2020)
   - 'PDT: easily exceeds 3 round trips/5 days at this trade frequency'
   - Short-term gains taxed at ordinary rates
-  sources:
-  - https://www.investopedia.com/terms/m/meanreversion.asp
-  - https://www.investopedia.com/articles/active-trading/052014/how-use-rsi-relative-strength-index.asp
-  - https://www.finra.org/investors/learn-to-invest/advanced-investing/day-trading-margin-requirements-know-rules
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - mean_reversion_z
@@ -438,10 +467,10 @@ strategies:
   - Premium has shrunk post-2010 as institutional adoption grew
   - Single-stock concentration; one earnings reversal can wipe a quarter
   - PDT-sensitive if you re-trade exits
-  sources:
-  - https://www.investopedia.com/terms/p/post-earnings-announcement-drift-pead.asp
-  - https://academic.oup.com/rfs/article-abstract/19/3/1119/1610528
-  - https://www.aqr.com/Insights/Research/Journal-Article/Post-Earnings-Announcement-Drift
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - earnings
   - news
@@ -472,10 +501,10 @@ strategies:
   - 'China policy risk: 2021 platform crackdown halved KWEB'
   - ADR-delisting risk under HFCAA (mitigated 2022 but not eliminated)
   - 'PDT: monthly+ rotation acceptable; weekly will exceed at $10k'
-  sources:
-  - https://kraneshares.com/kweb/
-  - https://www.ishares.com/us/products/239619/ishares-msci-china-etf
-  - https://www.sec.gov/files/pcaob-fact-sheet.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - relative_strength
   - news
@@ -507,10 +536,10 @@ strategies:
   - Decade-long underperformance is normal (2010-2020)
   - Higher volatility than total market
   - Liquidity thinner than large-cap funds
-  sources:
-  - https://www.investopedia.com/terms/s/small-cap-stock.asp
-  - https://www.avantisinvestors.com/etfs/avuv/
-  - https://www.bogleheads.org/wiki/Small_value_strategy
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - factor_exposure
   - expense_ratio
@@ -542,10 +571,10 @@ strategies:
   - Highly correlated with S&P 500 — limited diversification
   - Quality definitions vary by index provider — read the methodology
   - Underperforms in early-cycle low-quality rallies
-  sources:
-  - https://www.investopedia.com/terms/q/qualityetf.asp
-  - https://www.ishares.com/us/products/256101/ishares-msci-usa-quality-factor-etf
-  - https://www.msci.com/our-solutions/indexes/factor-investing
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - fundamentals_value
 - id: international_developed_etf
@@ -575,10 +604,10 @@ strategies:
   - Decade-long US outperformance can repeat
   - Currency risk (unhedged) adds vol
   - Geopolitical concentration (Japan + EU = >60%)
-  sources:
-  - https://investor.vanguard.com/investment-products/etfs/profile/vxus
-  - https://www.bogleheads.org/wiki/Domestic/international
-  - https://www.irs.gov/forms-pubs/about-form-1116
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - allocation_state
   - factor_exposure
@@ -610,10 +639,10 @@ strategies:
   - Single-name binary risk on report
   - 'PDT: easily exceeded if trading multiple cycles'
   - Implied moves are often correctly priced
-  sources:
-  - https://www.investopedia.com/articles/active-trading/030415/play-earnings-season-strangles-and-straddles.asp
-  - https://www.cmegroup.com/education/courses/introduction-to-options/calculating-the-implied-move.html
-  - https://www.optionseducation.org/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - earnings
   - iv_rank
@@ -646,10 +675,10 @@ strategies:
   - Antitrust break (e.g., NVDA-ARM 2022)
   - Spread compression — annualized return often only 4-8%
   - Single-deal concentration is dangerous; pros run baskets
-  sources:
-  - https://www.investopedia.com/terms/r/riskarbitrage.asp
-  - https://www.sec.gov/edgar/searchedgar/companysearch
-  - https://corpgov.law.harvard.edu/2022/01/14/the-hidden-cost-of-merger-arbitrage/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - merger_arbitrage_universe
   - news
@@ -682,10 +711,10 @@ strategies:
   - Front-running has compressed the alpha
   - 'PDT: typically uses 4-6 trades in June — at $10k this exceeds'
   - List-change rules change yearly — read FTSE methodology
-  sources:
-  - https://www.ftserussell.com/research-insights/russell-reconstitution
-  - https://www.investopedia.com/articles/investing/070815/russell-reconstitution-explained.asp
-  - https://www.spglobal.com/spdji/en/research/article/index-effects-on-stock-prices/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - chart
@@ -717,10 +746,10 @@ strategies:
   - Trend days (2022) extend, breaking fade premise
   - 'PDT: 8 round trips/year is fine, but layered intraday entries break it'
   - Slippage during the announcement minute is brutal
-  sources:
-  - https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - https://www.investopedia.com/terms/f/fomc.asp
-  - https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - chart
@@ -753,10 +782,10 @@ strategies:
   - Edge is small and crowded
   - Insiders may hold (Snowflake 2021 — minimal selling at lockup)
   - Naked shorts violate user's defined-risk-only rule — STICK to put spreads
-  sources:
-  - https://www.investopedia.com/terms/i/ipolockup.asp
-  - https://www.nasdaq.com/market-activity/ipos
-  - https://www.sec.gov/oiea/investor-alerts-bulletins/ib_lockupagreements.html
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - short_interest
@@ -788,10 +817,10 @@ strategies:
   - Pin risk often resolves quietly — premium decays
   - Slippage in options around expiry is real
   - Edge is small; this is for understanding mechanics, not alpha
-  sources:
-  - https://www.investopedia.com/terms/q/quadruplewitching.asp
-  - https://www.cboe.com/optionsexpirationcalendar/
-  - https://www.optionseducation.org/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - options_chain
@@ -825,10 +854,10 @@ strategies:
   - Caps upside in a rip — 'I sold the rocket'
   - Doesn't protect downside (you still own the underlying)
   - Deep-ITM call can disqualify long-term holding period — read IRS rules
-  sources:
-  - https://www.investopedia.com/terms/c/coveredcall.asp
-  - https://www.optionseducation.org/strategies/all-strategies/covered-call-buy-write-or-overwrite
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -862,10 +891,10 @@ strategies:
   - Assignment in a falling market locks you into long-the-bottom
   - Premium feels like income but it's actually risk compensation
   - Earnings/macro events can spike IV after you sell — paper loss
-  sources:
-  - https://www.investopedia.com/terms/c/cash-secured-put.asp
-  - https://www.optionseducation.org/strategies/all-strategies/cash-secured-put
-  - https://www.tastylive.com/concepts-strategies/cash-secured-put
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -899,10 +928,10 @@ strategies:
   - 'Asymmetric: small wins, occasional max loss'
   - Gap-down can blow through both legs
   - Need to manage assignment risk near expiry
-  sources:
-  - https://www.investopedia.com/terms/b/bullputspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/bull-put-spread-credit-put-spread
-  - https://www.tastylive.com/concepts-strategies/short-put-vertical
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -935,10 +964,10 @@ strategies:
   - Short call near earnings → IV crush risk + gap-up risk
   - If underlying rallies, max loss arrives quickly
   - Watch dividends — early assignment around ex-div is real
-  sources:
-  - https://www.investopedia.com/terms/b/bearcallspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/bear-call-spread-credit-call-spread
-  - https://www.tastylive.com/concepts-strategies/short-call-vertical
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -972,10 +1001,10 @@ strategies:
   - Trend days/weeks blow through one side
   - Pin risk near expiry — close early
   - Asymmetric P&L — one max loss erases multiple wins
-  sources:
-  - https://www.investopedia.com/terms/i/ironcondor.asp
-  - https://www.optionseducation.org/strategies/all-strategies/iron-condor
-  - https://www.tastylive.com/concepts-strategies/iron-condor
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -1007,10 +1036,10 @@ strategies:
   - Caps both sides of the trade — a giveaway in big rallies
   - 'Tax: married-put rules can suspend holding period — read carefully'
   - Multiple legs = multiple commissions/slippage
-  sources:
-  - https://www.investopedia.com/terms/c/collar.asp
-  - https://www.optionseducation.org/strategies/all-strategies/collar
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - portfolio
@@ -1043,10 +1072,10 @@ strategies:
   - Big moves in either direction kill the trade
   - Term-structure shifts can hurt even with correct directional view
   - More complex Greeks — beginners often size wrong
-  sources:
-  - https://www.investopedia.com/terms/c/calendarspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/calendar-spread
-  - https://www.tastylive.com/concepts-strategies/calendar-spread
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
@@ -1078,10 +1107,10 @@ strategies:
   - LEAPS can lose 50%+ if underlying drops materially
   - Short call can be assigned early around dividends → exercise LEAPS or deal with short stock
   - Less forgiving than covered call — no shares to fall back on
-  sources:
-  - https://www.investopedia.com/terms/p/poor-mans-covered-call.asp
-  - https://www.tastylive.com/concepts-strategies/poor-mans-covered-call
-  - https://www.optionseducation.org/strategies/all-strategies/long-call
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
 - id: btc_dca
@@ -1111,10 +1140,10 @@ strategies:
   - Severe drawdowns are normal — can lose 80% before recovery
   - Custody risk if held on exchange (FTX 2022)
   - Regulatory risk — US framework evolving
-  sources:
-  - https://www.investopedia.com/terms/b/bitcoin.asp
-  - https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-virtual-currency-transactions
-  - https://bitcoin.org/bitcoin.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - crypto_ohlcv
@@ -1145,10 +1174,10 @@ strategies:
   - Drawdowns deeper than BTC historically
   - Smart-contract / protocol risk
   - Staking rewards = ordinary income (taxable on receipt, not sale)
-  sources:
-  - https://www.investopedia.com/terms/e/ethereum.asp
-  - https://ethereum.org/en/whitepaper/
-  - https://www.irs.gov/pub/irs-drop/rr-23-14.pdf
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - chart
   - crypto_ohlcv
@@ -1180,10 +1209,10 @@ strategies:
   - Single regulatory headline can drop KWEB 10-20% intraday (July 2021)
   - Variable Interest Entity (VIE) structural risk
   - ADR delisting risk under HFCAA — partly mitigated by 2022 PCAOB deal but not eliminated
-  sources:
-  - https://kraneshares.com/kweb/
-  - https://www.sec.gov/news/press-release/2022-229
-  - https://www.irs.gov/forms-pubs/about-form-1116
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - relative_strength
   - news
@@ -1216,10 +1245,10 @@ strategies:
   - Decade of underperformance vs US is historical fact
   - Concentrated in Tencent/Alibaba — single-name policy risk
   - 'Geopolitical: Taiwan, sanctions, capital controls'
-  sources:
-  - https://www.ishares.com/us/products/239619/ishares-msci-china-etf
-  - https://www.investopedia.com/articles/etfs/best-china-etfs-mchi-fxi/
-  - https://www.msci.com/our-solutions/indexes/china-indexes
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - expense_ratio
   - allocation_state
@@ -1252,10 +1281,10 @@ strategies:
   - Wide bid-ask on FXI options vs SPY — slippage matters
   - Headline risk between entry and exit
   - Stick to defined-risk per user rule — never naked
-  sources:
-  - https://www.ishares.com/us/products/239536/ishares-china-largecap-etf
-  - https://www.optionseducation.org/
-  - https://www.cboe.com/tradable_products/etf_index_options/
+  # sources: removed 2026-04-27 — Phase 3 subagent generated
+  # general-web URLs without verifying they exist or that the page
+  # actually backs the strategy. See B7 followup task #66.
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
