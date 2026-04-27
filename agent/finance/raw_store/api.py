@@ -74,6 +74,55 @@ def list_blobs(
     }
 
 
+@router.get("/blobs/as-of")
+def blobs_as_of(
+    project_id:     str           = Query(...),
+    valid_time_max: Optional[str] = Query(None, description="ISO 8601 — blob.valid_time <= this"),
+    tx_time_max:    Optional[str] = Query(None, description="ISO 8601 — blob.first_seen_at <= this"),
+    valid_time_min: Optional[str] = Query(None),
+    tx_time_min:    Optional[str] = Query(None),
+    source_url:     Optional[str] = Query(None),
+    limit:          int           = Query(100, ge=1, le=500),
+) -> Dict[str, Any]:
+    """Phase B2 — bitemporal AS-OF query.
+
+    Implements the SQL:2011 ``FOR SYSTEM_TIME AS OF`` semantics on
+    top of the raw store: returns blobs that satisfy *both* the
+    valid-time bound (the underlying event happened before the
+    requested wall-clock) AND the transaction-time bound (we had
+    observed it by the requested observation moment).
+
+    Either bound is optional — provide one to narrow that dimension
+    only.
+
+    Note: route declared BEFORE /blobs/{sha256} so FastAPI matches
+    the literal "as-of" before treating it as a path parameter.
+    """
+    _check_project(project_id)
+    store = RawStore.for_project(project_id)
+    rows = store.index.query_bitemporal(
+        valid_time_max=valid_time_max,
+        valid_time_min=valid_time_min,
+        tx_time_max=tx_time_max,
+        tx_time_min=tx_time_min,
+        source_url=source_url,
+        limit=limit,
+    )
+    return {
+        "project_id":     project_id,
+        "count":          len(rows),
+        "blobs":          rows,
+        "valid_time_max": valid_time_max,
+        "tx_time_max":    tx_time_max,
+        "valid_time_min": valid_time_min,
+        "tx_time_min":    tx_time_min,
+        "explanation": (
+            "Bitemporal point-in-time query: rows match both valid_time "
+            "AND transaction_time (first_seen_at) bounds."
+        ),
+    }
+
+
 @router.get("/blobs/{sha256}")
 def get_blob(
     project_id:    str = Query(...),
@@ -250,3 +299,161 @@ def dev_reindex(project_id: str = Query(...)) -> Dict[str, Any]:
     store = RawStore.for_project(project_id)
     n = store.reindex_from_disk()
     return {"project_id": project_id, "reindexed_blobs": n}
+
+
+@router.post("/_dev/crawl_news_synthetic")
+def dev_crawl_news_synthetic(
+    project_id:     str  = Query(...),
+    n_articles:     int  = Query(5,  ge=1, le=50),
+    n_reposts:      int  = Query(2,  ge=0, le=20,
+                                description="N of the articles get reposted to extra sources"),
+    silent_edit:    bool = Query(False,
+                                description="re-fetch one article with edited body (silent edit demo)"),
+    valid_time_age_hours: float = Query(6.0, ge=0, le=720,
+                                description="how far in the past valid_time should be (vs now)"),
+) -> Dict[str, Any]:
+    """Phase B3 dev endpoint — simulates a realistic news crawl.
+
+    Generates synthetic news entries that go through the SAME code
+    path the real news crawler will use in production:
+      - one CrawlRunHandle per call
+      - each entry as one blob, content-addressed by body bytes
+      - bitemporal: valid_time set to (now - valid_time_age_hours),
+        transaction_time set to now → exercises B2's AS-OF queries
+      - multi-source reposts: same article URL on different domain
+        → produces distinct blobs (B3 will SimHash-dedupe in the
+        compute step, not here)
+      - optional silent edit: re-fetches one URL with different body
+        bytes, demonstrates B1's supersede detection
+
+    Gated by NEOMIND_RAW_DEV=1.  Used to exercise B1+B2+B3 end-to-end
+    in the browser without needing Miniflux running.
+    """
+    import json as _json
+    from datetime import datetime, timedelta, timezone
+    if not _dev_enabled():
+        raise HTTPException(
+            403,
+            "dev endpoints disabled — export NEOMIND_RAW_DEV=1 in the "
+            "uvicorn process to enable",
+        )
+    _check_project(project_id)
+    store = RawStore.for_project(project_id)
+
+    now      = datetime.now(timezone.utc)
+    valid_t  = (now - timedelta(hours=valid_time_age_hours)).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    # Realistic-ish news content templates
+    headlines = [
+        ("AAPL hits new 52w high on services momentum",
+         "Apple shares surged 2.3% as services revenue beat consensus..."),
+        ("META reports earnings tomorrow; options volume spikes",
+         "Implied volatility on Meta options has expanded to 4.2 vol points..."),
+        ("MSFT closed +1.5% as cloud growth accelerates",
+         "Microsoft's Azure segment grew 28% YoY versus 24% prior quarter..."),
+        ("AMD outlook tempered by datacenter inventory glut",
+         "Advanced Micro Devices guided down on Q4 datacenter ramp..."),
+        ("ARM IPO lockup expires in 10 days; insider selling watched",
+         "Arm Holdings' 180-day lockup unlocks an additional 95M shares..."),
+    ]
+    sources = [
+        ("Reuters",     "https://reuters.com/markets/"),
+        ("Bloomberg",   "https://bloomberg.com/news/articles/"),
+        ("YahooFin",    "https://finance.yahoo.com/news/"),
+        ("Xueqiu",      "https://xueqiu.com/today/"),
+    ]
+
+    blobs_written: List[Dict[str, Any]] = []
+    with store.open_crawl_run(
+        source="dev.news_synthetic",
+        query={
+            "n_articles": n_articles, "n_reposts": n_reposts,
+            "silent_edit": silent_edit,
+            "valid_time_age_hours": valid_time_age_hours,
+        },
+    ) as run:
+        for i in range(min(n_articles, len(headlines))):
+            title, body = headlines[i]
+            # Primary source
+            src_name, src_base = sources[0]
+            url   = f"{src_base}article-{i}"
+            entry = {
+                "title":         title,
+                "url":           url,
+                "source":        src_name,
+                "published_at":  valid_t,
+                "body":          body,
+                "id":            i,
+            }
+            payload = _json.dumps(entry, ensure_ascii=False).encode("utf-8")
+            meta = run.add_blob(
+                payload, url=url, response_status=200,
+                response_headers={"Content-Type": "application/json"},
+                valid_time=valid_t,
+            )
+            blobs_written.append({"url": url, "sha256": meta.sha256, "src": src_name})
+
+            # Reposts: same body content reposted to additional sources
+            # For B3 dedupe testing, we use IDENTICAL body bytes across
+            # sources — that means content-addressing makes them ONE blob
+            # (correct: same content). UI will surface "×4 sources" via
+            # the URL multi-mapping (TODO in compute step).
+            #
+            # If we wanted DIFFERENT blobs per source, we'd vary the
+            # body slightly (e.g. include source-specific header).
+            #
+            # For the demo: vary body so each repost is a distinct blob,
+            # which exercises the storage layer; SimHash-dedup is a
+            # later compute-side concern.
+            if i < n_reposts:
+                for src_name2, src_base2 in sources[1:1 + 2]:
+                    url2 = f"{src_base2}article-{i}"
+                    entry2 = dict(entry, source=src_name2, url=url2)
+                    payload2 = _json.dumps(entry2, ensure_ascii=False).encode("utf-8")
+                    m2 = run.add_blob(
+                        payload2, url=url2, response_status=200,
+                        response_headers={"Content-Type": "application/json"},
+                        valid_time=valid_t,
+                    )
+                    blobs_written.append({"url": url2, "sha256": m2.sha256, "src": src_name2})
+
+        # Silent edit: re-fetch article 0 with edited body bytes.
+        # Same URL, different content → B1 should detect this and add
+        # a supersede entry to the manifest.
+        if silent_edit:
+            src_name, src_base = sources[0]
+            url   = f"{src_base}article-0"
+            entry = {
+                "title":         headlines[0][0] + " — UPDATED",
+                "url":           url,
+                "source":        src_name,
+                "published_at":  valid_t,
+                "body":          headlines[0][1] + " (UPDATED 30 min later: revenue figure revised)",
+                "id":            0,
+            }
+            payload = _json.dumps(entry, ensure_ascii=False).encode("utf-8")
+            meta = run.add_blob(
+                payload, url=url, response_status=200,
+                response_headers={"Content-Type": "application/json"},
+                valid_time=valid_t,
+            )
+            blobs_written.append({"url": url, "sha256": meta.sha256, "src": src_name + " (edited)"})
+
+        run_id   = run.crawl_run_id
+        date_str = run.date_str
+
+    return {
+        "project_id":   project_id,
+        "crawl_run_id": run_id,
+        "date":         date_str,
+        "blobs":        blobs_written,
+        "wrote_n":      len(blobs_written),
+        "explanation": (
+            f"Wrote {len(blobs_written)} synthetic news blobs through the "
+            f"same RawStore code path the real news crawler will use in "
+            f"production. valid_time={valid_t} (different from now() "
+            f"so AS-OF queries demonstrate bitemporal). Repeat this "
+            f"endpoint with silent_edit=true to see B1's supersede "
+            f"detection fire."
+        ),
+    }
