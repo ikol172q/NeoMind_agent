@@ -1306,6 +1306,15 @@ export interface StrategyEntry {
   starter_step: string
   key_risks: string[]
   sources: string[]
+  /** Anti-hallucination guard (Layer 1). Default 'unverified' — Phase 3
+   *  research subagent's content has not been audited against real
+   *  RawStore bytes.  UI shows a ⚠ chip on every entry whose state is
+   *  not 'verified' / 'rawstore_grounded'.  Decision-path code paths
+   *  (strategy_matcher) only see entries with trusted state. */
+  provenance: {
+    state: 'unverified' | 'partially_verified' | 'verified' | 'rawstore_grounded'
+    source: string
+  }
 }
 
 // ── Lineage: what L1 obs the fin SQLite store emits into the lattice ──

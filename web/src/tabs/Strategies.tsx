@@ -592,6 +592,32 @@ function StrategyCard({
             {timeAware?.days_until != null && timeAware.event_label && (
               <TimeAwareChip ta={timeAware} activeLang={activeLang} />
             )}
+            {/* Anti-hallucination Layer 4: ⚠ chip when the entry's
+                provenance is not in the trusted set. Decision-path
+                code paths (strategy_matcher) already filter these
+                out, but the UI keeps them visible per user request
+                ("留着别动但是都标个符号表明不可信"). */}
+            {s.provenance && s.provenance.state !== 'verified' && s.provenance.state !== 'rawstore_grounded' && (
+              <span
+                className="text-[8px] px-1.5 py-0.5 rounded border font-mono shrink-0 cursor-help"
+                style={{
+                  borderColor: 'var(--color-amber,#e5a200)',
+                  color:       'var(--color-amber,#e5a200)',
+                }}
+                title={
+                  '⚠ 未经证实 / unverified\n\n' +
+                  '此策略的内容（typical_win_rate / max_loss / starter_step ' +
+                  '等具体数字）是 Phase 3 调研子 agent 生成的，未经审核。\n\n' +
+                  '后端的 strategy_matcher 已经把所有 unverified 策略过滤出 ' +
+                  '决策路径——它不会被引用为 L3 call 的 strategy_match。\n\n' +
+                  '当 Layer 0 auditor 自动审核通过、或人工标记为 verified 时，' +
+                  '这个 chip 才会消失。\n\n' +
+                  'Source: ' + s.provenance.source
+                }
+              >
+                ⚠ unverified
+              </span>
+            )}
             {/* Today's fit chip — same matcher, score against today's
                 themes. Always present (even on no-L3-call days). */}
             <span
