@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
+import { FreshnessBar } from '@/components/FreshnessBar'
 import { LatticeGraphView } from './LatticeGraphView'
 import { ReasoningText } from './ReasoningText'
 import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
@@ -145,6 +146,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
         historicalDate={historicalDate}
         setHistoricalDate={setHistoricalDate}
         onOpenConfig={onOpenConfig}
+        globalAsOf={asOf}
       />
       {/* V9: thin animated progress bar during any refetch. Old data
           stays visible below (via placeholderData: keepPreviousData)
@@ -157,6 +159,25 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
           aria-label="regenerating lattice — data may change shortly"
         />
       )}
+      {/* B6-Step1: provenance breadcrumb. Reads run_meta from the
+          /api/lattice/calls payload (B5-L3) — surfaces dep_hash,
+          compute_run_id, model, cache_hit and the L3 ← L2 ← L1
+          lineage chain so the user can trace any rendered call back
+          to the exact bytes that produced it. */}
+      <FreshnessBar
+        meta={payload?.run_meta}
+        pipelineLabel="Research"
+        showSnapshotHint
+        refreshing={q.isFetching}
+        onOpenRun={(id) =>
+          window.open(
+            `/api/compute/runs/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
+            '_blank',
+            'noopener',
+          )
+        }
+      />
+
 
       {(anomalies.data?.flags?.length ?? 0) > 0 && !isFreshInstall && (
         <AnomalyStrip
@@ -341,7 +362,7 @@ function AnomalyStrip({
 
 function Header({
   mode, setMode, fetchedAt, loading, onRefresh,
-  projectId, historicalDate, setHistoricalDate, onOpenConfig,
+  projectId, historicalDate, setHistoricalDate, onOpenConfig, globalAsOf,
 }: {
   mode: Mode
   setMode: (m: Mode) => void
@@ -352,8 +373,16 @@ function Header({
   historicalDate: string | null
   setHistoricalDate: (d: string | null) => void
   onOpenConfig?: () => void
+  /** B6 followup: top-nav AsOfPicker is the single source of truth.
+   *  When ``globalAsOf`` is set to a YYYY-MM-DD, the local
+   *  HistoryPicker stays hidden (was a duplicate that confused
+   *  users — see #65). */
+  globalAsOf?: string
 }) {
-  const isHistorical = historicalDate !== null
+  const isLocalHistorical = historicalDate !== null
+  const isGlobalHistorical = !!(globalAsOf && globalAsOf !== 'live')
+  const isHistorical = isLocalHistorical || isGlobalHistorical
+  const historicalLabel = globalAsOf && globalAsOf !== 'live' ? globalAsOf : historicalDate
   return (
     <div className="flex items-center gap-2 px-3 py-1.5 border-b border-[var(--color-border)] shrink-0">
       <Sparkles size={12} className="text-[var(--color-accent)]" />
@@ -361,19 +390,26 @@ function Header({
         {isHistorical ? (
           <>
             <span className="text-[var(--color-amber,#e5a200)]">
-              Historical · {historicalDate}
+              Historical · {historicalLabel}
             </span>
-            <button
-              onClick={() => setHistoricalDate(null)}
-              className="ml-2 text-[var(--color-accent)] hover:underline normal-case tracking-normal"
-              data-testid="digest-historical-clear"
-            >
-              ← back to live
-            </button>
+            {isLocalHistorical && !isGlobalHistorical && (
+              <button
+                onClick={() => setHistoricalDate(null)}
+                className="ml-2 text-[var(--color-accent)] hover:underline normal-case tracking-normal"
+                data-testid="digest-historical-clear"
+              >
+                ← back to live
+              </button>
+            )}
+            {isGlobalHistorical && (
+              <span className="ml-2 normal-case tracking-normal text-[var(--color-dim)]">
+                (use the global picker top-right to change date)
+              </span>
+            )}
           </>
         ) : (
           <>
-            Today's lattice · L1 → L2 → L3
+            Today's lattice · L1 (observations) → L2 (themes) → L3 (calls)
             {fetchedAt && (
               <span className="ml-2 text-[var(--color-dim)]/80">
                 updated {new Date(fetchedAt).toLocaleTimeString()}
@@ -382,12 +418,19 @@ function Header({
           </>
         )}
       </span>
-      <HistoryPicker
-        projectId={projectId}
-        value={historicalDate}
-        onChange={setHistoricalDate}
-        disabled={loading}
-      />
+      {/* B6 followup: hide the local HistoryPicker when the global
+          top-nav AsOfPicker is in non-Live mode — having both was the
+          'two date pickers' confusion (#65). When global is Live we
+          still expose the local picker for backwards-compat with
+          users who want a quick per-tab time-travel. */}
+      {!isGlobalHistorical && (
+        <HistoryPicker
+          projectId={projectId}
+          value={historicalDate}
+          onChange={setHistoricalDate}
+          disabled={loading}
+        />
+      )}
       <IntegrityBadge projectId={projectId} disabled={loading || isHistorical} />
       <BudgetsPicker disabled={isHistorical || loading} />
       <div

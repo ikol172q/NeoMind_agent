@@ -19,6 +19,8 @@ them; missing inputs degrade to zero observations, never to errors.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import math
 import re
@@ -799,6 +801,13 @@ def gen_fin_compliance_signals(proj: Dict[str, Any]) -> List[Observation]:
 
 # ── Engine ─────────────────────────────────────────────
 
+
+# Bumped whenever the L1 generator chain or its serialization
+# changes shape.  Embedded in ``DepHashInputs.extra`` so cached
+# observation snapshots never get reused under a different shape.
+OBSERVATIONS_PIPELINE_VERSION = "v1"
+
+
 def build_observations(
     project_id: str,
     *,
@@ -807,21 +816,76 @@ def build_observations(
 ) -> List[Observation]:
     """Scan every available L0 source and produce L1 observations.
 
-    When ``fresh=True``, bypass every downstream cache (synthesis,
-    anomalies). This is needed by tests that seed + immediately
-    assert, and by the ?fresh=1 API bypass.
+    Thin wrapper that drops the run metadata.  Use
+    :func:`build_observations_run` if you want the (rows, meta)
+    tuple — the router does, so it can surface the dep_hash and
+    cache-hit status in the response payload.
 
-    Imports live inside the function so a missing upstream (yfinance
-    down, DeepSeek 503) degrades gracefully — the matching generator
-    just returns [].
+    When ``fresh=True``, bypass every cache (compute / synthesis /
+    anomalies).
     """
+    rows, _meta = build_observations_run(
+        project_id,
+        news_limit_per_scan=news_limit_per_scan,
+        fresh=fresh,
+    )
+    return rows
+
+
+def build_observations_run(
+    project_id: str,
+    *,
+    news_limit_per_scan: int = 50,
+    fresh: bool = False,
+) -> "tuple[List[Observation], Dict[str, Any]]":
+    """Same compute, but routed through the strict ``dep_hash`` cache
+    and returns ``(rows, run_meta)``.
+
+    ``run_meta`` keys (always present, even on cache miss):
+        - dep_hash:        sha256 hex of the canonical input bundle
+        - compute_run_id:  id of the cache row (hit) or new write (miss)
+        - cache_hit:       bool
+        - taxonomy_version
+        - code_git_sha
+        - inputs_summary:  small dict for the breadcrumb (n_news, n_symbols, …)
+
+    On cache hit the generators are NOT re-run.  On miss the
+    generators run as before, the result is persisted, and the row
+    id is returned so the breadcrumb in the UI can drill back to it.
+    """
+    # Imports inside function: graceful degradation on missing deps.
+    from agent.finance.compute import (
+        DepHashInputs,
+        compute_dep_hash,
+        get_code_git_sha,
+        open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        algorithm_checks_for_observations,
+    )
+    from agent.finance.compute.cache import _utcnow_iso
+
     _reset_ids()
 
     try:
         from agent.finance import synthesis
     except Exception as exc:
         logger.error("lattice: synthesis import failed: %s", exc)
-        return []
+        # Degrade gracefully — return empty observations + meta tagged
+        # as "not cached" (synth failure is upstream, not a cache miss
+        # we want to memoise).
+        return [], {
+            "dep_hash":          "",
+            "compute_run_id":    None,
+            "cache_hit":         False,
+            "started_at":        _utcnow_iso(),
+            "completed_at":      _utcnow_iso(),
+            "taxonomy_version":  "",
+            "code_git_sha":      get_code_git_sha(),
+            "pipeline_version":  OBSERVATIONS_PIPELINE_VERSION,
+            "inputs_summary":    {"error": "synthesis_import_failed"},
+            "step":              "observations",
+        }
 
     try:
         proj = synthesis.synth_project_data(project_id, fresh=fresh)
@@ -872,6 +936,118 @@ def build_observations(
                       if str(w.get("market", "")).upper() == "US"}
     position_syms = {p["symbol"] for p in (proj.get("positions") or [])}
 
+    # ── B5-L1: dep_hash composition + strict cache lookup ──────────
+    #
+    # Every byte that influences the L1 output is fingerprinted here.
+    # The fingerprint includes:
+    #   * the project synthesis payload (positions, watchlist, sectors,
+    #     sentiment) — sha256 of canonical JSON
+    #   * each per-symbol synthesis blob — sha256, sorted by symbol so
+    #     order doesn't perturb the hash
+    #   * the anomalies payload — sha256 of canonical JSON
+    #   * each news entry — its individual sha256, sorted, so dropping a
+    #     stale entry doesn't accidentally reuse a cached run from when
+    #     it was still around
+    #
+    # The result is a deterministic blob_hashes tuple that DepHashInputs
+    # consumes as opaque content fingerprints — exactly the shape RawStore
+    # blobs would supply once L1 reads from there directly (B5 follow-up).
+    tax = load_taxonomy()
+
+    def _canon_sha(obj: Any) -> str:
+        try:
+            blob = json.dumps(obj, sort_keys=True, ensure_ascii=False, default=str).encode("utf-8")
+        except Exception:
+            blob = repr(obj).encode("utf-8")
+        return hashlib.sha256(blob).hexdigest()
+
+    inputs_fingerprint: List[str] = [
+        f"proj:{_canon_sha(proj)}",
+        f"anom:{_canon_sha(anomaly_payload)}",
+    ]
+    for sym in sorted(sym_snaps.keys()):
+        inputs_fingerprint.append(f"sym:{sym}:{_canon_sha(sym_snaps[sym])}")
+    for entry in sorted(news_entries, key=lambda e: (str(e.get("id", "")), str(e.get("url", "")))):
+        inputs_fingerprint.append(f"news:{_canon_sha(entry)}")
+
+    inputs_summary = {
+        "n_symbols":      len(sym_snaps),
+        "symbols":        sorted(sym_snaps.keys()),
+        "n_news_entries": len(news_entries),
+        "n_anomalies":    len((anomaly_payload or {}).get("alerts") or []),
+        "has_positions":  bool(proj.get("positions")),
+        "has_watchlist":  bool(proj.get("watchlist")),
+    }
+
+    inputs = DepHashInputs(
+        blob_hashes=             tuple(inputs_fingerprint),
+        prompt_template_version= "",   # L1 has no LLM
+        llm_model_id=            "",
+        llm_temperature=         0.0,
+        sample_strategy=         "",   # L1 reads everything
+        taxonomy_version=        str(tax.version or ""),
+        code_git_sha=            get_code_git_sha(),
+        extra=(
+            ("pipeline_version", OBSERVATIONS_PIPELINE_VERSION),
+            ("news_limit",       str(int(news_limit_per_scan))),
+        ),
+    )
+    dep_hash = compute_dep_hash(inputs)
+
+    cache = open_dep_cache(project_id)
+
+    # CACHE HIT path — skip generators entirely, restore the
+    # widget-payload stash so the graph builder still has the L0
+    # blobs to attach.
+    if not fresh:
+        hit = cache.get(dep_hash, "observations")
+        if hit:
+            try:
+                cached_blob = hit.read_payload()
+                cached = json.loads(cached_blob.decode("utf-8")) if cached_blob else None
+            except Exception as exc:
+                logger.warning("observations cache read failed (%s) — falling through to recompute", exc)
+                cached = None
+            if cached is not None:
+                rows_back = [Observation(**d) for d in cached.get("observations") or []]
+                wp = cached.get("widget_payloads")
+                if isinstance(wp, dict):
+                    _stash_widget_payloads(project_id, wp)
+                # Pull the stored validation report (B7) for the breadcrumb.
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("observations validation read on hit failed: %s", exc)
+                meta = {
+                    "dep_hash":          dep_hash,
+                    "compute_run_id":    hit.compute_run_id,
+                    "cache_hit":         True,
+                    "started_at":        hit.started_at,
+                    "completed_at":      hit.completed_at,
+                    "taxonomy_version":  inputs.taxonomy_version,
+                    "code_git_sha":      inputs.code_git_sha,
+                    "pipeline_version":  OBSERVATIONS_PIPELINE_VERSION,
+                    "inputs_summary":    inputs_summary,
+                    "step":              "observations",
+                    "validation_state":  vstate,
+                    "validation_summary": vsumm,
+                }
+                return rows_back, meta
+
+    # CACHE MISS path — fall through to the existing generator chain.
+    started_at_iso = _utcnow_iso()
+
     # Compose all generators. Order matters only for ID generation
     # stability within one scan — the engine itself is order-independent.
     # V10·A3: stamp each emitted observation with the generator
@@ -914,7 +1090,7 @@ def build_observations(
         out.append(r)
 
     # Taxonomy-validate tags; drop invalid ones loudly (logs warn).
-    tax = load_taxonomy()
+    # ``tax`` is already loaded above for the dep_hash inputs.
     for obs in out:
         obs.tags = tax.reject_invalid(obs.tags)
 
@@ -926,7 +1102,7 @@ def build_observations(
     # cycle, keyed by widget id. The graph builder attaches these
     # onto L0 widget nodes so the trace UI can show "this is the
     # exact blob that drove today's observations".
-    _stash_widget_payloads(project_id, {
+    widget_payloads = {
         "chart":     {"sym_snaps": sym_snaps},
         "earnings":  {"sym_snaps": {s: {k: v for k, v in (snap or {}).items()
                                          if k in ("days_until_earnings", "atm_iv_pct",
@@ -943,5 +1119,74 @@ def build_observations(
         "news":      {"entries_count": len(news_entries),
                       "sample": news_entries[:5]},
         "market_regime": {"regime": (proj.get("sentiment") or {}).get("regime")},
-    })
-    return out
+    }
+    _stash_widget_payloads(project_id, widget_payloads)
+
+    # ── B5-L1: persist the cache miss ──────────────────────────────
+    # Snapshot stores both observations AND widget_payloads so a cache
+    # hit can restore the stash without re-running generators.
+    snapshot_payload = json.dumps(
+        {
+            "observations":    [r.to_dict() for r in out],
+            "widget_payloads": widget_payloads,
+        },
+        sort_keys=True, ensure_ascii=False, default=str,
+    ).encode("utf-8")
+    try:
+        written = cache.put(
+            inputs=        inputs,
+            step=          "observations",
+            payload=       snapshot_payload,
+            crawl_run_id=  None,
+            started_at=    started_at_iso,
+        )
+        compute_run_id = written.compute_run_id
+        completed_at   = written.completed_at
+    except Exception as exc:
+        # Cache failure must NEVER break the L1 path — log and return
+        # the rows uncached.  The router will surface compute_run_id
+        # = None so the UI can show "result not cached" if desired.
+        logger.warning("observations cache.put failed (%s) — returning uncached rows", exc)
+        compute_run_id = None
+        completed_at   = _utcnow_iso()
+
+    # ── B7: persist validation checks for the algorithm step ──────
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {"n_total": 0, "n_pass": 0, "n_warn": 0, "n_fail": 0}
+    if compute_run_id is not None:
+        try:
+            vs = ValidationStore.for_dep_cache(cache)
+            historical = vs.percentile_bounds("obs.row_count_within_p10_p90")
+            checks = algorithm_checks_for_observations(
+                rows_count=        len(out),
+                inputs_summary=    inputs_summary,
+                historical_bounds= historical,
+            )
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("observations validation persist failed (%s) — meta validation_state=unknown", exc)
+
+    meta = {
+        "dep_hash":          dep_hash,
+        "compute_run_id":    compute_run_id,
+        "cache_hit":         False,
+        "started_at":        started_at_iso,
+        "completed_at":      completed_at,
+        "taxonomy_version":  inputs.taxonomy_version,
+        "code_git_sha":      inputs.code_git_sha,
+        "pipeline_version":  OBSERVATIONS_PIPELINE_VERSION,
+        "inputs_summary":    inputs_summary,
+        "step":              "observations",
+        "validation_state":  validation_state,
+        "validation_summary": validation_summary,
+    }
+    return out, meta

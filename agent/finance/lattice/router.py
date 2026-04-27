@@ -17,13 +17,13 @@ from fastapi import APIRouter, HTTPException, Query
 
 from agent.finance import investment_projects
 from agent.finance.lattice import runtime, spec
-from agent.finance.lattice.calls import build_calls, get_call_trace, get_call_pool_trace
+from agent.finance.lattice.calls import build_calls, build_calls_run, get_call_trace, get_call_pool_trace
 from agent.finance.lattice.graph import build_graph
-from agent.finance.lattice.observations import build_observations
+from agent.finance.lattice.observations import build_observations, build_observations_run
 from agent.finance.lattice.selfcheck import run_selfcheck
 from agent.finance.lattice.snapshots import list_runs_for_date, list_snapshots, read_snapshot
 from agent.finance.lattice.taxonomy import load_taxonomy
-from agent.finance.lattice.themes import build_themes, get_narrative_trace
+from agent.finance.lattice.themes import build_themes, build_themes_run, get_narrative_trace
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +58,21 @@ def build_lattice_router() -> APIRouter:
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
 
-        cache_key = f"obs::{project_id}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
+        # B5-L1: the strict ``dep_hash`` cache replaces the old 60s
+        # in-process TTL cache for L1 observations.  We still keep the
+        # surrounding payload keys (count, observations, taxonomy_version,
+        # theme_signatures, fetched_at, duration_ms) for backwards
+        # compatibility, and add a ``run_meta`` block carrying
+        # (dep_hash, compute_run_id, cache_hit, started_at, completed_at,
+        # taxonomy_version, code_git_sha, pipeline_version, inputs_summary).
+        # The UI breadcrumb reads run_meta to show "this view was
+        # produced by compute_run_id … hashing N raw inputs to
+        # dep_hash …" — exactly the data-coherence story the design
+        # doc spells out.
 
         t0 = time.monotonic()
         try:
-            rows = build_observations(project_id, fresh=fresh)
+            rows, run_meta = build_observations_run(project_id, fresh=fresh)
         except Exception as exc:
             logger.exception("lattice observations failed")
             raise HTTPException(502, f"observations build failed: {exc}")
@@ -85,8 +91,8 @@ def build_lattice_router() -> APIRouter:
             ],
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "duration_ms": duration_ms,
+            "run_meta": run_meta,
         }
-        _put(cache_key, payload)
         return payload
 
     @router.get("/api/lattice/themes")
@@ -97,17 +103,14 @@ def build_lattice_router() -> APIRouter:
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
 
-        lang = runtime.get_effective_language()
-        bh = runtime.budget_hash(runtime.get_effective_budgets())
-        cache_key = f"themes::{lang}::{bh}::{project_id}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
-
+        # B5-L2: dep_hash cache replaces the old in-process TTL cache.
+        # Inputs to dep_hash include language + budget_hash already, so
+        # the ad-hoc ``themes::lang::bh::project`` cache_key is gone.
+        # Response gains a ``run_meta`` block — same shape as
+        # /api/lattice/observations — for the UI breadcrumb.
         t0 = time.monotonic()
         try:
-            result = build_themes(project_id, fresh=fresh)
+            result, run_meta = build_themes_run(project_id, fresh=fresh)
         except Exception as exc:
             logger.exception("lattice themes failed")
             raise HTTPException(502, f"themes build failed: {exc}")
@@ -117,10 +120,10 @@ def build_lattice_router() -> APIRouter:
         payload = {
             **result,
             "taxonomy_version": tax.version,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "duration_ms": duration_ms,
+            "fetched_at":       datetime.now(timezone.utc).isoformat(),
+            "duration_ms":      duration_ms,
+            "run_meta":         run_meta,
         }
-        _put(cache_key, payload)
         return payload
 
     @router.get("/api/lattice/language")
@@ -465,17 +468,16 @@ def build_lattice_router() -> APIRouter:
             payload["snapshot_run_id"] = meta.get("run_id")
             return payload
 
-        lang = runtime.get_effective_language()
-        bh = runtime.budget_hash(runtime.get_effective_budgets())
-        cache_key = f"calls::{lang}::{bh}::{project_id}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
-
+        # B5-L3: dep_hash cache replaces the in-process TTL cache.
+        # Inputs to dep_hash include the L2 themes dep_hash (which
+        # transitively chains language + budgets + L1 + L0), so the
+        # ad-hoc ``calls::lang::bh::project`` cache_key is gone.
+        # Response gains a ``run_meta`` block with full lineage —
+        # dep_hash + compute_run_id at L3, plus themes_* and obs_*
+        # cross-links — for the UI breadcrumb.
         t0 = time.monotonic()
         try:
-            result = build_calls(project_id, fresh=fresh)
+            result, run_meta = build_calls_run(project_id, fresh=fresh)
         except Exception as exc:
             logger.exception("lattice calls failed")
             raise HTTPException(502, f"calls build failed: {exc}")
@@ -485,10 +487,10 @@ def build_lattice_router() -> APIRouter:
         payload = {
             **result,
             "taxonomy_version": tax.version,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "duration_ms": duration_ms,
+            "fetched_at":       datetime.now(timezone.utc).isoformat(),
+            "duration_ms":      duration_ms,
+            "run_meta":         run_meta,
         }
-        _put(cache_key, payload)
         return payload
 
     return router

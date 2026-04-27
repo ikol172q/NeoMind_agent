@@ -29,6 +29,11 @@ logger = logging.getLogger(__name__)
 DEFAULT_JOBS = [
     "agent.finance.scheduler.jobs.daily_market_pull",
     "agent.finance.scheduler.jobs.compliance_check",
+    # Phase B3-real (2026-04-26): pull Miniflux entries → RawStore.
+    # Graceful skip if Miniflux unconfigured/unreachable, so adding
+    # this module to the default registry is safe even on machines
+    # without docker miniflux booted.
+    "agent.finance.scheduler.jobs.news_pull",
 ]
 
 

@@ -8,16 +8,17 @@ import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
 import { LegacyTab } from '@/tabs/Legacy'
 import { StrategiesTab } from '@/tabs/Strategies'
+import { DataLakeTab } from '@/tabs/DataLake'
 import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
-import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen } from 'lucide-react'
+import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'strategies' | 'chat' | 'paper' | 'audit' | 'settings' | 'legacy'
+type Tab = 'research' | 'strategies' | 'chat' | 'paper' | 'audit' | 'data_lake' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'research',   label: 'Research',   icon: LineChart },
@@ -25,6 +26,9 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: 'chat',       label: 'Chat',       icon: MessagesSquare },
   { id: 'paper',      label: 'Paper',      icon: Wallet },
   { id: 'audit',      label: 'Audit',      icon: ClipboardList },
+  // Phase B6-Step2: Data Lake tab — provenance browser over the raw
+  // store (B1-B3) and the dep_hash compute cache (B4-B5).
+  { id: 'data_lake',  label: 'Data Lake',  icon: Database },
   { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
@@ -239,6 +243,7 @@ export default function App() {
             onConsumeFilter={() => setAuditReqFilter(null)}
           />
         )}
+        {tab === 'data_lake' && <DataLakeTab projectId={projectId} />}
         {tab === 'settings' && (
           <SettingsTab
             projectId={projectId}
