@@ -859,6 +859,9 @@ def build_observations_run(
         compute_dep_hash,
         get_code_git_sha,
         open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        algorithm_checks_for_observations,
     )
     from agent.finance.compute.cache import _utcnow_iso
 
@@ -1010,6 +1013,22 @@ def build_observations_run(
                 wp = cached.get("widget_payloads")
                 if isinstance(wp, dict):
                     _stash_widget_payloads(project_id, wp)
+                # Pull the stored validation report (B7) for the breadcrumb.
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("observations validation read on hit failed: %s", exc)
                 meta = {
                     "dep_hash":          dep_hash,
                     "compute_run_id":    hit.compute_run_id,
@@ -1021,6 +1040,8 @@ def build_observations_run(
                     "pipeline_version":  OBSERVATIONS_PIPELINE_VERSION,
                     "inputs_summary":    inputs_summary,
                     "step":              "observations",
+                    "validation_state":  vstate,
+                    "validation_summary": vsumm,
                 }
                 return rows_back, meta
 
@@ -1129,6 +1150,31 @@ def build_observations_run(
         compute_run_id = None
         completed_at   = _utcnow_iso()
 
+    # ── B7: persist validation checks for the algorithm step ──────
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {"n_total": 0, "n_pass": 0, "n_warn": 0, "n_fail": 0}
+    if compute_run_id is not None:
+        try:
+            vs = ValidationStore.for_dep_cache(cache)
+            historical = vs.percentile_bounds("obs.row_count_within_p10_p90")
+            checks = algorithm_checks_for_observations(
+                rows_count=        len(out),
+                inputs_summary=    inputs_summary,
+                historical_bounds= historical,
+            )
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("observations validation persist failed (%s) — meta validation_state=unknown", exc)
+
     meta = {
         "dep_hash":          dep_hash,
         "compute_run_id":    compute_run_id,
@@ -1140,5 +1186,7 @@ def build_observations_run(
         "pipeline_version":  OBSERVATIONS_PIPELINE_VERSION,
         "inputs_summary":    inputs_summary,
         "step":              "observations",
+        "validation_state":  validation_state,
+        "validation_summary": validation_summary,
     }
     return out, meta
