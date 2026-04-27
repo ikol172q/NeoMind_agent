@@ -31,6 +31,7 @@ from .cache import (
     CachedRun,
     open_dep_cache,
 )
+from .codeversion import get_code_git_sha
 
 __all__ = [
     "DEP_HASH_SCHEMA",
@@ -40,4 +41,5 @@ __all__ = [
     "DepCache",
     "CachedRun",
     "open_dep_cache",
+    "get_code_git_sha",
 ]
