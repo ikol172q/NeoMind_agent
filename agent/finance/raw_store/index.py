@@ -231,6 +231,53 @@ class RawIndex:
             rows = conn.execute(" ".join(sql_parts), params).fetchall()
             return [dict(r) for r in rows]
 
+    def query_bitemporal(
+        self,
+        *,
+        valid_time_max: Optional[str] = None,
+        tx_time_max:    Optional[str] = None,
+        valid_time_min: Optional[str] = None,
+        tx_time_min:    Optional[str] = None,
+        source_url:     Optional[str] = None,
+        limit:          int = 100,
+    ) -> List[Dict[str, Any]]:
+        """Phase B2 — point-in-time query.
+
+        Answer: "What did the agent know about THE WORLD at world-time
+        ``valid_time_max``, given only data observed by ``tx_time_max``?"
+
+        - ``valid_time_max`` ⇒ blob.valid_time <= valid_time_max
+          (the underlying event happened before the requested wall clock)
+        - ``tx_time_max``    ⇒ blob.first_seen_at <= tx_time_max
+          (we had observed it by the requested observation moment)
+
+        Together they implement the SQL:2011 bitemporal AS-OF query.
+        Both bounds optional; either alone narrows but doesn't enforce
+        the other dimension.  ``_min`` variants narrow to a window.
+        """
+        sql_parts = ["SELECT * FROM blobs WHERE 1=1"]
+        params: List[Any] = []
+        if valid_time_max is not None:
+            sql_parts.append("AND valid_time <= ?")
+            params.append(valid_time_max)
+        if valid_time_min is not None:
+            sql_parts.append("AND valid_time >= ?")
+            params.append(valid_time_min)
+        if tx_time_max is not None:
+            sql_parts.append("AND first_seen_at <= ?")
+            params.append(tx_time_max)
+        if tx_time_min is not None:
+            sql_parts.append("AND first_seen_at >= ?")
+            params.append(tx_time_min)
+        if source_url is not None:
+            sql_parts.append("AND url LIKE ?")
+            params.append(f"%{source_url}%")
+        sql_parts.append("ORDER BY valid_time DESC, first_seen_at DESC LIMIT ?")
+        params.append(int(limit))
+        with self._open() as conn:
+            rows = conn.execute(" ".join(sql_parts), params).fetchall()
+            return [dict(r) for r in rows]
+
     def get_blob(self, sha256: str) -> Optional[Dict[str, Any]]:
         with self._open() as conn:
             row = conn.execute(
