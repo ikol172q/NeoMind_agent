@@ -8,6 +8,7 @@ import {
 } from '@/lib/api'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Button } from '@/components/ui/Button'
+import { FreshnessBar } from '@/components/FreshnessBar'
 import { LatticeGraphView } from './LatticeGraphView'
 import { ReasoningText } from './ReasoningText'
 import { useLatticeLanguage, setLatticeLanguage } from '@/lib/api'
@@ -157,6 +158,23 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
           aria-label="regenerating lattice — data may change shortly"
         />
       )}
+      {/* B6-Step1: provenance breadcrumb. Reads run_meta from the
+          /api/lattice/calls payload (B5-L3) — surfaces dep_hash,
+          compute_run_id, model, cache_hit and the L3 ← L2 ← L1
+          lineage chain so the user can trace any rendered call back
+          to the exact bytes that produced it. */}
+      <FreshnessBar
+        meta={payload?.run_meta}
+        pipelineLabel="Research"
+        onOpenRun={(id) =>
+          window.open(
+            `/api/compute/runs/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
+            '_blank',
+            'noopener',
+          )
+        }
+      />
+
 
       {(anomalies.data?.flags?.length ?? 0) > 0 && !isFreshInstall && (
         <AnomalyStrip
