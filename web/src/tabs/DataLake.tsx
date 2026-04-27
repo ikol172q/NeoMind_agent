@@ -31,15 +31,36 @@ export function DataLakeTab({ projectId }: Props) {
 
   return (
     <div className="h-full flex flex-col bg-[var(--color-bg)]">
+      {/* Intro strip — answers "what is this tab for?". */}
+      <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)] text-[11px] leading-[1.55] text-[var(--color-dim)] shrink-0">
+        <div className="max-w-[1100px] mx-auto">
+          <span className="text-[var(--color-text)] font-semibold">Data Lake</span>{' '}
+          — provenance & audit browser.  Every analysis you see on the Research / Strategies tabs
+          was produced by a <em>compute run</em> (LLM call, observation pass, …) keyed by a
+          content-addressed <span className="font-mono">dep_hash</span>.  This tab lets you see:
+          <ul className="mt-1 ml-4 list-disc space-y-0.5">
+            <li><b>Cache Stats</b> — how often the strict cache is hitting (cost saved by not re-running LLMs).</li>
+            <li><b>Crawl Runs</b> — every raw-data crawl that's landed in the store, with anomalies and silent-edit chains.</li>
+            <li><b>Compute Runs</b> — every cached compute (observations / themes / calls), with the full <span className="font-mono">DepHashInputs</span> that produced it.</li>
+          </ul>
+          <span className="text-[10px] mt-1 inline-block">
+            Use this when you're asking "where did <em>this number</em> come from?" or "did today's run actually use the new prompt?".
+          </span>
+        </div>
+      </div>
+
       {/* Sub-nav */}
       <div className="flex items-center gap-0 px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-panel)] shrink-0">
-        <SubTab active={pane === 'stats'}   onClick={() => setPane('stats')}   icon={<Activity size={12} />}>
+        <SubTab active={pane === 'stats'}   onClick={() => setPane('stats')}   icon={<Activity size={12} />}
+                title="Lifetime hit/miss counters and bytes-avoided. Auto-refreshes every 5s.">
           Cache Stats
         </SubTab>
-        <SubTab active={pane === 'crawl'}   onClick={() => setPane('crawl')}   icon={<Database size={12} />}>
+        <SubTab active={pane === 'crawl'}   onClick={() => setPane('crawl')}   icon={<Database size={12} />}
+                title="Raw-data crawls (news, market_data). Click any row to see report totals, anomaly alerts, and silent-edit (supersede) chain.">
           Crawl Runs
         </SubTab>
-        <SubTab active={pane === 'compute'} onClick={() => setPane('compute')} icon={<Layers size={12} />}>
+        <SubTab active={pane === 'compute'} onClick={() => setPane('compute')} icon={<Layers size={12} />}
+                title="Cached compute runs across the L1→L2→L3 lattice. Click any row to see the full DepHashInputs (blob hashes, prompt template, model, temperature, code git sha).">
           Compute Runs
         </SubTab>
         <span className="ml-auto text-[10px] text-[var(--color-dim)]">
@@ -56,15 +77,17 @@ export function DataLakeTab({ projectId }: Props) {
   )
 }
 
-function SubTab({ active, onClick, icon, children }: {
+function SubTab({ active, onClick, icon, children, title }: {
   active: boolean
   onClick: () => void
   icon: React.ReactNode
   children: React.ReactNode
+  title?: string
 }) {
   return (
     <button
       onClick={onClick}
+      title={title}
       className={
         'flex items-center gap-1.5 px-3 py-1 text-[11px] border-b-2 -mb-1.5 ' +
         (active
@@ -398,14 +421,30 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
   })
   const [openId, setOpenId] = useState<string | null>(null)
 
+  // Tooltips explain what each lattice level is so users hovering
+  // a filter pill don't have to leave the tab to learn the vocab.
+  const stepTitles: Record<string, string> = {
+    '':             'All cached compute runs across the lattice.',
+    observations: 'L1 — atomic structured claims (e.g. "AAPL at top of 20d range"). Pure algorithm, no LLM.',
+    themes:       'L2 — clusters of L1 observations + one short LLM narrative each (e.g. "Near-term event risk").',
+    calls:        'L3 — Toulmin-structured trade ideas (grounds + warrant + qualifier), LLM-generated, MMR-filtered to ≤3 diverse calls.',
+  }
+
   return (
     <div className="p-4 max-w-[1100px] mx-auto">
+      <div className="text-[10.5px] text-[var(--color-dim)] mb-2 leading-[1.55]">
+        Each row is one cached compute. Click any row to expand the full{' '}
+        <span className="font-mono text-[var(--color-text)]">DepHashInputs</span>{' '}
+        — blob hashes, prompt template version, LLM model + temperature, code git sha.
+        Same inputs hash to the same dep_hash → next call hits cache, no re-run.
+      </div>
       <div className="flex items-center gap-2 mb-2 text-[11px]">
         <span className="text-[var(--color-dim)]">filter step:</span>
         {['', 'observations', 'themes', 'calls'].map((s) => (
           <button
             key={s || 'all'}
             onClick={() => setStepFilter(s)}
+            title={stepTitles[s] || stepTitles['']}
             className={
               'px-2 py-0.5 rounded border ' +
               (stepFilter === s
