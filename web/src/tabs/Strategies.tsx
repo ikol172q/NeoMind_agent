@@ -674,13 +674,26 @@ function StrategyCard({
                 className="text-[var(--color-dim)] italic leading-[1.4]"
                 title={usageLabel}
               >
-                No current L3 call references this strategy. This is one
-                of two things: (a) today's lattice themes don't strongly
-                support this strategy (matcher threshold ≥ 3 not met),
-                or (b) a real gap — the strategy is documented but the
-                lattice has no widget feeding it. To investigate, look
-                at the strategy's <code className="text-[var(--color-accent)]">data_requirements</code>{' '}
-                below and check Research tab's L0 widget list.
+                今天 lattice 没有 L3 call 引用这个 strategy。两种可能：
+                (a) 今日 lattice themes 对这个 strategy 的匹配分数不够（matcher
+                threshold ≥ 3 未达到），或者 (b) 真实的 gap —— 这个 strategy
+                文档里有，但 lattice 没有对应的 widget 数据流来 feed 它。要
+                查具体哪一种，往下看
+                {' '}
+                <a
+                  href={`#data-req-${s.id}`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    document
+                      .getElementById(`data-req-${s.id}`)
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }}
+                  className="text-[var(--color-accent)] underline cursor-pointer"
+                >
+                  data_requirements ↓
+                </a>
+                {' '}
+                这一节，再去 Research tab 看 L0 widget 列表对得上不。
               </p>
             ) : (
               <ul className="text-[var(--color-text)] flex flex-col gap-1">
@@ -725,7 +738,10 @@ function StrategyCard({
               onJumpToResearchNode={onJumpToResearchNode}
             />
           </Section>
-          <Section label="数据需求 / Data requirements (lattice widget mapping)">
+          <Section
+            label="数据需求 / Data requirements (lattice widget mapping)"
+            id={`data-req-${s.id}`}
+          >
             {widgetCoverage ? (
               <div className="flex flex-col gap-1">
                 {/* widget chips with status badges */}
@@ -788,9 +804,9 @@ function StrategyCard({
                 <span className="ml-2 text-[var(--color-blue,#5fa8ff)]">§1256 (60/40)</span>
               )}
               {s.tax_treatment.qualifies_long_term ? (
-                <span className="ml-2">eligible for long-term holding</span>
+                <span className="ml-2">可长期持有 / eligible for long-term holding</span>
               ) : (
-                <span className="ml-2">always short-term</span>
+                <span className="ml-2">永远短期 / always short-term</span>
               )}
               {s.tax_treatment.notes && (
                 <div className="mt-1 italic">{s.tax_treatment.notes}</div>
@@ -831,7 +847,7 @@ function StrategyCard({
               className="inline-flex items-center gap-1 px-2 py-1 rounded border border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] hover:bg-[var(--color-accent)]/10"
             >
               <Sparkles size={10} />
-              Ask the agent
+              问 Agent / Ask the agent
             </button>
             <a
               href={`/api/strategies/${s.id}`}
@@ -839,7 +855,7 @@ function StrategyCard({
               rel="noreferrer"
               className="text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)]"
             >
-              View raw JSON →
+              查看原始 JSON / View raw JSON →
             </a>
           </div>
         </div>
@@ -1120,9 +1136,9 @@ function StrategyMatchingThemes({
 }
 
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ label, children, id }: { label: string; children: React.ReactNode; id?: string }) {
   return (
-    <div>
+    <div id={id}>
       <div className="text-[8px] uppercase tracking-wider text-[var(--color-dim)] mb-0.5">
         {label}
       </div>
