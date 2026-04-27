@@ -159,7 +159,7 @@ function CacheStatsPane({ projectId }: { projectId: string }) {
             <tbody>
               {s.top_steps.map((row: { step: string; n: number }) => (
                 <tr key={row.step} className="border-t border-[var(--color-border)]">
-                  <td className="py-1 font-mono">{row.step}</td>
+                  <td className="py-1 font-mono">{STEP_DISPLAY[row.step] ?? row.step}</td>
                   <td className="py-1 font-mono">{row.n}</td>
                 </tr>
               ))}
@@ -421,8 +421,15 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
   })
   const [openId, setOpenId] = useState<string | null>(null)
 
-  // Tooltips explain what each lattice level is so users hovering
-  // a filter pill don't have to leave the tab to learn the vocab.
+  // L1/L2/L3 prefixes per user feedback: don't make users learn a
+  // separate vocab — the lattice levels are the same ones in the
+  // Research tab header ("L1 → L2 → L3").
+  const stepLabel: Record<string, string> = {
+    '':             'all',
+    observations: 'L1 · observations',
+    themes:       'L2 · themes',
+    calls:        'L3 · calls',
+  }
   const stepTitles: Record<string, string> = {
     '':             'All cached compute runs across the lattice.',
     observations: 'L1 — atomic structured claims (e.g. "AAPL at top of 20d range"). Pure algorithm, no LLM.',
@@ -433,13 +440,15 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
   return (
     <div className="p-4 max-w-[1100px] mx-auto">
       <div className="text-[10.5px] text-[var(--color-dim)] mb-2 leading-[1.55]">
-        Each row is one cached compute. Click any row to expand the full{' '}
+        Each row is one cached compute at one of the lattice levels{' '}
+        <b className="text-[var(--color-text)]">L1 (observations) → L2 (themes) → L3 (calls)</b>.
+        {' '}Click any row to expand the full{' '}
         <span className="font-mono text-[var(--color-text)]">DepHashInputs</span>{' '}
         — blob hashes, prompt template version, LLM model + temperature, code git sha.
         Same inputs hash to the same dep_hash → next call hits cache, no re-run.
       </div>
       <div className="flex items-center gap-2 mb-2 text-[11px]">
-        <span className="text-[var(--color-dim)]">filter step:</span>
+        <span className="text-[var(--color-dim)]">filter:</span>
         {['', 'observations', 'themes', 'calls'].map((s) => (
           <button
             key={s || 'all'}
@@ -452,7 +461,7 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
                 : 'border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]')
             }
           >
-            {s || 'all'}
+            {stepLabel[s] || s}
           </button>
         ))}
         <span className="ml-auto text-[var(--color-dim)]">
@@ -496,6 +505,14 @@ function ComputeRunsPane({ projectId }: { projectId: string }) {
   )
 }
 
+// Map raw step → "L1 · observations" form; same labels used in the
+// filter pills above so the row + filter share vocabulary.
+const STEP_DISPLAY: Record<string, string> = {
+  observations: 'L1 · observations',
+  themes:       'L2 · themes',
+  calls:        'L3 · calls',
+}
+
 function ComputeRunRowEl({
   row,
   expanded,
@@ -514,7 +531,7 @@ function ComputeRunRowEl({
         onClick={onToggle}
       >
         <td className="py-1.5 px-2 font-mono text-[10.5px]">{fmtIso(row.started_at)}</td>
-        <td className="py-1.5 px-2 font-mono">{row.step}</td>
+        <td className="py-1.5 px-2 font-mono">{STEP_DISPLAY[row.step] ?? row.step}</td>
         <td className="py-1.5 px-2 font-mono text-[10.5px]">{row.compute_run_id.slice(0, 8)}</td>
         <td className="py-1.5 px-2 font-mono text-[10.5px]">{row.dep_hash.slice(0, 12)}</td>
         <td className="py-1.5 px-2 text-right font-mono">{row.size_bytes ? fmtBytes(row.size_bytes) : '—'}</td>

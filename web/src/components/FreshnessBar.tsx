@@ -38,6 +38,11 @@ interface Props {
    *  nothing.  Set to true on tabs that always want the strip's
    *  vertical real estate reserved. */
   showSnapshotHint?: boolean
+  /** When true, overlay a "refreshing…" animation on the bar. The
+   *  caller passes ``q.isFetching`` from React Query so the user
+   *  sees an immediate "the date picker change is still loading"
+   *  signal instead of staring at stale data. */
+  refreshing?: boolean
 }
 
 const SHORT_HASH_LEN = 8
@@ -58,7 +63,7 @@ function fmtTime(iso: string | null | undefined): string {
   }
 }
 
-export function FreshnessBar({ meta, pipelineLabel, onOpenRun, showSnapshotHint }: Props) {
+export function FreshnessBar({ meta, pipelineLabel, onOpenRun, showSnapshotHint, refreshing }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
 
@@ -126,16 +131,30 @@ export function FreshnessBar({ meta, pipelineLabel, onOpenRun, showSnapshotHint 
           {pipelineLabel}
         </span>
       )}
-      <span
-        className="px-1.5 py-[1px] rounded text-[9.5px] uppercase tracking-wide"
-        style={{
-          background: hitColor,
-          color: 'var(--color-bg, #000)',
-          opacity: 0.85,
-        }}
-      >
-        {cacheHit ? 'cached' : 'fresh'}
-      </span>
+      {refreshing ? (
+        <span
+          className="px-1.5 py-[1px] rounded text-[9.5px] uppercase tracking-wide animate-pulse"
+          style={{
+            background: 'var(--color-accent, #4d84e0)',
+            color: 'var(--color-bg, #000)',
+            opacity: 0.85,
+          }}
+          title="Refetching after a date / filter change — bar will update once the new run lands"
+        >
+          refreshing…
+        </span>
+      ) : (
+        <span
+          className="px-1.5 py-[1px] rounded text-[9.5px] uppercase tracking-wide"
+          style={{
+            background: hitColor,
+            color: 'var(--color-bg, #000)',
+            opacity: 0.85,
+          }}
+        >
+          {cacheHit ? 'cached' : 'fresh'}
+        </span>
+      )}
 
       {/* Time */}
       <span className="text-[var(--color-dim)]" title={meta.completed_at || meta.started_at}>
@@ -224,19 +243,49 @@ export function FreshnessBar({ meta, pipelineLabel, onOpenRun, showSnapshotHint 
         </span>
       )}
 
-      {/* Lineage chip — only present on themes / calls */}
-      {(meta.themes_compute_run_id || meta.obs_compute_run_id) && (
-        <button
-          type="button"
-          className="ml-auto text-[var(--color-dim)] hover:text-[var(--color-fg)] hover:underline"
-          onClick={() => setExpanded((e) => !e)}
-          title="Click to expand the L3 ← L2 ← L1 lineage chain"
+      {/* Spacer pushing the right-side controls to the end. */}
+      <span className="ml-auto flex items-center gap-2">
+        {/* Lineage chip — only present on themes / calls */}
+        {(meta.themes_compute_run_id || meta.obs_compute_run_id) && (
+          <button
+            type="button"
+            className="text-[var(--color-dim)] hover:text-[var(--color-fg)] hover:underline"
+            onClick={() => setExpanded((e) => !e)}
+            title="Click to expand the L3 ← L2 ← L1 lineage chain"
+          >
+            {meta.step === 'calls'
+              ? `L3 ← L2 ← L1 ${expanded ? '▾' : '▸'}`
+              : `L2 ← L1 ${expanded ? '▾' : '▸'}`}
+          </button>
+        )}
+        {/* Help "?" — opens a tooltip cheat sheet on hover. */}
+        <span
+          className="
+            inline-flex items-center justify-center w-4 h-4 rounded-full
+            border border-[var(--color-border)]
+            text-[var(--color-dim)] hover:text-[var(--color-fg)]
+            cursor-help text-[10px] font-mono
+          "
+          title={
+            'PROVENANCE BREADCRUMB CHEAT SHEET\n\n' +
+            '• cached / fresh — was this view served from cache or computed now?\n' +
+            '• ⚙ <8-char> — short dep_hash (sha256 of every input). Click to copy full hash.\n' +
+            '• 🏷 <8-char> — compute_run_id. Click to open /api/compute/runs/{id} JSON detail.\n' +
+            '• 🧠 model @ T=N — LLM model and temperature used.\n' +
+            '• ✓ N/M — validation checks (B7): pass/total. Color = overall state.\n' +
+            '• L3 ← L2 ← L1 — click to expand the upstream lineage chain.\n\n' +
+            'TIPS\n' +
+            '• Same inputs → same dep_hash → cache hits, no re-run.\n' +
+            '• Edit a prompt → bump *_PROMPT_TEMPLATE_VERSION → all cached LLM runs invalidate.\n' +
+            '• Switch as_of date picker (top-right) to see historical snapshots — those are\n' +
+            '  frozen artifacts so the bar shows "📜 historical snapshot" instead of dep_hash.\n' +
+            '• Data Lake tab → Compute Runs → click any row to inspect full DepHashInputs.'
+          }
         >
-          {meta.step === 'calls'
-            ? `L3 ← L2 ← L1 ${expanded ? '▾' : '▸'}`
-            : `L2 ← L1 ${expanded ? '▾' : '▸'}`}
-        </button>
-      )}
+          ?
+        </span>
+      </span>
+
 
       {/* Expanded lineage panel — minimal: one row per upstream layer */}
       {expanded && (
