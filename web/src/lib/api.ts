@@ -7,7 +7,7 @@
  */
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 
-async function fetchJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init)
   if (!r.ok) {
     const body = await r.text().catch(() => '')
