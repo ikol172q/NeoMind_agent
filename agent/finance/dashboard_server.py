@@ -1302,12 +1302,14 @@ def create_app(
         from agent.finance.strategies_catalog import router as _fin_strategies_router
         from agent.finance.lattice.widget_router import router as _fin_widgets_router
         from agent.finance.raw_store.api import router as _fin_raw_store_router
+        from agent.finance.compute.api import router as _fin_compute_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
         app.include_router(_fin_integrity_router)
         app.include_router(_fin_strategies_router)
         app.include_router(_fin_widgets_router)
         app.include_router(_fin_raw_store_router)
+        app.include_router(_fin_compute_router)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "fin platform routers not mounted: %s "
