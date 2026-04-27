@@ -34,6 +34,12 @@ DEFAULT_JOBS = [
     # this module to the default registry is safe even on machines
     # without docker miniflux booted.
     "agent.finance.scheduler.jobs.news_pull",
+    # Anti-hallucination Layer 0a (2026-04-27): nightly audit of N
+    # 'unverified' strategies. Promotes them to 'verified' /
+    # 'partially_verified' once their numeric claims are grounded in
+    # RawStore bytes via LLM-extractor + mechanical post-check.
+    # Graceful skip on missing DEEPSEEK_API_KEY / network errors.
+    "agent.finance.scheduler.jobs.audit_strategies",
 ]
 
 
