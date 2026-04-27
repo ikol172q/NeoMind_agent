@@ -266,6 +266,7 @@ export function StrategiesTab({
         <FreshnessBar
           meta={calls.data?.run_meta}
           pipelineLabel="Strategies"
+          refreshing={calls.isFetching}
           onOpenRun={(id) =>
             window.open(
               `/api/compute/runs/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
