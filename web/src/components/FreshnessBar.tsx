@@ -19,10 +19,12 @@ import { useState } from 'react'
 import type { LatticeRunMeta } from '@/lib/api'
 
 interface Props {
-  /** When undefined the bar renders nothing — keeps the layout
-   *  unchanged for tabs that haven't been wired to a run_meta source
-   *  yet.  When the underlying request errored or pre-dates B5, the
-   *  caller should pass undefined rather than a stub object. */
+  /** When undefined the bar renders a thin "historical snapshot"
+   *  hint instead of disappearing — historical-snapshot reads
+   *  (as_of=YYYY-MM-DD) deliberately don't carry run_meta because
+   *  the snapshot envelope is a frozen artifact, not a live cache.
+   *  The hint tells the user that's why the dep_hash chips are
+   *  absent. */
   meta: LatticeRunMeta | undefined
   /** A short label that prefixes the row, e.g. "Research" or
    *  "Strategies".  Helps the user disambiguate when several tabs
@@ -31,6 +33,11 @@ interface Props {
   /** Optional click-through to open a "compute run detail" surface.
    *  When not supplied the run_id chip is non-interactive. */
   onOpenRun?: (computeRunId: string) => void
+  /** When true and meta is undefined, render the historical-snapshot
+   *  hint row.  When false (default) and meta is undefined, render
+   *  nothing.  Set to true on tabs that always want the strip's
+   *  vertical real estate reserved. */
+  showSnapshotHint?: boolean
 }
 
 const SHORT_HASH_LEN = 8
@@ -51,11 +58,36 @@ function fmtTime(iso: string | null | undefined): string {
   }
 }
 
-export function FreshnessBar({ meta, pipelineLabel, onOpenRun }: Props) {
+export function FreshnessBar({ meta, pipelineLabel, onOpenRun, showSnapshotHint }: Props) {
   const [expanded, setExpanded] = useState(false)
   const [copied, setCopied] = useState<string | null>(null)
 
-  if (!meta) return null
+  if (!meta) {
+    if (!showSnapshotHint) return null
+    return (
+      <div
+        data-testid="freshness-bar"
+        data-mode="snapshot"
+        className="
+          flex flex-wrap items-center gap-x-3 px-2 py-1 text-[10.5px]
+          border-b border-[var(--color-border)]
+          bg-[var(--color-panel-2,var(--color-panel))]
+          text-[var(--color-dim)] italic font-mono select-none
+        "
+        title={
+          'No live run_meta because this view is reading a historical snapshot ' +
+          '(as_of=YYYY-MM-DD). Snapshot envelopes are frozen artifacts and do ' +
+          'not carry the dep_hash cache breadcrumb. Switch the date picker ' +
+          'back to "Live" to see the dep_hash + cache-hit row.'
+        }
+      >
+        {pipelineLabel && (
+          <span className="not-italic uppercase tracking-wide">{pipelineLabel}</span>
+        )}
+        <span>📜 historical snapshot — provenance breadcrumb hidden (switch to Live to see dep_hash)</span>
+      </div>
+    )
+  }
 
   const cacheHit = meta.cache_hit === true
   const hitColor = cacheHit

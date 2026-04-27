@@ -166,6 +166,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
       <FreshnessBar
         meta={payload?.run_meta}
         pipelineLabel="Research"
+        showSnapshotHint
         onOpenRun={(id) =>
           window.open(
             `/api/compute/runs/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
