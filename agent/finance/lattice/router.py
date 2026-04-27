@@ -23,7 +23,7 @@ from agent.finance.lattice.observations import build_observations, build_observa
 from agent.finance.lattice.selfcheck import run_selfcheck
 from agent.finance.lattice.snapshots import list_runs_for_date, list_snapshots, read_snapshot
 from agent.finance.lattice.taxonomy import load_taxonomy
-from agent.finance.lattice.themes import build_themes, get_narrative_trace
+from agent.finance.lattice.themes import build_themes, build_themes_run, get_narrative_trace
 
 logger = logging.getLogger(__name__)
 
@@ -103,17 +103,14 @@ def build_lattice_router() -> APIRouter:
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
 
-        lang = runtime.get_effective_language()
-        bh = runtime.budget_hash(runtime.get_effective_budgets())
-        cache_key = f"themes::{lang}::{bh}::{project_id}"
-        if not fresh:
-            cached = _cached(cache_key)
-            if cached is not None:
-                return cached
-
+        # B5-L2: dep_hash cache replaces the old in-process TTL cache.
+        # Inputs to dep_hash include language + budget_hash already, so
+        # the ad-hoc ``themes::lang::bh::project`` cache_key is gone.
+        # Response gains a ``run_meta`` block — same shape as
+        # /api/lattice/observations — for the UI breadcrumb.
         t0 = time.monotonic()
         try:
-            result = build_themes(project_id, fresh=fresh)
+            result, run_meta = build_themes_run(project_id, fresh=fresh)
         except Exception as exc:
             logger.exception("lattice themes failed")
             raise HTTPException(502, f"themes build failed: {exc}")
@@ -123,10 +120,10 @@ def build_lattice_router() -> APIRouter:
         payload = {
             **result,
             "taxonomy_version": tax.version,
-            "fetched_at": datetime.now(timezone.utc).isoformat(),
-            "duration_ms": duration_ms,
+            "fetched_at":       datetime.now(timezone.utc).isoformat(),
+            "duration_ms":      duration_ms,
+            "run_meta":         run_meta,
         }
-        _put(cache_key, payload)
         return payload
 
     @router.get("/api/lattice/language")
