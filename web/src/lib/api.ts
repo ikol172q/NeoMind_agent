@@ -730,6 +730,15 @@ export interface LatticeRunMeta {
     has_watchlist?: boolean
     error?: string
   }
+  // B7: validation report roll-up
+  validation_state?: 'pass' | 'warn' | 'fail' | 'unknown'
+  validation_summary?: {
+    n_total?: number
+    n_pass?: number
+    n_warn?: number
+    n_fail?: number
+    n_unknown?: number
+  }
 }
 
 export function useLatticeCalls(project_id: string, date?: string | null) {

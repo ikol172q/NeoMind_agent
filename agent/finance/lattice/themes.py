@@ -591,6 +591,9 @@ def build_themes_run(
         compute_dep_hash,
         get_code_git_sha,
         open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        llm_checks_for_themes,
     )
     from agent.finance.compute.cache import _utcnow_iso
     from agent.finance.lattice import runtime
@@ -624,7 +627,10 @@ def build_themes_run(
 
     cache = open_dep_cache(project_id)
 
-    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str, completed_at: Optional[str]) -> Dict[str, Any]:
+    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str,
+                    completed_at: Optional[str],
+                    validation_state: str = "unknown",
+                    validation_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {
             "dep_hash":                dep_hash,
             "compute_run_id":          compute_run_id,
@@ -645,6 +651,8 @@ def build_themes_run(
             "obs_dep_hash":            obs_meta.get("dep_hash"),
             "obs_compute_run_id":      obs_meta.get("compute_run_id"),
             "obs_cache_hit":           obs_meta.get("cache_hit"),
+            "validation_state":        validation_state,
+            "validation_summary":      validation_summary or {},
         }
 
     # ── CACHE HIT path ──
@@ -658,11 +666,28 @@ def build_themes_run(
                 logger.warning("themes cache read failed (%s) — falling through", exc)
                 cached = None
             if cached is not None:
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("themes validation read on hit failed: %s", exc)
                 meta = _build_meta(
                     hit=True,
                     compute_run_id=hit.compute_run_id,
                     started_at=hit.started_at,
                     completed_at=hit.completed_at,
+                    validation_state=vstate,
+                    validation_summary=vsumm,
                 )
                 return cached, meta
 
@@ -712,10 +737,42 @@ def build_themes_run(
         compute_run_id = None
         completed_at   = _utcnow_iso()
 
+    # ── B7: persist LLM-step validation checks ──
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {}
+    if compute_run_id is not None:
+        try:
+            n_themes = len(themes)
+            n_template_fallback = sum(
+                1 for t in themes
+                if getattr(t, "narrative_source", "") == "template_fallback"
+            )
+            n_with_llm = n_themes - n_template_fallback
+            checks = llm_checks_for_themes(
+                n_themes=n_themes,
+                n_with_llm=n_with_llm,
+                n_template_fallback=n_template_fallback,
+            )
+            vs = ValidationStore.for_dep_cache(cache)
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("themes validation persist failed (%s)", exc)
+
     meta = _build_meta(
         hit=False,
         compute_run_id=compute_run_id,
         started_at=started_at_iso,
         completed_at=completed_at,
+        validation_state=validation_state,
+        validation_summary=validation_summary,
     )
     return result, meta
