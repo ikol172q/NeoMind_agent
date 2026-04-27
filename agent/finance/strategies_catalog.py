@@ -26,15 +26,69 @@ _STRATEGIES_DIR = Path(__file__).resolve().parent.parent.parent / "docs" / "stra
 _STRATEGIES_YAML = _STRATEGIES_DIR / "strategies.yaml"
 
 
+# ── provenance vocabulary ─────────────────────────────────────────
+# Anti-hallucination guarantees come from this state; a strategy
+# never enters the L3-call prompt unless its provenance.state is in
+# the trusted set.  See agent/finance/strategies/auditor.py for the
+# mechanism that promotes 'unverified' → 'verified'.
+PROVENANCE_STATES = (
+    "unverified",          # Phase 3 subagent default — DO NOT trust
+    "partially_verified",  # auditor confirmed SOME claims; others stay flagged
+    "verified",            # auditor confirmed every numeric claim against RawStore bytes
+    "rawstore_grounded",   # every source URL is a raw://<sha256>; strongest level
+)
+TRUSTED_PROVENANCE_STATES = ("verified", "rawstore_grounded")
+
+
+def _normalise_provenance(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Backfill missing provenance with conservative defaults.
+
+    Every existing entry written before 2026-04-27 was authored by
+    the Phase 3 research subagent without anti-hallucination guards;
+    none can be presumed verified.  An entry without any provenance
+    field at all is treated as 'unverified' rather than rejected so
+    a partial yaml never breaks the API.
+    """
+    prov = entry.get("provenance")
+    if not isinstance(prov, dict):
+        prov = {}
+    state = prov.get("state")
+    if state not in PROVENANCE_STATES:
+        state = "unverified"
+    return {
+        "state":  state,
+        "source": str(prov.get("source") or "Phase 3 research subagent 2026-04-25 (unverified default)"),
+    }
+
+
 def _load_catalog() -> List[Dict[str, Any]]:
     """Re-read the YAML on every request — file is small (~30k), reads
     are cheap, and editing YAML by hand should reflect immediately
     without a server restart.
+
+    B11: every entry is normalised through _normalise_provenance so
+    callers downstream can trust ``s["provenance"]["state"]`` is set.
     """
     if not _STRATEGIES_YAML.exists():
         return []
     raw = yaml.safe_load(_STRATEGIES_YAML.read_text(encoding="utf-8")) or {}
-    return list(raw.get("strategies", []))
+    out: List[Dict[str, Any]] = []
+    for s in raw.get("strategies", []) or []:
+        s = dict(s)
+        s["provenance"] = _normalise_provenance(s)
+        out.append(s)
+    return out
+
+
+def is_trusted(entry: Dict[str, Any]) -> bool:
+    """True when ``entry`` may participate in LLM prompts / decisions.
+
+    Single source of truth so the strategy_matcher, the L3 build_calls
+    prompt builder, and the UI all agree on the gate.  Default-deny:
+    if anything looks off, the entry stays out of decisions.
+    """
+    prov = entry.get("provenance") or {}
+    return prov.get("state") in TRUSTED_PROVENANCE_STATES
 
 
 @router.get("")
