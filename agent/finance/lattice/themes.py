@@ -38,14 +38,25 @@ import httpx
 
 from agent.constants.models import DEFAULT_MODEL
 from agent.finance.lattice import spec
-from agent.finance.lattice.observations import Observation, build_observations
+from agent.finance.lattice.observations import (
+    Observation,
+    build_observations,
+    build_observations_run,
+)
 from agent.finance.lattice.taxonomy import ThemeSignature, load_taxonomy
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 _NARRATIVE_MODEL = DEFAULT_MODEL
-_NARRATIVE_TTL_S = 300.0
+# Inner per-narrative cache TTL.  This sub-cache is content-addressed
+# by ``_content_hash(theme_id + members)``, so a TTL is unnecessary —
+# but kept as a long ceiling so a runaway leaked-process doesn't
+# accumulate stale entries forever.  The OUTER ``dep_hash`` cache
+# (B5-L2) catches almost all repeat calls; this inner cache only fires
+# on partial overlaps where some themes' members changed and others
+# didn't.
+_NARRATIVE_TTL_S = 86400.0   # 24h — effectively infinite for sessions
 _NARRATIVE_TIMEOUT_S = 30.0
 
 # Per-theme narrative cache: key is a content hash of (theme_id +
@@ -526,28 +537,165 @@ def _cluster_to_layer(
     return out
 
 
+# Bumped whenever the L2 prompt template (system / user) changes.
+# Embedded in DepHashInputs.prompt_template_version so cached themes
+# never get reused across a prompt edit.
+THEMES_PROMPT_TEMPLATE_VERSION = "v1"
+
+# Bumped whenever the L2 pipeline shape (cluster → narrate → validate)
+# changes how it serialises. Stored in DepHashInputs.extra to
+# invalidate snapshot reads on shape change.
+THEMES_PIPELINE_VERSION = "v1"
+
+
 def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
     """Full L1 (+ optional L1.5) + L2 pipeline: observations → clusters
     → narratives.
 
-    Returns a dict with:
-      observations  — L1 rows
-      sub_themes    — L1.5 rows (empty list when YAML has no sub_themes)
-      themes        — L2 rows with LLM narrative + members
-
-    `sub_themes` is the D6 hook: adding a `sub_themes:` block to
-    lattice_taxonomy.yaml engages n=4. No code change required.
+    Thin wrapper that drops the run metadata.  Use
+    :func:`build_themes_run` if you want the (result, meta) tuple —
+    the router does, so it can surface the dep_hash and cache-hit
+    status in the response payload.
     """
-    observations = build_observations(project_id, fresh=fresh)
-    tax = load_taxonomy()
-    # V9: budgets come from runtime (which returns the YAML default
-    # when no override is set), so a POST /api/lattice/budgets flips
-    # the pipeline without a restart.
-    from agent.finance.lattice import runtime
-    budgets = runtime.get_effective_budgets()
+    result, _meta = build_themes_run(project_id, fresh=fresh)
+    return result
 
-    # V7: apply L1 max_items cap before clustering. Sort by severity
-    # then confidence so the least-important obs drop first.
+
+def build_themes_run(
+    project_id: str, *, fresh: bool = False,
+) -> "tuple[Dict[str, Any], Dict[str, Any]]":
+    """Outer ``dep_hash`` cache around the L2 pipeline.
+
+    Inputs to the dep_hash:
+      * the L1 observations dep_hash (already content-addressed via
+        B5-L1) — captures every byte of input that drove the L1
+        layer
+      * effective budget hash (max_items caps for obs / sub_themes /
+        themes)
+      * effective language directive (zh / en / bilingual switch)
+      * taxonomy version
+      * prompt_template_version (bumps invalidate cached LLM
+        narratives)
+      * llm_model_id + llm_temperature
+      * code_git_sha
+      * pipeline_version
+
+    Strict cache by user approval — at temperature > 0 the FIRST
+    call writes the LLM response, subsequent identical-input calls
+    return the cached response (cache the first roll).  Edit the
+    prompt template → bump THEMES_PROMPT_TEMPLATE_VERSION → all
+    cached themes invalidate.
+    """
+    from agent.finance.compute import (
+        DepHashInputs,
+        compute_dep_hash,
+        get_code_git_sha,
+        open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        llm_checks_for_themes,
+    )
+    from agent.finance.compute.cache import _utcnow_iso
+    from agent.finance.lattice import runtime
+
+    # ── L1 observations (already cached via B5-L1) ──
+    observations, obs_meta = build_observations_run(project_id, fresh=fresh)
+
+    tax = load_taxonomy()
+    budgets = runtime.get_effective_budgets()
+    bh = runtime.budget_hash(budgets)
+    lang = runtime.get_effective_language()
+
+    # ── Compose dep_hash inputs ──
+    inputs = DepHashInputs(
+        blob_hashes=tuple([
+            f"obs:{obs_meta.get('dep_hash') or ''}",
+            f"budget:{bh}",
+            f"lang:{lang}",
+        ]),
+        prompt_template_version= THEMES_PROMPT_TEMPLATE_VERSION,
+        llm_model_id=            _NARRATIVE_MODEL,
+        llm_temperature=         0.3,
+        sample_strategy=         "",
+        taxonomy_version=        str(tax.version or ""),
+        code_git_sha=            get_code_git_sha(),
+        extra=(
+            ("pipeline_version", THEMES_PIPELINE_VERSION),
+        ),
+    )
+    dep_hash = compute_dep_hash(inputs)
+
+    cache = open_dep_cache(project_id)
+
+    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str,
+                    completed_at: Optional[str],
+                    validation_state: str = "unknown",
+                    validation_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "dep_hash":                dep_hash,
+            "compute_run_id":          compute_run_id,
+            "cache_hit":               hit,
+            "started_at":              started_at,
+            "completed_at":            completed_at,
+            "taxonomy_version":        inputs.taxonomy_version,
+            "code_git_sha":            inputs.code_git_sha,
+            "pipeline_version":        THEMES_PIPELINE_VERSION,
+            "prompt_template_version": THEMES_PROMPT_TEMPLATE_VERSION,
+            "llm_model_id":            _NARRATIVE_MODEL,
+            "llm_temperature":         0.3,
+            "language":                lang,
+            "budget_hash":             bh,
+            "step":                    "themes",
+            # Cross-link to the L1 run that fed us — UI breadcrumb
+            # uses these to render "L2 from L1 run X" lineage.
+            "obs_dep_hash":            obs_meta.get("dep_hash"),
+            "obs_compute_run_id":      obs_meta.get("compute_run_id"),
+            "obs_cache_hit":           obs_meta.get("cache_hit"),
+            "validation_state":        validation_state,
+            "validation_summary":      validation_summary or {},
+        }
+
+    # ── CACHE HIT path ──
+    if not fresh:
+        hit = cache.get(dep_hash, "themes")
+        if hit:
+            try:
+                cached_blob = hit.read_payload()
+                cached = json.loads(cached_blob.decode("utf-8")) if cached_blob else None
+            except Exception as exc:
+                logger.warning("themes cache read failed (%s) — falling through", exc)
+                cached = None
+            if cached is not None:
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("themes validation read on hit failed: %s", exc)
+                meta = _build_meta(
+                    hit=True,
+                    compute_run_id=hit.compute_run_id,
+                    started_at=hit.started_at,
+                    completed_at=hit.completed_at,
+                    validation_state=vstate,
+                    validation_summary=vsumm,
+                )
+                return cached, meta
+
+    # ── CACHE MISS path — run the full L2 pipeline ──
+    started_at_iso = _utcnow_iso()
+
+    # Apply L1 budget cap before clustering.  Sort by severity then
+    # confidence so the least-important obs drop first.
     if budgets.observations.max_items is not None:
         observations = sorted(
             observations,
@@ -563,9 +711,68 @@ def build_themes(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
         budget=budgets.themes,
     )
 
-    return {
-        "project_id": project_id,
+    result = {
+        "project_id":   project_id,
         "observations": [o.to_dict() for o in observations],
-        "sub_themes": [t.to_dict() for t in sub_themes],
-        "themes": [t.to_dict() for t in themes],
+        "sub_themes":   [t.to_dict() for t in sub_themes],
+        "themes":       [t.to_dict() for t in themes],
     }
+
+    # Persist
+    snapshot_payload = json.dumps(
+        result, sort_keys=True, ensure_ascii=False, default=str,
+    ).encode("utf-8")
+    try:
+        written = cache.put(
+            inputs=     inputs,
+            step=       "themes",
+            payload=    snapshot_payload,
+            crawl_run_id=None,
+            started_at= started_at_iso,
+        )
+        compute_run_id = written.compute_run_id
+        completed_at   = written.completed_at
+    except Exception as exc:
+        logger.warning("themes cache.put failed (%s) — returning uncached result", exc)
+        compute_run_id = None
+        completed_at   = _utcnow_iso()
+
+    # ── B7: persist LLM-step validation checks ──
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {}
+    if compute_run_id is not None:
+        try:
+            n_themes = len(themes)
+            n_template_fallback = sum(
+                1 for t in themes
+                if getattr(t, "narrative_source", "") == "template_fallback"
+            )
+            n_with_llm = n_themes - n_template_fallback
+            checks = llm_checks_for_themes(
+                n_themes=n_themes,
+                n_with_llm=n_with_llm,
+                n_template_fallback=n_template_fallback,
+            )
+            vs = ValidationStore.for_dep_cache(cache)
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("themes validation persist failed (%s)", exc)
+
+    meta = _build_meta(
+        hit=False,
+        compute_run_id=compute_run_id,
+        started_at=started_at_iso,
+        completed_at=completed_at,
+        validation_state=validation_state,
+        validation_summary=validation_summary,
+    )
+    return result, meta

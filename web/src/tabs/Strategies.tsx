@@ -37,6 +37,7 @@ import {
   type WidgetMeta,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
+import { FreshnessBar } from '@/components/FreshnessBar'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
@@ -256,6 +257,25 @@ export function StrategiesTab({
 
   return (
     <div className="h-full overflow-y-auto p-4 text-[12px]">
+      {/* B6-Step1: provenance breadcrumb at the very top of the tab.
+          Uses the same /api/lattice/calls payload the page already
+          fetches, so it surfaces the EXACT same dep_hash + run_id
+          the Research tab shows — confirming both tabs are looking at
+          the same compute run. */}
+      <div className="max-w-[1100px] mx-auto -mx-4 mb-3">
+        <FreshnessBar
+          meta={calls.data?.run_meta}
+          pipelineLabel="Strategies"
+          refreshing={calls.isFetching}
+          onOpenRun={(id) =>
+            window.open(
+              `/api/compute/runs/${encodeURIComponent(id)}?project_id=${encodeURIComponent(projectId)}`,
+              '_blank',
+              'noopener',
+            )
+          }
+        />
+      </div>
       <div className="max-w-[1100px] mx-auto">
         {/* Header */}
         <div className="flex items-baseline gap-3 mb-2">

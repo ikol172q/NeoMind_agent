@@ -606,11 +606,153 @@ def generate_calls(
     return calls
 
 
+# Bumped whenever the L3 prompt template / system prompt changes.
+CALLS_PROMPT_TEMPLATE_VERSION = "v1"
+
+# Bumped whenever the L3 pipeline shape (generate → MMR → strategy_match)
+# changes how it serialises.
+CALLS_PIPELINE_VERSION = "v1"
+
+
 def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
-    """Full L1 + L2 + L3 pipeline for the endpoint."""
-    themes_payload = build_themes(project_id, fresh=fresh)
+    """Full L1 + L2 + L3 pipeline for the endpoint.
+
+    Thin wrapper that drops the run metadata.  Use
+    :func:`build_calls_run` if you want the (payload, meta) tuple —
+    the router does, so it can surface dep_hash / cache-hit / lineage
+    in the response.
+    """
+    payload, _meta = build_calls_run(project_id, fresh=fresh)
+    return payload
+
+
+def build_calls_run(
+    project_id: str, *, fresh: bool = False,
+) -> "tuple[Dict[str, Any], Dict[str, Any]]":
+    """Outer ``dep_hash`` cache around the full L1+L2+L3 pipeline.
+
+    Inputs to the dep_hash:
+      * the L2 themes dep_hash (chains every upstream byte — L0
+        synthesis / news / anomalies / taxonomy / language /
+        budgets / themes prompt / themes model & temperature)
+      * calls prompt_template_version
+      * calls llm_model_id + llm_temperature
+      * code_git_sha
+      * pipeline_version
+
+    Strict cache: at temperature > 0 the FIRST call writes the
+    LLM response; subsequent identical-input calls return the
+    cached calls list.  Edit the prompt → bump
+    CALLS_PROMPT_TEMPLATE_VERSION → all cached calls invalidate.
+
+    The historical lattice snapshot file (under
+    ``<investment_root>/<project_id>/lattice_snapshots/<date>/<run_id>.json``)
+    uses the cache's ``compute_run_id`` as its ``run_id``, so the
+    snapshot file id == the compute_run_id — UI can drill from
+    snapshot → /api/compute/runs/<id> → dep_hash + lineage.
+    """
+    from agent.finance.compute import (
+        DepHashInputs,
+        compute_dep_hash,
+        get_code_git_sha,
+        open_dep_cache,
+        ValidationStore,
+        ValidationReport,
+        llm_checks_for_calls,
+    )
+    from agent.finance.compute.cache import _utcnow_iso
+    from agent.finance.lattice.themes import build_themes_run, ThemeMember
+
+    # ── Run L2 (which transitively runs L1) — both already cached ──
+    themes_payload, themes_meta = build_themes_run(project_id, fresh=fresh)
+
+    # ── Compose dep_hash inputs ──
+    inputs = DepHashInputs(
+        blob_hashes=tuple([
+            f"themes:{themes_meta.get('dep_hash') or ''}",
+        ]),
+        prompt_template_version= CALLS_PROMPT_TEMPLATE_VERSION,
+        llm_model_id=            _CALLS_MODEL,
+        llm_temperature=         0.4,
+        sample_strategy=         "",
+        taxonomy_version=        themes_meta.get("taxonomy_version") or "",
+        code_git_sha=            get_code_git_sha(),
+        extra=(
+            ("pipeline_version", CALLS_PIPELINE_VERSION),
+        ),
+    )
+    dep_hash = compute_dep_hash(inputs)
+
+    cache = open_dep_cache(project_id)
+
+    def _build_meta(*, hit: bool, compute_run_id: Optional[str], started_at: str,
+                    completed_at: Optional[str],
+                    validation_state: str = "unknown",
+                    validation_summary: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        return {
+            "dep_hash":                dep_hash,
+            "compute_run_id":          compute_run_id,
+            "cache_hit":               hit,
+            "started_at":              started_at,
+            "completed_at":            completed_at,
+            "taxonomy_version":        inputs.taxonomy_version,
+            "code_git_sha":            inputs.code_git_sha,
+            "pipeline_version":        CALLS_PIPELINE_VERSION,
+            "prompt_template_version": CALLS_PROMPT_TEMPLATE_VERSION,
+            "llm_model_id":            _CALLS_MODEL,
+            "llm_temperature":         0.4,
+            "step":                    "calls",
+            # Lineage — UI breadcrumb shows L3 ← L2 ← L1 ← L0 chain.
+            "themes_dep_hash":         themes_meta.get("dep_hash"),
+            "themes_compute_run_id":   themes_meta.get("compute_run_id"),
+            "themes_cache_hit":        themes_meta.get("cache_hit"),
+            "obs_dep_hash":            themes_meta.get("obs_dep_hash"),
+            "obs_compute_run_id":      themes_meta.get("obs_compute_run_id"),
+            "obs_cache_hit":           themes_meta.get("obs_cache_hit"),
+            "validation_state":        validation_state,
+            "validation_summary":      validation_summary or {},
+        }
+
+    # ── CACHE HIT path ──
+    if not fresh:
+        hit = cache.get(dep_hash, "calls")
+        if hit:
+            try:
+                cached_blob = hit.read_payload()
+                cached = json.loads(cached_blob.decode("utf-8")) if cached_blob else None
+            except Exception as exc:
+                logger.warning("calls cache read failed (%s) — falling through", exc)
+                cached = None
+            if cached is not None:
+                vstate, vsumm = "unknown", {}
+                try:
+                    vs = ValidationStore.for_dep_cache(cache)
+                    rep = vs.get_report(hit.compute_run_id)
+                    if rep is not None:
+                        vstate = rep.overall_state
+                        vsumm = {
+                            "n_total":   rep.n_total,
+                            "n_pass":    rep.n_pass,
+                            "n_warn":    rep.n_warn,
+                            "n_fail":    rep.n_fail,
+                            "n_unknown": rep.n_unknown,
+                        }
+                except Exception as exc:
+                    logger.debug("calls validation read on hit failed: %s", exc)
+                meta = _build_meta(
+                    hit=True,
+                    compute_run_id=hit.compute_run_id,
+                    started_at=hit.started_at,
+                    completed_at=hit.completed_at,
+                    validation_state=vstate,
+                    validation_summary=vsumm,
+                )
+                return cached, meta
+
+    # ── CACHE MISS path ──
+    started_at_iso = _utcnow_iso()
+
     # Re-hydrate Theme objects for generate_calls (build_themes returns dicts)
-    from agent.finance.lattice.themes import ThemeMember
     themes = [
         Theme(
             id=t["id"],
@@ -657,15 +799,84 @@ def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
         **themes_payload,
         "calls": enriched_calls,
     }
-    # V8: persist the fresh payload as today's snapshot so the
-    # historical-view UI can page back. Cache-hits (fresh=False AND
-    # the inner pipelines served from cache) don't overwrite — we
-    # only want to record *actual* generations. Best-effort: never
-    # break the live endpoint if the filesystem is unhappy.
-    if fresh:
+
+    # Persist via dep_hash cache.
+    snapshot_payload = json.dumps(
+        payload, sort_keys=True, ensure_ascii=False, default=str,
+    ).encode("utf-8")
+    try:
+        written = cache.put(
+            inputs=     inputs,
+            step=       "calls",
+            payload=    snapshot_payload,
+            crawl_run_id=None,
+            started_at= started_at_iso,
+        )
+        compute_run_id = written.compute_run_id
+        completed_at   = written.completed_at
+    except Exception as exc:
+        logger.warning("calls cache.put failed (%s) — returning uncached payload", exc)
+        compute_run_id = None
+        completed_at   = _utcnow_iso()
+
+    # V8: persist the fresh payload as today's lattice snapshot so the
+    # historical-view UI can page back.  Cache-hits skip this — we
+    # only want to record *actual* generations.  We pass the
+    # compute_run_id as the snapshot's run_id so a single id threads
+    # through dep_cache → snapshot file → UI breadcrumb.
+    if fresh and compute_run_id is not None:
         try:
             from agent.finance.lattice.snapshots import write_snapshot
-            write_snapshot(project_id, payload)
+            write_snapshot(project_id, payload, run_id=compute_run_id)
         except Exception as exc:   # pragma: no cover
             logger.warning("lattice snapshot write failed: %s", exc)
+
+    # ── B7: persist LLM-step validation checks ──
+    validation_state = "unknown"
+    validation_summary: Dict[str, Any] = {}
+    if compute_run_id is not None:
+        try:
+            # Resolve grounds: each call's grounds is a list of strings.
+            # We don't have ground→theme mapping here, so for V1 we
+            # treat empty grounds as unresolved (LLM omitted citations)
+            # and any non-empty list as resolved.  Future B7+ will
+            # cross-check each ground against theme.id and observation.id.
+            n_calls = len(enriched_calls)
+            n_resolved = 0
+            n_unresolved = 0
+            for c in enriched_calls:
+                grounds = c.get("grounds") or []
+                for g in grounds:
+                    if isinstance(g, str) and g.strip():
+                        n_resolved += 1
+                    else:
+                        n_unresolved += 1
+            checks = llm_checks_for_calls(
+                n_calls=n_calls,
+                n_grounds_resolved=n_resolved,
+                n_grounds_unresolved=n_unresolved,
+            )
+            vs = ValidationStore.for_dep_cache(cache)
+            report = ValidationReport(compute_run_id=compute_run_id, checks=checks)
+            vs.put_report(report)
+            validation_state = report.overall_state
+            validation_summary = {
+                "n_total":   report.n_total,
+                "n_pass":    report.n_pass,
+                "n_warn":    report.n_warn,
+                "n_fail":    report.n_fail,
+                "n_unknown": report.n_unknown,
+            }
+        except Exception as exc:
+            logger.warning("calls validation persist failed (%s)", exc)
+
+    meta = _build_meta(
+        hit=False,
+        compute_run_id=compute_run_id,
+        started_at=started_at_iso,
+        completed_at=completed_at,
+        validation_state=validation_state,
+        validation_summary=validation_summary,
+    )
+    return payload, meta
     return payload

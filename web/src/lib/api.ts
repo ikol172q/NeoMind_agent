@@ -7,7 +7,7 @@
  */
 import { useQuery, useMutation, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 
-async function fetchJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJSON<T = unknown>(url: string, init?: RequestInit): Promise<T> {
   const r = await fetch(url, init)
   if (!r.ok) {
     const body = await r.text().catch(() => '')
@@ -687,6 +687,58 @@ export interface LatticePayload {
   taxonomy_version: number
   fetched_at: string
   duration_ms: number
+  /** B5/B6: provenance breadcrumb. Present on /api/lattice/calls (and
+   *  themes/observations) when the response was produced through the
+   *  dep_hash cache. Absent on historical snapshot reads (the snapshot
+   *  envelope carries its own metadata).
+   *
+   *  ``dep_hash`` is the SHA-256 of every byte that fed this compute.
+   *  ``compute_run_id`` is the cache row id — clickable to drill into
+   *  /api/compute/runs/{id}.  ``cache_hit`` distinguishes "served from
+   *  cache" vs "freshly computed".  Cross-link fields (themes_*, obs_*)
+   *  let the UI render the L3 ← L2 ← L1 lineage chain. */
+  run_meta?: LatticeRunMeta
+}
+
+export interface LatticeRunMeta {
+  dep_hash: string
+  compute_run_id: string | null
+  cache_hit: boolean
+  started_at: string
+  completed_at: string | null
+  taxonomy_version: string | null
+  code_git_sha: string
+  pipeline_version: string
+  prompt_template_version?: string
+  llm_model_id?: string
+  llm_temperature?: number
+  step: 'observations' | 'themes' | 'calls'
+  // Lineage cross-links (present on themes & calls, not observations)
+  themes_dep_hash?: string | null
+  themes_compute_run_id?: string | null
+  themes_cache_hit?: boolean | null
+  obs_dep_hash?: string | null
+  obs_compute_run_id?: string | null
+  obs_cache_hit?: boolean | null
+  // Inputs summary (observations-step only)
+  inputs_summary?: {
+    n_symbols?: number
+    symbols?: string[]
+    n_news_entries?: number
+    n_anomalies?: number
+    has_positions?: boolean
+    has_watchlist?: boolean
+    error?: string
+  }
+  // B7: validation report roll-up
+  validation_state?: 'pass' | 'warn' | 'fail' | 'unknown'
+  validation_summary?: {
+    n_total?: number
+    n_pass?: number
+    n_warn?: number
+    n_fail?: number
+    n_unknown?: number
+  }
 }
 
 export function useLatticeCalls(project_id: string, date?: string | null) {
