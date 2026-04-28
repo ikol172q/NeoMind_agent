@@ -28,7 +28,19 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
   const snapshots: LatticeSnapshotEntry[] = q.data?.snapshots ?? []
 
   const isLive = value === 'live'
-  const label = isLive ? 'LIVE' : value
+  // Display date in user's local timezone for consistency with the
+  // dropdown rows. The underlying ``value`` is still the server-side
+  // UTC calendar date (used to look up the snapshot file) — we only
+  // change what's shown.
+  const matched = !isLive
+    ? snapshots.find((s) => s.date === value)
+    : undefined
+  const localLabel = matched?.recorded_at
+    ? new Date(matched.recorded_at).toLocaleDateString(undefined, {
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      })
+    : value   // fallback before snapshots load
+  const label = isLive ? 'LIVE' : localLabel
   const labelColor = isLive
     ? 'var(--color-green)'
     : 'var(--color-amber,#e5a200)'
@@ -43,7 +55,9 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
         title={
           isLive
             ? 'Live: lattice + strategy fit computed from current data'
-            : `Replay: lattice + strategy fit from snapshot recorded ${value}`
+            : `Replay: lattice + strategy fit from snapshot.\n` +
+              `local date: ${localLabel}\n` +
+              `UTC date (server): ${value}`
         }
       >
         {isLive ? <Radio size={10} /> : <Calendar size={10} />}
@@ -98,18 +112,40 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
             {snapshots.map((s) => {
               const selected = value === s.date
               const runCount = (s as LatticeSnapshotEntry & { run_count?: number }).run_count ?? 1
+              // The two original lines mixed time-zones — `s.date` is
+              // the server's UTC calendar date (e.g. "2026-04-28")
+              // while `s.recorded_at` rendered through toLocaleString
+              // is the user's local time (e.g. "4/27/2026, 7:31 PM").
+              // Past midnight UTC + before midnight local, this read as
+              // two different days for the same snapshot. Now: show
+              // BOTH lines in local time, with UTC as a hover tooltip.
+              const recorded = s.recorded_at ? new Date(s.recorded_at) : null
+              const localDate = recorded
+                ? recorded.toLocaleDateString(undefined, {
+                    year: 'numeric', month: '2-digit', day: '2-digit',
+                  })
+                : s.date
+              const localTime = recorded
+                ? recorded.toLocaleTimeString(undefined, {
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                  })
+                : ''
+              const tzTip = recorded
+                ? `local: ${recorded.toLocaleString()}\nUTC date (server): ${s.date}\nUTC ISO: ${s.recorded_at}`
+                : ''
               return (
                 <button
                   key={s.date}
                   onClick={() => { onChange(s.date); setOpen(false) }}
                   data-testid={`as-of-pick-${s.date}`}
+                  title={tzTip}
                   className={`w-full px-2 py-1.5 text-left text-[10px] font-mono flex items-center gap-2 hover:bg-[var(--color-bg)]/40 ${selected ? 'text-[var(--color-amber,#e5a200)] bg-[var(--color-bg)]/30' : 'text-[var(--color-text)]'}`}
                 >
                   <Calendar size={10} className="shrink-0" />
                   <div className="flex-1 min-w-0">
-                    <div>{s.date}</div>
+                    <div>{localDate}</div>
                     <div className="text-[8.5px] text-[var(--color-dim)] truncate">
-                      {s.recorded_at ? new Date(s.recorded_at).toLocaleString() : '—'}
+                      {localTime}
                       {runCount > 1 && (
                         <> · {runCount} runs</>
                       )}
