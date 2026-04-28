@@ -173,27 +173,69 @@ def _generation_prompt(themes: List[Theme]) -> str:
 
 
 def _call_llm(prompt: str) -> Dict[str, Any]:
+    """Call DeepSeek for the L3 calls JSON.
+
+    Tolerant of the failure mode discovered 2026-04-27 host audit:
+    DeepSeek occasionally returns HTTP 200 with an empty
+    ``choices[0].message.content``.  Cause is most likely the model
+    exhausting its budget on the long Toulmin prompt before producing
+    parseable JSON.  We retry once with a slight prompt nudge; if the
+    second attempt is also empty we surface a structured exception so
+    the caller can mark the call as a validation failure (B7) instead
+    of silently degrading to 0 calls.
+    """
     api_key = os.environ.get("DEEPSEEK_API_KEY", "").strip()
     if not api_key:
         raise RuntimeError("DEEPSEEK_API_KEY missing")
-    with httpx.Client(timeout=httpx.Timeout(_CALLS_TIMEOUT_S)) as client:
-        resp = client.post(
-            _DEEPSEEK_URL,
-            json={
-                "model": _CALLS_MODEL,
-                "messages": [
-                    {"role": "system", "content": _system_prompt()},
-                    {"role": "user", "content": prompt},
-                ],
-                "temperature": 0.4,
-                "max_tokens": 1200,
-                "response_format": {"type": "json_object"},
-            },
-            headers={"Authorization": f"Bearer {api_key}"},
-        )
-    if resp.status_code != 200:
-        raise RuntimeError(f"DeepSeek {resp.status_code}: {resp.text[:200]}")
-    return json.loads(resp.json()["choices"][0]["message"]["content"])
+
+    def _one_attempt(messages: List[Dict[str, str]]) -> str:
+        with httpx.Client(timeout=httpx.Timeout(_CALLS_TIMEOUT_S)) as client:
+            resp = client.post(
+                _DEEPSEEK_URL,
+                json={
+                    "model":           _CALLS_MODEL,
+                    "messages":        messages,
+                    "temperature":     0.4,
+                    # 2400 from 1200 (2026-04-27): the Toulmin schema
+                    # for 5 candidate calls easily exceeds 1200 output
+                    # tokens, especially when the LLM emits any
+                    # internal scratch reasoning before the JSON.
+                    "max_tokens":      2400,
+                    "response_format": {"type": "json_object"},
+                },
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+        if resp.status_code != 200:
+            raise RuntimeError(f"DeepSeek {resp.status_code}: {resp.text[:200]}")
+        return resp.json()["choices"][0]["message"]["content"]
+
+    msgs = [
+        {"role": "system", "content": _system_prompt()},
+        {"role": "user",   "content": prompt},
+    ]
+    content = _one_attempt(msgs)
+    if not content.strip():
+        # First attempt empty.  Retry once with an extra nudge — same
+        # prompt + an explicit "JSON only" reminder.  Still rare in
+        # practice, but the retry costs nothing if the first call
+        # already exhausted the budget; the second call gets a fresh
+        # token budget.
+        logger.warning("calls _call_llm: first attempt returned empty content; retrying once")
+        msgs_retry = msgs + [
+            {"role": "assistant", "content": ""},
+            {"role": "user",
+             "content": "Your previous reply was empty. Reply NOW with the "
+                        "JSON object as instructed. Do not include any "
+                        "preamble, code fence, or explanation — just the "
+                        "JSON object."},
+        ]
+        content = _one_attempt(msgs_retry)
+        if not content.strip():
+            raise RuntimeError(
+                "DeepSeek returned empty content twice — likely token-budget "
+                "exhaustion on the Toulmin prompt or transient provider issue"
+            )
+    return json.loads(content)
 
 
 # ── Validation ─────────────────────────────────────────
@@ -613,10 +655,13 @@ CALLS_PROMPT_TEMPLATE_VERSION = "v1"
 # changes how it serialises.
 #
 # v2 (2026-04-27): strategy_matcher now default-filters out unverified
-# strategies (anti-hallucination Layer 3). Calls cached with v1 may
-# carry strategy_match chips pointing at unverified entries — bumping
-# invalidates those caches so the next call re-enriches without them.
-CALLS_PIPELINE_VERSION = "v2"
+# strategies (anti-hallucination Layer 3).
+#
+# v3 (2026-04-27 evening): _call_llm now bumps max_tokens 1200→2400
+# and retries once on empty content; calls.llm_responded_with_json
+# B7 check fires fail when the LLM dies silently.  Bump invalidates
+# any cached '0 calls' results that were silent fallbacks from v2.
+CALLS_PIPELINE_VERSION = "v3"
 
 
 def build_calls(project_id: str, *, fresh: bool = False) -> Dict[str, Any]:
@@ -856,10 +901,27 @@ def build_calls_run(
                         n_resolved += 1
                     else:
                         n_unresolved += 1
+            # Surface the LLM-failure case (DeepSeek 200 + empty body,
+            # JSON parse error, etc) into the validation report so the
+            # FreshnessBar can show a red ✗ badge instead of an empty
+            # calls list with a silent green ✓ badge.
+            llm_error: Optional[str] = None
+            try:
+                pool_trace = get_call_pool_trace() or {}
+                err = pool_trace.get("error")
+                # The pool trace also fires for legitimate "LLM said
+                # there are no high-conviction calls" cases; only
+                # treat it as failure when there's an actual error
+                # string AND no calls were produced.
+                if err and n_calls == 0:
+                    llm_error = str(err)
+            except Exception:
+                pass
             checks = llm_checks_for_calls(
                 n_calls=n_calls,
                 n_grounds_resolved=n_resolved,
                 n_grounds_unresolved=n_unresolved,
+                llm_error=llm_error,
             )
             vs = ValidationStore.for_dep_cache(cache)
             report = ValidationReport(compute_run_id=compute_run_id, checks=checks)

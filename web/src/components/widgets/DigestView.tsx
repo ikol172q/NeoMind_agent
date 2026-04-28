@@ -230,6 +230,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
             observations={observations}
             startCollapsed
             ctx={ctx}
+            runMeta={payload?.run_meta}
           />
         )}
         {!q.isLoading && !q.isError && !isFreshInstall && mode === 'flat' && (
@@ -240,6 +241,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
             observations={observations}
             startCollapsed={false}
             ctx={ctx}
+            runMeta={payload?.run_meta}
           />
         )}
         {/* Trace mode uses useLatticeGraph (its own query) so it is
@@ -1230,7 +1232,7 @@ function Chip({
 // ── Drilldown / Flat mode ──────────────────────────────
 
 function DrilldownMode({
-  calls, themes, subThemes, observations, startCollapsed, ctx,
+  calls, themes, subThemes, observations, startCollapsed, ctx, runMeta,
 }: {
   calls: LatticeCall[]
   themes: LatticeTheme[]
@@ -1238,6 +1240,7 @@ function DrilldownMode({
   observations: LatticeObservation[]
   startCollapsed: boolean
   ctx: DigestCtx
+  runMeta?: import('@/lib/api').LatticeRunMeta
 }) {
   const themeById = useMemo(
     () => Object.fromEntries(themes.map(t => [t.id, t])),
@@ -1267,9 +1270,22 @@ function DrilldownMode({
         testId="section-l3"
       >
         {calls.length === 0 && (
-          <div className="p-3 text-[11px] italic text-[var(--color-dim)]">
-            No high-conviction call today.
-          </div>
+          // Distinguish two empty-state cases:
+          //   (a) LLM legitimately found no high-conviction call
+          //   (b) LLM bombed silently (returned empty, fell back) —
+          //       caught by B7 calls.llm_responded_with_json check
+          runMeta?.validation_state === 'fail' ? (
+            <div className="p-3 text-[11px] text-[var(--color-red,#f44336)]">
+              <b>L3 LLM 返回空 / failed.</b>{' '}
+              这不是"今日没机会"，是 LLM 调用本身失败了（DeepSeek 200 + empty body 或 JSON 解析错误）。
+              点击右上角 <span className="font-mono">refresh</span> 重试。
+              详细错误见 Data Lake → Compute Runs → /api/compute/runs/{(runMeta?.compute_run_id || '').slice(0, 8)} → validation。
+            </div>
+          ) : (
+            <div className="p-3 text-[11px] italic text-[var(--color-dim)]">
+              No high-conviction call today.
+            </div>
+          )
         )}
         {calls.map(c => (
           <CallDrilldown
