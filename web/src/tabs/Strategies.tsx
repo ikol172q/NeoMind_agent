@@ -39,6 +39,7 @@ import {
 import { cn } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
+import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -339,6 +340,13 @@ export function StrategiesTab({
             </div>
           </div>
         </div>
+
+        {/* Anti-hallucination Layer 0: visible signal that the daily
+            auditor is alive.  Without this, a row of 36 ⚠ unverified
+            chips is indistinguishable between (a) system never ran,
+            and (b) system ran and correctly rejected unsupported
+            numeric claims.  See LastAuditPanel.tsx for full rationale. */}
+        <LastAuditPanel />
 
         <p className="text-[10px] text-[var(--color-dim)] mb-3 leading-relaxed">
           Source: <code className="text-[var(--color-accent)]">docs/strategies/strategies.yaml</code> +{' '}

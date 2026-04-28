@@ -88,14 +88,6 @@ async def run(limit: int = _DEFAULT_BATCH_LIMIT) -> Dict[str, Any]:
         for r in reports[:5]
     ]
 
-    with connect() as conn:
-        dao.complete_analysis_run(
-            conn, run_id,
-            status="completed",
-            error_message=None,
-            rows_written=len(reports),
-        )
-
     summary = {
         "run_id":           run_id,
         "status":           "completed",
@@ -113,6 +105,27 @@ async def run(limit: int = _DEFAULT_BATCH_LIMIT) -> Dict[str, Any]:
             f"audit log written to docs/strategies/audit_logs/."
         ),
     }
+
+    with connect() as conn:
+        # Persist the rich summary into analysis_runs.metadata_json so
+        # the UI's "Last Audit" panel can answer "what did this run
+        # actually do?" without re-running the auditor.  The keys here
+        # mirror the JSON returned to the manual-rerun caller.
+        dao.complete_analysis_run(
+            conn, run_id,
+            status="completed",
+            error_message=None,
+            rows_written=len(reports),
+            metadata={
+                "audited_n":        len(reports),
+                "promoted_n":       n_promoted,
+                "still_unverified": n_still_unverified,
+                "errors_n":         n_errors,
+                "sample":           sample,
+                "explanation":      summary["explanation"],
+            },
+        )
+
     logger.info("audit_strategies complete: %s",
                 {k: v for k, v in summary.items() if k != "sample"})
     return summary

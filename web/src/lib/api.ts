@@ -1277,6 +1277,53 @@ export function useFinSchedulerJobs() {
   })
 }
 
+/** One past run of a scheduler job, with its rich summary parsed
+ *  out of `metadata_json`.  Powers the Strategies-tab "Last Audit"
+ *  panel (and any future "did it actually run?" surfaces). */
+export interface SchedulerRun {
+  run_id: string
+  run_type: 'scheduled' | 'manual' | 'force_rerun' | 'backfill'
+  job_name: string
+  started_at: string                       // ISO UTC
+  completed_at: string | null              // ISO UTC, null while still running
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  error_message: string | null
+  rows_written: number | null
+  duration_seconds: number | null
+  /** Job-specific summary.  For audit_strategies these keys exist:
+   *    audited_n / promoted_n / still_unverified / errors_n /
+   *    sample[] / explanation
+   *  Always defensive — older rows or other jobs may not have them. */
+  metadata: {
+    audited_n?: number
+    promoted_n?: number
+    still_unverified?: number
+    errors_n?: number
+    sample?: Array<{
+      strategy_id: string
+      state: string
+      n_corpus_blobs: number
+      n_supported: number
+      n_unsupported: number
+    }>
+    explanation?: string
+    // permissive — ignore other keys
+    [k: string]: unknown
+  }
+}
+
+export function useSchedulerRuns(jobName: string, limit = 10) {
+  return useQuery({
+    queryKey: ['fin_scheduler_runs', jobName, limit],
+    queryFn: () =>
+      fetchJSON<{ job: string; count: number; runs: SchedulerRun[] }>(
+        `/api/scheduler/runs/${jobName}?limit=${limit}`,
+      ),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
 // ── Strategies catalog (Phase 3 subagent output) ──────────
 
 export interface StrategyTaxTreatment {

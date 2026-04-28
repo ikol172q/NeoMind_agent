@@ -283,10 +283,18 @@ def complete_analysis_run(
     error_message: Optional[str] = None,
     universe_size: Optional[int] = None,
     rows_written: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Close a run row. Computes duration_seconds from started_at."""
+    """Close a run row. Computes duration_seconds from started_at.
+
+    ``metadata`` (optional) is merged into ``metadata_json`` so a job
+    can record its rich summary (counts, sample rows, explanation)
+    next to the run row — that's what the UI's "Last Audit" panel reads
+    when answering "what did this run actually do?".
+    """
     cur = conn.execute(
-        "SELECT started_at FROM analysis_runs WHERE run_id = ?", (run_id,),
+        "SELECT started_at, metadata_json FROM analysis_runs WHERE run_id = ?",
+        (run_id,),
     )
     row = cur.fetchone()
     if row is None:
@@ -296,18 +304,37 @@ def complete_analysis_run(
     completed = datetime.now(timezone.utc)
     duration = (completed - started).total_seconds()
 
+    if metadata is not None:
+        # Merge: keep prior keys (e.g. "limit" from start_analysis_run),
+        # let summary keys overwrite. JSON-stringify only at the end.
+        prior_raw = row["metadata_json"]
+        prior: Dict[str, Any] = {}
+        if prior_raw:
+            try:
+                prior = json.loads(prior_raw) or {}
+                if not isinstance(prior, dict):
+                    prior = {"_legacy": prior}
+            except Exception:  # pragma: no cover — defensive
+                prior = {}
+        prior.update(metadata)
+        merged_json: Optional[str] = json.dumps(prior, default=str)
+    else:
+        merged_json = None
+
     conn.execute(
         """
         UPDATE analysis_runs
            SET completed_at = ?, status = ?, error_message = ?,
                universe_size = COALESCE(?, universe_size),
                rows_written = COALESCE(?, rows_written),
-               duration_seconds = ?
+               duration_seconds = ?,
+               metadata_json = COALESCE(?, metadata_json)
          WHERE run_id = ?
         """,
         (
             completed.isoformat(timespec="seconds"),
             status, error_message, universe_size, rows_written, duration,
+            merged_json,
             run_id,
         ),
     )
