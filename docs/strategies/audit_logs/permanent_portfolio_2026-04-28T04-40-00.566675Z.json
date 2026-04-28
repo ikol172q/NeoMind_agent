@@ -1,0 +1,52 @@
+{
+  "strategy_id": "permanent_portfolio",
+  "started_at": "2026-04-28T04:39:51.710883Z",
+  "finished_at": "2026-04-28T04:40:00.566675Z",
+  "corpus": [
+    "raw://4037b934f89e696b722c25f1b044cea51faee487e0eb08145e9ed15638d5cc8e",
+    "raw://20a1f07f1763184e5fd8e8598ac34af9bd8a4e575c47996c50e865bd5cf92d8d",
+    "raw://279e4213e786e46b77ec18bd44d3168f7e5d40bacb79d18beaf30aa2fc1f9662"
+  ],
+  "verdicts": [
+    {
+      "field": "max_loss",
+      "claim_text": "Theoretical 100%; historical max drawdown ~15-20% (lower than equity-heavy)",
+      "numbers": [
+        "100%",
+        "20%",
+        "~15-20%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "typical_win_rate",
+      "claim_text": "~65% 12-month positive; lower CAGR than equity, lower drawdown",
+      "numbers": [
+        "~65%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "feasible_at_10k_reason",
+      "claim_text": "$2,500 each into VTI / TLT / GLD / SHY",
+      "numbers": [
+        "$2"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "starter_step",
+      "claim_text": "Buy 25% VTI, 25% TLT, 25% GLD, 25% SHY (or BIL) this week. Set annual rebalance to 25/25/25/25 each January.",
+      "numbers": [
+        "25%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    }
+  ],
+  "overall_state": "unverified",
+  "error": null
+}

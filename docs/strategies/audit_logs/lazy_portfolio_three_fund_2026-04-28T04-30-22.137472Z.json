@@ -1,0 +1,9 @@
+{
+  "strategy_id": "lazy_portfolio_three_fund",
+  "started_at": "2026-04-28T04:30:21.943721Z",
+  "finished_at": "2026-04-28T04:30:22.137472Z",
+  "corpus": [],
+  "verdicts": [],
+  "overall_state": "unverified",
+  "error": "no corpus blobs could be fetched"
+}

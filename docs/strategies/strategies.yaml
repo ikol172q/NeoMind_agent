@@ -62,7 +62,7 @@ strategies:
   - dividend_schedule
   provenance:
     state: unverified
-    source: Phase 3 research subagent 2026-04-25
+    source: Layer 0 auditor 2026-04-28T04:39:32.179350Z (corpus=2 blobs)
 - id: dividend_growth_etf
   name_en: Dividend-Growth ETF (SCHD / VIG / DGRO)
   name_zh: 股息增长 ETF
@@ -97,7 +97,7 @@ strategies:
   - expense_ratio
   provenance:
     state: unverified
-    source: Phase 3 research subagent 2026-04-25
+    source: Layer 0 auditor 2026-04-28T04:39:37.604345Z (corpus=2 blobs)
 - id: target_date_fund
   name_en: Target-Date Retirement Fund
   name_zh: 目标日期基金
@@ -133,7 +133,7 @@ strategies:
   - expense_ratio
   provenance:
     state: unverified
-    source: Phase 3 research subagent 2026-04-25
+    source: Layer 0 auditor 2026-04-28T04:39:44.974454Z (corpus=2 blobs)
 - id: lazy_portfolio_three_fund
   name_en: Bogleheads Three-Fund Portfolio
   name_zh: 三基金懒人组合
@@ -168,7 +168,7 @@ strategies:
   - allocation_state
   provenance:
     state: unverified
-    source: Phase 3 research subagent 2026-04-25
+    source: Layer 0 auditor 2026-04-28T04:39:51.599259Z (corpus=2 blobs)
 - id: permanent_portfolio
   name_en: Permanent Portfolio (Harry Browne)
   name_zh: 永久投资组合
@@ -202,7 +202,7 @@ strategies:
   - allocation_state
   provenance:
     state: unverified
-    source: Phase 3 research subagent 2026-04-25
+    source: Layer 0 auditor 2026-04-28T04:40:00.566675Z (corpus=3 blobs)
 - id: bond_ladder_treasury
   name_en: Treasury Bond Ladder
   name_zh: 美国国债阶梯
