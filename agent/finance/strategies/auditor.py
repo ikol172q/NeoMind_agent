@@ -41,6 +41,8 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+import httpx
 from typing import Any, Dict, List, Optional, Tuple
 
 import yaml
@@ -168,31 +170,40 @@ def _fetch_into_rawstore(url: str, project_id: str) -> Optional[str]:
     to RawStore via ``add_blob``; return ``raw://<sha256>``.  Returns
     None on failure (network error, 4xx/5xx).
 
-    We bypass the WebFetchTool's text-stripping because we want the
-    raw bytes for sha256 stability + the LLM context can stand HTML.
+    Uses httpx (already a project dep) instead of stdlib urllib —
+    urllib on macOS Python often fails opaquely on TLS without a
+    certifi bundle; httpx ships its own cert chain and behaves
+    consistently across hosts.  Also follows redirects (some
+    publishers like investor.gov return 301 → /www/...).
     """
-    import urllib.error
-    import urllib.request
-
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "NeoMind-strategies-auditor/1.0"},
-    )
     try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            body = resp.read()
-            if resp.status != 200:
-                logger.info("auditor: %s returned %d, skip", url, resp.status)
-                return None
-    except urllib.error.HTTPError as exc:
-        logger.info("auditor: %s HTTP %d, skip", url, exc.code)
-        return None
-    except urllib.error.URLError as exc:
-        logger.info("auditor: %s URL error %s, skip", url, exc.reason)
+        with httpx.Client(
+            timeout=httpx.Timeout(15.0),
+            follow_redirects=True,
+            headers={
+                # A real-looking user-agent — bot-detection on bigger
+                # publisher sites blocks plain "library/version" UAs.
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/121.0.0.0 Safari/537.36 NeoMind-auditor/1.0"
+                ),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.5",
+            },
+        ) as client:
+            resp = client.get(url)
+    except httpx.HTTPError as exc:
+        logger.warning("auditor: %s httpx error %s, skip", url, exc)
         return None
     except Exception as exc:
-        logger.info("auditor: %s fetch failed %s, skip", url, exc)
+        logger.warning("auditor: %s fetch failed %r, skip", url, exc)
         return None
+
+    if resp.status_code != 200:
+        logger.info("auditor: %s returned %d, skip", url, resp.status_code)
+        return None
+    body = resp.content
 
     try:
         from agent.finance.raw_store import RawStore
