@@ -58,23 +58,30 @@ logger = logging.getLogger(__name__)
 # topic, fetched with stable URL patterns.
 
 _SOURCE_URLS: Dict[str, List[str]] = {
-    # Generic options strategies
+    # Wikipedia is the canonical "we know this URL works" choice:
+    # stable URLs, machine-readable HTML, plenty of cited numeric
+    # claims, and on every educational topic it's the highest-quality
+    # plain-text source on the open web.  We picked Wikipedia
+    # specifically AFTER the original "curated whitelist" of
+    # cboe.com / optionseducation.org / etc. failed with HTTP 404
+    # on 2026-04-27 — those URLs were author-hallucinated from
+    # training rather than personally verified.  Lesson exemplified
+    # the very bug the auditor exists to catch.
     "options_general": [
-        "https://www.optionseducation.org/strategies",
-        "https://www.cboe.com/insights/posts/",
+        "https://en.wikipedia.org/wiki/Option_(finance)",
+        "https://en.wikipedia.org/wiki/Covered_call",
+        "https://en.wikipedia.org/wiki/Iron_condor",
     ],
-    # ETF / index basics
     "etf_general": [
-        "https://www.investor.gov/introduction-investing/investing-basics/investment-products/exchange-traded-funds-etfs",
+        "https://en.wikipedia.org/wiki/Exchange-traded_fund",
+        "https://en.wikipedia.org/wiki/Index_fund",
     ],
-    # Tax treatment
     "tax_general": [
-        "https://www.irs.gov/taxtopics/tc409",
-        "https://www.irs.gov/taxtopics/tc429",  # Section 1256
+        "https://en.wikipedia.org/wiki/Wash_sale",
+        "https://en.wikipedia.org/wiki/Capital_gains_tax_in_the_United_States",
     ],
-    # Day trading rules / PDT
     "pdt_rules": [
-        "https://www.finra.org/rules-guidance/key-topics/day-trading",
+        "https://en.wikipedia.org/wiki/Pattern_day_trader",
     ],
 }
 
