@@ -431,12 +431,35 @@ def audit_strategy(strategy_id: str, *, project_id: str = _PROJECT_ID) -> AuditR
             logger.warning("auditor: read_blob failed for %s: %s", uri, exc)
 
     if not corpus_uris:
+        # Surface WHY each URL failed so the user can debug instead of
+        # staring at "no corpus blobs could be fetched".  We replay
+        # the fetch loop, this time capturing the exception text per URL.
+        per_url_errors: List[str] = []
+        for u in urls:
+            try:
+                with httpx.Client(
+                    timeout=httpx.Timeout(15.0),
+                    follow_redirects=True,
+                    headers={
+                        "User-Agent": (
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/121.0.0.0 Safari/537.36 NeoMind-auditor/1.0"
+                        ),
+                        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                        "Accept-Language": "en-US,en;q=0.5",
+                    },
+                ) as client:
+                    r = client.get(u)
+                    per_url_errors.append(f"{u} -> HTTP {r.status_code} ({len(r.content)} bytes)")
+            except Exception as exc:
+                per_url_errors.append(f"{u} -> {type(exc).__name__}: {exc}")
         return AuditReport(
             strategy_id=strategy_id,
             started_at=started,
             finished_at=_utcnow_iso(),
             corpus=[],
-            error="no corpus blobs could be fetched",
+            error="no corpus blobs could be fetched: " + " | ".join(per_url_errors),
         )
 
     # Audit each verifiable field
