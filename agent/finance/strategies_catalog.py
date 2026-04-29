@@ -10,6 +10,7 @@ write a new <id>.md, no UI code change needed.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -183,19 +184,64 @@ def lattice_fit(
         for t in payload.get("themes", [])
     ]
 
-    fit = match_all_against_themes(themes)
+    # ── v2: regime-aware scoring (preferred when fingerprint exists) ──
+    # The new closed-form expected-utility scorer reads the daily
+    # regime fingerprint and the strategy's quantitative_profile (if
+    # present) and produces a continuous, regime-conditioned score
+    # that visibly differs across days even when the theme tags are
+    # similar.  Falls back to the legacy categorical matcher when
+    # no fingerprint exists yet (first-run, no backfill).
+    fp_date = (as_of if as_of and as_of != "live"
+               else datetime.now(timezone.utc).date().isoformat())
+    use_v2 = False
+    fit: List[Dict[str, Any]] = []
+    fingerprint_dict: Optional[Dict[str, Any]] = None
+    try:
+        from agent.finance.regime.fingerprint import fingerprint_for_date
+        from agent.finance.regime.scorer import score_all_strategies
+        fingerprint_dict = fingerprint_for_date(fp_date)
+        if fingerprint_dict and any(
+            fingerprint_dict.get(k) is not None for k in (
+                "risk_appetite_score", "volatility_regime_score",
+                "breadth_score", "event_density_score", "flow_score",
+            )
+        ):
+            fit = score_all_strategies(
+                fingerprint_dict,
+                lattice_payload=payload,
+                include_unverified=True,
+            )
+            use_v2 = True
+    except Exception as exc:
+        logger.warning(
+            "regime v2 scorer unavailable, falling back to categorical: %s",
+            exc,
+        )
+    if not use_v2:
+        fit = match_all_against_themes(themes)
+
     return {
         "project_id":      project_id,
         "themes_count":    len(themes),
         "calls_count":     len(payload.get("calls", [])),
         "strategies_count": len(fit),
         "fit":             fit,
+        "scorer_version":  "regime_v2" if use_v2 else "categorical_v1",
+        "fingerprint_date": fp_date if use_v2 else None,
+        "fingerprint":     {
+            "risk_appetite_score":     fingerprint_dict.get("risk_appetite_score"),
+            "volatility_regime_score": fingerprint_dict.get("volatility_regime_score"),
+            "breadth_score":           fingerprint_dict.get("breadth_score"),
+            "event_density_score":     fingerprint_dict.get("event_density_score"),
+            "flow_score":              fingerprint_dict.get("flow_score"),
+        } if (use_v2 and fingerprint_dict) else None,
         "explanation": (
-            "Score 0-10 per strategy. The same matcher used for L3-call "
-            "tagging, run against the aggregate tags of today's themes "
-            "(no real L3 call required). High score → strategy aligns "
-            "with what today's data is highlighting. Useful when no "
-            "high-conviction L3 call has fired yet."
+            "v2: closed-form expected utility computed against the day's "
+            "regime fingerprint (5 buckets × real market data via "
+            "raw_market_data table) + each strategy's quantitative_profile."
+            if use_v2 else
+            "v1 fallback: categorical matcher over today's theme tags. "
+            "Run regime backfill (regime_backfill.command) to upgrade."
         ),
     }
 
