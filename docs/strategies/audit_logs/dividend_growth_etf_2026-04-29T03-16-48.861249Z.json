@@ -1,0 +1,52 @@
+{
+  "strategy_id": "dividend_growth_etf",
+  "started_at": "2026-04-29T03:16:43.872910Z",
+  "finished_at": "2026-04-29T03:16:48.861249Z",
+  "corpus": [
+    "raw://71ce221e7b05fffb353657271783fd08648bd2482cc2350afea4e90f5b9b0197",
+    "raw://cc213f5d6bd6a37f299846eef8c736ddd52d3b50e5f174223eab77cdba0952a2"
+  ],
+  "verdicts": [
+    {
+      "field": "max_loss",
+      "claim_text": "Theoretical 100%; historical drawdowns ~35-40%",
+      "numbers": [
+        "100%",
+        "40%",
+        "~35-40%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "typical_win_rate",
+      "claim_text": "~65-70% rolling 12-month positive returns; ~9-11% long-run total return",
+      "numbers": [
+        "70%",
+        "11%",
+        "~65-70%",
+        "~9-11%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "feasible_at_10k_reason",
+      "claim_text": "Single-ticker exposure; fractional shares enable any size",
+      "numbers": [],
+      "state": "qualitative"
+    },
+    {
+      "field": "starter_step",
+      "claim_text": "Buy $1,000 of SCHD this week. Enroll in DRIP. Set a quarterly reminder to add $500 from new savings.",
+      "numbers": [
+        "$1",
+        "$500"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    }
+  ],
+  "overall_state": "unverified",
+  "error": null
+}
