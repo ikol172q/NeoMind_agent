@@ -42,6 +42,7 @@ import { cn } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
+import { RegimeFingerprintWidget } from '@/components/widgets/RegimeFingerprintWidget'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -401,6 +402,15 @@ export function StrategiesTab({
             </div>
           </div>
         </div>
+
+        {/* v2 (2026-04-29): 5-bucket regime fingerprint.  Lives at the
+            top so the user can SEE today's regime — it's the single
+            biggest factor in WHY each strategy got the score it got.
+            Click any bar to drill into components + 5-window percentile
+            data.  When raw_market_data hasn't been backfilled yet, the
+            widget renders placeholder bars + a hint to run the
+            regime_backfill.command. */}
+        <RegimeFingerprintWidget asOf={asOf ?? 'live'} compact />
 
         {/* Anti-hallucination Layer 0: visible signal that the daily
             auditor is alive.  Without this, a row of 36 ⚠ unverified
