@@ -262,6 +262,93 @@ CREATE TABLE IF NOT EXISTS scheduler_jobs (
     FOREIGN KEY (last_run_id) REFERENCES analysis_runs(run_id) ON DELETE SET NULL
 );
 
+-- ─── Strategy pipeline v2 (2026-04-29) ────────────────────────────────
+--
+-- Four tables that back the regime-based strategy distillation pipeline.
+-- See docs/design/2026-04-29_strategy-pipeline-v2.md for the full
+-- architecture; this is just the schema.
+
+-- raw_market_data: every OHLCV bar that lands in our universe.  The
+-- single source of truth for everything downstream — every regime
+-- score and every strategy fit is derived from rows here.  ~50MB
+-- after 1y backfill of the 3-tier watchlist (~520 tickers × 252 days).
+CREATE TABLE IF NOT EXISTS raw_market_data (
+    symbol         TEXT NOT NULL,
+    trade_date     TEXT NOT NULL,         -- 'YYYY-MM-DD' UTC
+    open           REAL,
+    high           REAL,
+    low            REAL,
+    close          REAL,
+    adjusted_close REAL,
+    volume         INTEGER,
+    source         TEXT NOT NULL,         -- 'yfinance' / 'manual' / ...
+    fetched_at     TEXT NOT NULL,
+    raw_blob_sha   TEXT,                  -- raw://<sha256> for full provenance
+    tier           INTEGER NOT NULL CHECK (tier IN (1,2,3)),
+                                          -- 1=user watchlist, 2=anchors, 3=breadth pool
+    PRIMARY KEY (symbol, trade_date)
+);
+CREATE INDEX IF NOT EXISTS idx_rmd_date  ON raw_market_data(trade_date);
+CREATE INDEX IF NOT EXISTS idx_rmd_tier  ON raw_market_data(tier, trade_date);
+
+-- regime_fingerprints: one row per fingerprint_date, holding the 5
+-- bucket scores + their components + the raw inputs that produced
+-- them.  Permanent retention — used both for UI display and for
+-- k-NN historical-similarity search.
+CREATE TABLE IF NOT EXISTS regime_fingerprints (
+    fingerprint_date         TEXT PRIMARY KEY,    -- 'YYYY-MM-DD' UTC
+    risk_appetite_score      REAL,
+    volatility_regime_score  REAL,
+    breadth_score            REAL,
+    event_density_score      REAL,
+    flow_score               REAL,
+    components_json          TEXT,                -- {"vix_pct_rank": {"1w": 0.35, ...}, ...}
+    inputs_json              TEXT,                -- {"vix_close": 14.2, ...}
+    sources_json             TEXT,                -- {"vix": "yfinance@2026-04-29T20:30Z", ...}
+    computed_at              TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rf_computed ON regime_fingerprints(computed_at DESC);
+
+-- decision_traces: every strategy recommendation we surface, with
+-- full breakdown + sources + constraint check + portfolio fit.
+-- This is the audit / "where did this number come from" entry point.
+CREATE TABLE IF NOT EXISTS decision_traces (
+    trace_id              TEXT PRIMARY KEY,       -- uuid4
+    fingerprint_date      TEXT NOT NULL,
+    strategy_id           TEXT NOT NULL,
+    score                 REAL NOT NULL,          -- final posterior 0-10
+    rank                  INTEGER NOT NULL,       -- 1 = top, 2-8 = alternatives
+    alternative_weight    REAL NOT NULL,          -- score / top_score (1.0 for top)
+    formula               TEXT NOT NULL,          -- e.g. 'closed_form_BS_v1' or 'hybrid_β=0.62'
+    breakdown_json        TEXT NOT NULL,          -- {"E_pnl": ..., "P_profit": ..., ...}
+    lattice_node_refs     TEXT NOT NULL,          -- JSON array of L0/L1/L2/L3 node ids
+    knn_neighbor_dates    TEXT,                   -- JSON array of fingerprint_dates
+    constraint_check_json TEXT NOT NULL,
+    portfolio_fit_json    TEXT,
+    computed_at           TEXT NOT NULL,
+    FOREIGN KEY (fingerprint_date) REFERENCES regime_fingerprints(fingerprint_date)
+);
+CREATE INDEX IF NOT EXISTS idx_dt_date     ON decision_traces(fingerprint_date);
+CREATE INDEX IF NOT EXISTS idx_dt_strategy ON decision_traces(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_dt_rank     ON decision_traces(fingerprint_date, rank);
+
+-- knn_lookups: every neighbor returned for a Bayesian shrinkage
+-- prior calculation, with the similarity score that justified its
+-- inclusion.  Lets the UI show "we looked at these N similar days
+-- when computing this fit number".
+CREATE TABLE IF NOT EXISTS knn_lookups (
+    lookup_id          TEXT PRIMARY KEY,           -- uuid4
+    target_date        TEXT NOT NULL,
+    neighbor_date      TEXT NOT NULL,
+    similarity_score   REAL NOT NULL,              -- 0-1 (cosine or 1-mahalanobis)
+    weight_in_prior    REAL NOT NULL,              -- normalized softmax weight
+    used_for_strategy  TEXT NOT NULL,
+    computed_at        TEXT NOT NULL,
+    FOREIGN KEY (target_date)   REFERENCES regime_fingerprints(fingerprint_date),
+    FOREIGN KEY (neighbor_date) REFERENCES regime_fingerprints(fingerprint_date)
+);
+CREATE INDEX IF NOT EXISTS idx_knn_target ON knn_lookups(target_date, used_for_strategy);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

@@ -40,6 +40,10 @@ DEFAULT_JOBS = [
     # RawStore bytes via LLM-extractor + mechanical post-check.
     # Graceful skip on missing DEEPSEEK_API_KEY / network errors.
     "agent.finance.scheduler.jobs.audit_strategies",
+    # Strategy pipeline v2 (2026-04-29): daily yfinance ingest + regime
+    # fingerprint compute.  Powers the 5-bucket regime widget on the
+    # Research tab and the new expected-utility scorer.
+    "agent.finance.scheduler.jobs.regime_daily",
 ]
 
 
