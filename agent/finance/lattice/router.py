@@ -8,12 +8,17 @@ Endpoints under `/api/lattice/*`:
 from __future__ import annotations
 
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
+
+# YYYY-MM-DD validator for date Query params.  Snapshot DAOs raise
+# ValueError on malformed dates; we'd rather return 422 than 500.
+_DATE_RE_HTTP = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 from agent.finance import investment_projects
 from agent.finance.lattice import runtime, spec
@@ -410,6 +415,18 @@ def build_lattice_router() -> APIRouter:
         """
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
+        # Defensive: a misbehaving caller (or a stale frontend) can pass
+        # the 'live' sentinel or some other bad string into the date
+        # query param.  read_snapshot → _date_dir raises ValueError;
+        # FastAPI converts that to 500 which is misleading.  Validate
+        # here so the caller sees 422 with a clear message.
+        if not _DATE_RE_HTTP.match(date):
+            raise HTTPException(
+                422,
+                f"invalid date {date!r}; expected YYYY-MM-DD "
+                f"(use the snapshots dropdown to pick a valid date, "
+                f"or use the /api/lattice/calls endpoint for live data)",
+            )
         envelope = read_snapshot(project_id, date, run_id=run_id)
         if envelope is None:
             who = f"{date} run_id={run_id}" if run_id else date
@@ -433,6 +450,10 @@ def build_lattice_router() -> APIRouter:
         pick a specific re-run instead of just 'latest'."""
         if project_id not in investment_projects.list_projects():
             raise HTTPException(404, f"project {project_id!r} is not registered")
+        if not _DATE_RE_HTTP.match(date):
+            raise HTTPException(
+                422, f"invalid date {date!r}; expected YYYY-MM-DD",
+            )
         runs = list_runs_for_date(project_id, date)
         return {
             "project_id": project_id,
