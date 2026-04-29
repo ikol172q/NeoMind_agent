@@ -344,12 +344,35 @@ def list_recent_runs(
     conn: sqlite3.Connection,
     job_name: Optional[str] = None,
     limit: int = 20,
+    *,
+    started_after: Optional[str] = None,
+    started_before: Optional[str] = None,
 ) -> List[sqlite3.Row]:
+    """List runs, newest-first.
+
+    Optional ``started_after`` / ``started_before`` are inclusive ISO 8601
+    bounds.  Both are compared lexicographically against the
+    ``started_at`` column, which is fine because the column is always
+    written as zulu-suffixed ISO (``2026-04-28T04:39:32Z`` / ``+00:00``)
+    and lex-order matches chronological order for that format.
+
+    Pass either or both to scope the query (e.g. "all runs from
+    2026-04-26 onwards", "all runs in 2026-04 week").
+    """
     sql = "SELECT * FROM analysis_runs"
+    where: List[str] = []
     args: List[Any] = []
     if job_name:
-        sql += " WHERE job_name = ?"
+        where.append("job_name = ?")
         args.append(job_name)
+    if started_after:
+        where.append("started_at >= ?")
+        args.append(started_after)
+    if started_before:
+        where.append("started_at <= ?")
+        args.append(started_before)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY started_at DESC LIMIT ?"
     args.append(limit)
     return list(conn.execute(sql, args))

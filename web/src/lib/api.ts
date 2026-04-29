@@ -1312,13 +1312,40 @@ export interface SchedulerRun {
   }
 }
 
-export function useSchedulerRuns(jobName: string, limit = 10) {
+/** Bounds passed to /api/scheduler/runs/{job_name}. ISO 8601 strings,
+ *  inclusive on both sides. ``null``/``undefined`` = no bound. */
+export interface SchedulerRunsBounds {
+  startedAfter?: string | null
+  startedBefore?: string | null
+}
+
+export function useSchedulerRuns(
+  jobName: string,
+  limit = 10,
+  bounds?: SchedulerRunsBounds,
+) {
+  const after = bounds?.startedAfter ?? null
+  const before = bounds?.startedBefore ?? null
   return useQuery({
-    queryKey: ['fin_scheduler_runs', jobName, limit],
-    queryFn: () =>
-      fetchJSON<{ job: string; count: number; runs: SchedulerRun[] }>(
-        `/api/scheduler/runs/${jobName}?limit=${limit}`,
-      ),
+    // Keep the bounds in the cache key so flipping the TimeScope
+    // pill triggers a refetch (and doesn't leak the previous result
+    // into the new view).
+    queryKey: ['fin_scheduler_runs', jobName, limit, after, before],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit) })
+      if (after)  params.set('started_after',  after)
+      if (before) params.set('started_before', before)
+      return fetchJSON<{
+        job: string
+        count: number
+        runs: SchedulerRun[]
+        filters: {
+          limit: number
+          started_after: string | null
+          started_before: string | null
+        }
+      }>(`/api/scheduler/runs/${jobName}?${params.toString()}`)
+    },
     refetchInterval: 60_000,
     retry: false,
   })

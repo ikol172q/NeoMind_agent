@@ -90,6 +90,11 @@ interface Props {
    *  every lattice-derived fetch so the tab stays time-coherent
    *  with Research. */
   asOf?: string
+  /** Bubble lattice as-of changes back up — used by the audit panel's
+   *  TimeScope control to keep Research+Strategies+audit history in
+   *  1:1 sync ("选择时间，三个 view 都跟随").  Optional: when omitted
+   *  the panel falls back to a no-op and only its local scope changes. */
+  onChangeAsOf?: (next: string) => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -104,6 +109,7 @@ export function StrategiesTab({
   onJumpToResearch,
   onJumpToResearchNode,
   asOf,
+  onChangeAsOf,
 }: Props) {
   const q = useFinStrategies()
   const calls = useLatticeCalls(projectId)
@@ -345,8 +351,13 @@ export function StrategiesTab({
             auditor is alive.  Without this, a row of 36 ⚠ unverified
             chips is indistinguishable between (a) system never ran,
             and (b) system ran and correctly rejected unsupported
-            numeric claims.  See LastAuditPanel.tsx for full rationale. */}
-        <LastAuditPanel />
+            numeric claims.  See LastAuditPanel.tsx for full rationale.
+            asOf + onChangeAsOf bind the panel's TimeScope to the
+            top-nav AsOfPicker so Research+Strategies+audit stay 1:1. */}
+        <LastAuditPanel
+          asOf={asOf ?? 'live'}
+          onChangeAsOf={(next) => onChangeAsOf?.(next)}
+        />
 
         <p className="text-[10px] text-[var(--color-dim)] mb-3 leading-relaxed">
           Source: <code className="text-[var(--color-accent)]">docs/strategies/strategies.yaml</code> +{' '}
