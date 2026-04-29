@@ -21,12 +21,14 @@ import {
   Sparkles,
 } from 'lucide-react'
 import {
+  asOfToLocalYMD,
   useFinStrategies,
   useFinStrategiesFit,
   useFinStrategiesTimeAware,
   useFinWidgetCoverage,
   useLatticeCalls,
   useLatticeLanguage,
+  useLatticeSnapshots,
   useStrategyThemesToday,
   useWidgetStrategies,
   type LatticeCall,
@@ -121,6 +123,15 @@ export function StrategiesTab({
   const calls = useLatticeCalls(projectId, asOf)
   const fit = useFinStrategiesFit(projectId, asOf)
   const coverage = useFinWidgetCoverage()
+  // Snapshot list — used to translate asOf (server UTC date) into the
+  // user's LOCAL YMD for display, so banner / labels match what the
+  // AsOfPicker dropdown showed (and don't disagree across Strategies
+  // tab surfaces).
+  const snapshotsQ = useLatticeSnapshots(projectId)
+  const asOfLocalYMD =
+    asOf && asOf !== 'live'
+      ? asOfToLocalYMD(asOf, snapshotsQ.data?.snapshots)
+      : (asOf ?? 'live')
   // Phase 6 followup #2: time-aware events per strategy (FOMC,
   // quad-witching, Russell rebal, earnings season).
   const timeAware = useFinStrategiesTimeAware(projectId)
@@ -322,7 +333,7 @@ export function StrategiesTab({
             <div className="flex items-start gap-1.5">
               <span className="mt-0.5 shrink-0 text-[var(--color-amber,#e5a200)]">📅</span>
               <div className="flex-1 text-[var(--color-text)]">
-                <b>正在看 {asOf} 的快照 / Viewing as of {asOf}</b>
+                <b>正在看 {asOfLocalYMD} 的快照 / Viewing as of {asOfLocalYMD}</b>
                 <div className="mt-1 text-[var(--color-dim)]">
                   <b className="text-[var(--color-green)]">✓ 跟着日期变 / time-aware:</b>
                   {' '}今日相关度 (today_fit) · 顶部 banner 的 L3 call 数 · FreshnessBar 的 dep_hash · 展开卡片看 themes-of-the-day · 上方审计面板的 runs 过滤
@@ -401,6 +412,7 @@ export function StrategiesTab({
         <LastAuditPanel
           asOf={asOf ?? 'live'}
           onChangeAsOf={(next) => onChangeAsOf?.(next)}
+          projectId={projectId}
         />
 
         <p className="text-[10px] text-[var(--color-dim)] mb-3 leading-relaxed">
