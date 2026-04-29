@@ -545,6 +545,13 @@ function HistoryPicker({
         <span className="font-mono">{value ?? 'past'}</span>
       </button>
       {open && (
+        <>
+        <button
+          onClick={() => setOpen(false)}
+          className="fixed inset-0 z-10 cursor-default"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
         <div
           data-testid="digest-history-menu"
           className="absolute top-full right-0 mt-1 min-w-[180px] max-h-[260px] overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg z-20 text-[10px]"
@@ -586,6 +593,7 @@ function HistoryPicker({
             })}
           </div>
         </div>
+        </>
       )}
     </div>
   )
@@ -642,6 +650,13 @@ function IntegrityBadge({
         </span>
       </button>
       {open && (
+        <>
+        <button
+          onClick={() => setOpen(false)}
+          className="fixed inset-0 z-10 cursor-default"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
         <div
           data-testid="digest-integrity-panel"
           className="absolute top-full right-0 mt-1 w-[380px] max-h-[400px] overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg p-3 text-[10px] z-20 flex flex-col gap-2"
@@ -688,6 +703,7 @@ function IntegrityBadge({
             </>
           )}
         </div>
+        </>
       )}
     </div>
   )
@@ -843,6 +859,13 @@ function BudgetsPicker({ disabled }: { disabled: boolean }) {
         <span className="font-mono">{label}</span>
       </button>
       {open && state && (
+        <>
+        <button
+          onClick={() => setOpen(false)}
+          className="fixed inset-0 z-10 cursor-default"
+          tabIndex={-1}
+          aria-hidden="true"
+        />
         <div
           data-testid="digest-budgets-panel"
           className="absolute top-full right-0 mt-1 w-[260px] rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg z-20 p-3 flex flex-col gap-2 text-[10px]"
@@ -939,6 +962,7 @@ function BudgetsPicker({ disabled }: { disabled: boolean }) {
             </div>
           )}
         </div>
+        </>
       )}
     </div>
   )
