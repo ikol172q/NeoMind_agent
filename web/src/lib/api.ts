@@ -368,36 +368,67 @@ export function streamChat(
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        // sse_starlette emits CRLF line endings; normalize to LF so
-        // the frame splitter ("\n\n") works reliably.
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-        let nl: number
-        while ((nl = buffer.indexOf('\n\n')) !== -1) {
-          const frame = buffer.slice(0, nl)
-          buffer = buffer.slice(nl + 2)
-          let data = ''
-          let event = 'message'
-          for (const line of frame.split('\n')) {
-            if (line.startsWith('event:')) event = line.slice(6).trim()
-            else if (line.startsWith('data:')) data += line.slice(5).trim()
-          }
-          if (!data) continue
-          try {
-            const payload = JSON.parse(data)
-            if (event === 'delta' && typeof payload.content === 'string') {
-              cb.onDelta(payload.content)
-            } else if (event === 'done') {
-              cb.onDone(payload)
-            } else if (event === 'error') {
-              cb.onError(String(payload.detail ?? 'stream error'))
+      // Track whether we got a clean termination (`done` event) so we
+      // can distinguish a normal end from a connection drop.  Without
+      // this the UI's pending spinner stayed forever when uvicorn
+      // restarted mid-stream or when the network silently closed.
+      let sawDoneEvent = false
+      // Idle timeout: if no chunk for N seconds, treat as hung.  Real
+      // DeepSeek streams emit at least one chunk every couple of
+      // seconds; 60s is generous.
+      const IDLE_MS = 60_000
+      let idleTimer: ReturnType<typeof setTimeout> | null = null
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          ac.abort()
+          cb.onError('stream idle for 60s — connection likely dropped')
+        }, IDLE_MS)
+      }
+      resetIdle()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          resetIdle()
+          // sse_starlette emits CRLF line endings; normalize to LF so
+          // the frame splitter ("\n\n") works reliably.
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+          let nl: number
+          while ((nl = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, nl)
+            buffer = buffer.slice(nl + 2)
+            let data = ''
+            let event = 'message'
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) event = line.slice(6).trim()
+              else if (line.startsWith('data:')) data += line.slice(5).trim()
             }
-          } catch (_) {
-            // skip non-JSON frames (heartbeats etc.)
+            if (!data) continue
+            try {
+              const payload = JSON.parse(data)
+              if (event === 'delta' && typeof payload.content === 'string') {
+                cb.onDelta(payload.content)
+              } else if (event === 'done') {
+                sawDoneEvent = true
+                cb.onDone(payload)
+              } else if (event === 'error') {
+                cb.onError(String(payload.detail ?? 'stream error'))
+              }
+            } catch (_) {
+              // skip non-JSON frames (heartbeats etc.)
+            }
           }
         }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer)
+      }
+      // Reader closed without a `done` event — this is the case where
+      // uvicorn restarts mid-stream, the network drops, or the
+      // connection times out at the proxy.  Fire onError so the UI
+      // exits its pending state instead of spinning forever.
+      if (!sawDoneEvent) {
+        cb.onError('stream closed without final event — connection dropped or backend restarted')
       }
     } catch (e: unknown) {
       if ((e as DOMException)?.name !== 'AbortError') {
