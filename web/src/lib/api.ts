@@ -1632,6 +1632,14 @@ export function useWidgetStrategies(widgetId: string | null | undefined) {
   })
 }
 
+export interface RegimeFingerprintScores {
+  risk_appetite_score:     number | null
+  volatility_regime_score: number | null
+  breadth_score:           number | null
+  event_density_score:     number | null
+  flow_score:              number | null
+}
+
 export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
   return useQuery({
     queryKey: ['fin_strategies_fit', projectId, asOf ?? 'live'],
@@ -1642,11 +1650,49 @@ export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
       strategies_count: number
       fit: StrategyFitEntry[]
       explanation: string
+      scorer_version?: 'regime_v2' | 'categorical_v1'
+      fingerprint_date?: string | null
+      fingerprint?: RegimeFingerprintScores | null
     }>(
       `/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}` +
       (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
     ),
     enabled: !!projectId,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+// ── /api/regime/* — 5-bucket regime fingerprint ───────────────
+
+export interface RegimeFingerprint {
+  fingerprint_date:        string
+  risk_appetite_score:     number | null
+  volatility_regime_score: number | null
+  breadth_score:           number | null
+  event_density_score:     number | null
+  flow_score:              number | null
+  components?: {
+    risk_appetite?:     Record<string, Record<string, number | null> | { value?: number }>
+    volatility_regime?: Record<string, Record<string, number | null> | { value?: number }>
+    breadth?:           Record<string, Record<string, number | null> | { value?: number }>
+    event_density?:     Record<string, Record<string, number | null> | { value?: number }>
+    flow?:              Record<string, Record<string, number | null> | { value?: number }>
+  }
+  inputs?:  Record<string, Record<string, unknown>>
+  sources?: Record<string, Record<string, string>>
+  todos?:   string[]
+}
+
+export function useRegimeFingerprint(date?: string | null) {
+  return useQuery({
+    queryKey: ['regime_fingerprint', date ?? 'today'],
+    queryFn: () => {
+      const url = (date && date !== 'live')
+        ? `/api/regime/at?date=${encodeURIComponent(date)}`
+        : `/api/regime/today`
+      return fetchJSON<RegimeFingerprint>(url)
+    },
     staleTime: 60_000,
     retry: false,
   })
