@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Bumped manually when schema.sql adds a backwards-incompatible change.
 # Compatible additions (new tables, new nullable columns) keep the same
 # version. Breaking changes (renamed columns, dropped tables) increment.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # 2026-04-29: regime pipeline tables added (raw_market_data, regime_fingerprints, decision_traces, knn_lookups)
 
 DEFAULT_DB_PATH = Path.home() / ".neomind" / "fin" / "fin.db"
 _SCHEMA_FILE = Path(__file__).parent / "schema.sql"
