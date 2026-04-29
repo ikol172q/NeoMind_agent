@@ -749,11 +749,17 @@ export function useLatticeCalls(project_id: string, date?: string | null) {
   // V8: when `date` is passed, fetch an archived snapshot instead of
   // live /calls. Historical snapshots are frozen artifacts (don't care
   // about current runtime overrides).
+  //
+  // BUG FIX: ``'live'`` is a sentinel string callers pass when there
+  // is NO historical pin (it shares the type with date strings to
+  // simplify call sites).  Treat it as "no date" — otherwise we hit
+  // /api/lattice/snapshot?date=live which 500s on backend (since
+  // 'live' is not a valid YYYY-MM-DD snapshot file).
   const lang = useLatticeLanguage()
   const active = lang.data?.active
   const budgets = useLatticeBudgets()
   const bh = budgets.data?.effective_hash
-  const isHistorical = !!date
+  const isHistorical = !!date && date !== 'live'
   return useQuery({
     queryKey: isHistorical
       ? ['lattice_calls_snapshot', project_id, date]
