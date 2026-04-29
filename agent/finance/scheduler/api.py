@@ -99,9 +99,19 @@ def force_run(job_name: str) -> Dict[str, Any]:
 @router.get("/runs/{job_name}")
 def list_runs(
     job_name: str,
-    limit: int = Query(default=10, ge=1, le=100),
+    limit: int = Query(default=10, ge=1, le=500),
+    started_after: Optional[str] = Query(
+        default=None,
+        description="Inclusive ISO 8601 lower bound on started_at "
+                    "(e.g. '2026-04-28T00:00:00Z').",
+    ),
+    started_before: Optional[str] = Query(
+        default=None,
+        description="Inclusive ISO 8601 upper bound on started_at "
+                    "(e.g. '2026-04-28T23:59:59Z').",
+    ),
 ) -> Dict[str, Any]:
-    """Return the last N analysis_runs rows for ``job_name``.
+    """Return analysis_runs rows for ``job_name``.
 
     This is the data source for the Strategies-tab "Last Audit" panel.
     Without this endpoint the user has no way to tell whether the daily
@@ -110,6 +120,14 @@ def list_runs(
     fire).  Each row carries the rich summary the job stashed into
     metadata_json on completion: audited_n / promoted_n / still_unverified
     / errors_n / sample / explanation.
+
+    With no date bounds: returns the most recent ``limit`` rows.
+    With ``started_after`` / ``started_before``: scopes to that window
+    (still capped by ``limit``).  The UI's TimeScope control passes:
+      - "Today"        → started_after = today 00:00 UTC
+      - "Single day"   → both bounds set to that day
+      - "Range"        → both bounds set to user-picked range
+      - "All time"     → no bounds (default)
     """
     ensure_schema()
     reg = build_default_registry()
@@ -121,7 +139,13 @@ def list_runs(
 
     out: List[Dict[str, Any]] = []
     with connect() as conn:
-        rows = dao.list_recent_runs(conn, job_name=job_name, limit=int(limit))
+        rows = dao.list_recent_runs(
+            conn,
+            job_name=job_name,
+            limit=int(limit),
+            started_after=started_after,
+            started_before=started_before,
+        )
 
     for r in rows:
         meta_raw: Optional[str] = r["metadata_json"] if "metadata_json" in r.keys() else None
@@ -147,4 +171,13 @@ def list_runs(
             "metadata":          meta,
         })
 
-    return {"job": job_name, "count": len(out), "runs": out}
+    return {
+        "job": job_name,
+        "count": len(out),
+        "runs": out,
+        "filters": {
+            "limit": int(limit),
+            "started_after": started_after,
+            "started_before": started_before,
+        },
+    }
