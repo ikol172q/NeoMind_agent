@@ -11,8 +11,13 @@
  */
 
 import { useState } from 'react'
-import { Calendar, ChevronDown, Radio } from 'lucide-react'
-import { useLatticeSnapshots, type LatticeSnapshotEntry } from '@/lib/api'
+import { Calendar, ChevronDown, Loader2, Radio, RefreshCw } from 'lucide-react'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
+import {
+  fetchJSON,
+  useLatticeSnapshots,
+  type LatticeSnapshotEntry,
+} from '@/lib/api'
 
 
 export interface AsOfPickerProps {
@@ -26,6 +31,32 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
   const [open, setOpen] = useState(false)
   const q = useLatticeSnapshots(projectId)
   const snapshots: LatticeSnapshotEntry[] = q.data?.snapshots ?? []
+  const qc = useQueryClient()
+
+  // Force a non-cached lattice build.  Hits /api/lattice/calls with
+  // ``fresh=true``; backend bypasses dep_hash cache, runs L1+L2+L3
+  // fresh, and writes a new snapshot with today's UTC date.  After
+  // success we invalidate every cache that reads from /calls so the
+  // dropdown immediately reflects the new row + Research+Strategies
+  // tabs re-fetch the new payload.  Cost is 2-3 LLM calls (≈ 30-60s),
+  // so the UI shows a spinner the whole time.
+  const forceFresh = useMutation({
+    mutationFn: () =>
+      fetchJSON<unknown>(
+        `/api/lattice/calls?project_id=${encodeURIComponent(projectId)}&fresh=true`,
+      ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['lattice_snapshots', projectId] })
+      qc.invalidateQueries({ queryKey: ['lattice_calls'] })
+      qc.invalidateQueries({ queryKey: ['lattice_themes'] })
+      qc.invalidateQueries({ queryKey: ['lattice_observations'] })
+      qc.invalidateQueries({ queryKey: ['lattice_graph'] })
+      qc.invalidateQueries({ queryKey: ['fin_strategies_today_fit'] })
+      // Bounce back to LIVE so the user sees the just-generated payload
+      // (instead of staying pinned to whatever past date they were on).
+      onChange('live')
+    },
+  })
 
   const isLive = value === 'live'
   // Display date in user's local timezone for consistency with the
@@ -46,7 +77,7 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
     : 'var(--color-amber,#e5a200)'
 
   return (
-    <div className="relative" data-testid="as-of-picker">
+    <div className="relative flex items-center gap-1" data-testid="as-of-picker">
       <button
         onClick={() => setOpen(o => !o)}
         data-testid="as-of-picker-trigger"
@@ -64,6 +95,39 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
         <span>{label}</span>
         <ChevronDown size={9} />
       </button>
+
+      {/* Force-fresh: bypass dep_hash cache, generate today's lattice
+          snapshot now.  This is the answer to user's '为啥下拉里没有
+          今天的结果?' — the daily cron isn't there, the strict cache
+          returns stale on cache-hit, so today's row only appears after
+          an explicit fresh build.  Cost: 2-3 LLM calls (~30-60s). */}
+      <button
+        onClick={() => forceFresh.mutate()}
+        disabled={forceFresh.isPending}
+        data-testid="as-of-force-fresh"
+        className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60 text-[var(--color-text)] disabled:opacity-50 disabled:cursor-not-allowed transition"
+        title={
+          'Force fresh build — 绕过 dep_hash cache, 跑 L1+L2+L3 重新生成 lattice，' +
+          '写一条今天的 snapshot。耗时约 30–60 秒（2-3 个 LLM 调用）。\n' +
+          '完成后下拉里会自动多出今天那一行；视图会切回 LIVE。\n' +
+          '与上面日期选择无关 — 这个按钮永远生成"现在"。'
+        }
+      >
+        {forceFresh.isPending
+          ? <Loader2 size={10} className="animate-spin" />
+          : <RefreshCw size={10} />
+        }
+        <span>{forceFresh.isPending ? 'building…' : 'fresh'}</span>
+      </button>
+
+      {forceFresh.isError && (
+        <span
+          className="text-[9px] text-[var(--color-red,#e07070)] font-mono"
+          title={String((forceFresh.error as Error)?.message ?? forceFresh.error)}
+        >
+          fresh failed
+        </span>
+      )}
 
       {open && (
         <>
