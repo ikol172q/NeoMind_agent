@@ -167,7 +167,7 @@ export function DigestView({ projectId, onJumpToChat, focus, onOpenConfig, onJum
       <FreshnessBar
         meta={payload?.run_meta}
         pipelineLabel="Research"
-        showSnapshotHint
+        showSnapshotHint={!!effectiveDate}
         refreshing={q.isFetching}
         onOpenRun={(id) =>
           window.open(
