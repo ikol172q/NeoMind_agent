@@ -219,8 +219,19 @@ def match_all_against_themes(themes: List[Any]) -> List[Dict[str, Any]]:
     Each strategy gets scored at its OWN horizon (so horizon_match
     fires automatically — we want to see how the OTHER signals like
     options-coupling / earnings / compliance light up).
+
+    BUG FIX (2026-04-29): previously called ``_load_strategies()``
+    which defaults to ``include_unverified=False`` — Layer 3's anti-
+    hallucination gate.  That gate is correct for the L3-call PROMPT
+    (don't let the LLM pick from unverified strategies), but this
+    endpoint is pure DISPLAY — every catalog card needs a fit score,
+    or the UI shows ``fit 0/10`` for all 36 cards (because the fit
+    array comes back empty and the UI's ``score ?? 0`` fallback
+    fires for every lookup).  Pass ``include_unverified=True`` here
+    so the display sees the full catalog.  The L3-call matcher in
+    ``match_strategy()`` below keeps the default-deny.
     """
-    strategies = _load_strategies()
+    strategies = _load_strategies(include_unverified=True)
     if not strategies:
         return []
 
