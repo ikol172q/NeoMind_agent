@@ -828,6 +828,74 @@ export function useLatticeSnapshots(project_id: string) {
   })
 }
 
+// ── timezone helpers for as-of dates ───────────────────────────
+//
+// Bug: snapshot.date is the SERVER's UTC calendar date (e.g.
+// "2026-04-27" for a snapshot recorded at 02:40Z).  But the user
+// thinks of dates in their local time (the same recording is
+// "04/26 7:40 PM" Pacific).  AsOfPicker's dropdown rows show local
+// (correct) but the audit panel + as-of banner showed the raw UTC
+// string ("2026-04-27") — confusing two-different-numbers UX.
+//
+// These helpers translate at the display / input boundary using
+// the snapshot list as ground truth (recorded_at carries the true
+// instant; toLocaleDateString() is the canonical local YMD).
+
+/** Convert "YYYY-MM-DD" → Date at midnight LOCAL. */
+function ymdToDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+/** Convert ISO timestamp → "YYYY-MM-DD" in LOCAL time. */
+function isoToLocalYMD(iso: string | null | undefined): string {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}`
+  } catch {
+    return ''
+  }
+}
+
+/** asOf is stored as the snapshot's UTC date string, but the user
+ *  thinks in their local timezone.  Given asOf + snapshots list,
+ *  return the LOCAL YMD that corresponds to it (matches the label
+ *  shown in AsOfPicker's dropdown).  Falls back to asOf itself
+ *  (unchanged) when no snapshot matches — better than throwing. */
+export function asOfToLocalYMD(
+  asOf: string,
+  snapshots: LatticeSnapshotEntry[] | undefined,
+): string {
+  if (!asOf || asOf === 'live') return asOf
+  const matched = (snapshots ?? []).find((s) => s.date === asOf)
+  const local = isoToLocalYMD(matched?.recorded_at)
+  return local || asOf  // fall back to UTC YMD if no match
+}
+
+/** Reverse: user picks a date in the date-input (always LOCAL YMD),
+ *  return the snapshot.date (UTC) that maps to it so we can store
+ *  it in asOf.  When no exact snapshot matches, return the local
+ *  YMD itself — caller will end up showing the friendly "no snapshot
+ *  for X" empty state from DigestView. */
+export function localYMDToAsOf(
+  localYMD: string,
+  snapshots: LatticeSnapshotEntry[] | undefined,
+): string {
+  if (!localYMD) return localYMD
+  // Find snapshot whose recorded_at falls on this local date
+  const target = ymdToDate(localYMD).getTime()
+  const tomorrow = target + 24 * 60 * 60 * 1000
+  const matched = (snapshots ?? []).find((s) => {
+    if (!s.recorded_at) return false
+    const t = new Date(s.recorded_at).getTime()
+    return t >= target && t < tomorrow
+  })
+  return matched?.date ?? localYMD
+}
+
 // ── /api/lattice/graph — structural view for V3 viz ────
 //
 // Shape mirrors agent/finance/lattice/graph.py output exactly.

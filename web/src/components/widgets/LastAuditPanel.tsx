@@ -67,7 +67,11 @@ import {
   CalendarDays,
 } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
-import { fetchJSON, useSchedulerRuns, type SchedulerRun } from '@/lib/api'
+import {
+  fetchJSON, useSchedulerRuns, useLatticeSnapshots,
+  asOfToLocalYMD, localYMDToAsOf,
+  type SchedulerRun,
+} from '@/lib/api'
 
 
 // ── helpers ───────────────────────────────────────────────────────
@@ -158,29 +162,50 @@ interface RangeBounds {
 // ── component ─────────────────────────────────────────────────────
 
 export interface LastAuditPanelProps {
-  /** App-level lattice as-of value: 'live' or 'YYYY-MM-DD'.
-   *  Audit panel scope syncs to this — lattice and audit stay 1:1. */
+  /** App-level lattice as-of value: 'live' or 'YYYY-MM-DD' (UTC
+   *  date of the snapshot).  Audit panel scope syncs to this —
+   *  lattice and audit stay 1:1. */
   asOf: string
   /** Bubble scope changes back up so the lattice in BOTH tabs follows.
    *  Called with 'live' for today/all-time scopes, or a YYYY-MM-DD
-   *  for single-day / range (= range end date). */
+   *  (snapshot UTC date) for single-day / range. */
   onChangeAsOf: (next: string) => void
+  /** Project id — used to fetch the snapshot list so we can translate
+   *  asOf (server UTC date) to the user's LOCAL YMD for display, and
+   *  reverse-translate the user's date input back. */
+  projectId: string
 }
 
 /** Initial scope inferred from the appAsOf prop. 'live' → today
- *  (the most useful default); a date string → single-day pinned to it. */
-function scopeFromAsOf(asOf: string): { scope: Scope, singleDate: string } {
+ *  (the most useful default); a date string → single-day pinned to
+ *  it.  ``initialLocal`` is the local YMD to seed the date input
+ *  with — derived once from asOf+snapshots so the input shows the
+ *  same date the AsOfPicker dropdown shows. */
+function scopeFromAsOf(asOf: string, initialLocal: string): { scope: Scope, singleDate: string } {
   if (!asOf || asOf === 'live') {
     return { scope: 'today', singleDate: todayLocal() }
   }
-  return { scope: 'single', singleDate: asOf }
+  return { scope: 'single', singleDate: initialLocal || asOf }
 }
 
-export function LastAuditPanel({ asOf, onChangeAsOf }: LastAuditPanelProps) {
+export function LastAuditPanel({ asOf, onChangeAsOf, projectId }: LastAuditPanelProps) {
   const qc = useQueryClient()
 
-  // Scope state — initial value from the App-level asOf
-  const init = useMemo(() => scopeFromAsOf(asOf), [])  // run once
+  // Snapshot list is the ground truth for translating between the
+  // server's UTC snapshot.date and the user's local calendar day.
+  const snapshotsQ = useLatticeSnapshots(projectId)
+  const snapshots = snapshotsQ.data?.snapshots
+
+  // Scope state — initial value from the App-level asOf, translated
+  // to local YMD if a matching snapshot is in the list.  (When
+  // snapshots haven't loaded yet, fall back to asOf as-is and let
+  // the inbound-sync effect refresh the value once they arrive.)
+  const init = useMemo(
+    () => scopeFromAsOf(asOf, asOfToLocalYMD(asOf, snapshots)),
+    // intentionally seeded once; further sync handled by effects.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  )
   const [scope, setScope] = useState<Scope>(init.scope)
   const [singleDate, setSingleDate] = useState<string>(init.singleDate)
   // Default range: last 7 days inclusive
@@ -197,21 +222,25 @@ export function LastAuditPanel({ asOf, onChangeAsOf }: LastAuditPanelProps) {
   // ── 1:1 sync wiring ────────────────────────────────────────────
   // (a) when scope state changes, push the matching as-of UP so the
   //     lattice in BOTH tabs follows. today/all → live; single →
-  //     date; range → range end.
+  //     date; range → range end.  ``singleDate`` and ``rangeTo``
+  //     are LOCAL YMDs (the date inputs); we translate to the
+  //     snapshot's UTC date before publishing so AsOfPicker /
+  //     /api/lattice/snapshot agree on the value.
   useEffect(() => {
     let next: string
     if (scope === 'today' || scope === 'all') next = 'live'
-    else if (scope === 'single') next = singleDate
-    else /* range */               next = rangeTo
+    else if (scope === 'single') next = localYMDToAsOf(singleDate, snapshots)
+    else /* range */               next = localYMDToAsOf(rangeTo, snapshots)
     if (next !== asOf) onChangeAsOf(next)
     // We deliberately don't put `asOf` in deps — that's the inbound
     // direction handled in the next effect. Re-running on asOf here
     // would create a feedback loop.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scope, singleDate, rangeTo])
+  }, [scope, singleDate, rangeTo, snapshots])
 
   // (b) when asOf changes externally (top-nav AsOfPicker), reflect
-  //     it in scope state.  'live' → today; YYYY-MM-DD → single day.
+  //     it in scope state.  'live' → today; YYYY-MM-DD (UTC snapshot
+  //     date) → single day with the corresponding LOCAL YMD.
   //     Skip the update if scope already matches to avoid bouncing.
   useEffect(() => {
     if (asOf === 'live') {
@@ -219,12 +248,13 @@ export function LastAuditPanel({ asOf, onChangeAsOf }: LastAuditPanelProps) {
         setScope('today')
       }
     } else {
-      // a date — single day mode pinned to it, unless user is in range
+      // Translate UTC snapshot date → local YMD for the input
+      const localYMD = asOfToLocalYMD(asOf, snapshots)
       if (scope === 'today' || scope === 'all') {
         setScope('single')
-        setSingleDate(asOf)
-      } else if (scope === 'single' && asOf !== singleDate) {
-        setSingleDate(asOf)
+        setSingleDate(localYMD)
+      } else if (scope === 'single' && localYMD !== singleDate) {
+        setSingleDate(localYMD)
       }
       // if user is in 'range', leave their range alone — they
       // explicitly chose it. The OUTBOUND effect already keeps
@@ -232,7 +262,7 @@ export function LastAuditPanel({ asOf, onChangeAsOf }: LastAuditPanelProps) {
       // happen if rangeTo is being driven by us anyway.
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asOf])
+  }, [asOf, snapshots])
 
   // Translate scope state → query bounds.  No bounds = "all time".
   const bounds: RangeBounds = useMemo(() => {
