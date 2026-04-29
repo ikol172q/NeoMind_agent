@@ -112,7 +112,13 @@ export function StrategiesTab({
   onChangeAsOf,
 }: Props) {
   const q = useFinStrategies()
-  const calls = useLatticeCalls(projectId)
+  // Phase A 1:1 sync: when the user picks a past date, the calls data
+  // (used in the connection-banner counts + lattice gap analysis)
+  // must come from THAT day's snapshot, not live.  Previously this
+  // call omitted asOf, so 'Today: N L3 calls' stayed pinned to live
+  // regardless of the user's date choice — Strategies-tab and
+  // Research-tab disagreed about what "today" was.
+  const calls = useLatticeCalls(projectId, asOf)
   const fit = useFinStrategiesFit(projectId, asOf)
   const coverage = useFinWidgetCoverage()
   // Phase 6 followup #2: time-aware events per strategy (FOMC,
@@ -293,6 +299,44 @@ export function StrategiesTab({
             {q.data ? `${q.data.count} strategies` : 'loading…'}
           </span>
         </div>
+
+        {/* Time-replay clarity: when asOf != live, explain to the user
+            EXACTLY what changes vs. doesn't change with the date.
+            Otherwise they see 36 cards looking identical across all
+            dates and assume the time-travel is broken.  Three layers
+            of "what's frozen by the date selector":
+              ✓ time-aware:   today_fit scores, theme matches, L3 call
+                              count, FreshnessBar dep_hash
+              ✗ NOT time-aware (yaml-static): cards' name/horizon/
+                              difficulty/min_capital/⚠ unverified chip
+                              — strategies.yaml is the source, and is
+                              not yet bitemporal (a 2026-04-25 audit
+                              that promotes X→verified updates the
+                              SAME yaml every "as-of" view reads).
+            See task #79 for the bitemporal-provenance follow-up. */}
+        {asOf && asOf !== 'live' && (
+          <div
+            data-testid="strategies-as-of-banner"
+            className="mb-3 p-2.5 rounded border border-[var(--color-amber,#e5a200)]/40 bg-[var(--color-amber,#e5a200)]/[0.05] text-[10px] leading-[1.5]"
+          >
+            <div className="flex items-start gap-1.5">
+              <span className="mt-0.5 shrink-0 text-[var(--color-amber,#e5a200)]">📅</span>
+              <div className="flex-1 text-[var(--color-text)]">
+                <b>正在看 {asOf} 的快照 / Viewing as of {asOf}</b>
+                <div className="mt-1 text-[var(--color-dim)]">
+                  <b className="text-[var(--color-green)]">✓ 跟着日期变 / time-aware:</b>
+                  {' '}今日相关度 (today_fit) · 顶部 banner 的 L3 call 数 · FreshnessBar 的 dep_hash · 展开卡片看 themes-of-the-day · 上方审计面板的 runs 过滤
+                </div>
+                <div className="mt-0.5 text-[var(--color-dim)]">
+                  <b className="text-[var(--color-amber,#e5a200)]">✗ 不变（yaml 静态）/ frozen:</b>
+                  {' '}卡片基础信息（名字、难度、最低资金、⚠ unverified chip）—
+                  strategies.yaml 还不是 bitemporal，audit 写回会改变所有"as-of"视图的 provenance。
+                  追这个 → task #79.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* How this connects to Research — direct answer to user's
             'Research tab 和 Strategies tab 是怎么连起来的'. */}
