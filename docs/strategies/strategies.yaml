@@ -8,31 +8,50 @@ strategies:
   asset_class: etf
   market: us
   defined_risk: false
-  max_loss: 100% of contributed capital (theoretical); historically max drawdown ~55% (2007-09)
+  max_loss: 100% of contributed capital (theoretical); historically max drawdown ~55%
+    (2007-09)
   pdt_relevant: false
   tax_treatment:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: Hold >12 months for LTCG. Reinvested dividends create new lots — track basis.
+    notes: Hold >12 months for LTCG. Reinvested dividends create new lots — track
+      basis.
   data_requirements:
   - monthly NAV
   - dividend schedule
   typical_win_rate: ~70% positive 12-month rolling returns since 1928 (S&P 500)
   feasible_at_10k: true
   feasible_at_10k_reason: $10k easily buys VTI/VOO; fractional shares at most brokers
-  starter_step: Open a Fidelity/Schwab/Vanguard account, set up an automatic weekly or biweekly purchase of $200 of VTI (or VOO). Turn on dividend reinvestment. Do not look at the account for 30 days.
+  starter_step: Open a Fidelity/Schwab/Vanguard account, set up an automatic weekly
+    or biweekly purchase of $200 of VTI (or VOO). Turn on dividend reinvestment. Do
+    not look at the account for 30 days.
   key_risks:
   - 'Sequence risk: a long bear market early in the journey extends time-to-breakeven'
   - 'Behavioral: many investors stop contributing at the bottom'
   - Inflation can erode real returns even when nominal is positive
-  sources:
-  - https://www.investopedia.com/terms/d/dollarcostaveraging.asp
-  - https://www.bogleheads.org/wiki/Dollar_cost_averaging
-  - https://investor.vanguard.com/investor-resources-education/news/dollar-cost-averaging-just-means-taking-risk-later
+  sources: []
   data_requirement_widgets:
   - chart
   - dividend_schedule
+  provenance:
+    state: unverified
+    source: Layer 0 auditor 2026-04-29T03:16:43.734480Z (corpus=2 blobs)
+  quantitative_profile:
+    payoff_class: dca
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.2
+      volatility_regime: -0.5
+      breadth: 0.6
+      event_density: 0.0
+      flow: 0.4
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: dividend_growth_etf
   name_en: Dividend-Growth ETF (SCHD / VIG / DGRO)
   name_zh: 股息增长 ETF
@@ -48,26 +67,44 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: Most distributions are qualified dividends taxed at LTCG rates if held >60 days around ex-date (IRS Pub 550).
+    notes: Most distributions are qualified dividends taxed at LTCG rates if held
+      >60 days around ex-date (IRS Pub 550).
   data_requirements:
   - dividend history
   - yield-on-cost
   - expense ratio
-  typical_win_rate: ~65-70% rolling 12-month positive returns; ~9-11% long-run total return
+  typical_win_rate: ~65-70% rolling 12-month positive returns; ~9-11% long-run total
+    return
   feasible_at_10k: true
   feasible_at_10k_reason: Single-ticker exposure; fractional shares enable any size
-  starter_step: Buy $1,000 of SCHD this week. Enroll in DRIP. Set a quarterly reminder to add $500 from new savings.
+  starter_step: Buy $1,000 of SCHD this week. Enroll in DRIP. Set a quarterly reminder
+    to add $500 from new savings.
   key_risks:
   - 'Dividend traps: high yield can signal distress (e.g., regional banks 2023)'
   - Sector concentration in financials/staples — underperforms in tech-led rallies
   - Tax drag in a taxable account vs. growth ETF in same risk bucket
-  sources:
-  - https://www.investopedia.com/terms/d/dividendetf.asp
-  - https://www.schwab.com/research/etfs/quotes/summary/schd
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  sources: []
   data_requirement_widgets:
   - dividend_schedule
   - expense_ratio
+  provenance:
+    state: unverified
+    source: Layer 0 auditor 2026-04-29T03:16:48.861249Z (corpus=2 blobs)
+  quantitative_profile:
+    payoff_class: buy_and_hold
+    greeks_template:
+      delta: 0.85
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.1
+      volatility_regime: -0.4
+      breadth: 0.5
+      event_density: 0.0
+      flow: 0.3
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.4
 - id: target_date_fund
   name_en: Target-Date Retirement Fund
   name_zh: 目标日期基金
@@ -83,25 +120,43 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: TDFs generate capital-gains distributions even if you don't sell — use in tax-advantaged accounts (IRA/401k) when possible.
+    notes: TDFs generate capital-gains distributions even if you don't sell — use
+      in tax-advantaged accounts (IRA/401k) when possible.
   data_requirements:
   - glidepath
   - expense ratio
   typical_win_rate: Tracks blended index; ~70% 12-month positive
   feasible_at_10k: true
-  feasible_at_10k_reason: Vanguard Target Retirement funds have $1,000 minimum; iShares LifePath ETFs are share-priced
-  starter_step: Inside your Roth IRA, buy 100% of contribution into VFIFX (or matching year). Set automatic monthly contribution. Done.
+  feasible_at_10k_reason: Vanguard Target Retirement funds have $1,000 minimum; iShares
+    LifePath ETFs are share-priced
+  starter_step: Inside your Roth IRA, buy 100% of contribution into VFIFX (or matching
+    year). Set automatic monthly contribution. Done.
   key_risks:
   - Glidepath may not match your true risk tolerance
   - Capital-gains distributions create tax drag in taxable accounts
   - All-in-one means you can't tax-loss harvest the components
-  sources:
-  - https://www.investopedia.com/terms/t/target-date_fund.asp
-  - https://www.bogleheads.org/wiki/Target_date_retirement_funds
-  - https://investor.vanguard.com/investment-products/mutual-funds/target-retirement-funds
+  sources: []
   data_requirement_widgets:
   - allocation_state
   - expense_ratio
+  provenance:
+    state: unverified
+    source: Layer 0 auditor 2026-04-29T03:16:55.512030Z (corpus=2 blobs)
+  quantitative_profile:
+    payoff_class: target_date_fund
+    greeks_template:
+      delta: 0.7
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: -0.3
+      breadth: 0.4
+      event_density: 0.0
+      flow: 0.2
+    expected_hold_days: 1825
+    breakeven_RV_pctile: 0.5
 - id: lazy_portfolio_three_fund
   name_en: Bogleheads Three-Fund Portfolio
   name_zh: 三基金懒人组合
@@ -117,24 +172,41 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: Rebalancing in taxable account triggers gains. Use new contributions to rebalance instead. Bond fund is taxed as ordinary income.
+    notes: Rebalancing in taxable account triggers gains. Use new contributions to
+      rebalance instead. Bond fund is taxed as ordinary income.
   data_requirements:
   - allocation %
   - rebalance bands
   typical_win_rate: ~70% 12-month positive; lower volatility than 100% equity
   feasible_at_10k: true
   feasible_at_10k_reason: $10k splits cleanly across VTI / VXUS / BND
-  starter_step: Decide allocation (e.g., 60/30/10 VTI/VXUS/BND). Buy this week with lump-sum or 4-week DCA. Set quarterly rebalance reminder using new cash.
+  starter_step: Decide allocation (e.g., 60/30/10 VTI/VXUS/BND). Buy this week with
+    lump-sum or 4-week DCA. Set quarterly rebalance reminder using new cash.
   key_risks:
   - Bonds + stocks both fell in 2022 — diversification can fail in inflation regimes
   - International underperformance for a decade is possible (and happened 2010-2020)
   - 'Behavioral: rebalancing requires selling winners — psychologically hard'
-  sources:
-  - https://www.bogleheads.org/wiki/Three-fund_portfolio
-  - https://www.investopedia.com/three-fund-portfolio-7484274
-  - https://www.bogleheads.org/wiki/Lazy_portfolios
+  sources: []
   data_requirement_widgets:
   - allocation_state
+  provenance:
+    state: unverified
+    source: Layer 0 auditor 2026-04-29T03:17:02.279637Z (corpus=2 blobs)
+  quantitative_profile:
+    payoff_class: lazy_portfolio_three_fund
+    greeks_template:
+      delta: 0.7
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: -0.3
+      breadth: 0.4
+      event_density: 0.0
+      flow: 0.2
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: permanent_portfolio
   name_en: Permanent Portfolio (Harry Browne)
   name_zh: 永久投资组合
@@ -150,24 +222,41 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: GLD generates 28% collectibles-rate gains (IRS treats physical-gold ETFs as collectibles). TLT distributions are ordinary income.
+    notes: GLD generates 28% collectibles-rate gains (IRS treats physical-gold ETFs
+      as collectibles). TLT distributions are ordinary income.
   data_requirements:
   - allocation %
   - rebalance bands
   typical_win_rate: ~65% 12-month positive; lower CAGR than equity, lower drawdown
   feasible_at_10k: true
   feasible_at_10k_reason: $2,500 each into VTI / TLT / GLD / SHY
-  starter_step: Buy 25% VTI, 25% TLT, 25% GLD, 25% SHY (or BIL) this week. Set annual rebalance to 25/25/25/25 each January.
+  starter_step: Buy 25% VTI, 25% TLT, 25% GLD, 25% SHY (or BIL) this week. Set annual
+    rebalance to 25/25/25/25 each January.
   key_risks:
   - Severely lags equity in long bull markets (2010s)
   - Bonds + stocks both fell in 2022, breaking the model
   - GLD collectibles tax rate can surprise filers
-  sources:
-  - https://www.investopedia.com/articles/investing/110813/permanent-portfolio-bulletproof-investment-strategy.asp
-  - https://www.bogleheads.org/wiki/Permanent_Portfolio
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  sources: []
   data_requirement_widgets:
   - allocation_state
+  provenance:
+    state: unverified
+    source: Layer 0 auditor 2026-04-29T03:17:10.990536Z (corpus=3 blobs)
+  quantitative_profile:
+    payoff_class: permanent_portfolio
+    greeks_template:
+      delta: 0.5
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: 0.0
+      flow: 0.1
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: bond_ladder_treasury
   name_en: Treasury Bond Ladder
   name_zh: 美国国债阶梯
@@ -177,30 +266,50 @@ strategies:
   asset_class: mixed
   market: us
   defined_risk: false
-  max_loss: Near-zero if held to maturity (UST credit risk negligible); MTM losses if sold early
+  max_loss: Near-zero if held to maturity (UST credit risk negligible); MTM losses
+    if sold early
   pdt_relevant: false
   tax_treatment:
     qualifies_long_term: false
     wash_sale_risk: low
     section_1256: false
-    notes: Treasury interest is federal-taxable but state/local-exempt. Use TreasuryDirect or broker secondary market.
+    notes: Treasury interest is federal-taxable but state/local-exempt. Use TreasuryDirect
+      or broker secondary market.
   data_requirements:
   - yield curve
   - auction calendar
   typical_win_rate: 100% nominal return if held to maturity (assuming no UST default)
   feasible_at_10k: true
-  feasible_at_10k_reason: T-bill minimum is $100 at TreasuryDirect; 5-rung ladder of $2k each is straightforward
-  starter_step: Open TreasuryDirect account. Buy $2,000 each of 13-week, 26-week, 1-year, 2-year, and 3-year T-bills/notes. As each matures, roll into the longest rung.
+  feasible_at_10k_reason: T-bill minimum is $100 at TreasuryDirect; 5-rung ladder
+    of $2k each is straightforward
+  starter_step: Open TreasuryDirect account. Buy $2,000 each of 13-week, 26-week,
+    1-year, 2-year, and 3-year T-bills/notes. As each matures, roll into the longest
+    rung.
   key_risks:
   - Reinvestment risk if rates fall when rungs mature
   - Real (after-inflation) returns can be negative — 2021-2022 was severe
   - 'Liquidity: selling pre-maturity may realize MTM loss'
-  sources:
-  - https://www.investopedia.com/terms/b/bondladder.asp
-  - https://www.treasurydirect.gov/marketable-securities/treasury-bills/
-  - https://www.bogleheads.org/wiki/Treasury_securities
+  sources: []
   data_requirement_widgets:
   - yield_curve
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: buy_and_hold
+    greeks_template:
+      delta: -0.1
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.3
+      volatility_regime: -0.2
+      breadth: 0.0
+      event_density: 0.0
+      flow: -0.4
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.3
 - id: sector_rotation
   name_en: Sector Rotation (Business-Cycle)
   name_zh: 行业轮动
@@ -216,27 +325,47 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: Rotation typically held 3-9 months → short-term gains taxed as ordinary income.
+    notes: Rotation typically held 3-9 months → short-term gains taxed as ordinary
+      income.
   data_requirements:
   - macro indicators (PMI, yield curve)
   - sector relative strength
-  typical_win_rate: Mixed; 50-55% per rotation, with positive expectancy from leaders > losers
+  typical_win_rate: Mixed; 50-55% per rotation, with positive expectancy from leaders
+    > losers
   feasible_at_10k: true
-  feasible_at_10k_reason: Use 2-3 SPDR sector ETFs (XLK/XLE/XLV etc.); $10k splits well
-  starter_step: Pick a framework (e.g., Fidelity business-cycle clock). Identify current phase. Allocate 70% to 2 winning sectors via XLY/XLK/etc., 30% cash. Reassess monthly.
+  feasible_at_10k_reason: Use 2-3 SPDR sector ETFs (XLK/XLE/XLV etc.); $10k splits
+    well
+  starter_step: Pick a framework (e.g., Fidelity business-cycle clock). Identify current
+    phase. Allocate 70% to 2 winning sectors via XLY/XLK/etc., 30% cash. Reassess
+    monthly.
   key_risks:
   - Mistimed regime calls — late-cycle in 2022 saw energy lead, then crash
   - Whipsaws produce many short-term-gains taxable events
   - PDT applicable if rotating frequently with $10k
-  sources:
-  - https://www.investopedia.com/terms/s/sectorrotation.asp
-  - https://www.fidelity.com/learning-center/trading-investing/markets-sectors/business-cycle-update
-  - https://www.ssga.com/us/en/individual/etfs/select-sector-spdr-etfs
+  sources: []
   data_requirement_widgets:
   - macro_pmi_inflation
   - yield_curve
   - sectors
   - relative_strength
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: sector_rotation_business_cycle
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.2
+      volatility_regime: -0.2
+      breadth: 0.1
+      event_density: -0.1
+      flow: 0.5
+    expected_hold_days: 90
+    breakeven_RV_pctile: 0.5
 - id: relative_strength_momentum
   name_en: Cross-Sectional Momentum (Top-Decile)
   name_zh: 横截面动量
@@ -252,25 +381,44 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: high
     section_1256: false
-    notes: Monthly rebalances trigger wash sales easily. Hold periods <12 mo → ordinary-income tax.
+    notes: Monthly rebalances trigger wash sales easily. Hold periods <12 mo → ordinary-income
+      tax.
   data_requirements:
   - 12-month and 1-month price data per symbol
   - monthly rebalance
-  typical_win_rate: ~55-58% per month; positive long-run premium documented (Jegadeesh & Titman 1993)
+  typical_win_rate: ~55-58% per month; positive long-run premium documented (Jegadeesh
+    & Titman 1993)
   feasible_at_10k: true
-  feasible_at_10k_reason: Buy MTUM (iShares MSCI USA Momentum) for $10k exposure without rebalancing yourself
-  starter_step: 'Option A (easy): buy $10k MTUM. Option B (DIY): rank S&P 500 by 12-1-month return, buy top 10 names equal weight, rebalance monthly.'
+  feasible_at_10k_reason: Buy MTUM (iShares MSCI USA Momentum) for $10k exposure without
+    rebalancing yourself
+  starter_step: 'Option A (easy): buy $10k MTUM. Option B (DIY): rank S&P 500 by 12-1-month
+    return, buy top 10 names equal weight, rebalance monthly.'
   key_risks:
   - Momentum crashes after market bottoms (April 2009, March 2020)
   - High turnover = high taxes in taxable account
   - DIY version uses 24+ round trips/year — PDT-relevant
-  sources:
-  - https://www.investopedia.com/terms/m/momentum_investing.asp
-  - https://www.ishares.com/us/products/251614/ishares-msci-usa-momentum-factor-etf
-  - https://onlinelibrary.wiley.com/doi/10.1111/j.1540-6261.1993.tb04702.x
+  sources: []
   data_requirement_widgets:
   - chart
   - allocation_state
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.4
+      volatility_regime: -0.2
+      breadth: 0.6
+      event_density: -0.2
+      flow: 0.3
+    expected_hold_days: 90
+    breakeven_RV_pctile: 0.5
 - id: value_factor_etf
   name_en: Value Factor ETF (VTV / VLUE / RPV)
   name_zh: 价值因子 ETF
@@ -291,21 +439,38 @@ strategies:
   - P/E
   - P/B
   - factor exposure
-  typical_win_rate: Lagged growth 2010-2020 substantially; reverted 2022. Long-run premium ~2-4%/yr historically (Fama-French).
+  typical_win_rate: Lagged growth 2010-2020 substantially; reverted 2022. Long-run
+    premium ~2-4%/yr historically (Fama-French).
   feasible_at_10k: true
   feasible_at_10k_reason: Single-ticker, fractional
-  starter_step: Buy $2,000 VTV this week as a satellite to a core index holding. Reassess yearly, not monthly.
+  starter_step: Buy $2,000 VTV this week as a satellite to a core index holding. Reassess
+    yearly, not monthly.
   key_risks:
   - Value can underperform for 10+ years (2010-2020)
   - '''Value trap'' stocks dominate cheap deciles'
   - Factor crowding may have eroded the premium
-  sources:
-  - https://www.investopedia.com/terms/v/valuefund.asp
-  - https://www.ishares.com/us/products/251616/ishares-msci-usa-value-factor-etf
-  - https://mba.tuck.dartmouth.edu/pages/faculty/ken.french/data_library.html
+  sources: []
   data_requirement_widgets:
   - fundamentals_value
   - factor_exposure
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: value_factor
+    greeks_template:
+      delta: 0.95
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.2
+      volatility_regime: 0.2
+      breadth: 0.2
+      event_density: 0.0
+      flow: 0.2
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: low_volatility_factor
   name_en: Low-Volatility Factor ETF (USMV / SPLV)
   name_zh: 低波动因子 ETF
@@ -333,13 +498,28 @@ strategies:
   - Lags hard in risk-on rallies (2020 H2)
   - Sector concentration in utilities/staples = interest-rate sensitivity
   - 'Crowded trade: factor degraded post-2017'
-  sources:
-  - https://www.investopedia.com/terms/l/low-volatility-stocks.asp
-  - https://www.ishares.com/us/products/239695/ishares-msci-usa-minimum-volatility-etf
-  - https://www.spglobal.com/spdji/en/indices/strategy/sp-500-low-volatility-index/
+  sources: []
   data_requirement_widgets:
   - chart
   - factor_exposure
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: low_volatility_factor
+    greeks_template:
+      delta: 0.7
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.4
+      volatility_regime: 0.5
+      breadth: -0.2
+      event_density: 0.2
+      flow: -0.3
+    expected_hold_days: 180
+    breakeven_RV_pctile: 0.5
 - id: swing_breakout_52w_high
   name_en: 52-Week-High Breakout Swing
   name_zh: 52 周新高突破
@@ -355,7 +535,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: high
     section_1256: false
-    notes: Re-entering a stopped-out position within 30 days triggers wash sale (IRS Pub 550). Use different ticker or wait.
+    notes: Re-entering a stopped-out position within 30 days triggers wash sale (IRS
+      Pub 550). Use different ticker or wait.
   data_requirements:
   - daily OHLCV
   - 52w high
@@ -364,17 +545,34 @@ strategies:
   typical_win_rate: ~40-50% wins, 1.5-2.5R avg winner — asymmetric
   feasible_at_10k: true
   feasible_at_10k_reason: $10k allows 4-5 concurrent positions of $2k each
-  starter_step: Build a watchlist of 30 large-cap leaders. Each evening, scan for those closing within 1% of their 52w high on >150% avg volume. Enter next day, stop 7% below.
+  starter_step: Build a watchlist of 30 large-cap leaders. Each evening, scan for
+    those closing within 1% of their 52w high on >150% avg volume. Enter next day,
+    stop 7% below.
   key_risks:
   - Choppy markets (2015, mid-2022) produce repeated stop-outs
   - 'PDT: at $10k you cannot exceed 3 round trips/5 business days'
   - Slippage on gappers can blow through stops
-  sources:
-  - https://www.investopedia.com/terms/s/swingtrading.asp
-  - https://www.investors.com/how-to-invest/investors-corner/the-52-week-high-rule/
-  - https://www.finra.org/investors/learn-to-invest/advanced-investing/day-trading-margin-requirements-know-rules
+  sources: []
   data_requirement_widgets:
   - chart
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: fifty_two_week_high_breakout_swing
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.5
+      volatility_regime: -0.3
+      breadth: 0.6
+      event_density: -0.3
+      flow: 0.4
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
 - id: mean_reversion_oversold
   name_en: Mean-Reversion Oversold Bounce (RSI-2)
   name_zh: 均值回归超卖反弹
@@ -398,18 +596,34 @@ strategies:
   typical_win_rate: ~65-75% wins, but small (~1%) per win; bad losses kill it
   feasible_at_10k: true
   feasible_at_10k_reason: Trade 1 ETF position at a time to stay PDT-safe
-  starter_step: 'Pick a basket: SPY/QQQ/IWM. Rule: long-only above 200-DMA, enter when RSI(2) < 10, exit when close > 5-DMA. Paper-trade for 4 weeks first.'
+  starter_step: 'Pick a basket: SPY/QQQ/IWM. Rule: long-only above 200-DMA, enter
+    when RSI(2) < 10, exit when close > 5-DMA. Paper-trade for 4 weeks first.'
   key_risks:
   - Trends crush mean-reversion (Q4 2018, March 2020)
   - 'PDT: easily exceeds 3 round trips/5 days at this trade frequency'
   - Short-term gains taxed at ordinary rates
-  sources:
-  - https://www.investopedia.com/terms/m/meanreversion.asp
-  - https://www.investopedia.com/articles/active-trading/052014/how-use-rsi-relative-strength-index.asp
-  - https://www.finra.org/investors/learn-to-invest/advanced-investing/day-trading-margin-requirements-know-rules
+  sources: []
   data_requirement_widgets:
   - chart
   - mean_reversion_z
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: mean_reversion_oversold_bounce_rsi2
+    greeks_template:
+      delta: 0.95
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.4
+      volatility_regime: 0.6
+      breadth: -0.3
+      event_density: 0.0
+      flow: -0.2
+    expected_hold_days: 5
+    breakeven_RV_pctile: 0.5
 - id: post_earnings_drift
   name_en: Post-Earnings Announcement Drift (PEAD)
   name_zh: 盈利公告后漂移
@@ -433,18 +647,35 @@ strategies:
   typical_win_rate: ~55% wins; documented academic premium ~3-5%/quarter on top decile
   feasible_at_10k: true
   feasible_at_10k_reason: Concentrated in 5-8 names per quarter; $10k splits OK
-  starter_step: 'Build screen: stocks that gap up >5% on earnings beat with revenue beat AND raised guidance. Buy the close of report day, hold 60 days, hard stop at -10%.'
+  starter_step: 'Build screen: stocks that gap up >5% on earnings beat with revenue
+    beat AND raised guidance. Buy the close of report day, hold 60 days, hard stop
+    at -10%.'
   key_risks:
   - Premium has shrunk post-2010 as institutional adoption grew
   - Single-stock concentration; one earnings reversal can wipe a quarter
   - PDT-sensitive if you re-trade exits
-  sources:
-  - https://www.investopedia.com/terms/p/post-earnings-announcement-drift-pead.asp
-  - https://academic.oup.com/rfs/article-abstract/19/3/1119/1610528
-  - https://www.aqr.com/Insights/Research/Journal-Article/Post-Earnings-Announcement-Drift
+  sources: []
   data_requirement_widgets:
   - earnings
   - news
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.2
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: 0.4
+      flow: 0.1
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
 - id: sector_etf_rotation_us_china
   name_en: US/China Sector Rotation (SOXX / KWEB / MCHI)
   name_zh: 中美科技 ETF 轮动
@@ -460,26 +691,43 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: KWEB/MCHI hold ADRs and HK shares — distributions can include foreign tax credits (claim via Form 1116).
+    notes: KWEB/MCHI hold ADRs and HK shares — distributions can include foreign tax
+      credits (claim via Form 1116).
   data_requirements:
   - 3-month relative strength SOXX vs KWEB vs MCHI
   - macro/policy news
   typical_win_rate: Highly regime-dependent; rotation captured KWEB's 2023 H1 rally
   feasible_at_10k: true
   feasible_at_10k_reason: Two 50/50 positions of $5k work cleanly
-  starter_step: Compute trailing 63-day return for SOXX, KWEB, MCHI weekly. Hold the top-2 50/50. Rebalance when the leaderboard changes by 1+ slot.
+  starter_step: Compute trailing 63-day return for SOXX, KWEB, MCHI weekly. Hold the
+    top-2 50/50. Rebalance when the leaderboard changes by 1+ slot.
   key_risks:
   - 'China policy risk: 2021 platform crackdown halved KWEB'
   - ADR-delisting risk under HFCAA (mitigated 2022 but not eliminated)
   - 'PDT: monthly+ rotation acceptable; weekly will exceed at $10k'
-  sources:
-  - https://kraneshares.com/kweb/
-  - https://www.ishares.com/us/products/239619/ishares-msci-china-etf
-  - https://www.sec.gov/files/pcaob-fact-sheet.pdf
+  sources: []
   data_requirement_widgets:
   - relative_strength
   - news
   - macro_pmi_inflation
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: sector_rotation_business_cycle
+    greeks_template:
+      delta: 0.95
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.2
+      volatility_regime: -0.2
+      breadth: 0.1
+      event_density: -0.1
+      flow: 0.5
+    expected_hold_days: 90
+    breakeven_RV_pctile: 0.5
 - id: small_cap_value
   name_en: Small-Cap Value (AVUV / VIOV / IJS)
   name_zh: 小盘价值
@@ -502,18 +750,34 @@ strategies:
   typical_win_rate: Highly variable; long-run premium ~3-4%/yr historically (Fama-French)
   feasible_at_10k: true
   feasible_at_10k_reason: Allocate 10-20% of $10k as a satellite tilt
-  starter_step: Buy $1,000 AVUV this week as a satellite alongside VTI core. Hold 5+ years before judging.
+  starter_step: Buy $1,000 AVUV this week as a satellite alongside VTI core. Hold
+    5+ years before judging.
   key_risks:
   - Decade-long underperformance is normal (2010-2020)
   - Higher volatility than total market
   - Liquidity thinner than large-cap funds
-  sources:
-  - https://www.investopedia.com/terms/s/small-cap-stock.asp
-  - https://www.avantisinvestors.com/etfs/avuv/
-  - https://www.bogleheads.org/wiki/Small_value_strategy
+  sources: []
   data_requirement_widgets:
   - factor_exposure
   - expense_ratio
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: value_factor
+    greeks_template:
+      delta: 1.1
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.3
+      volatility_regime: -0.2
+      breadth: 0.5
+      event_density: 0.0
+      flow: 0.4
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: quality_factor
   name_en: Quality Factor ETF (QUAL / SPHQ)
   name_zh: 质量因子 ETF
@@ -542,12 +806,27 @@ strategies:
   - Highly correlated with S&P 500 — limited diversification
   - Quality definitions vary by index provider — read the methodology
   - Underperforms in early-cycle low-quality rallies
-  sources:
-  - https://www.investopedia.com/terms/q/qualityetf.asp
-  - https://www.ishares.com/us/products/256101/ishares-msci-usa-quality-factor-etf
-  - https://www.msci.com/our-solutions/indexes/factor-investing
+  sources: []
   data_requirement_widgets:
   - fundamentals_value
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: value_factor
+    greeks_template:
+      delta: 0.95
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.1
+      volatility_regime: -0.1
+      breadth: 0.3
+      event_density: 0.0
+      flow: 0.2
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: international_developed_etf
   name_en: International Developed Markets ETF (VXUS / IEFA)
   name_zh: 国际发达市场 ETF
@@ -563,7 +842,8 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: Foreign-tax-paid passes through; claim Foreign Tax Credit on Form 1116. Best in taxable account vs IRA (FTC unusable in IRA).
+    notes: Foreign-tax-paid passes through; claim Foreign Tax Credit on Form 1116.
+      Best in taxable account vs IRA (FTC unusable in IRA).
   data_requirements:
   - country weights
   - currency exposure
@@ -575,13 +855,28 @@ strategies:
   - Decade-long US outperformance can repeat
   - Currency risk (unhedged) adds vol
   - Geopolitical concentration (Japan + EU = >60%)
-  sources:
-  - https://investor.vanguard.com/investment-products/etfs/profile/vxus
-  - https://www.bogleheads.org/wiki/Domestic/international
-  - https://www.irs.gov/forms-pubs/about-form-1116
+  sources: []
   data_requirement_widgets:
   - allocation_state
   - factor_exposure
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: buy_and_hold
+    greeks_template:
+      delta: 0.9
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.1
+      volatility_regime: -0.3
+      breadth: 0.3
+      event_density: 0.0
+      flow: 0.5
+    expected_hold_days: 365
+    breakeven_RV_pctile: 0.5
 - id: earnings_announcement_drift
   name_en: Earnings-Announcement Volatility Trade
   name_zh: 财报事件交易
@@ -605,19 +900,36 @@ strategies:
   typical_win_rate: Asymmetric; ~50-55% per trade with size discipline
   feasible_at_10k: true
   feasible_at_10k_reason: 1-2 names per cycle; defined entry/exit
-  starter_step: Pick 5 names with dense option markets (e.g., AAPL, NVDA, AMZN). Compare implied move vs historical realized; only trade when implied < historical avg by 20%+. Use small size first.
+  starter_step: Pick 5 names with dense option markets (e.g., AAPL, NVDA, AMZN). Compare
+    implied move vs historical realized; only trade when implied < historical avg
+    by 20%+. Use small size first.
   key_risks:
   - Single-name binary risk on report
   - 'PDT: easily exceeded if trading multiple cycles'
   - Implied moves are often correctly priced
-  sources:
-  - https://www.investopedia.com/articles/active-trading/030415/play-earnings-season-strangles-and-straddles.asp
-  - https://www.cmegroup.com/education/courses/introduction-to-options/calculating-the-implied-move.html
-  - https://www.optionseducation.org/
+  sources: []
   data_requirement_widgets:
   - earnings
   - iv_rank
   - options_chain
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.2
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: 0.5
+      flow: 0.0
+    expected_hold_days: 5
+    breakeven_RV_pctile: 0.5
 - id: merger_arbitrage
   name_en: Merger Arbitrage (Cash Deals)
   name_zh: 并购套利
@@ -633,7 +945,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: low
     section_1256: false
-    notes: Most arb spreads close <12mo → short-term gains. Cash mergers receive cash at close, treated as a sale on closing date.
+    notes: Most arb spreads close <12mo → short-term gains. Cash mergers receive cash
+      at close, treated as a sale on closing date.
   data_requirements:
   - spread vs deal price
   - deal docs (S-4)
@@ -641,19 +954,36 @@ strategies:
   typical_win_rate: ~85-90% deals close; tail of broken deals creates the loss profile
   feasible_at_10k: true
   feasible_at_10k_reason: $10k buys one position in a typical $20-40 spread
-  starter_step: Subscribe to a deals tracker (e.g., MergerArbitrageMonitor). Pick one announced cash deal with regulatory clarity. Buy target near deal price minus 1-2%. Hold to close.
+  starter_step: Subscribe to a deals tracker (e.g., MergerArbitrageMonitor). Pick
+    one announced cash deal with regulatory clarity. Buy target near deal price minus
+    1-2%. Hold to close.
   key_risks:
   - Antitrust break (e.g., NVDA-ARM 2022)
   - Spread compression — annualized return often only 4-8%
   - Single-deal concentration is dangerous; pros run baskets
-  sources:
-  - https://www.investopedia.com/terms/r/riskarbitrage.asp
-  - https://www.sec.gov/edgar/searchedgar/companysearch
-  - https://corpgov.law.harvard.edu/2022/01/14/the-hidden-cost-of-merger-arbitrage/
+  sources: []
   data_requirement_widgets:
   - merger_arbitrage_universe
   - news
   - event_calendar_ipo_russell_fomc
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: merger_arbitrage
+    greeks_template:
+      delta: 0.3
+      theta: 0.0
+      vega: -0.1
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.1
+      volatility_regime: -0.2
+      breadth: 0.0
+      event_density: 0.5
+      flow: -0.2
+    expected_hold_days: 90
+    breakeven_RV_pctile: 0.5
 - id: russell_rebalance
   name_en: Russell Reconstitution Trade
   name_zh: 罗素指数重构交易
@@ -677,18 +1007,35 @@ strategies:
   typical_win_rate: Edge has eroded since 2010; small but documented up to 2018
   feasible_at_10k: true
   feasible_at_10k_reason: Trade 2-3 add/delete names of $2-3k each
-  starter_step: In May, download the Russell preliminary lists. Long the top adds (smaller names with large index demand), short via paired ETFs. Exit by reconstitution day (last Friday of June).
+  starter_step: In May, download the Russell preliminary lists. Long the top adds
+    (smaller names with large index demand), short via paired ETFs. Exit by reconstitution
+    day (last Friday of June).
   key_risks:
   - Front-running has compressed the alpha
   - 'PDT: typically uses 4-6 trades in June — at $10k this exceeds'
   - List-change rules change yearly — read FTSE methodology
-  sources:
-  - https://www.ftserussell.com/research-insights/russell-reconstitution
-  - https://www.investopedia.com/articles/investing/070815/russell-reconstitution-explained.asp
-  - https://www.spglobal.com/spdji/en/research/article/index-effects-on-stock-prices/
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - chart
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: 0.8
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: 0.6
+      flow: 0.0
+    expected_hold_days: 14
+    breakeven_RV_pctile: 0.5
 - id: fomc_announcement_fade
   name_en: FOMC Day Volatility Fade
   name_zh: FOMC 日波动率回归
@@ -712,19 +1059,36 @@ strategies:
   typical_win_rate: Mixed; faded reactions can reverse next day
   feasible_at_10k: true
   feasible_at_10k_reason: Single position; defined risk via stop
-  starter_step: 'Mark next 8 FOMC dates. Plan: on announcement day, wait for the 2:00pm ET reaction. If SPY moves >1% in either direction in first 30 min, fade with 0.5% stop.'
+  starter_step: 'Mark next 8 FOMC dates. Plan: on announcement day, wait for the 2:00pm
+    ET reaction. If SPY moves >1% in either direction in first 30 min, fade with 0.5%
+    stop.'
   key_risks:
   - Trend days (2022) extend, breaking fade premise
   - 'PDT: 8 round trips/year is fine, but layered intraday entries break it'
   - Slippage during the announcement minute is brutal
-  sources:
-  - https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm
-  - https://www.investopedia.com/terms/f/fomc.asp
-  - https://www.cmegroup.com/markets/interest-rates/cme-fedwatch-tool.html
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - chart
   - sentiment
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: mean_reversion
+    greeks_template:
+      delta: 0.5
+      theta: 0.0
+      vega: -0.1
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: 0.5
+      breadth: 0.0
+      event_density: 0.7
+      flow: 0.0
+    expected_hold_days: 1
+    breakeven_RV_pctile: 0.5
 - id: ipo_lockup_expiry
   name_en: IPO Lockup-Expiration Short Bias
   name_zh: IPO 锁定期到期套利
@@ -734,13 +1098,15 @@ strategies:
   asset_class: stock
   market: us
   defined_risk: false
-  max_loss: 'If shorting outright: theoretically unlimited. Use put spreads instead (defined-risk per user constraint)'
+  max_loss: 'If shorting outright: theoretically unlimited. Use put spreads instead
+    (defined-risk per user constraint)'
   pdt_relevant: true
   tax_treatment:
     qualifies_long_term: false
     wash_sale_risk: high
     section_1256: false
-    notes: Constructive sales rules apply if hedging long. Short calls / long puts have own holding-period quirks (IRS Pub 550 §1092).
+    notes: Constructive sales rules apply if hedging long. Short calls / long puts
+      have own holding-period quirks (IRS Pub 550 §1092).
   data_requirements:
   - IPO calendar
   - lockup date (typ. 180d post-IPO)
@@ -748,18 +1114,35 @@ strategies:
   typical_win_rate: Edge has weakened post-2018 as it's well-known
   feasible_at_10k: true
   feasible_at_10k_reason: Use defined-risk put spreads; budget $500-1,000 per setup
-  starter_step: Track recent IPOs at NASDAQ IPO calendar. 30 days before lockup expiry, check if stock is still above IPO price AND 50% of share count unlocks. Buy a 30-day OTM put debit spread.
+  starter_step: Track recent IPOs at NASDAQ IPO calendar. 30 days before lockup expiry,
+    check if stock is still above IPO price AND 50% of share count unlocks. Buy a
+    30-day OTM put debit spread.
   key_risks:
   - Edge is small and crowded
   - Insiders may hold (Snowflake 2021 — minimal selling at lockup)
   - Naked shorts violate user's defined-risk-only rule — STICK to put spreads
-  sources:
-  - https://www.investopedia.com/terms/i/ipolockup.asp
-  - https://www.nasdaq.com/market-activity/ipos
-  - https://www.sec.gov/oiea/investor-alerts-bulletins/ib_lockupagreements.html
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - short_interest
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: -0.7
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: -0.2
+      volatility_regime: 0.3
+      breadth: -0.2
+      event_density: 0.5
+      flow: -0.1
+    expected_hold_days: 14
+    breakeven_RV_pctile: 0.5
 - id: quad_witching_volatility
   name_en: Quad Witching Volatility Setup
   name_zh: 四巫日波动
@@ -775,7 +1158,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: 'Equity options: short-term capital gains. SPX-style index options would qualify for §1256 60/40 — different ticker.'
+    notes: 'Equity options: short-term capital gains. SPX-style index options would
+      qualify for §1256 60/40 — different ticker.'
   data_requirements:
   - quarterly quad-witch dates (3rd Fri Mar/Jun/Sep/Dec)
   - open interest concentration
@@ -783,19 +1167,36 @@ strategies:
   typical_win_rate: Asymmetric; many small losses, occasional big wins
   feasible_at_10k: true
   feasible_at_10k_reason: Long debit spreads of $200-500 work at this size
-  starter_step: Mark next 4 quad-witch dates. 3 days prior, check if SPY is pinned within 0.5% of a high-OI strike. Buy a defined-risk straddle/strangle spread expiring the following week.
+  starter_step: Mark next 4 quad-witch dates. 3 days prior, check if SPY is pinned
+    within 0.5% of a high-OI strike. Buy a defined-risk straddle/strangle spread expiring
+    the following week.
   key_risks:
   - Pin risk often resolves quietly — premium decays
   - Slippage in options around expiry is real
   - Edge is small; this is for understanding mechanics, not alpha
-  sources:
-  - https://www.investopedia.com/terms/q/quadruplewitching.asp
-  - https://www.cboe.com/optionsexpirationcalendar/
-  - https://www.optionseducation.org/
+  sources: []
   data_requirement_widgets:
   - event_calendar_ipo_russell_fomc
   - options_chain
   - sentiment
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: long_straddle
+    greeks_template:
+      delta: 0.0
+      theta: -0.04
+      vega: 0.18
+      gamma: 0.02
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: -0.4
+      breadth: 0.0
+      event_density: 0.7
+      flow: 0.0
+    expected_hold_days: 5
+    breakeven_RV_pctile: 0.5
 - id: covered_call_etf
   name_en: ETF Covered Call
   name_zh: ETF 备兑开仓
@@ -805,13 +1206,16 @@ strategies:
   asset_class: options
   market: us
   defined_risk: true
-  max_loss: Underlying drop minus premium received. Stock can still go to zero; option only offsets premium
+  max_loss: Underlying drop minus premium received. Stock can still go to zero; option
+    only offsets premium
   pdt_relevant: false
   tax_treatment:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: Selling a 'qualified covered call' (not deep-ITM) does NOT suspend long-term holding period (IRS Pub 550). Deep-ITM calls (unqualified) DO suspend it. Premium taxed when option closes/expires.
+    notes: Selling a 'qualified covered call' (not deep-ITM) does NOT suspend long-term
+      holding period (IRS Pub 550). Deep-ITM calls (unqualified) DO suspend it. Premium
+      taxed when option closes/expires.
   data_requirements:
   - options chain
   - delta
@@ -819,20 +1223,39 @@ strategies:
   - earnings calendar
   typical_win_rate: ~70-80% of calls expire worthless or are bought back at profit
   feasible_at_10k: true
-  feasible_at_10k_reason: Need 100 shares of underlying. SPY ($550) too expensive at 100; QQQ ($500) similar. Use lower-priced ETFs like IWM, XLF, or single 100-share lot of QQQ if budget allows
-  starter_step: Buy 100 shares of XLF (~$4,500). Sell a 30-day call ~5 strikes OTM (delta ~0.20). Collect premium. If called, you keep gains + premium. If not, sell another.
+  feasible_at_10k_reason: Need 100 shares of underlying. SPY ($550) too expensive
+    at 100; QQQ ($500) similar. Use lower-priced ETFs like IWM, XLF, or single 100-share
+    lot of QQQ if budget allows
+  starter_step: Buy 100 shares of XLF (~$4,500). Sell a 30-day call ~5 strikes OTM
+    (delta ~0.20). Collect premium. If called, you keep gains + premium. If not, sell
+    another.
   key_risks:
   - Caps upside in a rip — 'I sold the rocket'
   - Doesn't protect downside (you still own the underlying)
   - Deep-ITM call can disqualify long-term holding period — read IRS rules
-  sources:
-  - https://www.investopedia.com/terms/c/coveredcall.asp
-  - https://www.optionseducation.org/strategies/all-strategies/covered-call-buy-write-or-overwrite
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
   - earnings
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: covered_call_etf
+    greeks_template:
+      delta: 0.5
+      theta: 0.05
+      vega: -0.18
+      gamma: -0.02
+    regime_sensitivity:
+      risk_appetite: -0.2
+      volatility_regime: 0.6
+      breadth: 0.1
+      event_density: -0.4
+      flow: 0.0
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
 - id: cash_secured_put_etf
   name_en: ETF Cash-Secured Put
   name_zh: ETF 现金担保卖出认沽
@@ -848,7 +1271,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: Premium recognized at close/expiry/assignment. If assigned, basis on shares = strike − premium (IRS Pub 550).
+    notes: Premium recognized at close/expiry/assignment. If assigned, basis on shares
+      = strike − premium (IRS Pub 550).
   data_requirements:
   - options chain
   - delta
@@ -856,20 +1280,37 @@ strategies:
   - support levels
   typical_win_rate: ~70-80% expire worthless
   feasible_at_10k: true
-  feasible_at_10k_reason: Need cash to cover strike × 100. XLF $35 strike = $3,500 collateral works at $10k
-  starter_step: Pick an ETF you'd be happy to own (XLF, KWEB, IWM). Sell a 30-45 DTE put at delta ~0.25. Set the cash aside. If assigned, you own shares at a discount.
+  feasible_at_10k_reason: Need cash to cover strike × 100. XLF $35 strike = $3,500
+    collateral works at $10k
+  starter_step: Pick an ETF you'd be happy to own (XLF, KWEB, IWM). Sell a 30-45 DTE
+    put at delta ~0.25. Set the cash aside. If assigned, you own shares at a discount.
   key_risks:
   - Assignment in a falling market locks you into long-the-bottom
   - Premium feels like income but it's actually risk compensation
   - Earnings/macro events can spike IV after you sell — paper loss
-  sources:
-  - https://www.investopedia.com/terms/c/cash-secured-put.asp
-  - https://www.optionseducation.org/strategies/all-strategies/cash-secured-put
-  - https://www.tastylive.com/concepts-strategies/cash-secured-put
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
   - chart
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: cash_secured_put
+    greeks_template:
+      delta: 0.4
+      theta: 0.05
+      vega: -0.18
+      gamma: -0.02
+    regime_sensitivity:
+      risk_appetite: -0.2
+      volatility_regime: 0.5
+      breadth: -0.1
+      event_density: -0.3
+      flow: -0.1
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
 - id: vertical_bull_put_spread
   name_en: Bull Put Credit Spread
   name_zh: 牛市认沽信用价差
@@ -885,7 +1326,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: 'Equity options: short-term capital gains/losses. Closed before expiry to avoid assignment around ex-div.'
+    notes: 'Equity options: short-term capital gains/losses. Closed before expiry
+      to avoid assignment around ex-div.'
   data_requirements:
   - options chain
   - delta
@@ -894,18 +1336,36 @@ strategies:
   typical_win_rate: ~65-75% if entered at delta ~0.20-0.30 short put
   feasible_at_10k: true
   feasible_at_10k_reason: $1-5 wide spread requires $100-500 buying power per contract
-  starter_step: Pick a bullish ETF (SPY, QQQ). Sell 30-DTE put at delta 0.25, buy put 5 strikes lower. Net credit ~$1.00. Max risk ~$400/contract. Close at 50% of max profit.
+  starter_step: Pick a bullish ETF (SPY, QQQ). Sell 30-DTE put at delta 0.25, buy
+    put 5 strikes lower. Net credit ~$1.00. Max risk ~$400/contract. Close at 50%
+    of max profit.
   key_risks:
   - 'Asymmetric: small wins, occasional max loss'
   - Gap-down can blow through both legs
   - Need to manage assignment risk near expiry
-  sources:
-  - https://www.investopedia.com/terms/b/bullputspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/bull-put-spread-credit-put-spread
-  - https://www.tastylive.com/concepts-strategies/short-put-vertical
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: vertical_bull_put_spread
+    greeks_template:
+      delta: 0.2
+      theta: 0.04
+      vega: -0.1
+      gamma: -0.01
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: 0.4
+      breadth: 0.2
+      event_density: -0.4
+      flow: 0.1
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
+    max_loss_units: 1.0
 - id: vertical_bear_call_spread
   name_en: Bear Call Credit Spread
   name_zh: 熊市认购信用价差
@@ -930,19 +1390,36 @@ strategies:
   typical_win_rate: ~65-75% at delta 0.20-0.30
   feasible_at_10k: true
   feasible_at_10k_reason: Same as bull put — small BP per spread
-  starter_step: Pick an ETF you think is range-bound or weakening. Sell 30-DTE call at delta 0.25, buy call 5 strikes higher. Manage at 50% profit or 200% loss.
+  starter_step: Pick an ETF you think is range-bound or weakening. Sell 30-DTE call
+    at delta 0.25, buy call 5 strikes higher. Manage at 50% profit or 200% loss.
   key_risks:
   - Short call near earnings → IV crush risk + gap-up risk
   - If underlying rallies, max loss arrives quickly
   - Watch dividends — early assignment around ex-div is real
-  sources:
-  - https://www.investopedia.com/terms/b/bearcallspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/bear-call-spread-credit-call-spread
-  - https://www.tastylive.com/concepts-strategies/short-call-vertical
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
   - chart
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: vertical_bear_call_spread
+    greeks_template:
+      delta: -0.2
+      theta: 0.04
+      vega: -0.1
+      gamma: -0.01
+    regime_sensitivity:
+      risk_appetite: -0.2
+      volatility_regime: 0.4
+      breadth: -0.2
+      event_density: -0.4
+      flow: -0.1
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
+    max_loss_units: 1.0
 - id: iron_condor_index
   name_en: Iron Condor on Index ETF
   name_zh: 指数 ETF 铁鹰
@@ -958,7 +1435,9 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: Equity-options ICs are short-term. SPX (cash-settled index) iron condors qualify for §1256 60/40 LTCG/STCG split — significant tax benefit if scaling later.
+    notes: Equity-options ICs are short-term. SPX (cash-settled index) iron condors
+      qualify for §1256 60/40 LTCG/STCG split — significant tax benefit if scaling
+      later.
   data_requirements:
   - options chain
   - IV rank
@@ -967,19 +1446,36 @@ strategies:
   typical_win_rate: ~60-70% with breakevens 1 standard deviation out
   feasible_at_10k: true
   feasible_at_10k_reason: $5-wide IC on SPY uses ~$400-450 BP per contract
-  starter_step: On SPY, with IV rank > 30, sell 30-45 DTE iron condor at ±1 SD (deltas ~0.16). Manage at 50% profit, defend tested side at 21 DTE.
+  starter_step: On SPY, with IV rank > 30, sell 30-45 DTE iron condor at ±1 SD (deltas
+    ~0.16). Manage at 50% profit, defend tested side at 21 DTE.
   key_risks:
   - Trend days/weeks blow through one side
   - Pin risk near expiry — close early
   - Asymmetric P&L — one max loss erases multiple wins
-  sources:
-  - https://www.investopedia.com/terms/i/ironcondor.asp
-  - https://www.optionseducation.org/strategies/all-strategies/iron-condor
-  - https://www.tastylive.com/concepts-strategies/iron-condor
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
   - chart
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: iron_condor_index
+    greeks_template:
+      delta: 0.0
+      theta: 0.06
+      vega: -0.12
+      gamma: -0.01
+    regime_sensitivity:
+      risk_appetite: -0.1
+      volatility_regime: 0.5
+      breadth: 0.0
+      event_density: -0.5
+      flow: 0.0
+    expected_hold_days: 30
+    breakeven_RV_pctile: 0.5
+    max_loss_units: 2.0
 - id: collar_protective_put
   name_en: Collar (Protective Put + Covered Call)
   name_zh: 领口策略
@@ -995,26 +1491,45 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: 'Married-put / collar: protective put can RESET the holding period if put bought before stock long-term qualified (IRS Pub 550 ''Married Puts'' rules — important nuance).'
+    notes: 'Married-put / collar: protective put can RESET the holding period if put
+      bought before stock long-term qualified (IRS Pub 550 ''Married Puts'' rules
+      — important nuance).'
   data_requirements:
   - options chain
   - underlying cost basis
   typical_win_rate: Designed to floor losses, not optimize wins
   feasible_at_10k: true
-  feasible_at_10k_reason: Need 100 shares + put + call. Best on lower-priced underlyings (XLF, IWM)
-  starter_step: If you hold 100 shares of QQQ already, buy a 90-DTE put 7% OTM, sell a 30-DTE call 5% OTM monthly. Net cost near zero. Floor your downside.
+  feasible_at_10k_reason: Need 100 shares + put + call. Best on lower-priced underlyings
+    (XLF, IWM)
+  starter_step: If you hold 100 shares of QQQ already, buy a 90-DTE put 7% OTM, sell
+    a 30-DTE call 5% OTM monthly. Net cost near zero. Floor your downside.
   key_risks:
   - Caps both sides of the trade — a giveaway in big rallies
   - 'Tax: married-put rules can suspend holding period — read carefully'
   - Multiple legs = multiple commissions/slippage
-  sources:
-  - https://www.investopedia.com/terms/c/collar.asp
-  - https://www.optionseducation.org/strategies/all-strategies/collar
-  - https://www.irs.gov/pub/irs-pdf/p550.pdf
+  sources: []
   data_requirement_widgets:
   - options_chain
   - portfolio
   - fin_db.holding_period_tracker
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: buy_and_hold
+    greeks_template:
+      delta: 0.5
+      theta: -0.02
+      vega: 0.1
+      gamma: 0.01
+    regime_sensitivity:
+      risk_appetite: -0.4
+      volatility_regime: 0.0
+      breadth: 0.0
+      event_density: 0.3
+      flow: -0.2
+    expected_hold_days: 90
+    breakeven_RV_pctile: 0.5
 - id: calendar_spread
   name_en: Calendar Spread (Long Time Diagonal)
   name_zh: 日历价差
@@ -1030,7 +1545,8 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: 'Equity-option calendars: short-term. Holding the long leg >1y for LTCG is unusual but possible if structured as diagonal.'
+    notes: 'Equity-option calendars: short-term. Holding the long leg >1y for LTCG
+      is unusual but possible if structured as diagonal.'
   data_requirements:
   - options chain
   - term structure of IV
@@ -1038,18 +1554,35 @@ strategies:
   typical_win_rate: Mixed; ~50-60% with active management
   feasible_at_10k: true
   feasible_at_10k_reason: Debit per spread typically $100-300
-  starter_step: Pick an underlying you think pins (e.g., SPY pre-FOMC). Buy 60-DTE ATM call, sell 30-DTE same strike. Profit if underlying stays near strike and IV rises.
+  starter_step: Pick an underlying you think pins (e.g., SPY pre-FOMC). Buy 60-DTE
+    ATM call, sell 30-DTE same strike. Profit if underlying stays near strike and
+    IV rises.
   key_risks:
   - Big moves in either direction kill the trade
   - Term-structure shifts can hurt even with correct directional view
   - More complex Greeks — beginners often size wrong
-  sources:
-  - https://www.investopedia.com/terms/c/calendarspread.asp
-  - https://www.optionseducation.org/strategies/all-strategies/calendar-spread
-  - https://www.tastylive.com/concepts-strategies/calendar-spread
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: calendar_spread
+    greeks_template:
+      delta: 0.0
+      theta: 0.02
+      vega: 0.05
+      gamma: -0.01
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: -0.3
+      breadth: 0.0
+      event_density: 0.2
+      flow: 0.0
+    expected_hold_days: 14
+    breakeven_RV_pctile: 0.5
 - id: poor_mans_covered_call
   name_en: Poor Man's Covered Call (LEAPS Diagonal)
   name_zh: 穷人备兑（LEAPS 对角）
@@ -1065,25 +1598,44 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: LEAPS held >1y can qualify for LTCG. Short calls reset holding-period rules if 'unqualified' (deep-ITM short call against LEAPS — read IRS Pub 550).
+    notes: LEAPS held >1y can qualify for LTCG. Short calls reset holding-period rules
+      if 'unqualified' (deep-ITM short call against LEAPS — read IRS Pub 550).
   data_requirements:
   - LEAPS quote (1-2 yr)
   - monthly call chain
   - delta of LEAPS
   typical_win_rate: Similar to covered call (~70%) but capital-efficient
   feasible_at_10k: true
-  feasible_at_10k_reason: Buy 80-delta LEAPS for ~$2,000-4,000 vs $50,000 for 100 shares of SPY
-  starter_step: Pick QQQ. Buy a 12-month 75-delta call (ITM LEAPS) for ~$5,000. Each month, sell a 30-DTE 25-delta call against it. Roll up if tested.
+  feasible_at_10k_reason: Buy 80-delta LEAPS for ~$2,000-4,000 vs $50,000 for 100
+    shares of SPY
+  starter_step: Pick QQQ. Buy a 12-month 75-delta call (ITM LEAPS) for ~$5,000. Each
+    month, sell a 30-DTE 25-delta call against it. Roll up if tested.
   key_risks:
   - LEAPS can lose 50%+ if underlying drops materially
-  - Short call can be assigned early around dividends → exercise LEAPS or deal with short stock
+  - Short call can be assigned early around dividends → exercise LEAPS or deal with
+    short stock
   - Less forgiving than covered call — no shares to fall back on
-  sources:
-  - https://www.investopedia.com/terms/p/poor-mans-covered-call.asp
-  - https://www.tastylive.com/concepts-strategies/poor-mans-covered-call
-  - https://www.optionseducation.org/strategies/all-strategies/long-call
+  sources: []
   data_requirement_widgets:
   - options_chain
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: diagonal_spread
+    greeks_template:
+      delta: 0.3
+      theta: 0.03
+      vega: -0.08
+      gamma: -0.01
+    regime_sensitivity:
+      risk_appetite: -0.1
+      volatility_regime: 0.3
+      breadth: 0.1
+      event_density: -0.3
+      flow: 0.0
+    expected_hold_days: 60
+    breakeven_RV_pctile: 0.5
 - id: btc_dca
   name_en: Bitcoin Dollar-Cost Averaging
   name_zh: 比特币定投
@@ -1099,25 +1651,43 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: Crypto is property (IRS Notice 2014-21). NO wash-sale rule applies as of 2026 (legislation has been proposed but not enacted — verify before using TLH). Hold >12mo for LTCG.
+    notes: Crypto is property (IRS Notice 2014-21). NO wash-sale rule applies as of
+      2026 (legislation has been proposed but not enacted — verify before using TLH).
+      Hold >12mo for LTCG.
   data_requirements:
   - weekly close
   - exchange ACH ramp
   typical_win_rate: ~60% rolling 12-month positive since 2014
   feasible_at_10k: true
   feasible_at_10k_reason: Coinbase/Kraken/Fidelity Crypto allow $10 increments
-  starter_step: Open a Coinbase or Fidelity Crypto account. Set up automatic $50/week BTC purchase. Self-custody if balance grows past $5k (consider hardware wallet).
+  starter_step: Open a Coinbase or Fidelity Crypto account. Set up automatic $50/week
+    BTC purchase. Self-custody if balance grows past $5k (consider hardware wallet).
   key_risks:
   - Severe drawdowns are normal — can lose 80% before recovery
   - Custody risk if held on exchange (FTX 2022)
   - Regulatory risk — US framework evolving
-  sources:
-  - https://www.investopedia.com/terms/b/bitcoin.asp
-  - https://www.irs.gov/individuals/international-taxpayers/frequently-asked-questions-on-virtual-currency-transactions
-  - https://bitcoin.org/bitcoin.pdf
+  sources: []
   data_requirement_widgets:
   - chart
   - crypto_ohlcv
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: dca
+    greeks_template:
+      delta: 1.5
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.5
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: -0.1
+      flow: 0.5
+    expected_hold_days: 1095
+    breakeven_RV_pctile: 0.5
 - id: eth_dca
   name_en: Ethereum Dollar-Cost Averaging
   name_zh: 以太坊定投
@@ -1133,25 +1703,42 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: 'Same as BTC: property treatment, no wash sale (verify current law). Staking rewards are ordinary income at FMV when received (Rev. Rul. 2023-14).'
+    notes: 'Same as BTC: property treatment, no wash sale (verify current law). Staking
+      rewards are ordinary income at FMV when received (Rev. Rul. 2023-14).'
   data_requirements:
   - weekly close
   - exchange access
   typical_win_rate: ~55-60% rolling 12-month positive since 2017
   feasible_at_10k: true
   feasible_at_10k_reason: Fractional purchases trivial
-  starter_step: Same flow as BTC DCA. $50/week ETH automatic. Decide upfront whether to stake (extra yield, extra complexity, ordinary-income tax).
+  starter_step: Same flow as BTC DCA. $50/week ETH automatic. Decide upfront whether
+    to stake (extra yield, extra complexity, ordinary-income tax).
   key_risks:
   - Drawdowns deeper than BTC historically
   - Smart-contract / protocol risk
   - Staking rewards = ordinary income (taxable on receipt, not sale)
-  sources:
-  - https://www.investopedia.com/terms/e/ethereum.asp
-  - https://ethereum.org/en/whitepaper/
-  - https://www.irs.gov/pub/irs-drop/rr-23-14.pdf
+  sources: []
   data_requirement_widgets:
   - chart
   - crypto_ohlcv
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: dca
+    greeks_template:
+      delta: 1.6
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.5
+      volatility_regime: 0.0
+      breadth: 0.2
+      event_density: -0.1
+      flow: 0.5
+    expected_hold_days: 1095
+    breakeven_RV_pctile: 0.5
 - id: kweb_momentum
   name_en: KWEB Momentum (China Internet ETF)
   name_zh: KWEB 中概互联网动量
@@ -1167,7 +1754,8 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: medium
     section_1256: false
-    notes: KWEB holds ADRs and HK-listed shares. Distributions may include foreign-source income; foreign-tax credit possible (Form 1116). Hold >12mo for LTCG.
+    notes: KWEB holds ADRs and HK-listed shares. Distributions may include foreign-source
+      income; foreign-tax credit possible (Form 1116). Hold >12mo for LTCG.
   data_requirements:
   - 3-month relative strength
   - China policy news flow
@@ -1175,19 +1763,35 @@ strategies:
   typical_win_rate: Highly regime-dependent
   feasible_at_10k: true
   feasible_at_10k_reason: Single ticker, fractional-share-friendly
-  starter_step: 'Define rule: long KWEB only when 50-DMA > 200-DMA AND last 60-day return > 0. Position size 10-20% of $10k. Reassess weekly, exit on rule violation.'
+  starter_step: 'Define rule: long KWEB only when 50-DMA > 200-DMA AND last 60-day
+    return > 0. Position size 10-20% of $10k. Reassess weekly, exit on rule violation.'
   key_risks:
   - Single regulatory headline can drop KWEB 10-20% intraday (July 2021)
   - Variable Interest Entity (VIE) structural risk
   - ADR delisting risk under HFCAA — partly mitigated by 2022 PCAOB deal but not eliminated
-  sources:
-  - https://kraneshares.com/kweb/
-  - https://www.sec.gov/news/press-release/2022-229
-  - https://www.irs.gov/forms-pubs/about-form-1116
+  sources: []
   data_requirement_widgets:
   - relative_strength
   - news
   - factor_exposure
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: trend_following
+    greeks_template:
+      delta: 1.1
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.4
+      volatility_regime: -0.2
+      breadth: 0.3
+      event_density: -0.2
+      flow: 0.4
+    expected_hold_days: 60
+    breakeven_RV_pctile: 0.5
 - id: mchi_long_hold
   name_en: MCHI Buy-and-Hold (Broad China)
   name_zh: MCHI 中国宽基长持
@@ -1203,7 +1807,8 @@ strategies:
     qualifies_long_term: true
     wash_sale_risk: low
     section_1256: false
-    notes: Foreign-tax-paid passes through (Form 1116). Generally use in taxable account so FTC is usable.
+    notes: Foreign-tax-paid passes through (Form 1116). Generally use in taxable account
+      so FTC is usable.
   data_requirements:
   - expense ratio
   - holdings concentration
@@ -1211,19 +1816,35 @@ strategies:
   typical_win_rate: Lost decade for Chinese equities 2008-2024
   feasible_at_10k: true
   feasible_at_10k_reason: Fractional-share-friendly; allocate 5-15% as a satellite
-  starter_step: Buy $500-1,000 MCHI as a satellite alongside VTI/VXUS core. Hold 5+ years. Dollar-cost-average in if conviction is high.
+  starter_step: Buy $500-1,000 MCHI as a satellite alongside VTI/VXUS core. Hold 5+
+    years. Dollar-cost-average in if conviction is high.
   key_risks:
   - Decade of underperformance vs US is historical fact
   - Concentrated in Tencent/Alibaba — single-name policy risk
   - 'Geopolitical: Taiwan, sanctions, capital controls'
-  sources:
-  - https://www.ishares.com/us/products/239619/ishares-msci-china-etf
-  - https://www.investopedia.com/articles/etfs/best-china-etfs-mchi-fxi/
-  - https://www.msci.com/our-solutions/indexes/china-indexes
+  sources: []
   data_requirement_widgets:
   - expense_ratio
   - allocation_state
   - macro_pmi_inflation
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: buy_and_hold
+    greeks_template:
+      delta: 1.0
+      theta: 0.0
+      vega: 0.0
+      gamma: 0.0
+    regime_sensitivity:
+      risk_appetite: 0.3
+      volatility_regime: -0.2
+      breadth: 0.2
+      event_density: 0.0
+      flow: 0.4
+    expected_hold_days: 730
+    breakeven_RV_pctile: 0.5
 - id: fxi_volatility_play
   name_en: FXI Defined-Risk Volatility Play
   name_zh: FXI 大盘中国波动率交易
@@ -1239,25 +1860,44 @@ strategies:
     qualifies_long_term: false
     wash_sale_risk: medium
     section_1256: false
-    notes: FXI is an equity-option underlying — short-term capital treatment. Foreign-tax credits do not apply to options (only the dividend pass-through of the ETF itself).
+    notes: FXI is an equity-option underlying — short-term capital treatment. Foreign-tax
+      credits do not apply to options (only the dividend pass-through of the ETF itself).
   data_requirements:
   - FXI options chain
   - IV rank
   - China policy / stimulus calendar
   typical_win_rate: Event-driven; 50-60% if entered at high IV rank
   feasible_at_10k: true
-  feasible_at_10k_reason: FXI ($30 range) makes spreads cheap — $1-2 wide spreads cost $50-150
-  starter_step: When FXI IV rank > 50 (e.g., around major China policy announcement), sell a 30-DTE put spread at delta 0.25 to express bullish view, OR buy a defined-risk debit spread on directional conviction.
+  feasible_at_10k_reason: FXI ($30 range) makes spreads cheap — $1-2 wide spreads
+    cost $50-150
+  starter_step: When FXI IV rank > 50 (e.g., around major China policy announcement),
+    sell a 30-DTE put spread at delta 0.25 to express bullish view, OR buy a defined-risk
+    debit spread on directional conviction.
   key_risks:
   - Wide bid-ask on FXI options vs SPY — slippage matters
   - Headline risk between entry and exit
   - Stick to defined-risk per user rule — never naked
-  sources:
-  - https://www.ishares.com/us/products/239536/ishares-china-largecap-etf
-  - https://www.optionseducation.org/
-  - https://www.cboe.com/tradable_products/etf_index_options/
+  sources: []
   data_requirement_widgets:
   - options_chain
   - iv_rank
   - news
   - event_calendar_ipo_russell_fomc
+  provenance:
+    state: unverified
+    source: Phase 3 research subagent 2026-04-25
+  quantitative_profile:
+    payoff_class: long_straddle
+    greeks_template:
+      delta: 0.0
+      theta: -0.04
+      vega: 0.18
+      gamma: 0.02
+    regime_sensitivity:
+      risk_appetite: 0.0
+      volatility_regime: -0.3
+      breadth: 0.0
+      event_density: 0.4
+      flow: -0.2
+    expected_hold_days: 14
+    breakeven_RV_pctile: 0.5

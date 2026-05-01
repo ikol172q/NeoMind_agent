@@ -57,6 +57,19 @@ export function FinIntegrityBadge() {
         </span>
       </button>
       {open && (
+        <>
+          {/* Click-away catcher — matches the AsOfPicker pattern.
+              Without this the popover stayed open across tab clicks
+              and would only close by re-clicking the fin badge.
+              The fixed-inset overlay absorbs clicks outside, the
+              tabIndex=-1 + aria-hidden keeps it out of the tab
+              order and the screen-reader tree. */}
+          <button
+            onClick={() => setOpen(false)}
+            className="fixed inset-0 z-10 cursor-default"
+            tabIndex={-1}
+            aria-hidden="true"
+          />
         <div
           data-testid="fin-integrity-panel"
           className="absolute top-full right-0 mt-1 w-[420px] max-h-[440px] overflow-y-auto rounded border border-[var(--color-border)] bg-[var(--color-panel)] shadow-lg p-3 text-[10px] z-20 flex flex-col gap-2"
@@ -154,6 +167,7 @@ export function FinIntegrityBadge() {
             </>
           )}
         </div>
+        </>
       )}
     </div>
   )

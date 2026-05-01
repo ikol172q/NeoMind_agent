@@ -1,0 +1,50 @@
+{
+  "strategy_id": "dollar_cost_averaging_index",
+  "started_at": "2026-04-28T04:39:24.994901Z",
+  "finished_at": "2026-04-28T04:39:32.179350Z",
+  "corpus": [
+    "raw://71ce221e7b05fffb353657271783fd08648bd2482cc2350afea4e90f5b9b0197",
+    "raw://cc213f5d6bd6a37f299846eef8c736ddd52d3b50e5f174223eab77cdba0952a2"
+  ],
+  "verdicts": [
+    {
+      "field": "max_loss",
+      "claim_text": "100% of contributed capital (theoretical); historically max drawdown ~55% (2007-09)",
+      "numbers": [
+        "100%",
+        "~55%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "typical_win_rate",
+      "claim_text": "~70% positive 12-month rolling returns since 1928 (S&P 500)",
+      "numbers": [
+        "~70%"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "feasible_at_10k_reason",
+      "claim_text": "$10k easily buys VTI/VOO; fractional shares at most brokers",
+      "numbers": [
+        "$10k"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    },
+    {
+      "field": "starter_step",
+      "claim_text": "Open a Fidelity/Schwab/Vanguard account, set up an automatic weekly or biweekly purchase of $200 of VTI (or VOO). Turn on dividend reinvestment. Do not look at the account for 30 days.",
+      "numbers": [
+        "$200"
+      ],
+      "state": "unsupported",
+      "rejection_reason": "LLM did not provide a citation"
+    }
+  ],
+  "overall_state": "unverified",
+  "error": null
+}

@@ -221,6 +221,7 @@ export default function App() {
             onJumpToResearch={(widgetId) => jumpToResearch({ widgetId })}
             onJumpToResearchNode={(nodeId) => jumpToResearch({ nodeId })}
             asOf={appAsOf}
+            onChangeAsOf={setAsOfPersist}
           />
         </div>
         {tab === 'chat'     && (

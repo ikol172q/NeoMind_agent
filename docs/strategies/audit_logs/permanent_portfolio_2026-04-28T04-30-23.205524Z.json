@@ -1,0 +1,9 @@
+{
+  "strategy_id": "permanent_portfolio",
+  "started_at": "2026-04-28T04:30:22.255004Z",
+  "finished_at": "2026-04-28T04:30:23.205524Z",
+  "corpus": [],
+  "verdicts": [],
+  "overall_state": "unverified",
+  "error": "no corpus blobs could be fetched"
+}

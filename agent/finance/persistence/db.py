@@ -39,7 +39,7 @@ logger = logging.getLogger(__name__)
 # Bumped manually when schema.sql adds a backwards-incompatible change.
 # Compatible additions (new tables, new nullable columns) keep the same
 # version. Breaking changes (renamed columns, dropped tables) increment.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 4  # 2026-04-30: NeoMind Live — user_watchlist + signal_events + signal_confluences
 
 DEFAULT_DB_PATH = Path.home() / ".neomind" / "fin" / "fin.db"
 _SCHEMA_FILE = Path(__file__).parent / "schema.sql"
@@ -87,6 +87,9 @@ def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     return conn
 
 
+_SCHEMA_VERIFIED: dict[str, bool] = {}
+
+
 def ensure_schema(db_path: Optional[Path] = None) -> int:
     """Apply the schema if not already present. Returns current version.
 
@@ -98,7 +101,15 @@ def ensure_schema(db_path: Optional[Path] = None) -> int:
     than this code knows about — that means the DB was last touched
     by a newer build, and we refuse to operate on it lest we corrupt
     data.
+
+    Performance: short-circuits on hot loops by remembering per-process
+    that the schema has been validated for a given path. The first call
+    runs the full executescript; subsequent calls return immediately.
     """
+    cache_key = str(db_path) if db_path else str(get_db_path())
+    if _SCHEMA_VERIFIED.get(cache_key):
+        return SCHEMA_VERSION
+
     if not _SCHEMA_FILE.exists():
         raise FileNotFoundError(
             f"schema.sql missing at {_SCHEMA_FILE} — package is broken"
@@ -143,6 +154,10 @@ def ensure_schema(db_path: Optional[Path] = None) -> int:
                 existing_version, SCHEMA_VERSION, get_db_path(),
             )
         else:
-            logger.debug("fin DB schema already at v%d", existing_version)
+            # Only log once per process — was hot-loop spam before.
+            if not _SCHEMA_VERIFIED:
+                logger.info("fin DB schema verified at v%d (%s)",
+                            existing_version, cache_key)
 
+    _SCHEMA_VERIFIED[cache_key] = True
     return SCHEMA_VERSION

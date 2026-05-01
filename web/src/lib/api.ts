@@ -368,36 +368,67 @@ export function streamChat(
       const reader = resp.body.getReader()
       const decoder = new TextDecoder()
       let buffer = ''
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        // sse_starlette emits CRLF line endings; normalize to LF so
-        // the frame splitter ("\n\n") works reliably.
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
-        let nl: number
-        while ((nl = buffer.indexOf('\n\n')) !== -1) {
-          const frame = buffer.slice(0, nl)
-          buffer = buffer.slice(nl + 2)
-          let data = ''
-          let event = 'message'
-          for (const line of frame.split('\n')) {
-            if (line.startsWith('event:')) event = line.slice(6).trim()
-            else if (line.startsWith('data:')) data += line.slice(5).trim()
-          }
-          if (!data) continue
-          try {
-            const payload = JSON.parse(data)
-            if (event === 'delta' && typeof payload.content === 'string') {
-              cb.onDelta(payload.content)
-            } else if (event === 'done') {
-              cb.onDone(payload)
-            } else if (event === 'error') {
-              cb.onError(String(payload.detail ?? 'stream error'))
+      // Track whether we got a clean termination (`done` event) so we
+      // can distinguish a normal end from a connection drop.  Without
+      // this the UI's pending spinner stayed forever when uvicorn
+      // restarted mid-stream or when the network silently closed.
+      let sawDoneEvent = false
+      // Idle timeout: if no chunk for N seconds, treat as hung.  Real
+      // DeepSeek streams emit at least one chunk every couple of
+      // seconds; 60s is generous.
+      const IDLE_MS = 60_000
+      let idleTimer: ReturnType<typeof setTimeout> | null = null
+      const resetIdle = () => {
+        if (idleTimer) clearTimeout(idleTimer)
+        idleTimer = setTimeout(() => {
+          ac.abort()
+          cb.onError('stream idle for 60s — connection likely dropped')
+        }, IDLE_MS)
+      }
+      resetIdle()
+      try {
+        while (true) {
+          const { done, value } = await reader.read()
+          if (done) break
+          resetIdle()
+          // sse_starlette emits CRLF line endings; normalize to LF so
+          // the frame splitter ("\n\n") works reliably.
+          buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n')
+          let nl: number
+          while ((nl = buffer.indexOf('\n\n')) !== -1) {
+            const frame = buffer.slice(0, nl)
+            buffer = buffer.slice(nl + 2)
+            let data = ''
+            let event = 'message'
+            for (const line of frame.split('\n')) {
+              if (line.startsWith('event:')) event = line.slice(6).trim()
+              else if (line.startsWith('data:')) data += line.slice(5).trim()
             }
-          } catch (_) {
-            // skip non-JSON frames (heartbeats etc.)
+            if (!data) continue
+            try {
+              const payload = JSON.parse(data)
+              if (event === 'delta' && typeof payload.content === 'string') {
+                cb.onDelta(payload.content)
+              } else if (event === 'done') {
+                sawDoneEvent = true
+                cb.onDone(payload)
+              } else if (event === 'error') {
+                cb.onError(String(payload.detail ?? 'stream error'))
+              }
+            } catch (_) {
+              // skip non-JSON frames (heartbeats etc.)
+            }
           }
         }
+      } finally {
+        if (idleTimer) clearTimeout(idleTimer)
+      }
+      // Reader closed without a `done` event — this is the case where
+      // uvicorn restarts mid-stream, the network drops, or the
+      // connection times out at the proxy.  Fire onError so the UI
+      // exits its pending state instead of spinning forever.
+      if (!sawDoneEvent) {
+        cb.onError('stream closed without final event — connection dropped or backend restarted')
       }
     } catch (e: unknown) {
       if ((e as DOMException)?.name !== 'AbortError') {
@@ -749,11 +780,17 @@ export function useLatticeCalls(project_id: string, date?: string | null) {
   // V8: when `date` is passed, fetch an archived snapshot instead of
   // live /calls. Historical snapshots are frozen artifacts (don't care
   // about current runtime overrides).
+  //
+  // BUG FIX: ``'live'`` is a sentinel string callers pass when there
+  // is NO historical pin (it shares the type with date strings to
+  // simplify call sites).  Treat it as "no date" — otherwise we hit
+  // /api/lattice/snapshot?date=live which 500s on backend (since
+  // 'live' is not a valid YYYY-MM-DD snapshot file).
   const lang = useLatticeLanguage()
   const active = lang.data?.active
   const budgets = useLatticeBudgets()
   const bh = budgets.data?.effective_hash
-  const isHistorical = !!date
+  const isHistorical = !!date && date !== 'live'
   return useQuery({
     queryKey: isHistorical
       ? ['lattice_calls_snapshot', project_id, date]
@@ -820,6 +857,74 @@ export function useLatticeSnapshots(project_id: string) {
     staleTime: 60_000,
     refetchOnWindowFocus: false,
   })
+}
+
+// ── timezone helpers for as-of dates ───────────────────────────
+//
+// Bug: snapshot.date is the SERVER's UTC calendar date (e.g.
+// "2026-04-27" for a snapshot recorded at 02:40Z).  But the user
+// thinks of dates in their local time (the same recording is
+// "04/26 7:40 PM" Pacific).  AsOfPicker's dropdown rows show local
+// (correct) but the audit panel + as-of banner showed the raw UTC
+// string ("2026-04-27") — confusing two-different-numbers UX.
+//
+// These helpers translate at the display / input boundary using
+// the snapshot list as ground truth (recorded_at carries the true
+// instant; toLocaleDateString() is the canonical local YMD).
+
+/** Convert "YYYY-MM-DD" → Date at midnight LOCAL. */
+function ymdToDate(ymd: string): Date {
+  const [y, m, d] = ymd.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+/** Convert ISO timestamp → "YYYY-MM-DD" in LOCAL time. */
+function isoToLocalYMD(iso: string | null | undefined): string {
+  if (!iso) return ''
+  try {
+    const d = new Date(iso)
+    const yyyy = d.getFullYear()
+    const mm = String(d.getMonth() + 1).padStart(2, '0')
+    const dd = String(d.getDate()).padStart(2, '0')
+    return `${yyyy}-${mm}-${dd}`
+  } catch {
+    return ''
+  }
+}
+
+/** asOf is stored as the snapshot's UTC date string, but the user
+ *  thinks in their local timezone.  Given asOf + snapshots list,
+ *  return the LOCAL YMD that corresponds to it (matches the label
+ *  shown in AsOfPicker's dropdown).  Falls back to asOf itself
+ *  (unchanged) when no snapshot matches — better than throwing. */
+export function asOfToLocalYMD(
+  asOf: string,
+  snapshots: LatticeSnapshotEntry[] | undefined,
+): string {
+  if (!asOf || asOf === 'live') return asOf
+  const matched = (snapshots ?? []).find((s) => s.date === asOf)
+  const local = isoToLocalYMD(matched?.recorded_at)
+  return local || asOf  // fall back to UTC YMD if no match
+}
+
+/** Reverse: user picks a date in the date-input (always LOCAL YMD),
+ *  return the snapshot.date (UTC) that maps to it so we can store
+ *  it in asOf.  When no exact snapshot matches, return the local
+ *  YMD itself — caller will end up showing the friendly "no snapshot
+ *  for X" empty state from DigestView. */
+export function localYMDToAsOf(
+  localYMD: string,
+  snapshots: LatticeSnapshotEntry[] | undefined,
+): string {
+  if (!localYMD) return localYMD
+  // Find snapshot whose recorded_at falls on this local date
+  const target = ymdToDate(localYMD).getTime()
+  const tomorrow = target + 24 * 60 * 60 * 1000
+  const matched = (snapshots ?? []).find((s) => {
+    if (!s.recorded_at) return false
+    const t = new Date(s.recorded_at).getTime()
+    return t >= target && t < tomorrow
+  })
+  return matched?.date ?? localYMD
 }
 
 // ── /api/lattice/graph — structural view for V3 viz ────
@@ -1277,6 +1382,80 @@ export function useFinSchedulerJobs() {
   })
 }
 
+/** One past run of a scheduler job, with its rich summary parsed
+ *  out of `metadata_json`.  Powers the Strategies-tab "Last Audit"
+ *  panel (and any future "did it actually run?" surfaces). */
+export interface SchedulerRun {
+  run_id: string
+  run_type: 'scheduled' | 'manual' | 'force_rerun' | 'backfill'
+  job_name: string
+  started_at: string                       // ISO UTC
+  completed_at: string | null              // ISO UTC, null while still running
+  status: 'running' | 'completed' | 'failed' | 'cancelled'
+  error_message: string | null
+  rows_written: number | null
+  duration_seconds: number | null
+  /** Job-specific summary.  For audit_strategies these keys exist:
+   *    audited_n / promoted_n / still_unverified / errors_n /
+   *    sample[] / explanation
+   *  Always defensive — older rows or other jobs may not have them. */
+  metadata: {
+    audited_n?: number
+    promoted_n?: number
+    still_unverified?: number
+    errors_n?: number
+    sample?: Array<{
+      strategy_id: string
+      state: string
+      n_corpus_blobs: number
+      n_supported: number
+      n_unsupported: number
+    }>
+    explanation?: string
+    // permissive — ignore other keys
+    [k: string]: unknown
+  }
+}
+
+/** Bounds passed to /api/scheduler/runs/{job_name}. ISO 8601 strings,
+ *  inclusive on both sides. ``null``/``undefined`` = no bound. */
+export interface SchedulerRunsBounds {
+  startedAfter?: string | null
+  startedBefore?: string | null
+}
+
+export function useSchedulerRuns(
+  jobName: string,
+  limit = 10,
+  bounds?: SchedulerRunsBounds,
+) {
+  const after = bounds?.startedAfter ?? null
+  const before = bounds?.startedBefore ?? null
+  return useQuery({
+    // Keep the bounds in the cache key so flipping the TimeScope
+    // pill triggers a refetch (and doesn't leak the previous result
+    // into the new view).
+    queryKey: ['fin_scheduler_runs', jobName, limit, after, before],
+    queryFn: () => {
+      const params = new URLSearchParams({ limit: String(limit) })
+      if (after)  params.set('started_after',  after)
+      if (before) params.set('started_before', before)
+      return fetchJSON<{
+        job: string
+        count: number
+        runs: SchedulerRun[]
+        filters: {
+          limit: number
+          started_after: string | null
+          started_before: string | null
+        }
+      }>(`/api/scheduler/runs/${jobName}?${params.toString()}`)
+    },
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
 // ── Strategies catalog (Phase 3 subagent output) ──────────
 
 export interface StrategyTaxTreatment {
@@ -1306,6 +1485,15 @@ export interface StrategyEntry {
   starter_step: string
   key_risks: string[]
   sources: string[]
+  /** Anti-hallucination guard (Layer 1). Default 'unverified' — Phase 3
+   *  research subagent's content has not been audited against real
+   *  RawStore bytes.  UI shows a ⚠ chip on every entry whose state is
+   *  not 'verified' / 'rawstore_grounded'.  Decision-path code paths
+   *  (strategy_matcher) only see entries with trusted state. */
+  provenance: {
+    state: 'unverified' | 'partially_verified' | 'verified' | 'rawstore_grounded'
+    source: string
+  }
 }
 
 // ── Lineage: what L1 obs the fin SQLite store emits into the lattice ──
@@ -1444,6 +1632,14 @@ export function useWidgetStrategies(widgetId: string | null | undefined) {
   })
 }
 
+export interface RegimeFingerprintScores {
+  risk_appetite_score:     number | null
+  volatility_regime_score: number | null
+  breadth_score:           number | null
+  event_density_score:     number | null
+  flow_score:              number | null
+}
+
 export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
   return useQuery({
     queryKey: ['fin_strategies_fit', projectId, asOf ?? 'live'],
@@ -1454,12 +1650,600 @@ export function useFinStrategiesFit(projectId: string, asOf?: string | null) {
       strategies_count: number
       fit: StrategyFitEntry[]
       explanation: string
+      scorer_version?: 'regime_v2' | 'categorical_v1'
+      fingerprint_date?: string | null
+      fingerprint?: RegimeFingerprintScores | null
     }>(
       `/api/strategies/lattice-fit?project_id=${encodeURIComponent(projectId)}` +
       (asOf && asOf !== 'live' ? `&as_of=${encodeURIComponent(asOf)}` : ''),
     ),
     enabled: !!projectId,
     staleTime: 60_000,
+    retry: false,
+  })
+}
+
+// ── /api/regime/* — 5-bucket regime fingerprint ───────────────
+
+export interface RegimeFingerprint {
+  fingerprint_date:        string
+  risk_appetite_score:     number | null
+  volatility_regime_score: number | null
+  breadth_score:           number | null
+  event_density_score:     number | null
+  flow_score:              number | null
+  components?: {
+    risk_appetite?:     Record<string, Record<string, number | null> | { value?: number }>
+    volatility_regime?: Record<string, Record<string, number | null> | { value?: number }>
+    breadth?:           Record<string, Record<string, number | null> | { value?: number }>
+    event_density?:     Record<string, Record<string, number | null> | { value?: number }>
+    flow?:              Record<string, Record<string, number | null> | { value?: number }>
+  }
+  inputs?:  Record<string, Record<string, unknown>>
+  sources?: Record<string, Record<string, string>>
+  todos?:   string[]
+}
+
+export function useRegimeFingerprint(date?: string | null) {
+  return useQuery({
+    queryKey: ['regime_fingerprint', date ?? 'today'],
+    queryFn: () => {
+      const url = (date && date !== 'live')
+        ? `/api/regime/at?date=${encodeURIComponent(date)}`
+        : `/api/regime/today`
+      return fetchJSON<RegimeFingerprint>(url)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Step F: MMR-diversified portfolio (top1 + alternatives) ────────
+
+
+export interface PortfolioEntry {
+  strategy_id: string
+  name_en?: string
+  name_zh?: string
+  horizon?: string
+  difficulty?: number
+  asset_class?: string
+  score: number
+  score_breakdown?: Record<string, unknown>
+  formula?: string
+  _mmr_score?: number
+  _diversity_from_top?: number
+}
+
+export interface PortfolioSelection {
+  top: PortfolioEntry | null
+  alternatives: PortfolioEntry[]
+  selection_method: string
+  lambda: number
+  n_alternatives: number
+  n_candidates_considered?: number
+  fingerprint_date?: string
+  fingerprint?: RegimeFingerprintScores | null
+  note?: string
+}
+
+export function usePortfolioSelection(
+  date?: string | null,
+  nAlternatives: number = 5,
+  lambdaWeight: number = 0.65,
+) {
+  return useQuery({
+    queryKey: ['portfolio_selection', date ?? 'today', nAlternatives, lambdaWeight],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (date && date !== 'live') params.set('as_of', date)
+      params.set('n_alternatives', String(nAlternatives))
+      params.set('lambda_weight', String(lambdaWeight))
+      return fetchJSON<PortfolioSelection>(`/api/regime/portfolio?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── decision_traces (Audit tab drill view) ─────────────────────────
+
+
+export interface DecisionTrace {
+  trace_id: string
+  fingerprint_date: string
+  strategy_id: string
+  score: number
+  rank: number
+  alternative_weight: number
+  formula: string
+  computed_at: string
+  breakdown?: Record<string, unknown> | null
+  lattice_node_refs?: string[] | null
+  knn_neighbor_dates?: string[] | null
+  constraint_check?: Record<string, unknown> | null
+  portfolio_fit?: Record<string, unknown> | null
+}
+
+// ── Settings #92: user prefs (4-question onboarding) ──────────────
+
+
+export interface UserPrefs {
+  options_level: number                    // 0..3
+  max_drawdown_tolerance: number           // 0..1
+  income_vs_growth: number                 // 0..1
+  max_position_concentration: number       // 0..1
+  _source?: 'saved' | 'default'
+  _path?: string
+  _defaults?: Partial<UserPrefs>
+}
+
+export function useUserPrefs() {
+  return useQuery({
+    queryKey: ['user_prefs'],
+    queryFn: () => fetchJSON<UserPrefs>('/api/regime/prefs'),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export async function saveUserPrefs(prefs: Partial<UserPrefs>): Promise<UserPrefs> {
+  const r = await fetch('/api/regime/prefs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(prefs),
+  })
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '')
+    throw new Error(`saveUserPrefs ${r.status}: ${txt}`)
+  }
+  const data = await r.json()
+  return data.merged as UserPrefs
+}
+
+
+// ── Phase L: NeoMind Live — push signal system ────────────────────
+
+
+export interface UserWatchlistEntry {
+  ticker:     string
+  added_at:   string
+  note?:      string | null
+  importance: number
+}
+
+export interface UserWatchlistPayload {
+  user_watchlist:  UserWatchlistEntry[]
+  supply_chain:    string[]
+  total_universe:  string[]
+}
+
+export function useUserWatchlist() {
+  return useQuery({
+    queryKey: ['user_watchlist'],
+    queryFn: () => fetchJSON<UserWatchlistPayload>('/api/regime/watchlist'),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export async function saveWatchlistBulk(tickers: string[]): Promise<{
+  added: string[]; removed: string[]; current: string[]
+}> {
+  const r = await fetch('/api/regime/watchlist/bulk', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tickers }),
+  })
+  if (!r.ok) throw new Error(`saveWatchlistBulk ${r.status}`)
+  return r.json()
+}
+
+export async function triggerWatchlistScan(): Promise<{
+  scanner: string
+  n_tickers: number
+  n_emitted: number
+  new_confluences: number
+  took_ms: number
+}> {
+  const r = await fetch('/api/regime/scan/watchlist', { method: 'POST' })
+  if (!r.ok) throw new Error(`scan ${r.status}`)
+  return r.json()
+}
+
+export async function triggerAllScans(): Promise<{
+  scanners: Record<string, unknown>
+  new_confluences: number
+}> {
+  const r = await fetch('/api/regime/scan/all', { method: 'POST' })
+  if (!r.ok) throw new Error(`scan/all ${r.status}`)
+  return r.json()
+}
+
+
+export interface SignalEvent {
+  event_id:         string
+  scanner_name:     string
+  ticker?:          string | null
+  theme?:           string | null
+  signal_type:      string
+  severity:         'high' | 'med' | 'low'
+  title:            string
+  body?:            Record<string, unknown> | null
+  source_url?:      string | null
+  source_timestamp?: string | null
+  detected_at:      string
+}
+
+export interface SignalConfluence {
+  confluence_id:   string
+  ticker?:         string | null
+  theme?:          string | null
+  headline:        string
+  n_sources:       number
+  color:           'green' | 'amber' | 'red' | 'gray'
+  interpretation?: string | null
+  detected_at:     string
+  expires_at:      string
+  event_ids?:      string[]
+  events?:         SignalEvent[]
+  dismissed?:      number
+}
+
+export function useTodaySignals(limit: number = 3) {
+  return useQuery({
+    queryKey: ['signals_today', limit],
+    queryFn: () => fetchJSON<{ n: number; signals: SignalConfluence[] }>(
+      `/api/regime/signals/today?limit=${limit}`,
+    ),
+    staleTime: 30_000,
+    refetchInterval: 60_000,         // poll every minute
+    retry: false,
+  })
+}
+
+export function useRecentSignals(opts: {
+  limit?:   number
+  ticker?:  string
+  scanner?: string
+} = {}) {
+  const { limit = 50, ticker, scanner } = opts
+  return useQuery({
+    queryKey: ['signals_recent', limit, ticker ?? '', scanner ?? ''],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('limit', String(limit))
+      if (ticker)  params.set('ticker', ticker)
+      if (scanner) params.set('scanner', scanner)
+      return fetchJSON<{ n: number; events: SignalEvent[] }>(
+        `/api/regime/signals/recent?${params}`,
+      )
+    },
+    staleTime: 15_000,
+    refetchInterval: 30_000,         // live-ish stream — poll every 30s
+    retry: false,
+  })
+}
+
+// Phase M1b — analysis_runs feed for NeoMindLive "ops" view.
+export interface AnalysisRun {
+  run_id:        string
+  job_name:      string
+  run_type?:     string | null
+  status:        string                         // running | completed | failed
+  started_at:    string
+  completed_at?: string | null
+  duration_s?:   number | null
+  rows_written?: number | null
+  error_message?: string | null
+  summary?:      Record<string, unknown> | null
+}
+
+export function useRecentRuns(limit = 50) {
+  return useQuery({
+    queryKey: ['regime', 'runs', limit],
+    queryFn: () =>
+      fetchJSON<{ n: number; runs: AnalysisRun[] }>(
+        `/api/regime/runs?limit=${limit}`,
+      ),
+    // Phase M1b: keep this snappy — when the user clicks "立即扫描" the
+    // run row appears as `running` within 10s, then flips to `completed`
+    // a few polls later.  Cheap query (5–10 SQLite rows).
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    retry: false,
+  })
+}
+
+
+export async function dismissSignal(confluenceId: string): Promise<boolean> {
+  const r = await fetch(
+    `/api/regime/signals/dismiss/${encodeURIComponent(confluenceId)}`,
+    { method: 'POST' },
+  )
+  if (!r.ok) return false
+  const data = await r.json()
+  return !!data.ok
+}
+
+
+// ── Risk Dashboard (Phase H — 6-dimension math-backed view) ───────
+
+
+export interface RiskBucketFit {
+  strategy_pref: 'high' | 'low' | 'neutral'
+  sensitivity:   number
+  today:         'high' | 'low' | 'neutral'
+  today_value:   number
+  fit:           'good' | 'warning' | 'bad' | 'neutral'
+}
+
+export interface RiskDashboardEntry {
+  strategy_id:      string
+  name_zh?:         string
+  name_en?:         string
+  horizon?:         string
+  asset_class?:     string
+  hold_days:        number
+  fingerprint_date: string
+  data_quality:     'real' | 'proxy_only'
+
+  return_distribution: {
+    n: number
+    median?:        number
+    p10?:           number
+    p25?:           number
+    p75?:           number
+    p90?:           number
+    mean?:          number
+    std?:           number
+    k_nn?:          number
+    neighbor_dates?: string[]
+    error?:         string
+  }
+
+  tail_risk: {
+    n: number
+    confidence?:        number
+    var?:               number
+    cvar?:              number
+    max_drawdown?:      number
+    max_drawdown_date?: string
+    win_rate?:          number
+    loss_rate?:         number
+    error?:             string
+  }
+
+  position_sizing: {
+    n: number
+    win_rate?:         number
+    avg_win?:          number
+    avg_loss?:         number
+    gain_loss_ratio?:  number
+    kelly?:            number | null
+    half_kelly?:       number | null
+    interpretation?:   string
+    error?:            string
+  }
+
+  hedge_candidates: {
+    n_candidates?: number
+    top?: Array<{
+      strategy_id:  string
+      correlation:  number
+      n_overlap:    number
+      size_ratio:   number
+    }>
+    error?: string
+  }
+
+  stop_loss: {
+    n?: number
+    sigma?:          number
+    suggested_stop?: number
+    atr_multiple?:   number
+    time_stop_days?: number
+    coverage?:       number
+    interpretation?: string
+    error?:          string
+  }
+
+  regime_fit: {
+    buckets:    Record<string, RiskBucketFit>
+    n_good:     number
+    n_warning:  number
+    n_bad:      number
+    n_neutral:  number
+    fit_score:  number
+    verdict:    'strong_fit' | 'ok_fit' | 'weak_fit' | 'bad_fit'
+  }
+
+  walk_forward?: {
+    strategy_id?:        string
+    n_total?:            number
+    is_n?:               number
+    oos_n?:              number
+    is_sharpe_ann?:      number
+    oos_sharpe_ann?:     number
+    is_oos_gap?:         number
+    overfitting_ratio?:  number | null
+    deflated_sharpe?: {
+      observed_sr:     number
+      n_trials:        number
+      n_obs:           number
+      skewness:        number
+      kurtosis:        number
+      sr_max_expected: number
+      sr_se:           number
+      z_score:         number
+      dsr_prob:        number
+      interpretation:  string
+    }
+    verdict?:            'ship' | 'promising' | 'noise' | 'overfit' | 'uncertain'
+    error?:              string
+  }
+
+  recommendation: {
+    color:            'green' | 'amber' | 'red' | 'gray'
+    reasons_for:      string[]
+    reasons_against:  string[]
+    interpretation:   string
+    paper_trade_required?: boolean
+  }
+}
+
+export function useRiskDashboard(opts: {
+  strategyId: string
+  asOf?: string | null
+  holdDays?: number
+}) {
+  const { strategyId, asOf, holdDays = 30 } = opts
+  return useQuery({
+    queryKey: ['risk_dashboard', strategyId, asOf ?? 'today', holdDays],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('strategy_id', strategyId)
+      if (asOf) params.set('as_of', asOf)
+      params.set('hold_days', String(holdDays))
+      return fetchJSON<RiskDashboardEntry>(`/api/regime/dashboard?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!strategyId,
+  })
+}
+
+export function useRiskDashboardAll(opts: {
+  asOf?: string | null
+  holdDays?: number
+  limit?: number
+} = {}) {
+  const { asOf, holdDays = 30, limit = 36 } = opts
+  return useQuery({
+    queryKey: ['risk_dashboard_all', asOf ?? 'today', holdDays, limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (asOf) params.set('as_of', asOf)
+      params.set('hold_days', String(holdDays))
+      params.set('limit', String(limit))
+      return fetchJSON<{
+        fingerprint_date: string
+        n: number
+        strategies: RiskDashboardEntry[]
+      }>(`/api/regime/dashboard/all?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Backtest recall (per-strategy calibration) ────────────────────
+
+
+export interface BacktestRecallEntry {
+  strategy_id: string
+  n_runs: number
+  mean_predicted: number
+  mean_realized: number
+  median_realized: number
+  hit_rate: number | null
+  p_calibration_high: number | null
+  p_calibration_low: number | null
+  delta_high_low: number | null
+  spearman_corr: number | null
+  n_high: number
+  n_low: number
+}
+
+export interface BacktestRecallPayload {
+  strategies: BacktestRecallEntry[]
+  n_total_rows: number
+  score_cutoff: number
+  hold_days: number
+}
+
+export function useBacktestRecall(opts: {
+  holdDays?: number
+  scoreCutoff?: number
+  strategyId?: string | null
+} = {}) {
+  const { holdDays = 30, scoreCutoff = 4.0, strategyId } = opts
+  return useQuery({
+    queryKey: ['backtest_recall', holdDays, scoreCutoff, strategyId ?? 'all'],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('hold_days', String(holdDays))
+      params.set('score_cutoff', String(scoreCutoff))
+      if (strategyId) params.set('strategy_id', strategyId)
+      return fetchJSON<BacktestRecallPayload>(`/api/regime/backtest/recall?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+export interface BacktestRow {
+  result_id: string
+  fingerprint_date: string
+  strategy_id: string
+  predicted_score: number
+  rank: number
+  hold_days: number
+  realized_pnl_pct: number | null
+  underlying_return: number | null
+  method: string
+  notes?: Record<string, unknown> | null
+  computed_at: string
+}
+
+export function useBacktestRows(opts: {
+  fingerprintDate?: string | null
+  strategyId?: string | null
+  holdDays?: number
+  limit?: number
+} = {}) {
+  const { fingerprintDate, strategyId, holdDays = 30, limit = 500 } = opts
+  return useQuery({
+    queryKey: ['backtest_rows', fingerprintDate ?? 'all', strategyId ?? 'all', holdDays, limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('hold_days', String(holdDays))
+      params.set('limit', String(limit))
+      if (fingerprintDate) params.set('fingerprint_date', fingerprintDate)
+      if (strategyId) params.set('strategy_id', strategyId)
+      return fetchJSON<{ count: number, results: BacktestRow[] }>(
+        `/api/regime/backtest/rows?${params}`
+      )
+    },
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!(fingerprintDate || strategyId),
+  })
+}
+
+
+export function useDecisionTraces(opts: {
+  date?: string | null
+  strategyId?: string | null
+  limit?: number
+} = {}) {
+  const { date, strategyId, limit = 200 } = opts
+  return useQuery({
+    queryKey: ['decision_traces', date ?? 'all', strategyId ?? 'all', limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (date) params.set('fingerprint_date', date)
+      if (strategyId) params.set('strategy_id', strategyId)
+      params.set('limit', String(limit))
+      return fetchJSON<{ count: number, traces: DecisionTrace[] }>(
+        `/api/regime/traces?${params}`
+      )
+    },
+    staleTime: 30_000,
     retry: false,
   })
 }

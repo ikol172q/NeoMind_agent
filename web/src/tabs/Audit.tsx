@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/Button'
 import { fmtTs } from '@/lib/utils'
 import { ChevronDown, ChevronRight, RefreshCw, X, Copy, Check } from 'lucide-react'
 import { PastRunsView } from '@/components/widgets/PastRunsView'
+import { DecisionTracesPanel } from '@/components/widgets/DecisionTracesPanel'
+import { BacktestRecallPanel } from '@/components/widgets/BacktestRecallPanel'
 
 type KindFilter = '' | 'request' | 'response' | 'error'
 
@@ -122,6 +124,24 @@ export function AuditTab({ initialReqFilter, onConsumeFilter }: Props) {
       <div className="flex-1 overflow-y-auto" data-testid="audit-scroll-root">
         <div className="px-3 pt-3">
           <PastRunsView title="Past runs (scheduler + manual)" />
+        </div>
+
+        {/* Step F (#91) — decision_traces table drill view.
+            Shows every (date × strategy) recommendation persisted by
+            the portfolio endpoint, with full score breakdown for
+            audit. Lets the user answer "what did the agent recommend
+            on day X for strategy Y, and what numbers backed it?" */}
+        <div className="px-3 pt-2">
+          <DecisionTracesPanel />
+        </div>
+
+        {/* Backtest recall (#95) — predicted vs realized calibration
+            per strategy across all historical fingerprints.  Run
+            regime_backtest.command first to populate. Lets the user
+            answer "if I had used this scorer 5 years ago, would the
+            high-score days have actually been profitable?" */}
+        <div className="px-3 pt-2 pb-3">
+          <BacktestRecallPanel />
         </div>
 
         {/* List */}

@@ -563,14 +563,34 @@ def llm_checks_for_calls(
     n_calls:               int,
     n_grounds_resolved:    int,
     n_grounds_unresolved:  int,
+    llm_error:             Optional[str] = None,
 ) -> List[ValidationCheck]:
     """LLM-step checks for build_calls.  ``n_grounds_resolved`` /
     ``n_grounds_unresolved`` are summed across every call's
     ``grounds`` list — each ground is supposed to resolve to a real
     L2 theme or L1 observation; unresolved grounds mean the LLM
     invented a citation.
+
+    ``llm_error`` is the string from generate_calls's pool trace's
+    ``error`` field when the LLM call itself failed (HTTP non-200,
+    empty body, JSON parse error, etc).  When set, this fires a
+    distinct fail check so the FreshnessBar surfaces a red badge
+    instead of the user staring at an empty calls list.
     """
     out: List[ValidationCheck] = []
+
+    # New (2026-04-27): explicit fail check when the LLM call itself
+    # bombed.  Surfaces the silent-fallback failure mode discovered
+    # in host audit (DeepSeek 200 + empty content → JSON parse error
+    # → fall back to 0 calls without telling the user).
+    if llm_error:
+        out.append(failing(
+            name="calls.llm_responded_with_json",
+            step="llm",
+            message=f"LLM did not return parseable JSON: {llm_error[:160]}",
+        ))
+        # Don't bother with grounds_resolve when we have no LLM output.
+        return out
 
     if n_calls == 0:
         out.append(unknown(

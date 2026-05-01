@@ -21,12 +21,14 @@ import {
   Sparkles,
 } from 'lucide-react'
 import {
+  asOfToLocalYMD,
   useFinStrategies,
   useFinStrategiesFit,
   useFinStrategiesTimeAware,
   useFinWidgetCoverage,
   useLatticeCalls,
   useLatticeLanguage,
+  useLatticeSnapshots,
   useStrategyThemesToday,
   useWidgetStrategies,
   type LatticeCall,
@@ -39,6 +41,14 @@ import {
 import { cn } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
+import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
+import { RegimeFingerprintWidget } from '@/components/widgets/RegimeFingerprintWidget'
+import { PortfolioWidget } from '@/components/widgets/PortfolioWidget'
+import { RiskDashboardWidget } from '@/components/widgets/RiskDashboardWidget'
+import { AlgorithmAppendix } from '@/components/widgets/AlgorithmAppendix'
+import { TodaysSignalsWidget } from '@/components/widgets/TodaysSignalsWidget'
+import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
+import { ChatPanel } from '@/components/chat/ChatPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -89,6 +99,11 @@ interface Props {
    *  every lattice-derived fetch so the tab stays time-coherent
    *  with Research. */
   asOf?: string
+  /** Bubble lattice as-of changes back up — used by the audit panel's
+   *  TimeScope control to keep Research+Strategies+audit history in
+   *  1:1 sync ("选择时间，三个 view 都跟随").  Optional: when omitted
+   *  the panel falls back to a no-op and only its local scope changes. */
+  onChangeAsOf?: (next: string) => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -103,11 +118,27 @@ export function StrategiesTab({
   onJumpToResearch,
   onJumpToResearchNode,
   asOf,
+  onChangeAsOf,
 }: Props) {
   const q = useFinStrategies()
-  const calls = useLatticeCalls(projectId)
+  // Phase A 1:1 sync: when the user picks a past date, the calls data
+  // (used in the connection-banner counts + lattice gap analysis)
+  // must come from THAT day's snapshot, not live.  Previously this
+  // call omitted asOf, so 'Today: N L3 calls' stayed pinned to live
+  // regardless of the user's date choice — Strategies-tab and
+  // Research-tab disagreed about what "today" was.
+  const calls = useLatticeCalls(projectId, asOf)
   const fit = useFinStrategiesFit(projectId, asOf)
   const coverage = useFinWidgetCoverage()
+  // Snapshot list — used to translate asOf (server UTC date) into the
+  // user's LOCAL YMD for display, so banner / labels match what the
+  // AsOfPicker dropdown showed (and don't disagree across Strategies
+  // tab surfaces).
+  const snapshotsQ = useLatticeSnapshots(projectId)
+  const asOfLocalYMD =
+    asOf && asOf !== 'live'
+      ? asOfToLocalYMD(asOf, snapshotsQ.data?.snapshots)
+      : (asOf ?? 'live')
   // Phase 6 followup #2: time-aware events per strategy (FOMC,
   // quad-witching, Russell rebal, earnings season).
   const timeAware = useFinStrategiesTimeAware(projectId)
@@ -256,7 +287,8 @@ export function StrategiesTab({
   }, [q.data, diffFilter, feasibleOnly, sortKey, strategyToCalls, fitByStrategy])
 
   return (
-    <div className="h-full overflow-y-auto p-4 text-[12px]">
+    <div className="h-full flex overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-4 text-[12px]">
       {/* B6-Step1: provenance breadcrumb at the very top of the tab.
           Uses the same /api/lattice/calls payload the page already
           fetches, so it surfaces the EXACT same dep_hash + run_id
@@ -286,6 +318,44 @@ export function StrategiesTab({
             {q.data ? `${q.data.count} strategies` : 'loading…'}
           </span>
         </div>
+
+        {/* Time-replay clarity: when asOf != live, explain to the user
+            EXACTLY what changes vs. doesn't change with the date.
+            Otherwise they see 36 cards looking identical across all
+            dates and assume the time-travel is broken.  Three layers
+            of "what's frozen by the date selector":
+              ✓ time-aware:   today_fit scores, theme matches, L3 call
+                              count, FreshnessBar dep_hash
+              ✗ NOT time-aware (yaml-static): cards' name/horizon/
+                              difficulty/min_capital/⚠ unverified chip
+                              — strategies.yaml is the source, and is
+                              not yet bitemporal (a 2026-04-25 audit
+                              that promotes X→verified updates the
+                              SAME yaml every "as-of" view reads).
+            See task #79 for the bitemporal-provenance follow-up. */}
+        {asOf && asOf !== 'live' && (
+          <div
+            data-testid="strategies-as-of-banner"
+            className="mb-3 p-2.5 rounded border border-[var(--color-amber,#e5a200)]/40 bg-[var(--color-amber,#e5a200)]/[0.05] text-[10px] leading-[1.5]"
+          >
+            <div className="flex items-start gap-1.5">
+              <span className="mt-0.5 shrink-0 text-[var(--color-amber,#e5a200)]">📅</span>
+              <div className="flex-1 text-[var(--color-text)]">
+                <b>正在看 {asOfLocalYMD} 的快照 / Viewing as of {asOfLocalYMD}</b>
+                <div className="mt-1 text-[var(--color-dim)]">
+                  <b className="text-[var(--color-green)]">✓ 跟着日期变 / time-aware:</b>
+                  {' '}今日相关度 (today_fit) · 顶部 banner 的 L3 call 数 · FreshnessBar 的 dep_hash · 展开卡片看 themes-of-the-day · 上方审计面板的 runs 过滤
+                </div>
+                <div className="mt-0.5 text-[var(--color-dim)]">
+                  <b className="text-[var(--color-amber,#e5a200)]">✗ 不变（yaml 静态）/ frozen:</b>
+                  {' '}卡片基础信息（名字、难度、最低资金、⚠ unverified chip）—
+                  strategies.yaml 还不是 bitemporal，audit 写回会改变所有"as-of"视图的 provenance。
+                  追这个 → task #79.
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* How this connects to Research — direct answer to user's
             'Research tab 和 Strategies tab 是怎么连起来的'. */}
@@ -339,6 +409,53 @@ export function StrategiesTab({
             </div>
           </div>
         </div>
+
+        {/* Phase L (#106) — NeoMind Live signal system.
+            Pull → Push transition: instead of the user staring at a
+            dashboard, NeoMind scans 5 sources continuously and only
+            surfaces ≥2-source confluences as "Today's signals". The
+            live stream below shows transparency into what scanners
+            are doing — modeled on Operator/Claude Tools UX but
+            persisted to SQLite for cross-session traceability. */}
+        <TodaysSignalsWidget />
+        <NeoMindLiveStream />
+
+        {/* v2 (2026-04-29): 5-bucket regime fingerprint.  Lives at the
+            top so the user can SEE today's regime — it's the single
+            biggest factor in WHY each strategy got the score it got.
+            Click any bar to drill into components + 5-window percentile
+            data.  When raw_market_data hasn't been backfilled yet, the
+            widget renders placeholder bars + a hint to run the
+            regime_backfill.command. */}
+        <RegimeFingerprintWidget asOf={asOf ?? 'live'} compact />
+
+        {/* Step F (#89) — MMR diversified portfolio selection.
+            Shows ONE most-recommended strategy + 3-8 alternatives that
+            are intentionally DIFFERENT in payoff_class / asset_class /
+            regime_sensitivity direction so the user has real options
+            instead of a list of near-clones.  Uses /api/regime/portfolio
+            backed by select_diversified_portfolio() in scorer.py. */}
+        <PortfolioWidget asOf={asOf ?? 'live'} />
+
+        {/* Phase H (#101) — Risk Dashboard.  Math-grounded 6-dimension
+            view per strategy: return distribution / VaR-CVaR / Kelly /
+            hedge candidates / ATR stop / regime fit. Replaces the
+            single fit score with multi-dimensional risk-aware
+            decision support. */}
+        <RiskDashboardWidget asOf={asOf ?? 'live'} />
+
+        {/* Anti-hallucination Layer 0: visible signal that the daily
+            auditor is alive.  Without this, a row of 36 ⚠ unverified
+            chips is indistinguishable between (a) system never ran,
+            and (b) system ran and correctly rejected unsupported
+            numeric claims.  See LastAuditPanel.tsx for full rationale.
+            asOf + onChangeAsOf bind the panel's TimeScope to the
+            top-nav AsOfPicker so Research+Strategies+audit stay 1:1. */}
+        <LastAuditPanel
+          asOf={asOf ?? 'live'}
+          onChangeAsOf={(next) => onChangeAsOf?.(next)}
+          projectId={projectId}
+        />
 
         <p className="text-[10px] text-[var(--color-dim)] mb-3 leading-relaxed">
           Source: <code className="text-[var(--color-accent)]">docs/strategies/strategies.yaml</code> +{' '}
@@ -488,8 +605,140 @@ export function StrategiesTab({
             ))}
           </div>
         )}
+
+        {/* Phase K2 (#105) — Algorithm Appendix.  Ground truth documentation
+            of every algorithm visualized on this tab — formula + paper +
+            code path + thresholds — so the user can verify any number on
+            the dashboard is computed as advertised.  Default-collapsed. */}
+        <AlgorithmAppendix />
       </div>
+      </div>
+
+      {/* Phase M (#109) — right-side ChatPanel.  Always-on agent
+          conversation panel so the user can ask questions about
+          signals, regime, strategies WITHOUT leaving the Strategies
+          tab.  Phase M1a: rail is resizable + sessions sidebar can
+          be hidden so the conversation has more width.  The standalone
+          Chat tab is preserved (this is a second mount of ChatPanel;
+          sessions are independent). */}
+      <ChatRail projectId={projectId} />
     </div>
+  )
+}
+
+
+// ── ChatRail ────────────────────────────────────────────────────────
+// Resizable + collapsible right rail wrapping ChatPanel.
+//   • drag the left edge to resize (persist width in localStorage)
+//   • click "💬 sessions" to toggle the past-sessions sidebar
+//   • click the chevron to fully collapse the rail to a thin strip
+function ChatRail({ projectId }: { projectId: string }) {
+  const KEY_W   = 'strategies.chatRail.width'
+  const KEY_SS  = 'strategies.chatRail.showSessions'
+  const KEY_OPEN = 'strategies.chatRail.open'
+
+  const [width, setWidth] = useState<number>(() => {
+    const v = Number(localStorage.getItem(KEY_W))
+    return v >= 280 && v <= 900 ? v : 400
+  })
+  const [showSessions, setShowSessions] = useState<boolean>(() => {
+    return localStorage.getItem(KEY_SS) !== '0'
+  })
+  const [open, setOpen] = useState<boolean>(() => {
+    return localStorage.getItem(KEY_OPEN) !== '0'
+  })
+
+  useEffect(() => { localStorage.setItem(KEY_W,  String(width)) }, [width])
+  useEffect(() => { localStorage.setItem(KEY_SS, showSessions ? '1' : '0') }, [showSessions])
+  useEffect(() => { localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open])
+
+  // Drag-to-resize via global mousemove/mouseup so cursor doesn't
+  // snap back if it leaves the handle while dragging.
+  const draggingRef = useRef(false)
+  function onResizeStart(e: React.MouseEvent) {
+    e.preventDefault()
+    draggingRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+  useEffect(() => {
+    function onMove(ev: MouseEvent) {
+      if (!draggingRef.current) return
+      // Width is from the right edge of the viewport
+      const next = Math.min(900, Math.max(280, window.innerWidth - ev.clientX))
+      setWidth(next)
+    }
+    function onUp() {
+      if (!draggingRef.current) return
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup',   onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup',   onUp)
+    }
+  }, [])
+
+  if (!open) {
+    // Collapsed strip — just a vertical button to re-open
+    return (
+      <aside className="w-[28px] flex-shrink-0 border-l border-[var(--color-border)] bg-[var(--color-bg)]/30 flex flex-col items-center pt-2">
+        <button
+          onClick={() => setOpen(true)}
+          title="展开 Ask NeoMind"
+          className="text-[var(--color-dim)] hover:text-[var(--color-text)] text-[14px] px-1 py-2"
+        >
+          ◀
+        </button>
+        <div
+          className="text-[9px] text-[var(--color-dim)] mt-1 select-none"
+          style={{ writingMode: 'vertical-rl' }}
+        >
+          💬 Ask NeoMind
+        </div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside
+      style={{ width: `${width}px` }}
+      className="flex-shrink-0 border-l border-[var(--color-border)] flex flex-row bg-[var(--color-bg)]/30 relative"
+    >
+      {/* Drag handle on the left edge */}
+      <div
+        onMouseDown={onResizeStart}
+        title="拖动调整宽度"
+        className="absolute left-0 top-0 bottom-0 w-[4px] cursor-col-resize hover:bg-[var(--color-accent)]/40 z-10"
+      />
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="px-3 py-2 border-b border-[var(--color-border)] text-[10px] text-[var(--color-dim)] flex items-center gap-2">
+          <span className="font-semibold text-[var(--color-text)]">💬 Ask NeoMind</span>
+          <span className="italic truncate">— 不用切 tab</span>
+          <button
+            onClick={() => setShowSessions(s => !s)}
+            title={showSessions ? '隐藏 sessions' : '显示 sessions'}
+            className="ml-auto px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+          >
+            {showSessions ? '◧ hide sessions' : '◨ show sessions'}
+          </button>
+          <button
+            onClick={() => setOpen(false)}
+            title="折叠 chat 栏"
+            className="px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+          >
+            ▶
+          </button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <ChatPanel projectId={projectId} hideSessions={!showSessions} />
+        </div>
+      </div>
+    </aside>
   )
 }
 
@@ -592,6 +841,32 @@ function StrategyCard({
             {timeAware?.days_until != null && timeAware.event_label && (
               <TimeAwareChip ta={timeAware} activeLang={activeLang} />
             )}
+            {/* Anti-hallucination Layer 4: ⚠ chip when the entry's
+                provenance is not in the trusted set. Decision-path
+                code paths (strategy_matcher) already filter these
+                out, but the UI keeps them visible per user request
+                ("留着别动但是都标个符号表明不可信"). */}
+            {s.provenance && s.provenance.state !== 'verified' && s.provenance.state !== 'rawstore_grounded' && (
+              <span
+                className="text-[8px] px-1.5 py-0.5 rounded border font-mono shrink-0 cursor-help"
+                style={{
+                  borderColor: 'var(--color-amber,#e5a200)',
+                  color:       'var(--color-amber,#e5a200)',
+                }}
+                title={
+                  '⚠ 未经证实 / unverified\n\n' +
+                  '此策略的内容（typical_win_rate / max_loss / starter_step ' +
+                  '等具体数字）是 Phase 3 调研子 agent 生成的，未经审核。\n\n' +
+                  '后端的 strategy_matcher 已经把所有 unverified 策略过滤出 ' +
+                  '决策路径——它不会被引用为 L3 call 的 strategy_match。\n\n' +
+                  '当 Layer 0 auditor 自动审核通过、或人工标记为 verified 时，' +
+                  '这个 chip 才会消失。\n\n' +
+                  'Source: ' + s.provenance.source
+                }
+              >
+                ⚠ unverified
+              </span>
+            )}
             {/* Today's fit chip — same matcher, score against today's
                 themes. Always present (even on no-L3-call days). */}
             <span
@@ -674,13 +949,26 @@ function StrategyCard({
                 className="text-[var(--color-dim)] italic leading-[1.4]"
                 title={usageLabel}
               >
-                No current L3 call references this strategy. This is one
-                of two things: (a) today's lattice themes don't strongly
-                support this strategy (matcher threshold ≥ 3 not met),
-                or (b) a real gap — the strategy is documented but the
-                lattice has no widget feeding it. To investigate, look
-                at the strategy's <code className="text-[var(--color-accent)]">data_requirements</code>{' '}
-                below and check Research tab's L0 widget list.
+                今天 lattice 没有 L3 call 引用这个 strategy。两种可能：
+                (a) 今日 lattice themes 对这个 strategy 的匹配分数不够（matcher
+                threshold ≥ 3 未达到），或者 (b) 真实的 gap —— 这个 strategy
+                文档里有，但 lattice 没有对应的 widget 数据流来 feed 它。要
+                查具体哪一种，往下看
+                {' '}
+                <a
+                  href={`#data-req-${s.id}`}
+                  onClick={(e) => {
+                    e.preventDefault()
+                    document
+                      .getElementById(`data-req-${s.id}`)
+                      ?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                  }}
+                  className="text-[var(--color-accent)] underline cursor-pointer"
+                >
+                  data_requirements ↓
+                </a>
+                {' '}
+                这一节，再去 Research tab 看 L0 widget 列表对得上不。
               </p>
             ) : (
               <ul className="text-[var(--color-text)] flex flex-col gap-1">
@@ -725,7 +1013,10 @@ function StrategyCard({
               onJumpToResearchNode={onJumpToResearchNode}
             />
           </Section>
-          <Section label="数据需求 / Data requirements (lattice widget mapping)">
+          <Section
+            label="数据需求 / Data requirements (lattice widget mapping)"
+            id={`data-req-${s.id}`}
+          >
             {widgetCoverage ? (
               <div className="flex flex-col gap-1">
                 {/* widget chips with status badges */}
@@ -788,9 +1079,9 @@ function StrategyCard({
                 <span className="ml-2 text-[var(--color-blue,#5fa8ff)]">§1256 (60/40)</span>
               )}
               {s.tax_treatment.qualifies_long_term ? (
-                <span className="ml-2">eligible for long-term holding</span>
+                <span className="ml-2">可长期持有 / eligible for long-term holding</span>
               ) : (
-                <span className="ml-2">always short-term</span>
+                <span className="ml-2">永远短期 / always short-term</span>
               )}
               {s.tax_treatment.notes && (
                 <div className="mt-1 italic">{s.tax_treatment.notes}</div>
@@ -831,7 +1122,7 @@ function StrategyCard({
               className="inline-flex items-center gap-1 px-2 py-1 rounded border border-[var(--color-accent)] text-[var(--color-accent)] text-[10px] hover:bg-[var(--color-accent)]/10"
             >
               <Sparkles size={10} />
-              Ask the agent
+              问 Agent / Ask the agent
             </button>
             <a
               href={`/api/strategies/${s.id}`}
@@ -839,7 +1130,7 @@ function StrategyCard({
               rel="noreferrer"
               className="text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)]"
             >
-              View raw JSON →
+              查看原始 JSON / View raw JSON →
             </a>
           </div>
         </div>
@@ -1120,9 +1411,9 @@ function StrategyMatchingThemes({
 }
 
 
-function Section({ label, children }: { label: string; children: React.ReactNode }) {
+function Section({ label, children, id }: { label: string; children: React.ReactNode; id?: string }) {
   return (
-    <div>
+    <div id={id}>
       <div className="text-[8px] uppercase tracking-wider text-[var(--color-dim)] mb-0.5">
         {label}
       </div>
