@@ -340,6 +340,29 @@ def complete_analysis_run(
     )
 
 
+# Backward-compat alias: signal_hourly + whale_daily + the manual
+# /scan/all endpoint all call this name.  Maps the older `summary_json`
+# kwarg onto `metadata` so callers don't need to change.
+def finish_analysis_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    status: str = "completed",
+    error_message: Optional[str] = None,
+    summary_json: Optional[Dict[str, Any]] = None,
+    universe_size: Optional[int] = None,
+    rows_written: Optional[int] = None,
+) -> None:
+    return complete_analysis_run(
+        conn, run_id,
+        status=status,
+        error_message=error_message,
+        universe_size=universe_size,
+        rows_written=rows_written,
+        metadata=summary_json,
+    )
+
+
 def list_recent_runs(
     conn: sqlite3.Connection,
     job_name: Optional[str] = None,

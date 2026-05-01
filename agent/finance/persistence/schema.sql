@@ -349,6 +349,84 @@ CREATE TABLE IF NOT EXISTS knn_lookups (
 );
 CREATE INDEX IF NOT EXISTS idx_knn_target ON knn_lookups(target_date, used_for_strategy);
 
+-- backtest_results: schema v3 (2026-04-30) — for every historical
+-- (fingerprint_date × strategy_id), compute the model's predicted
+-- score AND the realized P&L over a forward holding window.  This
+-- lets the UI show "system loved covered_call_etf in vol-spike days,
+-- but in 73% of those days the strategy actually lost money" — i.e.,
+-- recall / calibration on real history.
+--
+-- realized_pnl_pct is a strategy-class-aware proxy (see backtest.py
+-- _proxy_pnl) NOT real P&L from option chains (which we don't have).
+-- Treat as directional / first-order signal.
+CREATE TABLE IF NOT EXISTS backtest_results (
+    result_id           TEXT PRIMARY KEY,         -- uuid4
+    fingerprint_date    TEXT NOT NULL,
+    strategy_id         TEXT NOT NULL,
+    predicted_score     REAL NOT NULL,            -- scorer's 0-10 fit
+    rank                INTEGER NOT NULL,         -- 1=top, 2-N=alternative
+    hold_days           INTEGER NOT NULL,         -- 30 default
+    realized_pnl_pct    REAL,                     -- forward return proxy, fraction (0.05 = 5%)
+    underlying_return   REAL,                     -- raw market forward return for the asset_class anchor
+    method              TEXT NOT NULL,            -- 'proxy_v1'
+    notes_json          TEXT,                     -- {"anchor": "SPY", "window": "2024-04-01..2024-05-01", ...}
+    computed_at         TEXT NOT NULL,
+    FOREIGN KEY (fingerprint_date) REFERENCES regime_fingerprints(fingerprint_date)
+);
+CREATE INDEX IF NOT EXISTS idx_bt_date     ON backtest_results(fingerprint_date);
+CREATE INDEX IF NOT EXISTS idx_bt_strategy ON backtest_results(strategy_id);
+CREATE INDEX IF NOT EXISTS idx_bt_rank     ON backtest_results(fingerprint_date, rank);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_bt_unique
+    ON backtest_results(fingerprint_date, strategy_id, hold_days);
+
+-- ─── Phase L: NeoMind Live — push signal system ─────────────────
+--
+-- user_watchlist: the user's hand-curated tickers.  Auto-supply-chain
+-- expansion is computed on demand, not stored, so it stays fresh.
+CREATE TABLE IF NOT EXISTS user_watchlist (
+    ticker     TEXT PRIMARY KEY,
+    added_at   TEXT NOT NULL,
+    note       TEXT,
+    importance INTEGER DEFAULT 1   -- 1 = normal, 2 = priority (more frequent scanning)
+);
+
+-- signal_events: every individual scanner emission.  Multi-source
+-- confluence is computed downstream from these rows.
+CREATE TABLE IF NOT EXISTS signal_events (
+    event_id          TEXT PRIMARY KEY,        -- uuid4
+    scanner_name      TEXT NOT NULL,            -- 'watchlist' / 'news' / '13f' / 'stock_act' / 'earnings'
+    ticker            TEXT,                     -- nullable for theme-level events
+    theme             TEXT,                     -- e.g. 'china_ai_capex', 'fomc_may'
+    signal_type       TEXT NOT NULL,            -- 'price_break' / 'rsi_extreme' / 'ma_cross' / 'whale_buy' / 'policy' / 'earnings_beat' / etc.
+    severity          TEXT NOT NULL,            -- 'high' / 'med' / 'low'
+    title             TEXT NOT NULL,            -- one-line headline
+    body_json         TEXT,                     -- structured payload
+    source_url        TEXT,                     -- click-through to evidence
+    source_timestamp  TEXT,                     -- when underlying event happened (UTC)
+    detected_at       TEXT NOT NULL             -- when scanner saw it (UTC)
+);
+CREATE INDEX IF NOT EXISTS idx_se_detected ON signal_events(detected_at DESC);
+CREATE INDEX IF NOT EXISTS idx_se_ticker   ON signal_events(ticker);
+CREATE INDEX IF NOT EXISTS idx_se_scanner  ON signal_events(scanner_name);
+
+-- signal_confluences: when ≥2 independent scanners agree on the same
+-- ticker / theme within a 24-72h window, we promote a confluence
+-- record.  The frontend's "Today's 3 signals" reads from this table.
+CREATE TABLE IF NOT EXISTS signal_confluences (
+    confluence_id   TEXT PRIMARY KEY,           -- uuid4
+    ticker          TEXT,
+    theme           TEXT,
+    headline        TEXT NOT NULL,
+    n_sources       INTEGER NOT NULL,
+    color           TEXT NOT NULL,              -- 'green' / 'amber' / 'red' / 'gray'
+    interpretation  TEXT,
+    detected_at     TEXT NOT NULL,
+    expires_at      TEXT NOT NULL,              -- 24-72h ttl
+    event_ids_json  TEXT NOT NULL,              -- JSON array of contributing event_ids
+    dismissed       INTEGER DEFAULT 0           -- user can dismiss
+);
+CREATE INDEX IF NOT EXISTS idx_sc_detected ON signal_confluences(detected_at DESC);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

@@ -294,8 +294,15 @@ def score_all_strategies(
     user_prefs: Optional[Dict[str, Any]] = None,
     lattice_payload: Optional[Dict[str, Any]] = None,
     include_unverified: bool = True,
+    apply_knn_prior: bool = True,
+    k: int = 5,
 ) -> List[Dict[str, Any]]:
-    """Score every strategy in the catalog.  Sorted by score DESC."""
+    """Score every strategy in the catalog. Sorted by score DESC.
+
+    When ``apply_knn_prior`` is true and there's enough fingerprint
+    history, blends each strategy's score with an empirical-Bayes
+    prior from the K nearest historical regime days (Step E).
+    """
     from agent.finance.lattice.strategy_matcher import _load_strategies
     strategies = _load_strategies(include_unverified=include_unverified)
     out = [
@@ -304,5 +311,236 @@ def score_all_strategies(
                        lattice_payload=lattice_payload)
         for s in strategies
     ]
+
+    # ── Step E: Bayesian shrinkage with k-NN regime neighbors ──
+    if apply_knn_prior:
+        try:
+            neighbors = _knn_regime_neighbors(fingerprint, k=k)
+        except Exception as exc:  # pragma: no cover
+            logger.debug("knn lookup unavailable: %s", exc)
+            neighbors = []
+
+        if neighbors:
+            from agent.finance.regime.store import (
+                list_decision_traces, write_knn_lookups,
+            )
+            target_date = fingerprint.get("fingerprint_date")
+            for entry in out:
+                # Pull historical traces of THIS strategy on the
+                # neighbor dates.  Their scores form the empirical
+                # prior; we shrink today's model score toward the
+                # similarity-weighted mean.
+                hist_scores: List[float] = []
+                weights: List[float] = []
+                neighbor_dates_used: List[str] = []
+                for nb in neighbors:
+                    rows = list_decision_traces(
+                        fingerprint_date=nb["neighbor_date"],
+                        strategy_id=entry["strategy_id"],
+                        limit=1,
+                    )
+                    if rows:
+                        hist_scores.append(float(rows[0]["score"]))
+                        weights.append(float(nb["similarity"]))
+                        neighbor_dates_used.append(nb["neighbor_date"])
+
+                if hist_scores:
+                    wsum = sum(weights) or 1.0
+                    prior = sum(s * w for s, w in zip(hist_scores, weights)) / wsum
+                    # Empirical-Bayes shrinkage with adaptive trust:
+                    # more samples → more weight on prior.
+                    n = len(hist_scores)
+                    beta = min(0.40, n / (n + 5.0))   # ≤0.4 max
+                    blended = (1 - beta) * entry["score"] + beta * prior
+                    entry["score_breakdown"]["knn_prior"] = {
+                        "prior_mean":     round(prior, 3),
+                        "n_neighbors":    n,
+                        "shrinkage_beta": round(beta, 3),
+                        "neighbor_dates": neighbor_dates_used,
+                        "model_only_score": entry["score"],
+                    }
+                    entry["score"] = round(blended, 2)
+                    entry["formula"] = entry["formula"] + "+knn_prior"
+
+            # Persist the k-NN lookups for the audit trail
+            try:
+                if target_date:
+                    write_knn_lookups(
+                        target_date=target_date,
+                        used_for_strategy="*",
+                        neighbors=[
+                            {
+                                "neighbor_date":    nb["neighbor_date"],
+                                "similarity_score": nb["similarity"],
+                                "weight_in_prior":  nb["similarity"],
+                            }
+                            for nb in neighbors
+                        ],
+                    )
+            except Exception as exc:  # pragma: no cover
+                logger.debug("write_knn_lookups failed: %s", exc)
+
     out.sort(key=lambda x: x["score"], reverse=True)
     return out
+
+
+def _knn_regime_neighbors(
+    target_fp: Dict[str, Any],
+    *, k: int = 5,
+) -> List[Dict[str, Any]]:
+    """Find the K nearest historical regime days by Euclidean distance
+    in the 5-bucket score space.  Returns
+    [{neighbor_date, similarity (0..1), distance}], best first.
+    """
+    from agent.finance.regime.store import list_fingerprints
+
+    keys = ("risk_appetite_score", "volatility_regime_score",
+            "breadth_score", "event_density_score", "flow_score")
+    target_vec = [target_fp.get(k_, 50.0) or 50.0 for k_ in keys]
+    target_date = target_fp.get("fingerprint_date")
+
+    history = list_fingerprints(limit=400)  # ~ 1.6 yrs of trading days
+    scored: List[Dict[str, Any]] = []
+    for row in history:
+        if row.get("fingerprint_date") == target_date:
+            continue
+        vec = [row.get(k_, 50.0) or 50.0 for k_ in keys]
+        dist = math.sqrt(sum((a - b) ** 2 for a, b in zip(target_vec, vec)))
+        # Convert 5-bucket-space distance (0..~111) to similarity 0..1
+        sim = max(0.0, 1.0 - dist / 111.8)
+        scored.append({
+            "neighbor_date": row["fingerprint_date"],
+            "similarity":    round(sim, 4),
+            "distance":      round(dist, 2),
+        })
+    scored.sort(key=lambda x: -x["similarity"])
+    return scored[:k]
+
+
+# ── Step F: MMR (Maximal Marginal Relevance) diversification ──────
+
+
+def _strategy_similarity(a: Dict[str, Any], b: Dict[str, Any],
+                         strategies_by_id: Dict[str, Dict[str, Any]]) -> float:
+    """Cosine-ish similarity between two scored strategies in [0, 1].
+
+    Combines:
+      • payoff_class match (0.40 weight)  — identical class → 1, similar class → 0.5
+      • asset_class match  (0.20 weight)  — same asset class → 1
+      • regime_sensitivity cosine (0.40 weight) — direction in regime space
+    """
+    sa = strategies_by_id.get(a["strategy_id"], {})
+    sb = strategies_by_id.get(b["strategy_id"], {})
+    pa = sa.get("quantitative_profile") or {}
+    pb = sb.get("quantitative_profile") or {}
+
+    # 1) payoff_class
+    pca = pa.get("payoff_class", "")
+    pcb = pb.get("payoff_class", "")
+    if pca and pca == pcb:
+        payoff_sim = 1.0
+    elif pca and pcb and pca.split("_")[0] == pcb.split("_")[0]:
+        payoff_sim = 0.5  # related family (e.g. covered_call vs covered_strangle)
+    else:
+        payoff_sim = 0.0
+
+    # 2) asset_class
+    aca = sa.get("asset_class", "")
+    acb = sb.get("asset_class", "")
+    asset_sim = 1.0 if aca and aca == acb else 0.0
+
+    # 3) regime_sensitivity cosine
+    sa_sens = pa.get("regime_sensitivity", {}) or {}
+    sb_sens = pb.get("regime_sensitivity", {}) or {}
+    keys = ("risk_appetite", "volatility_regime", "breadth", "event_density", "flow")
+    va = [float(sa_sens.get(k, 0.0)) for k in keys]
+    vb = [float(sb_sens.get(k, 0.0)) for k in keys]
+    dot = sum(x * y for x, y in zip(va, vb))
+    na = math.sqrt(sum(x * x for x in va))
+    nb = math.sqrt(sum(x * x for x in vb))
+    if na > 0 and nb > 0:
+        regime_sim = max(0.0, min(1.0, dot / (na * nb)))
+    else:
+        regime_sim = 0.0
+
+    return 0.40 * payoff_sim + 0.20 * asset_sim + 0.40 * regime_sim
+
+
+def select_diversified_portfolio(
+    scored: List[Dict[str, Any]],
+    *,
+    n_alternatives: int = 5,
+    lambda_weight: float = 0.65,
+    min_score: float = 1.0,
+) -> Dict[str, Any]:
+    """MMR-style portfolio selection.
+
+    Args:
+      scored: output of ``score_all_strategies`` (already sorted DESC).
+      n_alternatives: how many alternatives to surface (3-8 typical).
+      lambda_weight: balance between relevance (1.0) and diversity (0.0).
+        0.65 = lean toward relevance but penalise duplicates.
+      min_score: skip candidates below this threshold (0.0..10.0).
+
+    Returns:
+      {
+        "top": <best>,
+        "alternatives": [<by_diversified_relevance>...],
+        "selection_method": "mmr_v1",
+        "lambda": 0.65,
+      }
+    """
+    if not scored:
+        return {
+            "top": None,
+            "alternatives": [],
+            "selection_method": "mmr_v1",
+            "lambda": lambda_weight,
+            "note": "empty scored list",
+        }
+
+    # Need raw strategy YAML entries to compute similarity (payoff_class etc).
+    from agent.finance.lattice.strategy_matcher import _load_strategies
+    strategies_by_id = {s["id"]: s for s in _load_strategies(include_unverified=True)}
+
+    candidates = [s for s in scored if s.get("score", 0) >= min_score]
+    if not candidates:
+        candidates = list(scored)
+
+    # 1) Pick top by raw score
+    top = candidates[0]
+    selected: List[Dict[str, Any]] = [top]
+    remaining = list(candidates[1:])
+
+    # 2) MMR loop
+    max_score = max((s.get("score", 0) for s in candidates), default=10.0) or 10.0
+    while remaining and len(selected) < n_alternatives + 1:
+        best_idx = None
+        best_mmr = -1e9
+        for idx, cand in enumerate(remaining):
+            relevance = (cand.get("score", 0) / max_score)  # 0..1
+            sim_to_selected = max(
+                _strategy_similarity(cand, s, strategies_by_id)
+                for s in selected
+            )
+            mmr = lambda_weight * relevance - (1 - lambda_weight) * sim_to_selected
+            if mmr > best_mmr:
+                best_mmr = mmr
+                best_idx = idx
+        if best_idx is None:
+            break
+        chosen = remaining.pop(best_idx)
+        chosen["_mmr_score"] = round(best_mmr, 4)
+        chosen["_diversity_from_top"] = round(
+            1.0 - _strategy_similarity(chosen, top, strategies_by_id), 3
+        )
+        selected.append(chosen)
+
+    return {
+        "top": top,
+        "alternatives": selected[1:],
+        "selection_method": "mmr_v1",
+        "lambda": lambda_weight,
+        "n_alternatives": len(selected) - 1,
+        "n_candidates_considered": len(candidates),
+    }
