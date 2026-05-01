@@ -44,6 +44,24 @@ auto_search:
   - 黄金
   - 原油
   - 美债
+  # Explicit search-intent phrases — multi-char to avoid false
+  # positives (single 搜/查 would match 搜过/查不到). Added when
+  # the user's query carried clear "go search" intent but none of
+  # the topic-keyword triggers above hit (e.g. "你搜搜 00 后 OpenAI
+  # 离职"). Effective in both CLI and web auto-search.
+  - 搜搜
+  - 搜一下
+  - 搜索一下
+  - 帮我搜
+  - 帮我查
+  - 帮我找
+  - 查一下
+  - 找一下
+  - search for
+  - look up
+  - google it
+  - "搜下 "
+  - "查下 "
 commands:
 - stock
 - portfolio
