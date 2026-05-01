@@ -1814,11 +1814,10 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("news router unavailable: %s", exc)
 
-    try:
-        from agent.finance.chat_stream import build_chat_router
-        app.include_router(build_chat_router(fleet))
-    except Exception as exc:  # pragma: no cover
-        logger.warning("chat router unavailable: %s", exc)
+    # Fleet-backed /api/chat router removed 2026-05-01 — SPA only uses
+    # /api/chat_stream (chat_streaming.py). OpenBB Workspace copilot
+    # still goes through fleet via openbb_adapter.build_agent_router
+    # below.
 
     try:
         from agent.finance.cn_data import build_cn_router

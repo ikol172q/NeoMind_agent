@@ -141,14 +141,18 @@ export function ChatPanel({
   useEffect(() => () => abortRef.current?.abort(), [])
 
   // ── Pending prompt hand-off from other tabs ──
-  // When the user clicks "ask agent" on a widget, App.tsx sets a
-  // pendingPrompt + optional pendingContext + switches to Chat.
-  // We pre-fill the input, attach the context to the next send,
-  // focus, then tell the parent to clear so leaving + re-entering
-  // the tab doesn't replay it.
+  // When the user clicks "ask agent" on a widget (or picks a ⌘K
+  // palette command), App.tsx sets pendingPrompt + optional
+  // pendingContext + switches tabs. We start a CLEAN session so the
+  // incoming prompt doesn't inherit irrelevant history from the last
+  // conversation (e.g. a watchlist "ask about MSFT" arriving in a
+  // session that had been talking about BTC), pre-fill the input,
+  // attach the context to the next send, focus, then tell the parent
+  // to clear so leaving + re-entering the tab doesn't replay it.
   useEffect(() => {
     if (!pendingPrompt) return
-    setInput(pendingPrompt)
+    startNewSession()           // sessionId=null, msgs=[], input=''
+    setInput(pendingPrompt)     // override the '' startNewSession set
     if (pendingContext) setNextSendContext(pendingContext)
     queueMicrotask(() => inputRef.current?.focus())
     onConsumePendingPrompt?.()

@@ -2,21 +2,28 @@
 through fleet. Emits SSE with token-by-token `delta` events so the
 UI gets Telegram-style typing effect, not a 20s-silent-then-dump.
 
-Trade-off vs fleet:
-- No fleet multi-agent deliberation (not needed for chat UX)
-- No persona config YAML loading (hardcoded system prompt below)
-- No transcript writing (but audit log still captures full request+response)
+Persona / model / behavior come from the single source of truth:
+- system prompt: ``agent_config.get_mode_config("fin")["system_prompt"]``
+  (i.e. fin.yaml — same prompt CLI ``neomind`` mode uses)
+- model: ``get_active_model("neomind")`` (i.e. ``provider-state.json``
+  — runtime ``/model`` selection takes effect immediately)
+- tools: web channel has no tool dispatch yet, so we append a fence
+  telling the LLM "AVAILABLE TOOLS: (none)" so the fin persona prompt
+  (which expects runtime tool injection) doesn't emit raw <tool_call>
+  XML
 
-Preserves:
+Web-only concerns kept here (not config dilution, just channel-level):
+- SSE token-by-token streaming
 - Investment-root data firewall (project_id validation)
 - Zero-data-loss audit log (full messages + full content)
-- Tool-free mode (no tool_call XML leak)
+- DASHBOARD STATE injection via build_context_block
 
 Each SSE stream ends with an ``event: done`` carrying the req_id,
 so the UI can link the chat bubble to its audit entry for debug.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -27,27 +34,58 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from agent.constants.models import DEFAULT_MODEL
+from agent.constants.models import get_active_model
 from agent.finance import agent_audit, investment_projects
+from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
+from agent_config import agent_config
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_DEFAULT_MODEL = DEFAULT_MODEL
 _MAX_TOKENS = 4096
 _TEMPERATURE = 0.3
+_SEARCH_TIMEOUT_S = 15.0
 
-# Hard-coded fin persona prompt. Concise — fleet has the full
-# multi-thousand-char version; this is optimized for chat UX.
-_SYSTEM_PROMPT = """You are NeoMind (新思), 金融认知延伸, the user's finance copilot inside a local-first dashboard.
+# Lazy singleton — UniversalSearchEngine init pulls in tier1/2/3
+# sources + cache + reranker, so we only pay for it once and only
+# when auto-search is actually wanted.
+_search_engine: Any = None  # None = uninitialized, False = init failed
 
-- Respond in the user's language (中文/English, match their input).
-- You do NOT have tool access in this chat channel. Do not emit <tool_call> blocks. Do not say "let me search" — answer from your own knowledge.
-- If the user clearly needs real-time data (live prices, today's news), briefly say so and suggest they use the Quote / Chart / News widgets on the Research tab.
-- Be concrete, concise, numeric when possible. Avoid filler.
-- If the question is about trading/investing, add a brief risk caveat when relevant — not every turn.
-- Markdown allowed (bold, bullets, code). No tables unless the user asks.
-"""
+
+def _get_search_engine():
+    """Return UniversalSearchEngine instance or None if unavailable.
+
+    Triggers come from fin.yaml's auto_search.triggers list (single
+    source — same triggers CLI uses). Domain hardcoded to "finance"
+    because this endpoint is fin-only.
+    """
+    global _search_engine
+    if _search_engine is None:
+        try:
+            from agent.search.engine import UniversalSearchEngine
+            triggers_list = (
+                agent_config.get_mode_config("fin")
+                .get("auto_search", {})
+                .get("triggers", [])
+            )
+            _search_engine = UniversalSearchEngine(
+                domain="finance",
+                triggers=set(triggers_list) if triggers_list else None,
+            )
+            logger.info(
+                "auto-search engine ready: %d triggers, %d tier1 + %d tier2 + %d tier3 sources",
+                len(_search_engine.triggers),
+                len(_search_engine.tier1_sources),
+                len(_search_engine.tier2_sources),
+                len(_search_engine.tier3_sources),
+            )
+        except Exception as exc:
+            logger.warning(
+                "UniversalSearchEngine init failed: %s; auto-search disabled",
+                exc,
+            )
+            _search_engine = False  # Sentinel — don't retry every call
+    return _search_engine if _search_engine else None
 
 
 def _get_api_key() -> str:
@@ -59,201 +97,6 @@ def _get_api_key() -> str:
             "`./scripts/sync_launchd_env.sh` then restart the dashboard",
         )
     return key
-
-
-def _build_context_block(
-    project_id: str,
-    context_symbol: Optional[str],
-    context_project: bool,
-) -> str:
-    """Render a compact DASHBOARD STATE block for the system prompt.
-
-    The block is agent-oriented: bullet points, no raw JSON, each
-    section labelled so the model can reference it back to the user.
-    We intentionally keep it under ~1.5k tokens — big enough to be
-    useful, small enough not to dominate the context window.
-    """
-    if not context_symbol and not context_project:
-        return ""
-    try:
-        from agent.finance import synthesis  # lazy: avoid circular
-    except Exception as exc:
-        logger.debug("synth import failed: %s", exc)
-        return ""
-
-    parts: list[str] = ["### DASHBOARD STATE (fresh, from the user's running dashboard) ###"]
-
-    if context_symbol:
-        sym = context_symbol.upper()
-        try:
-            s = synthesis.synth_symbol_data(project_id, sym)
-        except Exception as exc:
-            logger.debug("synth_symbol failed for %s: %s", sym, exc)
-            s = None
-        if s:
-            parts.append(_format_symbol_block(s))
-
-    if context_project:
-        try:
-            p = synthesis.synth_project_data(project_id)
-        except Exception as exc:
-            logger.debug("synth_project failed: %s", exc)
-            p = None
-        if p:
-            parts.append(_format_project_block(p))
-
-    parts.append(
-        "### END DASHBOARD STATE ###\n"
-        "Use the data above to ground your answer. If the user asks "
-        "something the data supports, cite the specific number. If the "
-        "data conflicts with something they said, surface the conflict. "
-        "If a field is null, say so — don't invent."
-    )
-    return "\n\n".join(parts)
-
-
-def _format_symbol_block(s: Dict[str, Any]) -> str:
-    sym = s.get("symbol", "?")
-    mkt = s.get("market", "?")
-    out: list[str] = [f"## Symbol: {sym} ({mkt})"]
-
-    q = s.get("quote") or {}
-    if q.get("price") is not None:
-        chg = q.get("change_pct")
-        chg_s = f"{chg:+.2f}%" if chg is not None else "n/a"
-        out.append(f"- quote: {q['price']} ({chg_s} day)")
-
-    pos = s.get("position")
-    if pos:
-        pct = pos.get("unrealized_pnl_pct")
-        pct_s = f"{pct:+.2f}%" if pct is not None else "n/a"
-        out.append(
-            f"- position held: {pos.get('quantity')} @ {pos.get('entry_price')} "
-            f"(unrealized {pct_s}, ${pos.get('unrealized_pnl'):+.2f})"
-        )
-
-    wl = s.get("watchlist")
-    if wl:
-        note = (wl.get("note") or "").strip()
-        out.append(f"- on watchlist{' · note: ' + note if note else ''}")
-
-    t = s.get("technical") or {}
-    if t:
-        bits = []
-        if t.get("trend"): bits.append(f"trend {t['trend']}")
-        if t.get("momentum"): bits.append(f"momentum {t['momentum']}")
-        if t.get("rsi14") is not None: bits.append(f"RSI14 {t['rsi14']}")
-        if t.get("range_pos_20d_pct") is not None: bits.append(f"20d-range {t['range_pos_20d_pct']}%")
-        if t.get("return_5d_pct") is not None: bits.append(f"5d {t['return_5d_pct']:+.2f}%")
-        if bits:
-            out.append("- technical: " + " · ".join(bits))
-
-    e = s.get("earnings") or {}
-    if e:
-        bits = []
-        if e.get("days_until") is not None: bits.append(f"{e['days_until']}d out ({e.get('next_earnings_date')})")
-        if e.get("atm_iv_pct") is not None: bits.append(f"ATM IV {e['atm_iv_pct']}%")
-        if e.get("avg_abs_move_pct") is not None: bits.append(f"avg |move| {e['avg_abs_move_pct']}%")
-        if e.get("rv_30d_pct") is not None: bits.append(f"30d RV {e['rv_30d_pct']}%")
-        if bits:
-            out.append("- earnings: " + " · ".join(bits))
-
-    r = s.get("rs") or {}
-    if r:
-        rank = r.get("rank_in_sp100_3m")
-        uni = r.get("universe_size")
-        r3m, r6m, rytd = r.get("return_3m"), r.get("return_6m"), r.get("return_ytd")
-        out.append(
-            f"- relative strength: rank {rank}/{uni} on 3M · "
-            f"3M {r3m:+.2f}% · 6M {r6m:+.2f}% · YTD {rytd:+.2f}%"
-        )
-
-    sec = s.get("sector") or {}
-    if sec.get("sector"):
-        bits = [sec["sector"]]
-        if sec.get("industry") and sec.get("industry") != sec.get("sector"):
-            bits.append(sec["industry"])
-        out.append(f"- sector: {' / '.join(bits)}")
-
-    news = s.get("news") or {}
-    headlines = (news.get("headlines") or [])[:3]
-    if headlines:
-        out.append(f"- recent news ({news.get('count_7d_approx', 0)} recent hits):")
-        for h in headlines:
-            out.append(f"  · {h.get('title', '')[:110]}")
-    elif news.get("count_7d_approx") == 0:
-        out.append("- no recent news hits for this symbol")
-
-    sent = s.get("market_sentiment") or {}
-    if sent.get("label"):
-        out.append(
-            f"- market regime (for context, not symbol-specific): "
-            f"{sent['label']} ({sent.get('composite_score')}/100)"
-        )
-
-    return "\n".join(out)
-
-
-def _format_project_block(p: Dict[str, Any]) -> str:
-    out: list[str] = [f"## Project: {p.get('project_id')}"]
-
-    wl = p.get("watchlist") or []
-    if wl:
-        summary = ", ".join(f"{e['market']}:{e['symbol']}" for e in wl[:20])
-        out.append(f"- watchlist ({len(wl)}): {summary}")
-
-    positions = p.get("positions") or []
-    if positions:
-        parts = []
-        for pos in positions:
-            pct = pos.get("unrealized_pnl_pct")
-            pct_s = f"{pct:+.2f}%" if pct is not None else "n/a"
-            parts.append(f"{pos['symbol']} {pos.get('quantity')} @ {pos.get('entry_price')} ({pct_s})")
-        out.append("- paper positions: " + "; ".join(parts))
-
-    acct = p.get("account") or {}
-    if acct.get("equity") is not None:
-        out.append(
-            f"- account: equity ${acct.get('equity')} · "
-            f"total P&L ${acct.get('total_pnl')} ({acct.get('total_pnl_pct'):+.3f}%)"
-        )
-
-    upcoming = p.get("upcoming_earnings") or []
-    if upcoming:
-        bits = [
-            f"{e['symbol']} in {e['days_until']}d "
-            f"(IV {e.get('atm_iv_pct','?')}% vs avg |move| {e.get('avg_abs_move_pct','?')}%)"
-            for e in upcoming[:10]
-        ]
-        out.append("- upcoming earnings: " + "; ".join(bits))
-
-    sm = p.get("sector_movers") or {}
-    tops = sm.get("top") or []
-    bots = sm.get("bottom") or []
-    if tops:
-        out.append(
-            "- sectors today — top: "
-            + ", ".join(f"{s['name']} {s['change_pct']:+.2f}%" for s in tops)
-        )
-    if bots:
-        out.append(
-            "  bottom: "
-            + ", ".join(f"{s['name']} {s['change_pct']:+.2f}%" for s in bots)
-        )
-
-    sent = p.get("market_sentiment") or {}
-    if sent.get("label"):
-        out.append(
-            f"- market regime: {sent['label']} ({sent.get('composite_score')}/100)"
-        )
-
-    news = p.get("relevant_news") or []
-    if news:
-        out.append(f"- recent news mentioning your holdings/watchlist ({len(news)}):")
-        for h in news[:8]:
-            out.append(f"  · {h.get('title', '')[:110]}")
-
-    return "\n".join(out)
 
 
 def _validate_project(pid: str) -> str:
@@ -271,7 +114,12 @@ def build_chat_stream_router() -> APIRouter:
     async def chat_stream(
         project_id: str = Query(...),
         message: str = Query(...),
-        model: str = Query(_DEFAULT_MODEL),
+        model: Optional[str] = Query(
+            None,
+            description="Override the model. When omitted, uses "
+                        "get_active_model('neomind') so runtime "
+                        "/model selection takes effect.",
+        ),
         context_symbol: Optional[str] = Query(
             None,
             description="If set, fetch /api/synthesis/symbol/{sym} and "
@@ -292,21 +140,54 @@ def build_chat_stream_router() -> APIRouter:
         if len(message) > 4000:
             raise HTTPException(400, "message too long")
 
+        if not model:
+            model = get_active_model("neomind")
+
         api_key = _get_api_key()
         req_id = agent_audit.new_req_id()
 
-        # Context injection — pull synthesis snapshots and prepend as
-        # an extra system-level block. Keep best-effort: if synthesis
-        # fails we still send the user's message, just without the
-        # extra context (chat is useful even without dashboard state).
-        system_prompt = _SYSTEM_PROMPT
-        injected_ctx = _build_context_block(
+        # System prompt layers (in order):
+        #   1. fin.yaml persona (CLI's source of truth)
+        #   2. WEB_CHANNEL_FENCE — "no LLM-driven tool dispatch"
+        #   3. AUTO-SEARCH RESULTS (if message hits fin.yaml triggers
+        #      and UniversalSearchEngine returns something)
+        #   4. DASHBOARD STATE (if widget context requested)
+        # get_mode_config("fin") is mode-agnostic so the dashboard's
+        # prompt doesn't drift if user runs `/mode coding` in the CLI.
+        fin_prompt = agent_config.get_mode_config("fin").get("system_prompt", "")
+        system_prompt = fin_prompt + "\n\n" + WEB_CHANNEL_FENCE
+
+        # Auto-search: trigger detection comes from fin.yaml's
+        # auto_search.triggers (single source — same trigger set CLI
+        # uses). Failure / timeout degrades to "no results" rather
+        # than blocking the chat — answering from training knowledge
+        # is still useful.
+        engine = _get_search_engine()
+        if engine and engine.should_search(message):
+            try:
+                ok, search_text = await asyncio.wait_for(
+                    engine.search(message),
+                    timeout=_SEARCH_TIMEOUT_S,
+                )
+                if ok and search_text:
+                    system_prompt += (
+                        "\n\n══════ AUTO-SEARCH RESULTS ══════\n"
+                        f"(query: {message!r})\n\n"
+                        f"{search_text}\n"
+                        "══════ END AUTO-SEARCH ══════"
+                    )
+            except asyncio.TimeoutError:
+                logger.warning("auto-search timed out after %ss", _SEARCH_TIMEOUT_S)
+            except Exception as exc:
+                logger.warning("auto-search failed: %s", exc)
+
+        injected_ctx = build_context_block(
             project_id=pid,
             context_symbol=context_symbol,
             context_project=context_project,
         )
         if injected_ctx:
-            system_prompt = _SYSTEM_PROMPT + "\n\n" + injected_ctx
+            system_prompt = system_prompt + "\n\n" + injected_ctx
 
         messages = [
             {"role": "system", "content": system_prompt},

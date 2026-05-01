@@ -23,16 +23,21 @@ from typing import Any, Dict, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
-from agent.constants.models import DEFAULT_MODEL
+from agent.constants.models import get_active_model
 from agent.finance import agent_audit, investment_projects, synthesis
-from agent.finance.chat_streaming import _SYSTEM_PROMPT, _build_context_block
+from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
+from agent_config import agent_config
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_MODEL = DEFAULT_MODEL
 _TEMPERATURE = 0.25
-_MAX_TOKENS = 700
+# Budget covers DeepSeek-v4-flash's reasoning_tokens (consumed before
+# output starts) plus the actual 3-line brief. fin.yaml's truth-first
+# system prompt triggers ~1500-2000 reasoning tokens for a structured
+# brief task; under-budget causes finish_reason='length' with empty
+# content. The brief itself stays ~50 words by _BRIEF_PROMPT rules.
+_MAX_TOKENS = 2500
 
 _TTL_S = 300.0          # 5 min per project
 _REQUEST_TIMEOUT_S = 35.0
@@ -90,13 +95,13 @@ def _put(key: str, value: Dict[str, Any]) -> None:
         _cache[key] = (time.time(), value)
 
 
-async def _call_deepseek(system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+async def _call_deepseek(system_prompt: str, user_prompt: str, model: str) -> Dict[str, Any]:
     api_key = _get_api_key()
     async with httpx.AsyncClient(timeout=httpx.Timeout(_REQUEST_TIMEOUT_S)) as client:
         resp = await client.post(
             _DEEPSEEK_URL,
             json={
-                "model": _MODEL,
+                "model": model,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt},
@@ -136,11 +141,20 @@ def build_research_brief_router() -> APIRouter:
                 return cached
 
         req_id = agent_audit.new_req_id()
-        system_prompt = _SYSTEM_PROMPT + "\n\n" + _build_context_block(
-            project_id=project_id,
-            context_symbol=None,
-            context_project=True,
+        # Single source: fin.yaml persona (CLI's truth) + web "no tools"
+        # fence + DASHBOARD STATE. Model from provider-state via
+        # get_active_model so runtime /model selection takes effect.
+        fin_prompt = agent_config.get_mode_config("fin").get("system_prompt", "")
+        system_prompt = (
+            fin_prompt
+            + "\n\n" + WEB_CHANNEL_FENCE
+            + "\n\n" + build_context_block(
+                project_id=project_id,
+                context_symbol=None,
+                context_project=True,
+            )
         )
+        model = get_active_model("neomind")
         agent_audit.audit_request(
             req_id=req_id,
             endpoint="/api/research_brief",
@@ -149,7 +163,7 @@ def build_research_brief_router() -> APIRouter:
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": _BRIEF_PROMPT},
             ],
-            model=_MODEL,
+            model=model,
             max_tokens=_MAX_TOKENS,
             temperature=_TEMPERATURE,
             project_id=project_id,
@@ -157,7 +171,7 @@ def build_research_brief_router() -> APIRouter:
 
         t0 = time.monotonic()
         try:
-            response = await _call_deepseek(system_prompt, _BRIEF_PROMPT)
+            response = await _call_deepseek(system_prompt, _BRIEF_PROMPT, model)
         except HTTPException as exc:
             agent_audit.audit_error(
                 req_id=req_id,
