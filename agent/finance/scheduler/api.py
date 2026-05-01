@@ -7,9 +7,12 @@ Mounted into ``dashboard_server.py``:
 
 Endpoints
 ---------
-GET  /api/scheduler/jobs            — list registered jobs + DB state
-POST /api/scheduler/run/{job_name}  — force-run a job synchronously
-                                       (the "manual rerun" button)
+GET  /api/scheduler/jobs                — list registered jobs + DB state
+POST /api/scheduler/run/{job_name}      — force-run a job synchronously
+                                          (the "manual rerun" button)
+GET  /api/scheduler/runs/{job_name}     — last N runs for that job, with
+                                          parsed metadata (the "Last Audit"
+                                          panel data source)
 
 The force-run endpoint is intentionally synchronous in V1: a single
 data pull takes <30s on real Yahoo Finance, and synchronous keeps
@@ -23,12 +26,16 @@ that triggers expensive recomputation MUST be auth-gated.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+import json
+import logging
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
-from agent.finance.persistence import connect, ensure_schema
+from agent.finance.persistence import connect, dao, ensure_schema
 from agent.finance.scheduler.core import build_default_registry, run_job_once
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/scheduler", tags=["fin-scheduler"])
 
@@ -87,3 +94,90 @@ def force_run(job_name: str) -> Dict[str, Any]:
 
     result = run_job_once(job_name)
     return {"job": job_name, "result": result}
+
+
+@router.get("/runs/{job_name}")
+def list_runs(
+    job_name: str,
+    limit: int = Query(default=10, ge=1, le=500),
+    started_after: Optional[str] = Query(
+        default=None,
+        description="Inclusive ISO 8601 lower bound on started_at "
+                    "(e.g. '2026-04-28T00:00:00Z').",
+    ),
+    started_before: Optional[str] = Query(
+        default=None,
+        description="Inclusive ISO 8601 upper bound on started_at "
+                    "(e.g. '2026-04-28T23:59:59Z').",
+    ),
+) -> Dict[str, Any]:
+    """Return analysis_runs rows for ``job_name``.
+
+    This is the data source for the Strategies-tab "Last Audit" panel.
+    Without this endpoint the user has no way to tell whether the daily
+    auditor actually ran (and produced "still unverified" because the
+    corpus didn't ground the claims) vs. silently skipped (cron didn't
+    fire).  Each row carries the rich summary the job stashed into
+    metadata_json on completion: audited_n / promoted_n / still_unverified
+    / errors_n / sample / explanation.
+
+    With no date bounds: returns the most recent ``limit`` rows.
+    With ``started_after`` / ``started_before``: scopes to that window
+    (still capped by ``limit``).  The UI's TimeScope control passes:
+      - "Today"        → started_after = today 00:00 UTC
+      - "Single day"   → both bounds set to that day
+      - "Range"        → both bounds set to user-picked range
+      - "All time"     → no bounds (default)
+    """
+    ensure_schema()
+    reg = build_default_registry()
+    if job_name not in reg.names():
+        raise HTTPException(
+            status_code=404,
+            detail=f"unknown job {job_name!r}; known: {reg.names()}",
+        )
+
+    out: List[Dict[str, Any]] = []
+    with connect() as conn:
+        rows = dao.list_recent_runs(
+            conn,
+            job_name=job_name,
+            limit=int(limit),
+            started_after=started_after,
+            started_before=started_before,
+        )
+
+    for r in rows:
+        meta_raw: Optional[str] = r["metadata_json"] if "metadata_json" in r.keys() else None
+        meta: Dict[str, Any] = {}
+        if meta_raw:
+            try:
+                parsed = json.loads(meta_raw)
+                if isinstance(parsed, dict):
+                    meta = parsed
+            except Exception:  # pragma: no cover — defensive
+                meta = {"_raw": meta_raw}
+
+        out.append({
+            "run_id":            r["run_id"],
+            "run_type":          r["run_type"],
+            "job_name":          r["job_name"],
+            "started_at":        r["started_at"],
+            "completed_at":      r["completed_at"],
+            "status":            r["status"],
+            "error_message":     r["error_message"],
+            "rows_written":      r["rows_written"],
+            "duration_seconds":  r["duration_seconds"],
+            "metadata":          meta,
+        })
+
+    return {
+        "job": job_name,
+        "count": len(out),
+        "runs": out,
+        "filters": {
+            "limit": int(limit),
+            "started_after": started_after,
+            "started_before": started_before,
+        },
+    }

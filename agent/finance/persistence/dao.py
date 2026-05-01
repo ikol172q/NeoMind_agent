@@ -283,10 +283,18 @@ def complete_analysis_run(
     error_message: Optional[str] = None,
     universe_size: Optional[int] = None,
     rows_written: Optional[int] = None,
+    metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Close a run row. Computes duration_seconds from started_at."""
+    """Close a run row. Computes duration_seconds from started_at.
+
+    ``metadata`` (optional) is merged into ``metadata_json`` so a job
+    can record its rich summary (counts, sample rows, explanation)
+    next to the run row — that's what the UI's "Last Audit" panel reads
+    when answering "what did this run actually do?".
+    """
     cur = conn.execute(
-        "SELECT started_at FROM analysis_runs WHERE run_id = ?", (run_id,),
+        "SELECT started_at, metadata_json FROM analysis_runs WHERE run_id = ?",
+        (run_id,),
     )
     row = cur.fetchone()
     if row is None:
@@ -296,20 +304,62 @@ def complete_analysis_run(
     completed = datetime.now(timezone.utc)
     duration = (completed - started).total_seconds()
 
+    if metadata is not None:
+        # Merge: keep prior keys (e.g. "limit" from start_analysis_run),
+        # let summary keys overwrite. JSON-stringify only at the end.
+        prior_raw = row["metadata_json"]
+        prior: Dict[str, Any] = {}
+        if prior_raw:
+            try:
+                prior = json.loads(prior_raw) or {}
+                if not isinstance(prior, dict):
+                    prior = {"_legacy": prior}
+            except Exception:  # pragma: no cover — defensive
+                prior = {}
+        prior.update(metadata)
+        merged_json: Optional[str] = json.dumps(prior, default=str)
+    else:
+        merged_json = None
+
     conn.execute(
         """
         UPDATE analysis_runs
            SET completed_at = ?, status = ?, error_message = ?,
                universe_size = COALESCE(?, universe_size),
                rows_written = COALESCE(?, rows_written),
-               duration_seconds = ?
+               duration_seconds = ?,
+               metadata_json = COALESCE(?, metadata_json)
          WHERE run_id = ?
         """,
         (
             completed.isoformat(timespec="seconds"),
             status, error_message, universe_size, rows_written, duration,
+            merged_json,
             run_id,
         ),
+    )
+
+
+# Backward-compat alias: signal_hourly + whale_daily + the manual
+# /scan/all endpoint all call this name.  Maps the older `summary_json`
+# kwarg onto `metadata` so callers don't need to change.
+def finish_analysis_run(
+    conn: sqlite3.Connection,
+    *,
+    run_id: str,
+    status: str = "completed",
+    error_message: Optional[str] = None,
+    summary_json: Optional[Dict[str, Any]] = None,
+    universe_size: Optional[int] = None,
+    rows_written: Optional[int] = None,
+) -> None:
+    return complete_analysis_run(
+        conn, run_id,
+        status=status,
+        error_message=error_message,
+        universe_size=universe_size,
+        rows_written=rows_written,
+        metadata=summary_json,
     )
 
 
@@ -317,12 +367,35 @@ def list_recent_runs(
     conn: sqlite3.Connection,
     job_name: Optional[str] = None,
     limit: int = 20,
+    *,
+    started_after: Optional[str] = None,
+    started_before: Optional[str] = None,
 ) -> List[sqlite3.Row]:
+    """List runs, newest-first.
+
+    Optional ``started_after`` / ``started_before`` are inclusive ISO 8601
+    bounds.  Both are compared lexicographically against the
+    ``started_at`` column, which is fine because the column is always
+    written as zulu-suffixed ISO (``2026-04-28T04:39:32Z`` / ``+00:00``)
+    and lex-order matches chronological order for that format.
+
+    Pass either or both to scope the query (e.g. "all runs from
+    2026-04-26 onwards", "all runs in 2026-04 week").
+    """
     sql = "SELECT * FROM analysis_runs"
+    where: List[str] = []
     args: List[Any] = []
     if job_name:
-        sql += " WHERE job_name = ?"
+        where.append("job_name = ?")
         args.append(job_name)
+    if started_after:
+        where.append("started_at >= ?")
+        args.append(started_after)
+    if started_before:
+        where.append("started_at <= ?")
+        args.append(started_before)
+    if where:
+        sql += " WHERE " + " AND ".join(where)
     sql += " ORDER BY started_at DESC LIMIT ?"
     args.append(limit)
     return list(conn.execute(sql, args))

@@ -67,15 +67,27 @@ _PDT_AWARE_HORIZON = {"intraday", "days"}
 _ASSUMED_ACCOUNT_UNDER_25K = True
 
 
-def _load_strategies() -> List[Dict[str, Any]]:
-    if not _STRATEGIES_YAML.exists():
-        return []
-    try:
-        raw = yaml.safe_load(_STRATEGIES_YAML.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        logger.warning("strategies.yaml parse error: %s", exc)
-        return []
-    return list(raw.get("strategies", []))
+def _load_strategies(*, include_unverified: bool = False) -> List[Dict[str, Any]]:
+    """Load the catalog with provenance normalisation.
+
+    By default returns only ``is_trusted()`` strategies — those whose
+    provenance.state is ``verified`` or ``rawstore_grounded``.  This
+    is the Layer 3 anti-hallucination gate: unverified entries (the
+    Phase 3 subagent's 2026-04-25 default) cannot reach the L3 calls
+    prompt or attach as a strategy_match chip on a Call.
+
+    Pass ``include_unverified=True`` only for diagnostic / UI views
+    that explicitly need to show the full catalog (the Strategies tab
+    page itself, with a ⚠ chip).  Decision-path code paths must use
+    the default.
+    """
+    # Delegate to the central catalog loader so the same normalisation
+    # (default-deny on missing provenance) runs in one place.
+    from agent.finance.strategies_catalog import _load_catalog, is_trusted
+    items = _load_catalog()
+    if include_unverified:
+        return items
+    return [s for s in items if is_trusted(s)]
 
 
 def _collect_member_tags(
@@ -207,8 +219,19 @@ def match_all_against_themes(themes: List[Any]) -> List[Dict[str, Any]]:
     Each strategy gets scored at its OWN horizon (so horizon_match
     fires automatically — we want to see how the OTHER signals like
     options-coupling / earnings / compliance light up).
+
+    BUG FIX (2026-04-29): previously called ``_load_strategies()``
+    which defaults to ``include_unverified=False`` — Layer 3's anti-
+    hallucination gate.  That gate is correct for the L3-call PROMPT
+    (don't let the LLM pick from unverified strategies), but this
+    endpoint is pure DISPLAY — every catalog card needs a fit score,
+    or the UI shows ``fit 0/10`` for all 36 cards (because the fit
+    array comes back empty and the UI's ``score ?? 0`` fallback
+    fires for every lookup).  Pass ``include_unverified=True`` here
+    so the display sees the full catalog.  The L3-call matcher in
+    ``match_strategy()`` below keeps the default-deny.
     """
-    strategies = _load_strategies()
+    strategies = _load_strategies(include_unverified=True)
     if not strategies:
         return []
 

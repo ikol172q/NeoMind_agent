@@ -22,6 +22,13 @@ content lives in the files it points to.
 - `real-terminal-fidelity-testing` — 100% user-behavior terminal testing
 - `session-reflection` (user-level) — auto-trigger self-review every ~30 min in
   long sessions, externalize new learnings, dedup against existing docs
+- `anti-hallucination` — **MUST READ** before any task that fills fact-heavy
+  structured data (yaml/json), researches sources, or asks an LLM to "compress
+  training knowledge into facts". Phase 3 subagent fabricated 108 source URLs
+  + dozens of numeric claims in `docs/strategies/strategies.yaml` because this
+  rule did not exist. Hard rules: URLs must be `raw://<sha256>` or `[]`;
+  numeric claims must be qualitative or `*_source`-cited; empty is honest,
+  invented number is trust violation.
 
 ### 🪞 Periodic self-reflection (mandatory)
 At session start for long/complex work, schedule a wakeup (~25 min) to invoke
