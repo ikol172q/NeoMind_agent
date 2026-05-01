@@ -495,13 +495,23 @@ def backfill_fingerprints(
     start = date.fromisoformat(since)
     end = date.fromisoformat(until) if until else date.today()
     total_days = (end - start).days + 1
+    # Estimate trading-day count (~5/7 of calendar days) for progress %
+    est_trading_days = int(round(total_days * 5 / 7))
     written = 0
     skipped = 0
     failed = 0
     cur = start
+    visited_trading_days = 0
+    import time as _time
+    t_start = _time.monotonic()
+    logger.info(
+        "[FP-BACKFILL] starting %s..%s (~%d trading days)",
+        since, end.isoformat(), est_trading_days,
+    )
     while cur <= end:
         # Skip weekends (no trading)
         if cur.weekday() < 5:
+            visited_trading_days += 1
             iso = cur.isoformat()
             if skip_existing and get_fingerprint(iso):
                 skipped += 1
@@ -513,6 +523,17 @@ def backfill_fingerprints(
                 except Exception as exc:
                     logger.warning("fingerprint compute failed for %s: %s", iso, exc)
                     failed += 1
+            # Progress marker every 25 trading days (~5 weeks)
+            if visited_trading_days % 25 == 0:
+                pct = 100.0 * visited_trading_days / max(1, est_trading_days)
+                elapsed = _time.monotonic() - t_start
+                eta_total = elapsed * est_trading_days / max(1, visited_trading_days)
+                eta_left = max(0, eta_total - elapsed)
+                logger.info(
+                    "[FP-BACKFILL] %5.1f%% · day %d/%d · cur=%s · written=%d skipped=%d failed=%d · elapsed=%.0fs eta=%.0fs",
+                    pct, visited_trading_days, est_trading_days, iso,
+                    written, skipped, failed, elapsed, eta_left,
+                )
         cur = cur + timedelta(days=1)
     logger.info(
         "backfill_fingerprints: %s..%s — wrote %d skipped %d failed %d",

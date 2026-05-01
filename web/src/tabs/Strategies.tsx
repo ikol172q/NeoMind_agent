@@ -43,6 +43,12 @@ import { FreshnessBar } from '@/components/FreshnessBar'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
 import { RegimeFingerprintWidget } from '@/components/widgets/RegimeFingerprintWidget'
+import { PortfolioWidget } from '@/components/widgets/PortfolioWidget'
+import { RiskDashboardWidget } from '@/components/widgets/RiskDashboardWidget'
+import { AlgorithmAppendix } from '@/components/widgets/AlgorithmAppendix'
+import { TodaysSignalsWidget } from '@/components/widgets/TodaysSignalsWidget'
+import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
+import { ChatPanel } from '@/components/chat/ChatPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
   'long_term',
@@ -281,7 +287,8 @@ export function StrategiesTab({
   }, [q.data, diffFilter, feasibleOnly, sortKey, strategyToCalls, fitByStrategy])
 
   return (
-    <div className="h-full overflow-y-auto p-4 text-[12px]">
+    <div className="h-full flex overflow-hidden">
+      <div className="flex-1 overflow-y-auto p-4 text-[12px]">
       {/* B6-Step1: provenance breadcrumb at the very top of the tab.
           Uses the same /api/lattice/calls payload the page already
           fetches, so it surfaces the EXACT same dep_hash + run_id
@@ -403,6 +410,16 @@ export function StrategiesTab({
           </div>
         </div>
 
+        {/* Phase L (#106) — NeoMind Live signal system.
+            Pull → Push transition: instead of the user staring at a
+            dashboard, NeoMind scans 5 sources continuously and only
+            surfaces ≥2-source confluences as "Today's signals". The
+            live stream below shows transparency into what scanners
+            are doing — modeled on Operator/Claude Tools UX but
+            persisted to SQLite for cross-session traceability. */}
+        <TodaysSignalsWidget />
+        <NeoMindLiveStream />
+
         {/* v2 (2026-04-29): 5-bucket regime fingerprint.  Lives at the
             top so the user can SEE today's regime — it's the single
             biggest factor in WHY each strategy got the score it got.
@@ -411,6 +428,21 @@ export function StrategiesTab({
             widget renders placeholder bars + a hint to run the
             regime_backfill.command. */}
         <RegimeFingerprintWidget asOf={asOf ?? 'live'} compact />
+
+        {/* Step F (#89) — MMR diversified portfolio selection.
+            Shows ONE most-recommended strategy + 3-8 alternatives that
+            are intentionally DIFFERENT in payoff_class / asset_class /
+            regime_sensitivity direction so the user has real options
+            instead of a list of near-clones.  Uses /api/regime/portfolio
+            backed by select_diversified_portfolio() in scorer.py. */}
+        <PortfolioWidget asOf={asOf ?? 'live'} />
+
+        {/* Phase H (#101) — Risk Dashboard.  Math-grounded 6-dimension
+            view per strategy: return distribution / VaR-CVaR / Kelly /
+            hedge candidates / ATR stop / regime fit. Replaces the
+            single fit score with multi-dimensional risk-aware
+            decision support. */}
+        <RiskDashboardWidget asOf={asOf ?? 'live'} />
 
         {/* Anti-hallucination Layer 0: visible signal that the daily
             auditor is alive.  Without this, a row of 36 ⚠ unverified
@@ -573,8 +605,140 @@ export function StrategiesTab({
             ))}
           </div>
         )}
+
+        {/* Phase K2 (#105) — Algorithm Appendix.  Ground truth documentation
+            of every algorithm visualized on this tab — formula + paper +
+            code path + thresholds — so the user can verify any number on
+            the dashboard is computed as advertised.  Default-collapsed. */}
+        <AlgorithmAppendix />
       </div>
+      </div>
+
+      {/* Phase M (#109) — right-side ChatPanel.  Always-on agent
+          conversation panel so the user can ask questions about
+          signals, regime, strategies WITHOUT leaving the Strategies
+          tab.  Phase M1a: rail is resizable + sessions sidebar can
+          be hidden so the conversation has more width.  The standalone
+          Chat tab is preserved (this is a second mount of ChatPanel;
+          sessions are independent). */}
+      <ChatRail projectId={projectId} />
     </div>
+  )
+}
+
+
+// ── ChatRail ────────────────────────────────────────────────────────
+// Resizable + collapsible right rail wrapping ChatPanel.
+//   • drag the left edge to resize (persist width in localStorage)
+//   • click "💬 sessions" to toggle the past-sessions sidebar
+//   • click the chevron to fully collapse the rail to a thin strip
+function ChatRail({ projectId }: { projectId: string }) {
+  const KEY_W   = 'strategies.chatRail.width'
+  const KEY_SS  = 'strategies.chatRail.showSessions'
+  const KEY_OPEN = 'strategies.chatRail.open'
+
+  const [width, setWidth] = useState<number>(() => {
+    const v = Number(localStorage.getItem(KEY_W))
+    return v >= 280 && v <= 900 ? v : 400
+  })
+  const [showSessions, setShowSessions] = useState<boolean>(() => {
+    return localStorage.getItem(KEY_SS) !== '0'
+  })
+  const [open, setOpen] = useState<boolean>(() => {
+    return localStorage.getItem(KEY_OPEN) !== '0'
+  })
+
+  useEffect(() => { localStorage.setItem(KEY_W,  String(width)) }, [width])
+  useEffect(() => { localStorage.setItem(KEY_SS, showSessions ? '1' : '0') }, [showSessions])
+  useEffect(() => { localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open])
+
+  // Drag-to-resize via global mousemove/mouseup so cursor doesn't
+  // snap back if it leaves the handle while dragging.
+  const draggingRef = useRef(false)
+  function onResizeStart(e: React.MouseEvent) {
+    e.preventDefault()
+    draggingRef.current = true
+    document.body.style.cursor = 'col-resize'
+    document.body.style.userSelect = 'none'
+  }
+  useEffect(() => {
+    function onMove(ev: MouseEvent) {
+      if (!draggingRef.current) return
+      // Width is from the right edge of the viewport
+      const next = Math.min(900, Math.max(280, window.innerWidth - ev.clientX))
+      setWidth(next)
+    }
+    function onUp() {
+      if (!draggingRef.current) return
+      draggingRef.current = false
+      document.body.style.cursor = ''
+      document.body.style.userSelect = ''
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup',   onUp)
+    return () => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup',   onUp)
+    }
+  }, [])
+
+  if (!open) {
+    // Collapsed strip — just a vertical button to re-open
+    return (
+      <aside className="w-[28px] flex-shrink-0 border-l border-[var(--color-border)] bg-[var(--color-bg)]/30 flex flex-col items-center pt-2">
+        <button
+          onClick={() => setOpen(true)}
+          title="展开 Ask NeoMind"
+          className="text-[var(--color-dim)] hover:text-[var(--color-text)] text-[14px] px-1 py-2"
+        >
+          ◀
+        </button>
+        <div
+          className="text-[9px] text-[var(--color-dim)] mt-1 select-none"
+          style={{ writingMode: 'vertical-rl' }}
+        >
+          💬 Ask NeoMind
+        </div>
+      </aside>
+    )
+  }
+
+  return (
+    <aside
+      style={{ width: `${width}px` }}
+      className="flex-shrink-0 border-l border-[var(--color-border)] flex flex-row bg-[var(--color-bg)]/30 relative"
+    >
+      {/* Drag handle on the left edge */}
+      <div
+        onMouseDown={onResizeStart}
+        title="拖动调整宽度"
+        className="absolute left-0 top-0 bottom-0 w-[4px] cursor-col-resize hover:bg-[var(--color-accent)]/40 z-10"
+      />
+
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="px-3 py-2 border-b border-[var(--color-border)] text-[10px] text-[var(--color-dim)] flex items-center gap-2">
+          <span className="font-semibold text-[var(--color-text)]">💬 Ask NeoMind</span>
+          <span className="italic truncate">— 不用切 tab</span>
+          <button
+            onClick={() => setShowSessions(s => !s)}
+            title={showSessions ? '隐藏 sessions' : '显示 sessions'}
+            className="ml-auto px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+          >
+            {showSessions ? '◧ hide sessions' : '◨ show sessions'}
+          </button>
+          <button
+            onClick={() => setOpen(false)}
+            title="折叠 chat 栏"
+            className="px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+          >
+            ▶
+          </button>
+        </div>
+        <div className="flex-1 overflow-hidden">
+          <ChatPanel projectId={projectId} hideSessions={!showSessions} />
+        </div>
+      </div>
+    </aside>
   )
 }
 

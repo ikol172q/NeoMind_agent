@@ -44,6 +44,14 @@ DEFAULT_JOBS = [
     # fingerprint compute.  Powers the 5-bucket regime widget on the
     # Research tab and the new expected-utility scorer.
     "agent.finance.scheduler.jobs.regime_daily",
+    # Phase L+ (2026-04-30): hourly signal scan — watchlist + news
+    # scanners → confluence detector → "Today's Signals" inbox.
+    # Skips gracefully if user_watchlist is empty.
+    "agent.finance.scheduler.jobs.signal_hourly",
+    # Phase L+ (2026-04-30): daily 13F whale scan via SEC EDGAR.
+    # 7 whales × ~1s each + 0.5s sleep = ~30s.  Idempotent: re-emits
+    # only when SEC publishes a new filing.
+    "agent.finance.scheduler.jobs.whale_daily",
 ]
 
 

@@ -41,6 +41,10 @@ interface Props {
    *  so the agent sees the dashboard state in its system prompt. */
   pendingContext?: { symbol?: string; project?: boolean } | null
   onConsumePendingPrompt?: () => void
+  /** When true, the past-sessions sidebar is not rendered.  Used by
+   *  the embedded ChatPanel in Strategies' right rail so that narrow
+   *  layouts can hide sessions to give the conversation more width. */
+  hideSessions?: boolean
 }
 
 /**
@@ -85,6 +89,7 @@ export function ChatPanel({
   pendingPrompt,
   pendingContext,
   onConsumePendingPrompt,
+  hideSessions = false,
 }: Props) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -336,12 +341,14 @@ export function ChatPanel({
 
   return (
     <div className="h-full flex">
-      <SessionSidebar
-        projectId={projectId}
-        currentSessionId={sessionId}
-        onSelect={selectSession}
-        onNew={startNewSession}
-      />
+      {!hideSessions && (
+        <SessionSidebar
+          projectId={projectId}
+          currentSessionId={sessionId}
+          onSelect={selectSession}
+          onNew={startNewSession}
+        />
+      )}
 
       <div className="flex-1 flex flex-col min-w-0 max-w-4xl mx-auto">
         <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)]">

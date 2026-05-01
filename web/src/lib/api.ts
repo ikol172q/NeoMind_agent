@@ -1699,6 +1699,556 @@ export function useRegimeFingerprint(date?: string | null) {
 }
 
 
+// ── Step F: MMR-diversified portfolio (top1 + alternatives) ────────
+
+
+export interface PortfolioEntry {
+  strategy_id: string
+  name_en?: string
+  name_zh?: string
+  horizon?: string
+  difficulty?: number
+  asset_class?: string
+  score: number
+  score_breakdown?: Record<string, unknown>
+  formula?: string
+  _mmr_score?: number
+  _diversity_from_top?: number
+}
+
+export interface PortfolioSelection {
+  top: PortfolioEntry | null
+  alternatives: PortfolioEntry[]
+  selection_method: string
+  lambda: number
+  n_alternatives: number
+  n_candidates_considered?: number
+  fingerprint_date?: string
+  fingerprint?: RegimeFingerprintScores | null
+  note?: string
+}
+
+export function usePortfolioSelection(
+  date?: string | null,
+  nAlternatives: number = 5,
+  lambdaWeight: number = 0.65,
+) {
+  return useQuery({
+    queryKey: ['portfolio_selection', date ?? 'today', nAlternatives, lambdaWeight],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (date && date !== 'live') params.set('as_of', date)
+      params.set('n_alternatives', String(nAlternatives))
+      params.set('lambda_weight', String(lambdaWeight))
+      return fetchJSON<PortfolioSelection>(`/api/regime/portfolio?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── decision_traces (Audit tab drill view) ─────────────────────────
+
+
+export interface DecisionTrace {
+  trace_id: string
+  fingerprint_date: string
+  strategy_id: string
+  score: number
+  rank: number
+  alternative_weight: number
+  formula: string
+  computed_at: string
+  breakdown?: Record<string, unknown> | null
+  lattice_node_refs?: string[] | null
+  knn_neighbor_dates?: string[] | null
+  constraint_check?: Record<string, unknown> | null
+  portfolio_fit?: Record<string, unknown> | null
+}
+
+// ── Settings #92: user prefs (4-question onboarding) ──────────────
+
+
+export interface UserPrefs {
+  options_level: number                    // 0..3
+  max_drawdown_tolerance: number           // 0..1
+  income_vs_growth: number                 // 0..1
+  max_position_concentration: number       // 0..1
+  _source?: 'saved' | 'default'
+  _path?: string
+  _defaults?: Partial<UserPrefs>
+}
+
+export function useUserPrefs() {
+  return useQuery({
+    queryKey: ['user_prefs'],
+    queryFn: () => fetchJSON<UserPrefs>('/api/regime/prefs'),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export async function saveUserPrefs(prefs: Partial<UserPrefs>): Promise<UserPrefs> {
+  const r = await fetch('/api/regime/prefs', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(prefs),
+  })
+  if (!r.ok) {
+    const txt = await r.text().catch(() => '')
+    throw new Error(`saveUserPrefs ${r.status}: ${txt}`)
+  }
+  const data = await r.json()
+  return data.merged as UserPrefs
+}
+
+
+// ── Phase L: NeoMind Live — push signal system ────────────────────
+
+
+export interface UserWatchlistEntry {
+  ticker:     string
+  added_at:   string
+  note?:      string | null
+  importance: number
+}
+
+export interface UserWatchlistPayload {
+  user_watchlist:  UserWatchlistEntry[]
+  supply_chain:    string[]
+  total_universe:  string[]
+}
+
+export function useUserWatchlist() {
+  return useQuery({
+    queryKey: ['user_watchlist'],
+    queryFn: () => fetchJSON<UserWatchlistPayload>('/api/regime/watchlist'),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export async function saveWatchlistBulk(tickers: string[]): Promise<{
+  added: string[]; removed: string[]; current: string[]
+}> {
+  const r = await fetch('/api/regime/watchlist/bulk', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ tickers }),
+  })
+  if (!r.ok) throw new Error(`saveWatchlistBulk ${r.status}`)
+  return r.json()
+}
+
+export async function triggerWatchlistScan(): Promise<{
+  scanner: string
+  n_tickers: number
+  n_emitted: number
+  new_confluences: number
+  took_ms: number
+}> {
+  const r = await fetch('/api/regime/scan/watchlist', { method: 'POST' })
+  if (!r.ok) throw new Error(`scan ${r.status}`)
+  return r.json()
+}
+
+export async function triggerAllScans(): Promise<{
+  scanners: Record<string, unknown>
+  new_confluences: number
+}> {
+  const r = await fetch('/api/regime/scan/all', { method: 'POST' })
+  if (!r.ok) throw new Error(`scan/all ${r.status}`)
+  return r.json()
+}
+
+
+export interface SignalEvent {
+  event_id:         string
+  scanner_name:     string
+  ticker?:          string | null
+  theme?:           string | null
+  signal_type:      string
+  severity:         'high' | 'med' | 'low'
+  title:            string
+  body?:            Record<string, unknown> | null
+  source_url?:      string | null
+  source_timestamp?: string | null
+  detected_at:      string
+}
+
+export interface SignalConfluence {
+  confluence_id:   string
+  ticker?:         string | null
+  theme?:          string | null
+  headline:        string
+  n_sources:       number
+  color:           'green' | 'amber' | 'red' | 'gray'
+  interpretation?: string | null
+  detected_at:     string
+  expires_at:      string
+  event_ids?:      string[]
+  events?:         SignalEvent[]
+  dismissed?:      number
+}
+
+export function useTodaySignals(limit: number = 3) {
+  return useQuery({
+    queryKey: ['signals_today', limit],
+    queryFn: () => fetchJSON<{ n: number; signals: SignalConfluence[] }>(
+      `/api/regime/signals/today?limit=${limit}`,
+    ),
+    staleTime: 30_000,
+    refetchInterval: 60_000,         // poll every minute
+    retry: false,
+  })
+}
+
+export function useRecentSignals(opts: {
+  limit?:   number
+  ticker?:  string
+  scanner?: string
+} = {}) {
+  const { limit = 50, ticker, scanner } = opts
+  return useQuery({
+    queryKey: ['signals_recent', limit, ticker ?? '', scanner ?? ''],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('limit', String(limit))
+      if (ticker)  params.set('ticker', ticker)
+      if (scanner) params.set('scanner', scanner)
+      return fetchJSON<{ n: number; events: SignalEvent[] }>(
+        `/api/regime/signals/recent?${params}`,
+      )
+    },
+    staleTime: 15_000,
+    refetchInterval: 30_000,         // live-ish stream — poll every 30s
+    retry: false,
+  })
+}
+
+// Phase M1b — analysis_runs feed for NeoMindLive "ops" view.
+export interface AnalysisRun {
+  run_id:        string
+  job_name:      string
+  run_type?:     string | null
+  status:        string                         // running | completed | failed
+  started_at:    string
+  completed_at?: string | null
+  duration_s?:   number | null
+  rows_written?: number | null
+  error_message?: string | null
+  summary?:      Record<string, unknown> | null
+}
+
+export function useRecentRuns(limit = 50) {
+  return useQuery({
+    queryKey: ['regime', 'runs', limit],
+    queryFn: () =>
+      fetchJSON<{ n: number; runs: AnalysisRun[] }>(
+        `/api/regime/runs?limit=${limit}`,
+      ),
+    // Phase M1b: keep this snappy — when the user clicks "立即扫描" the
+    // run row appears as `running` within 10s, then flips to `completed`
+    // a few polls later.  Cheap query (5–10 SQLite rows).
+    staleTime: 5_000,
+    refetchInterval: 10_000,
+    retry: false,
+  })
+}
+
+
+export async function dismissSignal(confluenceId: string): Promise<boolean> {
+  const r = await fetch(
+    `/api/regime/signals/dismiss/${encodeURIComponent(confluenceId)}`,
+    { method: 'POST' },
+  )
+  if (!r.ok) return false
+  const data = await r.json()
+  return !!data.ok
+}
+
+
+// ── Risk Dashboard (Phase H — 6-dimension math-backed view) ───────
+
+
+export interface RiskBucketFit {
+  strategy_pref: 'high' | 'low' | 'neutral'
+  sensitivity:   number
+  today:         'high' | 'low' | 'neutral'
+  today_value:   number
+  fit:           'good' | 'warning' | 'bad' | 'neutral'
+}
+
+export interface RiskDashboardEntry {
+  strategy_id:      string
+  name_zh?:         string
+  name_en?:         string
+  horizon?:         string
+  asset_class?:     string
+  hold_days:        number
+  fingerprint_date: string
+  data_quality:     'real' | 'proxy_only'
+
+  return_distribution: {
+    n: number
+    median?:        number
+    p10?:           number
+    p25?:           number
+    p75?:           number
+    p90?:           number
+    mean?:          number
+    std?:           number
+    k_nn?:          number
+    neighbor_dates?: string[]
+    error?:         string
+  }
+
+  tail_risk: {
+    n: number
+    confidence?:        number
+    var?:               number
+    cvar?:              number
+    max_drawdown?:      number
+    max_drawdown_date?: string
+    win_rate?:          number
+    loss_rate?:         number
+    error?:             string
+  }
+
+  position_sizing: {
+    n: number
+    win_rate?:         number
+    avg_win?:          number
+    avg_loss?:         number
+    gain_loss_ratio?:  number
+    kelly?:            number | null
+    half_kelly?:       number | null
+    interpretation?:   string
+    error?:            string
+  }
+
+  hedge_candidates: {
+    n_candidates?: number
+    top?: Array<{
+      strategy_id:  string
+      correlation:  number
+      n_overlap:    number
+      size_ratio:   number
+    }>
+    error?: string
+  }
+
+  stop_loss: {
+    n?: number
+    sigma?:          number
+    suggested_stop?: number
+    atr_multiple?:   number
+    time_stop_days?: number
+    coverage?:       number
+    interpretation?: string
+    error?:          string
+  }
+
+  regime_fit: {
+    buckets:    Record<string, RiskBucketFit>
+    n_good:     number
+    n_warning:  number
+    n_bad:      number
+    n_neutral:  number
+    fit_score:  number
+    verdict:    'strong_fit' | 'ok_fit' | 'weak_fit' | 'bad_fit'
+  }
+
+  walk_forward?: {
+    strategy_id?:        string
+    n_total?:            number
+    is_n?:               number
+    oos_n?:              number
+    is_sharpe_ann?:      number
+    oos_sharpe_ann?:     number
+    is_oos_gap?:         number
+    overfitting_ratio?:  number | null
+    deflated_sharpe?: {
+      observed_sr:     number
+      n_trials:        number
+      n_obs:           number
+      skewness:        number
+      kurtosis:        number
+      sr_max_expected: number
+      sr_se:           number
+      z_score:         number
+      dsr_prob:        number
+      interpretation:  string
+    }
+    verdict?:            'ship' | 'promising' | 'noise' | 'overfit' | 'uncertain'
+    error?:              string
+  }
+
+  recommendation: {
+    color:            'green' | 'amber' | 'red' | 'gray'
+    reasons_for:      string[]
+    reasons_against:  string[]
+    interpretation:   string
+    paper_trade_required?: boolean
+  }
+}
+
+export function useRiskDashboard(opts: {
+  strategyId: string
+  asOf?: string | null
+  holdDays?: number
+}) {
+  const { strategyId, asOf, holdDays = 30 } = opts
+  return useQuery({
+    queryKey: ['risk_dashboard', strategyId, asOf ?? 'today', holdDays],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('strategy_id', strategyId)
+      if (asOf) params.set('as_of', asOf)
+      params.set('hold_days', String(holdDays))
+      return fetchJSON<RiskDashboardEntry>(`/api/regime/dashboard?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!strategyId,
+  })
+}
+
+export function useRiskDashboardAll(opts: {
+  asOf?: string | null
+  holdDays?: number
+  limit?: number
+} = {}) {
+  const { asOf, holdDays = 30, limit = 36 } = opts
+  return useQuery({
+    queryKey: ['risk_dashboard_all', asOf ?? 'today', holdDays, limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (asOf) params.set('as_of', asOf)
+      params.set('hold_days', String(holdDays))
+      params.set('limit', String(limit))
+      return fetchJSON<{
+        fingerprint_date: string
+        n: number
+        strategies: RiskDashboardEntry[]
+      }>(`/api/regime/dashboard/all?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+// ── Backtest recall (per-strategy calibration) ────────────────────
+
+
+export interface BacktestRecallEntry {
+  strategy_id: string
+  n_runs: number
+  mean_predicted: number
+  mean_realized: number
+  median_realized: number
+  hit_rate: number | null
+  p_calibration_high: number | null
+  p_calibration_low: number | null
+  delta_high_low: number | null
+  spearman_corr: number | null
+  n_high: number
+  n_low: number
+}
+
+export interface BacktestRecallPayload {
+  strategies: BacktestRecallEntry[]
+  n_total_rows: number
+  score_cutoff: number
+  hold_days: number
+}
+
+export function useBacktestRecall(opts: {
+  holdDays?: number
+  scoreCutoff?: number
+  strategyId?: string | null
+} = {}) {
+  const { holdDays = 30, scoreCutoff = 4.0, strategyId } = opts
+  return useQuery({
+    queryKey: ['backtest_recall', holdDays, scoreCutoff, strategyId ?? 'all'],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('hold_days', String(holdDays))
+      params.set('score_cutoff', String(scoreCutoff))
+      if (strategyId) params.set('strategy_id', strategyId)
+      return fetchJSON<BacktestRecallPayload>(`/api/regime/backtest/recall?${params}`)
+    },
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+
+export interface BacktestRow {
+  result_id: string
+  fingerprint_date: string
+  strategy_id: string
+  predicted_score: number
+  rank: number
+  hold_days: number
+  realized_pnl_pct: number | null
+  underlying_return: number | null
+  method: string
+  notes?: Record<string, unknown> | null
+  computed_at: string
+}
+
+export function useBacktestRows(opts: {
+  fingerprintDate?: string | null
+  strategyId?: string | null
+  holdDays?: number
+  limit?: number
+} = {}) {
+  const { fingerprintDate, strategyId, holdDays = 30, limit = 500 } = opts
+  return useQuery({
+    queryKey: ['backtest_rows', fingerprintDate ?? 'all', strategyId ?? 'all', holdDays, limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('hold_days', String(holdDays))
+      params.set('limit', String(limit))
+      if (fingerprintDate) params.set('fingerprint_date', fingerprintDate)
+      if (strategyId) params.set('strategy_id', strategyId)
+      return fetchJSON<{ count: number, results: BacktestRow[] }>(
+        `/api/regime/backtest/rows?${params}`
+      )
+    },
+    staleTime: 60_000,
+    retry: false,
+    enabled: !!(fingerprintDate || strategyId),
+  })
+}
+
+
+export function useDecisionTraces(opts: {
+  date?: string | null
+  strategyId?: string | null
+  limit?: number
+} = {}) {
+  const { date, strategyId, limit = 200 } = opts
+  return useQuery({
+    queryKey: ['decision_traces', date ?? 'all', strategyId ?? 'all', limit],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      if (date) params.set('fingerprint_date', date)
+      if (strategyId) params.set('strategy_id', strategyId)
+      params.set('limit', String(limit))
+      return fetchJSON<{ count: number, traces: DecisionTrace[] }>(
+        `/api/regime/traces?${params}`
+      )
+    },
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
+
 // ── Phase 6 followup #1: detailed past run log ───────────────────
 //
 // /api/db/runs (already exists in agent/finance/persistence/api.py)
