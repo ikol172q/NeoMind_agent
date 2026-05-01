@@ -104,6 +104,14 @@ interface Props {
    *  1:1 sync ("选择时间，三个 view 都跟随").  Optional: when omitted
    *  the panel falls back to a no-op and only its local scope changes. */
   onChangeAsOf?: (next: string) => void
+  /** Chat-host props (since Chat tab was removed 2026-05-01 — the
+   *  Strategies right rail is now the only ChatPanel mount). All five
+   *  forwarded to ChatRail → ChatPanel. */
+  onJumpToAudit?: (reqId: string) => void
+  onNavigateToResearch?: (focus: { symbol?: string }) => void
+  pendingPrompt?: string | null
+  pendingContext?: { symbol?: string; project?: boolean } | null
+  onConsumePendingPrompt?: () => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -119,6 +127,11 @@ export function StrategiesTab({
   onJumpToResearchNode,
   asOf,
   onChangeAsOf,
+  onJumpToAudit,
+  onNavigateToResearch,
+  pendingPrompt,
+  pendingContext,
+  onConsumePendingPrompt,
 }: Props) {
   const q = useFinStrategies()
   // Phase A 1:1 sync: when the user picks a past date, the calls data
@@ -614,14 +627,19 @@ export function StrategiesTab({
       </div>
       </div>
 
-      {/* Phase M (#109) — right-side ChatPanel.  Always-on agent
-          conversation panel so the user can ask questions about
-          signals, regime, strategies WITHOUT leaving the Strategies
-          tab.  Phase M1a: rail is resizable + sessions sidebar can
-          be hidden so the conversation has more width.  The standalone
-          Chat tab is preserved (this is a second mount of ChatPanel;
-          sessions are independent). */}
-      <ChatRail projectId={projectId} />
+      {/* Right-side ChatPanel — sole mount since the standalone Chat
+          tab was removed 2026-05-01. All cross-tab "ask agent"
+          jumps (widgets, ⌘K palette, Research/Legacy chips) land
+          here via App.tsx → setTab('strategies') + pendingPrompt.
+          Resizable + collapsible; sessions sidebar can be hidden. */}
+      <ChatRail
+        projectId={projectId}
+        onJumpToAudit={onJumpToAudit}
+        onNavigateToResearch={onNavigateToResearch}
+        pendingPrompt={pendingPrompt}
+        pendingContext={pendingContext}
+        onConsumePendingPrompt={onConsumePendingPrompt}
+      />
     </div>
   )
 }
@@ -632,7 +650,21 @@ export function StrategiesTab({
 //   • drag the left edge to resize (persist width in localStorage)
 //   • click "💬 sessions" to toggle the past-sessions sidebar
 //   • click the chevron to fully collapse the rail to a thin strip
-function ChatRail({ projectId }: { projectId: string }) {
+function ChatRail({
+  projectId,
+  onJumpToAudit,
+  onNavigateToResearch,
+  pendingPrompt,
+  pendingContext,
+  onConsumePendingPrompt,
+}: {
+  projectId: string
+  onJumpToAudit?: (reqId: string) => void
+  onNavigateToResearch?: (focus: { symbol?: string }) => void
+  pendingPrompt?: string | null
+  pendingContext?: { symbol?: string; project?: boolean } | null
+  onConsumePendingPrompt?: () => void
+}) {
   const KEY_W   = 'strategies.chatRail.width'
   const KEY_SS  = 'strategies.chatRail.showSessions'
   const KEY_OPEN = 'strategies.chatRail.open'
@@ -735,7 +767,15 @@ function ChatRail({ projectId }: { projectId: string }) {
           </button>
         </div>
         <div className="flex-1 overflow-hidden">
-          <ChatPanel projectId={projectId} hideSessions={!showSessions} />
+          <ChatPanel
+            projectId={projectId}
+            hideSessions={!showSessions}
+            onJumpToAudit={onJumpToAudit}
+            onNavigateToResearch={onNavigateToResearch}
+            pendingPrompt={pendingPrompt}
+            pendingContext={pendingContext}
+            onConsumePendingPrompt={onConsumePendingPrompt}
+          />
         </div>
       </div>
     </aside>

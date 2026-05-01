@@ -305,20 +305,11 @@ export function useAuditStats(days = 1) {
   })
 }
 
-// ── Chat ─────────────────────────────────────────────────
-export async function dispatchChat(project_id: string, message: string): Promise<string> {
-  const qs = new URLSearchParams({ project_id, message })
-  const r = await fetchJSON<{ task_id: string }>(`/api/chat?${qs}`, { method: 'POST' })
-  return r.task_id
-}
-
-export async function getTask(task_id: string) {
-  return fetchJSON<{ status: string; reply?: string; error?: string }>(
-    `/api/tasks/${encodeURIComponent(task_id)}`,
-  )
-}
-
 // ── Streaming chat ──────────────────────────────────────
+// (Fleet-backed dispatchChat + getTask removed 2026-05-01 — SPA only
+// uses streamChat below. Fleet task-polling endpoint /api/tasks/{id}
+// still served by backend for OpenBB Workspace copilot.)
+
 export interface StreamCallbacks {
   onDelta: (chunk: string) => void
   onDone: (info: { req_id: string; duration_ms: number; total_tokens?: number; content_length: number }) => void

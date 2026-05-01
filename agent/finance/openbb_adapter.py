@@ -847,9 +847,26 @@ def build_agent_router(fleet: Any) -> APIRouter:
                 404, f"project {project_id!r} is not registered"
             )
 
-        # Build the same tool-free chat prompt used by /api/chat
-        from agent.finance.chat_stream import build_chat_prompt
-        prompt = build_chat_prompt(last_human, project_id)
+        # Fleet-channel chat prompt. Kept local to openbb_adapter
+        # because fleet's one-shot worker has no tool executor (would
+        # leak raw <tool_call> XML otherwise) and the JSON contract at
+        # the end is fleet-specific. Not the same prompt as the SPA's
+        # chat_streaming endpoint, which goes through agent_config +
+        # WEB_CHANNEL_FENCE.
+        prompt = (
+            f"[fin-dashboard chat · project={project_id}]\n"
+            "You are chatting with the user in a lightweight dashboard "
+            "panel. You do NOT have tool access in this mode — do not "
+            "emit <tool_call> blocks, do not say 'let me search', do not "
+            "promise to fetch data. Answer from your own knowledge in the "
+            "user's language, be concrete, and if you genuinely cannot "
+            "answer without fresh data, say so briefly and suggest what "
+            "panel of the dashboard to use instead (e.g. the Quote or "
+            "Chart section). If the user explicitly asks for a trade "
+            "signal, return JSON matching AgentAnalysis (signal, "
+            "confidence, reason, risk_level).\n\n"
+            f"User: {last_human}"
+        )
 
         try:
             task_id = await fleet.dispatch_chat(

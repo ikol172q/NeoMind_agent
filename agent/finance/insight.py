@@ -23,16 +23,21 @@ from typing import Any, Dict, Optional
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
-from agent.constants.models import DEFAULT_MODEL
+from agent.constants.models import get_active_model
 from agent.finance import agent_audit, investment_projects
-from agent.finance.chat_streaming import _SYSTEM_PROMPT, _build_context_block
+from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
+from agent_config import agent_config
 
 logger = logging.getLogger(__name__)
 
 _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
-_MODEL = DEFAULT_MODEL
 _TEMPERATURE = 0.2
-_MAX_TOKENS = 220
+# Budget covers DeepSeek-v4-flash's reasoning_tokens (consumed before
+# output starts) plus the one-sentence verdict. fin.yaml's truth-first
+# system prompt triggers ~1000-1500 reasoning tokens; under-budget
+# causes empty content. Output itself stays under 25 words by
+# _INSIGHT_PROMPT rules.
+_MAX_TOKENS = 1500
 
 _TTL_S = 300.0
 _REQUEST_TIMEOUT_S = 25.0
@@ -76,13 +81,13 @@ def _put(key: str, value: Dict[str, Any]) -> None:
         _cache[key] = (time.time(), value)
 
 
-async def _call(system: str, user: str) -> str:
+async def _call(system: str, user: str, model: str) -> str:
     api_key = _get_api_key()
     async with httpx.AsyncClient(timeout=httpx.Timeout(_REQUEST_TIMEOUT_S)) as client:
         resp = await client.post(
             _DEEPSEEK_URL,
             json={
-                "model": _MODEL,
+                "model": model,
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
@@ -121,11 +126,20 @@ def build_insight_router() -> APIRouter:
             if cached is not None:
                 return cached
 
-        system = _SYSTEM_PROMPT + "\n\n" + _build_context_block(
-            project_id=project_id,
-            context_symbol=sym,
-            context_project=False,
+        # Single source: fin.yaml persona (CLI's truth) + web "no
+        # tools" fence + DASHBOARD STATE for the symbol. Model from
+        # provider-state via get_active_model.
+        fin_prompt = agent_config.get_mode_config("fin").get("system_prompt", "")
+        system = (
+            fin_prompt
+            + "\n\n" + WEB_CHANNEL_FENCE
+            + "\n\n" + build_context_block(
+                project_id=project_id,
+                context_symbol=sym,
+                context_project=False,
+            )
         )
+        model = get_active_model("neomind")
 
         req_id = agent_audit.new_req_id()
         agent_audit.audit_request(
@@ -136,7 +150,7 @@ def build_insight_router() -> APIRouter:
                 {"role": "system", "content": system},
                 {"role": "user", "content": _INSIGHT_PROMPT},
             ],
-            model=_MODEL,
+            model=model,
             max_tokens=_MAX_TOKENS,
             temperature=_TEMPERATURE,
             project_id=project_id,
@@ -144,7 +158,7 @@ def build_insight_router() -> APIRouter:
 
         t0 = time.monotonic()
         try:
-            text = await _call(system, _INSIGHT_PROMPT)
+            text = await _call(system, _INSIGHT_PROMPT, model)
         except HTTPException as exc:
             agent_audit.audit_error(
                 req_id=req_id,

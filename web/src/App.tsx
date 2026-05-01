@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useHealth } from '@/lib/api'
 import { ResearchTab } from '@/tabs/Research'
-import { ChatTab } from '@/tabs/Chat'
 import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
@@ -14,16 +13,15 @@ import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
-import { Sparkles, LineChart, MessagesSquare, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database } from 'lucide-react'
+import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database } from 'lucide-react'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'strategies' | 'chat' | 'paper' | 'audit' | 'data_lake' | 'settings' | 'legacy'
+type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  { id: 'chat',       label: 'Chat',       icon: MessagesSquare },
   { id: 'paper',      label: 'Paper',      icon: Wallet },
   { id: 'audit',      label: 'Audit',      icon: ClipboardList },
   // Phase B6-Step2: Data Lake tab — provenance browser over the raw
@@ -98,7 +96,9 @@ export default function App() {
   function jumpToChat(prompt: string, ctx?: { symbol?: string; project?: boolean }) {
     setPendingChatPrompt(prompt)
     setPendingChatContext(ctx ?? null)
-    setTab('chat')
+    // Chat tab removed 2026-05-01 — Strategies right rail is the
+    // only ChatPanel mount, so all "ask agent" jumps land there.
+    setTab('strategies')
   }
 
   /**
@@ -182,11 +182,13 @@ export default function App() {
         open={paletteOpen}
         onClose={() => setPaletteOpen(false)}
         onPick={(cmd) => {
-          // Route to chat tab with the command queued as pending prompt.
-          // ChatPanel's useEffect populates input, user hits enter to send.
+          // Route to Strategies (which hosts the only ChatPanel mount
+          // since the standalone Chat tab was removed) with the
+          // command queued as pending prompt. ChatPanel's useEffect
+          // populates input; user hits enter to send.
           setPendingChatPrompt(cmd)
           setPendingChatContext(null)   // workflow commands inject context server-side
-          setTab('chat')
+          setTab('strategies')
         }}
       />
 
@@ -222,11 +224,6 @@ export default function App() {
             onJumpToResearchNode={(nodeId) => jumpToResearch({ nodeId })}
             asOf={appAsOf}
             onChangeAsOf={setAsOfPersist}
-          />
-        </div>
-        {tab === 'chat'     && (
-          <ChatTab
-            projectId={projectId}
             onJumpToAudit={jumpToAudit}
             onNavigateToResearch={jumpToResearch}
             pendingPrompt={pendingChatPrompt}
@@ -236,7 +233,7 @@ export default function App() {
               setPendingChatContext(null)
             }}
           />
-        )}
+        </div>
         {tab === 'paper'    && <PaperTab projectId={projectId} />}
         {tab === 'audit'    && (
           <AuditTab
