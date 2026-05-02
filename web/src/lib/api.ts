@@ -312,7 +312,19 @@ export function useAuditStats(days = 1) {
 
 export interface StreamCallbacks {
   onDelta: (chunk: string) => void
-  onDone: (info: { req_id: string; duration_ms: number; total_tokens?: number; content_length: number }) => void
+  onDone: (info: {
+    req_id: string;
+    duration_ms: number;
+    total_tokens?: number;
+    /** Tokens of the prompt the LLM saw (system + history + new user
+     *  message). Used by the chat header to render a context-window
+     *  status bar. */
+    prompt_tokens?: number;
+    /** Active model's advertised max context window size, in tokens.
+     *  Pulled from agent.constants.models.get_active_max_context. */
+    max_context?: number;
+    content_length: number
+  }) => void
   onError: (err: string) => void
 }
 
@@ -335,11 +347,13 @@ export function streamChat(
   message: string,
   cb: StreamCallbacks,
   ctx?: StreamContext,
+  session_id?: string | null,
 ): AbortController {
   const ac = new AbortController()
   const qs = new URLSearchParams({ project_id, message })
   if (ctx?.symbol) qs.set('context_symbol', ctx.symbol)
   if (ctx?.project) qs.set('context_project', 'true')
+  if (session_id) qs.set('session_id', session_id)
 
   ;(async () => {
     try {
