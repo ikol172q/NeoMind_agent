@@ -323,6 +323,9 @@ export interface StreamCallbacks {
     /** Active model's advertised max context window size, in tokens.
      *  Pulled from agent.constants.models.get_active_max_context. */
     max_context?: number;
+    /** True when the backend auto-compacted this turn (older history
+     *  was summarized to keep prompt tokens under the threshold). */
+    compacted?: boolean;
     content_length: number
   }) => void
   onError: (err: string) => void

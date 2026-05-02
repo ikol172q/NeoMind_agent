@@ -28,7 +28,8 @@ import json
 import logging
 import os
 import time
-from typing import Any, AsyncGenerator, Dict, Optional
+from datetime import datetime, timezone
+from typing import Any, AsyncGenerator, Dict, List, Optional
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -45,6 +46,105 @@ _DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
 _MAX_TOKENS = 4096
 _TEMPERATURE = 0.3
 _SEARCH_TIMEOUT_S = 15.0
+
+# ── Auto-compact tunables ────────────────────────────────────────────
+# When estimated prompt tokens for the next LLM call exceed this
+# fraction of the model's max_context, summarize the older portion of
+# history (Claude Code / LangChain SummaryBufferMemory pattern).
+_COMPACT_TRIGGER_PCT = 0.9
+# Number of trailing messages kept verbatim after compaction. 12 = 6
+# turns (6 user + 6 assistant) — LangChain default ballpark.
+_COMPACT_KEEP_RECENT_MSGS = 12
+# Max tokens reserved for the summary itself (cap the summarizer's
+# output so it doesn't undo the compression).
+_COMPACT_SUMMARY_MAX_TOKENS = 2000
+_COMPACT_SUMMARIZER_TIMEOUT_S = 30.0
+# Marker prefix written into the role=system entry persisted in
+# chat_sessions. Backend looks for this on subsequent loads so a
+# session never re-summarizes already-compacted prefix.
+_COMPACT_MARKER_PREFIX = "[COMPACT_SUMMARY]\n"
+
+
+def _estimate_tokens(messages: List[Dict[str, Any]]) -> int:
+    """Rough estimate: ~0.4 tokens/char (zh-heavy fin chat). Off by
+    ±20% but the compact threshold has slack — exactness not needed.
+    Avoids adding tiktoken / sentencepiece runtime dep."""
+    total_chars = sum(len(m.get("content", "")) for m in messages)
+    return int(total_chars * 0.4)
+
+
+async def _summarize_history(
+    history: List[Dict[str, Any]],
+    api_key: str,
+    model: str,
+) -> Optional[str]:
+    """Compress old turns into a brief factual summary. Returns None
+    on any failure so the caller can fall back to drop-oldest."""
+    convo = "\n\n".join(
+        f"{m['role'].upper()}: {m.get('content', '')}" for m in history
+    )
+    prompt = (
+        "Compress this conversation into a brief summary that preserves "
+        "ALL key facts, numbers, dates, decisions, named entities, and "
+        "open questions mentioned. Output as plain text, max 800 words, "
+        "no markdown headings, no preamble. The summary will be fed back "
+        "into the same agent so the assistant retains continuity.\n\n"
+        + convo
+    )
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(_COMPACT_SUMMARIZER_TIMEOUT_S)
+        ) as client:
+            resp = await client.post(
+                _DEEPSEEK_URL,
+                json={
+                    "model": model,
+                    "messages": [
+                        {"role": "system", "content": "You are a concise, faithful summarizer."},
+                        {"role": "user", "content": prompt},
+                    ],
+                    "stream": False,
+                    "temperature": 0.1,
+                    "max_tokens": _COMPACT_SUMMARY_MAX_TOKENS,
+                },
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+        if resp.status_code != 200:
+            logger.warning(
+                "compact summarize: deepseek %d: %s",
+                resp.status_code, resp.text[:200],
+            )
+            return None
+        data = resp.json()
+        return (data.get("choices") or [{}])[0].get("message", {}).get("content", "").strip() or None
+    except Exception as exc:
+        logger.warning("compact summarize failed: %s", exc)
+        return None
+
+
+def _persist_compact_summary(
+    pid: str,
+    sid: str,
+    summary: str,
+    compacted_n: int,
+) -> None:
+    """Append a compact_summary entry to chat_sessions jsonl. Original
+    raw turns stay in the file (UI history sidebar still shows them);
+    chat_streaming's load loop just skips everything before this marker
+    on subsequent calls."""
+    from agent.finance.chat_sessions import _session_path
+    spath = _session_path(pid, sid)
+    entry = {
+        "role": "system",
+        "content": _COMPACT_MARKER_PREFIX + summary,
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "compacted_message_count": compacted_n,
+    }
+    with spath.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 # Lazy singleton — UniversalSearchEngine init pulls in tier1/2/3
 # sources + cache + reranker, so we only pay for it once and only
@@ -199,21 +299,25 @@ def build_chat_stream_router() -> APIRouter:
         if injected_ctx:
             system_prompt = system_prompt + "\n\n" + injected_ctx
 
-        # Multi-turn: load prior turns from chat_sessions (single source
-        # of truth on the server) and prepend. Filter to user/assistant
-        # only — error / system entries are UI-side and would confuse
-        # the LLM. Dedup the trailing turn against current message in
-        # case the frontend's fire-and-forget persist beat us to it
-        # (otherwise the LLM would see the same user message twice).
-        history: list[dict] = []
+        # Multi-turn: load prior turns from chat_sessions (single
+        # source of truth on the server). Two pass:
+        #   1. Read all entries, identify the LATEST compact_summary
+        #      marker (everything before it has been folded into a
+        #      summary on a previous turn).
+        #   2. Build effective history = [summary as system] + raw
+        #      user/assistant turns AFTER the marker. If no marker,
+        #      use all raw user/assistant turns.
+        # Dedup trailing turn against current message in case the
+        # frontend's fire-and-forget persist beat us to the file.
+        raw_entries: list[dict] = []
         if session_id:
             try:
                 from agent.finance.chat_sessions import (
                     _session_path,
                     _validate_session_id,
                 )
-                sid = _validate_session_id(session_id)
-                spath = _session_path(pid, sid)
+                sid_validated = _validate_session_id(session_id)
+                spath = _session_path(pid, sid_validated)
                 if spath.exists():
                     with spath.open("r", encoding="utf-8") as f:
                         for line in f:
@@ -224,14 +328,21 @@ def build_chat_stream_router() -> APIRouter:
                                 obj = json.loads(line)
                             except Exception:
                                 continue
-                            if (
-                                isinstance(obj, dict)
-                                and obj.get("role") in ("user", "assistant")
-                                and isinstance(obj.get("content"), str)
+                            if not isinstance(obj, dict):
+                                continue
+                            role = obj.get("role")
+                            content = obj.get("content")
+                            if role in ("user", "assistant") and isinstance(content, str):
+                                raw_entries.append({"role": role, "content": content})
+                            elif (
+                                role == "system"
+                                and isinstance(content, str)
+                                and content.startswith(_COMPACT_MARKER_PREFIX)
                             ):
-                                history.append({
-                                    "role": obj["role"],
-                                    "content": obj["content"],
+                                raw_entries.append({
+                                    "role": "system",
+                                    "content": content,
+                                    "_compact": True,
                                 })
             except Exception as exc:
                 logger.warning(
@@ -239,13 +350,75 @@ def build_chat_stream_router() -> APIRouter:
                     session_id, exc,
                 )
 
+        last_compact_idx = -1
+        for i, e in enumerate(raw_entries):
+            if e.get("_compact"):
+                last_compact_idx = i
+
+        if last_compact_idx >= 0:
+            history = [{
+                "role": "system",
+                "content": raw_entries[last_compact_idx]["content"],
+            }]
+            for e in raw_entries[last_compact_idx + 1:]:
+                if e["role"] in ("user", "assistant"):
+                    history.append({"role": e["role"], "content": e["content"]})
+        else:
+            history = [
+                {"role": e["role"], "content": e["content"]}
+                for e in raw_entries
+                if e["role"] in ("user", "assistant")
+            ]
+
         if (
             history
             and history[-1]["role"] == "user"
             and history[-1]["content"] == message
         ):
-            # Frontend persist already wrote current message; drop dup
             history.pop()
+
+        # Auto-compact when the next call would push prompt tokens
+        # over _COMPACT_TRIGGER_PCT of the model's context window.
+        # Only attempt once per turn — if it fails we fall back to
+        # drop-oldest (lossy buffer-window). Need at least
+        # _COMPACT_KEEP_RECENT_MSGS + 1 messages of history before it
+        # makes sense to summarize.
+        compacted_this_turn = False
+        candidate = [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": message},
+        ]
+        max_ctx = get_active_max_context("neomind")
+        if (
+            session_id
+            and len(history) > _COMPACT_KEEP_RECENT_MSGS
+            and _estimate_tokens(candidate) > _COMPACT_TRIGGER_PCT * max_ctx
+        ):
+            old = history[:-_COMPACT_KEEP_RECENT_MSGS]
+            recent = history[-_COMPACT_KEEP_RECENT_MSGS:]
+            summary = await _summarize_history(old, api_key, model)
+            if summary:
+                try:
+                    _persist_compact_summary(pid, session_id, summary, len(old))
+                    history = [{
+                        "role": "system",
+                        "content": _COMPACT_MARKER_PREFIX + summary,
+                    }] + recent
+                    compacted_this_turn = True
+                    logger.info(
+                        "auto-compacted session %s: %d old msgs summarized into %d chars",
+                        session_id, len(old), len(summary),
+                    )
+                except Exception as exc:
+                    logger.warning("compact persist failed for %s: %s", session_id, exc)
+            else:
+                # Fallback: drop oldest 12 messages (lossy buffer-window)
+                history = history[_COMPACT_KEEP_RECENT_MSGS:]
+                logger.warning(
+                    "auto-compact summarize failed for %s; fell back to drop-oldest %d msgs",
+                    session_id, _COMPACT_KEEP_RECENT_MSGS,
+                )
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -381,6 +554,7 @@ def build_chat_stream_router() -> APIRouter:
                     "total_tokens": (usage or {}).get("total_tokens"),
                     "prompt_tokens": (usage or {}).get("prompt_tokens"),
                     "max_context": get_active_max_context("neomind"),
+                    "compacted": compacted_this_turn,
                     "content_length": len(final_content),
                 }),
             }
