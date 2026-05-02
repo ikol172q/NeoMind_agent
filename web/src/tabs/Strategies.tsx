@@ -47,6 +47,7 @@ import { PortfolioWidget } from '@/components/widgets/PortfolioWidget'
 import { RiskDashboardWidget } from '@/components/widgets/RiskDashboardWidget'
 import { AlgorithmAppendix } from '@/components/widgets/AlgorithmAppendix'
 import { TodaysSignalsWidget } from '@/components/widgets/TodaysSignalsWidget'
+import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 
@@ -431,6 +432,15 @@ export function StrategiesTab({
             are doing — modeled on Operator/Claude Tools UX but
             persisted to SQLite for cross-session traceability. */}
         <TodaysSignalsWidget />
+
+        {/* 13F whale activity — independent of confluence TTL.
+            TodaysSignalsWidget filters for active (non-expired) confluences
+            with 24h TTL, but 13F filings are quarterly so user wants to
+            see Buffett/Druckenmiller/etc moves regardless of whether a
+            second scanner happens to tag the same ticker. Reads
+            useRecentSignals({scanner: '13f'}) directly. */}
+        <SmartMoneyWidget />
+
         <NeoMindLiveStream />
 
         {/* v2 (2026-04-29): 5-bucket regime fingerprint.  Lives at the
