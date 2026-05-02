@@ -112,6 +112,11 @@ export function ChatPanel({
   // when a long conversation is approaching the limit.
   const [ctxPromptTokens, setCtxPromptTokens] = useState<number | null>(null)
   const [ctxMaxContext, setCtxMaxContext] = useState<number | null>(null)
+  // Cumulative count of auto-compactions this session has gone through
+  // (server-side). Reset to 0 when the user starts a new session.
+  // Surfaced in the header next to ctx so the user knows context has
+  // been auto-summarized.
+  const [compactCount, setCompactCount] = useState<number>(0)
   const loadedProjectRef = useRef(projectId)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -200,6 +205,9 @@ export function ChatPanel({
     setSessionId(null)
     setMsgs([])
     setInput('')
+    setCtxPromptTokens(null)
+    setCtxMaxContext(null)
+    setCompactCount(0)
   }
 
   async function selectSession(sid: string) {
@@ -320,6 +328,7 @@ export function ChatPanel({
           reqId = info.req_id
           if (typeof info.prompt_tokens === 'number') setCtxPromptTokens(info.prompt_tokens)
           if (typeof info.max_context === 'number') setCtxMaxContext(info.max_context)
+          if (info.compacted) setCompactCount(c => c + 1)
           updateMsg(msgId, {
             content: accumulated || '(empty reply)',
             pending: false,
@@ -401,6 +410,18 @@ export function ChatPanel({
                 </>
               )
             })()}
+            {compactCount > 0 && (
+              <>
+                {' · '}
+                <span
+                  className="text-[var(--color-dim)]"
+                  data-testid="chat-compact-count"
+                  title={`${compactCount} auto-compaction${compactCount === 1 ? '' : 's'} in this session — older history was summarized to fit the context window. Original turns remain in chat_sessions on disk.`}
+                >
+                  📦 {compactCount}×
+                </span>
+              </>
+            )}
             {' · '}
             <span className="text-[var(--color-dim)]">
               type <code>/help</code> for commands · click <code>raw</code> on a reply to jump to its audit entry
