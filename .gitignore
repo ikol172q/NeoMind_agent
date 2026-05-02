@@ -176,3 +176,6 @@ FIX_LOG.md
 .host_evolution_data/
 .mycontext
 .venv-host/
+
+# C1 — episode capture jsonl (manual reflect input, not source-of-truth)
+_evolution/
