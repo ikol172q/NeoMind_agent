@@ -3610,8 +3610,11 @@ class NeoMindTelegramBot:
     async def _llm_extract_search_queries(self, user_message: str, chat_id: int = 0) -> List[str]:
         """Use a fast LLM call to generate 2-3 good search engine queries.
 
-        Returns a list of search queries optimized for web search engines.
-        Falls back to simple keyword extraction if LLM call fails.
+        Reads up to 2 prior turns from history so a short user reply
+        (e.g. "meta" right after the bot asked "想拿哪家公司财报练手?")
+        keeps the prior frame and produces "META Q1 earnings" instead of
+        "META stock price". Without this the optimizer sees the bare token
+        and defaults to the most generic interpretation.
         """
         import aiohttp as _aiohttp
         import json as _json
@@ -3620,16 +3623,43 @@ class NeoMindTelegramBot:
         if not providers:
             return [user_message]  # fallback
 
+        # Pull last 2 turns (4 messages: user/asst pairs) for frame.
+        # Keep tight — we don't want the optimizer LLM to drown in old
+        # context when the current message is already self-explanatory.
+        history_block = ""
+        try:
+            recent = self._store.get_recent_history(chat_id, limit=4) if chat_id else []
+            if recent:
+                lines = []
+                for msg in recent[-4:]:
+                    role = msg.get("role", "?")
+                    content = (msg.get("content") or "")[:300]
+                    if content:
+                        lines.append(f"{role}: {content}")
+                if lines:
+                    history_block = (
+                        "Recent conversation context (use this to disambiguate "
+                        "short or pronoun-only user messages):\n"
+                        + "\n".join(lines) + "\n\n"
+                    )
+        except Exception:
+            history_block = ""  # history is best-effort, never block search
+
         provider = providers[0]
         extract_prompt = (
-            "You are a search query optimizer. Given a user message, generate 2-3 concise, "
-            "specific web search queries that would find the most relevant results.\n\n"
+            "You are a search query optimizer. Given a user message (and optional prior "
+            "conversation context), generate 2-3 concise, specific web search queries "
+            "that would find the most relevant results.\n\n"
             "Rules:\n"
             "- Each query should be 3-8 words, optimized for search engines\n"
             "- Include brand names, product categories, and year when relevant\n"
             "- Generate both English and Chinese queries for better coverage\n"
             "- Do NOT include filler words like '我想知道', '帮我查', '有吗'\n"
+            "- If the user's current message is short or a single token, use the "
+            "  prior context to infer what they actually want (e.g. user just said "
+            "  '财报' last turn, then types 'meta' → query is META earnings, NOT META price)\n"
             "- Output ONLY the queries, one per line, nothing else\n\n"
+            + history_block +
             f"User message: {user_message}\n\n"
             "Search queries:"
         )
