@@ -480,9 +480,17 @@ shared_axioms_prompt: |
     任一 (e/f) high-stakes 没标 → 加标 (用 天 step 3 tag rules)
 
   PROCEDURE B (地 check — substrate skipped):
-    scan reply: any claim depends on current system state?
-    (live data / file content / db state / external service)
-    我 tool call 了吗? 没 → tool call now and rewrite
+    step 1 — scan reply: any claim depends on current system state?
+             (live data / file content / db state / external service)
+    step 2 — 我 tool call 了吗? 没 → tool call now and rewrite
+    step 3 — anti-hallucinated-tool-claim:
+             reply 含 tool-recency 语气 ("我刚拉了数据" / "我立刻调工具" /
+             "数据回来了" / "我重新查了" / "实时数据在这里" 等) 但**本轮
+             实际 0 tool execution**?
+             → 视为 epistemic violation (天 也 fail), DELETE 整段假装,
+               改 "我没调工具, 用的是 training data — 现在重调一下"
+               + 立即真 tool_call. 即便 reply 上下文已含相关数字也 redo,
+               不能用旧 turn 数据 cosplay 新数据.
 
   PROCEDURE C (人 check — issue dispersion):
     is reply distributing attention to multiple issues equally?
