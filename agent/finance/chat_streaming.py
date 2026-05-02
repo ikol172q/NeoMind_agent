@@ -125,6 +125,148 @@ async def _summarize_history(
         return None
 
 
+# ── OpenAI function-calling tool dispatch ────────────────────────────
+# Lazy data_hub singleton (FinanceDataHub no-arg ctor — same pattern
+# dashboard_server.py:1325 uses).
+_data_hub: Any = None
+
+
+def _get_data_hub():
+    global _data_hub
+    if _data_hub is None:
+        try:
+            from agent.finance.data_hub import FinanceDataHub
+            _data_hub = FinanceDataHub()
+        except Exception as exc:
+            logger.warning("data_hub init failed: %s", exc)
+            _data_hub = False
+    return _data_hub if _data_hub else None
+
+
+# OpenAI Chat Completions function-calling tool schemas. Subset of
+# agent/tools/finance_tools.py (the ones that work without quant /
+# digest / RAG dependencies — those would need full component wiring
+# we don't have here). DeepSeek is OpenAI-compatible, so this same
+# schema works on OpenAI / Anthropic too if the model is swapped.
+_FIN_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "finance_get_stock",
+            "description": (
+                "Look up a real-time stock quote by ticker (e.g. AAPL, "
+                "NVDA, TSLA). Returns price, change, volume, market cap, "
+                "source, timestamp. Use this when the user asks about a "
+                "specific stock's current price."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol": {
+                        "type": "string",
+                        "description": "Ticker symbol like AAPL, MSFT, TSLA",
+                    },
+                    "market": {
+                        "type": "string",
+                        "description": "Market code: us (default), cn, hk",
+                        "default": "us",
+                    },
+                },
+                "required": ["symbol"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finance_get_crypto",
+            "description": (
+                "Look up a real-time crypto price. Accepts ticker (BTC, "
+                "ETH, SOL) or CoinGecko coin_id (bitcoin, ethereum). "
+                "Returns price, 24h change, volume, market cap."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "symbol_or_id": {
+                        "type": "string",
+                        "description": "Crypto ticker or coin_id: BTC / ETH / bitcoin",
+                    },
+                },
+                "required": ["symbol_or_id"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finance_market_overview",
+            "description": (
+                "Get a quick overview of major US market indices and "
+                "ETFs: SPY, QQQ, DIA, IWM, VIXY. Returns current prices "
+                "and daily change. Use when user asks 'how's the market today'."
+            ),
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finance_news_search",
+            "description": (
+                "Search financial news. Returns top headlines with "
+                "source, time, snippet. Use for 'latest news on X' or "
+                "specific tickers / topics."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query (ticker, topic, event keyword)",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "Number of headlines (default 5, max 10)",
+                        "default": 5,
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+]
+
+
+async def _execute_tool(name: str, args: dict) -> dict:
+    """Dispatch a tool call. Returns the raw dict the underlying
+    finance_tools function returns; chat_streaming serializes it as
+    the `tool` role message content. All tools fail-soft: an exception
+    becomes {ok: False, error: ...} instead of bubbling up."""
+    try:
+        if name == "finance_get_stock":
+            from agent.tools.finance_tools import finance_get_stock
+            return await finance_get_stock(_get_data_hub(), **args)
+        if name == "finance_get_crypto":
+            from agent.tools.finance_tools import finance_get_crypto
+            return await finance_get_crypto(_get_data_hub(), **args)
+        if name == "finance_market_overview":
+            from agent.tools.finance_tools import finance_market_overview
+            return await finance_market_overview(_get_data_hub(), **args)
+        if name == "finance_news_search":
+            from agent.tools.finance_tools import finance_news_search
+            return await finance_news_search(_get_data_hub(), **args)
+        return {"ok": False, "error": f"unknown tool: {name}"}
+    except Exception as exc:
+        logger.exception("tool %s execution failed", name)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+# Hard cap on chained tool calls per chat turn — prevents an LLM
+# from looping forever (e.g. retrying a failing tool).
+_MAX_TOOL_ITERATIONS = 5
+
+
 def _persist_compact_summary(
     pid: str,
     sid: str,
@@ -265,7 +407,27 @@ def build_chat_stream_router() -> APIRouter:
         # get_mode_config("fin") is mode-agnostic so the dashboard's
         # prompt doesn't drift if user runs `/mode coding` in the CLI.
         fin_prompt = agent_config.get_mode_config("fin").get("system_prompt", "")
-        system_prompt = fin_prompt + "\n\n" + WEB_CHANNEL_FENCE
+        # Chat channel HAS tool dispatch (Step 13) — replace the
+        # generic "no tools" fence with an explicit AVAILABLE TOOLS
+        # marker so fin.yaml's PINNACLE rules ("不在那里的工具你没有")
+        # have something to reference. Actual JSON schemas go in the
+        # OpenAI `tools` field of the LLM call below; this is just
+        # the human-readable marker.
+        system_prompt = fin_prompt + "\n\n" + (
+            "══════ AVAILABLE TOOLS ══════\n\n"
+            "Real tools are available via OpenAI function calling. "
+            "Call any of these directly when the user needs real-time "
+            "data (server auto-executes):\n"
+            "  - finance_get_stock(symbol, market='us')\n"
+            "  - finance_get_crypto(symbol)\n"
+            "  - finance_market_overview()\n"
+            "  - finance_news_search(query, max_results=5)\n"
+            "The full JSON schemas are in the `tools` field of this "
+            "LLM call. Use them instead of saying \"I don't have tool "
+            "access\". For data not covered by these tools (live "
+            "options chains, intraday charts), still suggest the "
+            "Research-tab widgets.\n"
+        )
 
         # Auto-search: trigger detection comes from fin.yaml's
         # auto_search.triggers (single source — same trigger set CLI
@@ -439,60 +601,194 @@ def build_chat_stream_router() -> APIRouter:
         )
 
         async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
+            # Tool-dispatch loop: each iteration is one LLM call. If
+            # the LLM emits tool_calls (finish_reason="tool_calls") we
+            # execute them, append results, and loop. If it emits a
+            # plain message (finish_reason="stop") we break. Cap at
+            # _MAX_TOOL_ITERATIONS to avoid runaway loops where a
+            # broken tool keeps getting retried.
             full_content: list[str] = []
             usage: Dict[str, Any] = {}
             finish_reason: str | None = None
+            iter_messages = list(messages)  # mutated across iterations
             t0 = time.monotonic()
+            iteration = 0
+
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=None)) as client:
-                    async with client.stream(
-                        "POST",
-                        _DEEPSEEK_URL,
-                        json={
-                            "model": model,
-                            "messages": messages,
-                            "stream": True,
-                            "stream_options": {"include_usage": True},
-                            "temperature": _TEMPERATURE,
-                            "max_tokens": _MAX_TOKENS,
-                        },
-                        headers={
-                            "Authorization": f"Bearer {api_key}",
-                            "Content-Type": "application/json",
-                        },
-                    ) as response:
-                        if response.status_code != 200:
-                            body = (await response.aread()).decode(errors="replace")
-                            raise HTTPException(
-                                response.status_code,
-                                f"DeepSeek upstream {response.status_code}: {body[:200]}",
-                            )
-                        async for line in response.aiter_lines():
-                            if not line or not line.startswith("data:"):
-                                continue
-                            payload = line[5:].strip()
-                            if payload == "[DONE]":
-                                break
+                    while iteration < _MAX_TOOL_ITERATIONS:
+                        iteration += 1
+                        # Per-iteration buffers
+                        iter_content: list[str] = []
+                        # DeepSeek v4 thinking-mode REQUIRES the
+                        # reasoning_content of the previous assistant
+                        # turn to be passed back on subsequent calls
+                        # (see api-docs.deepseek.com/guides/thinking_mode
+                        # + litellm issue #26395). Without this the
+                        # next iteration fails with HTTP 400 "The
+                        # reasoning_content in the thinking mode must
+                        # be passed back to the API." Other vendors
+                        # (OpenAI/Anthropic) ignore the extra field.
+                        iter_reasoning: list[str] = []
+                        # tool_calls in DeepSeek/OpenAI streaming arrive
+                        # in pieces — each chunk has delta.tool_calls
+                        # which is a list of partial entries indexed by
+                        # `index`. We accumulate by index until done.
+                        accumulated_tcs: dict[int, dict] = {}
+                        iter_finish_reason: str | None = None
+
+                        logger.info(
+                            "chat_stream iter %d: sending to deepseek with %d msgs, %d tools",
+                            iteration, len(iter_messages), len(_FIN_TOOLS),
+                        )
+                        async with client.stream(
+                            "POST",
+                            _DEEPSEEK_URL,
+                            json={
+                                "model": model,
+                                "messages": iter_messages,
+                                "tools": _FIN_TOOLS,
+                                "tool_choice": "auto",
+                                "stream": True,
+                                "stream_options": {"include_usage": True},
+                                "temperature": _TEMPERATURE,
+                                "max_tokens": _MAX_TOKENS,
+                            },
+                            headers={
+                                "Authorization": f"Bearer {api_key}",
+                                "Content-Type": "application/json",
+                            },
+                        ) as response:
+                            if response.status_code != 200:
+                                body = (await response.aread()).decode(errors="replace")
+                                raise HTTPException(
+                                    response.status_code,
+                                    f"DeepSeek upstream {response.status_code}: {body[:200]}",
+                                )
+                            async for line in response.aiter_lines():
+                                if not line or not line.startswith("data:"):
+                                    continue
+                                payload = line[5:].strip()
+                                if payload == "[DONE]":
+                                    break
+                                try:
+                                    chunk = json.loads(payload)
+                                except Exception:
+                                    continue
+                                choices = chunk.get("choices") or []
+                                if choices:
+                                    delta = choices[0].get("delta") or {}
+                                    token = delta.get("content") or ""
+                                    if token:
+                                        iter_content.append(token)
+                                        full_content.append(token)
+                                        yield {
+                                            "event": "delta",
+                                            "data": json.dumps({"content": token}),
+                                        }
+                                    rc = delta.get("reasoning_content") or ""
+                                    if rc:
+                                        iter_reasoning.append(rc)
+                                    tcs = delta.get("tool_calls")
+                                    if tcs:
+                                        for tc in tcs:
+                                            idx = tc.get("index", 0)
+                                            slot = accumulated_tcs.setdefault(
+                                                idx,
+                                                {"id": "", "name": "", "args": ""},
+                                            )
+                                            if tc.get("id"):
+                                                slot["id"] = tc["id"]
+                                            fn = tc.get("function") or {}
+                                            if fn.get("name"):
+                                                slot["name"] += fn["name"]
+                                            if fn.get("arguments"):
+                                                slot["args"] += fn["arguments"]
+                                    fr = choices[0].get("finish_reason")
+                                    if fr:
+                                        iter_finish_reason = fr
+                                u = chunk.get("usage")
+                                if u:
+                                    usage = u
+
+                        finish_reason = iter_finish_reason
+
+                        if iter_finish_reason != "tool_calls" or not accumulated_tcs:
+                            # Normal final assistant message — done
+                            break
+
+                        # The LLM wants tools. Append the assistant
+                        # message (with tool_calls) and execute each
+                        # tool, appending its result, then loop for
+                        # the next LLM call.
+                        tool_calls_for_msg = []
+                        for idx in sorted(accumulated_tcs.keys()):
+                            slot = accumulated_tcs[idx]
+                            tool_calls_for_msg.append({
+                                "id": slot["id"] or f"call_{iteration}_{idx}",
+                                "type": "function",
+                                "function": {
+                                    "name": slot["name"],
+                                    "arguments": slot["args"] or "{}",
+                                },
+                            })
+                        assistant_turn = {
+                            "role": "assistant",
+                            "content": "".join(iter_content) or None,
+                            "tool_calls": tool_calls_for_msg,
+                        }
+                        if iter_reasoning:
+                            # DeepSeek thinking-mode requires this on
+                            # subsequent turns; OpenAI/Anthropic ignore
+                            assistant_turn["reasoning_content"] = "".join(iter_reasoning)
+                        iter_messages.append(assistant_turn)
+
+                        for tc_msg in tool_calls_for_msg:
+                            name = tc_msg["function"]["name"]
+                            raw_args = tc_msg["function"]["arguments"]
                             try:
-                                chunk = json.loads(payload)
+                                args = json.loads(raw_args) if raw_args else {}
                             except Exception:
-                                continue
-                            choices = chunk.get("choices") or []
-                            if choices:
-                                delta = choices[0].get("delta") or {}
-                                token = delta.get("content") or ""
-                                if token:
-                                    full_content.append(token)
-                                    yield {
-                                        "event": "delta",
-                                        "data": json.dumps({"content": token}),
-                                    }
-                                fr = choices[0].get("finish_reason")
-                                if fr:
-                                    finish_reason = fr
-                            u = chunk.get("usage")
-                            if u:
-                                usage = u
+                                args = {}
+                            yield {
+                                "event": "tool_call_start",
+                                "data": json.dumps({
+                                    "name": name,
+                                    "args": args,
+                                }, ensure_ascii=False),
+                            }
+                            t_tool = time.monotonic()
+                            tool_result = await _execute_tool(name, args)
+                            tool_dur_ms = int((time.monotonic() - t_tool) * 1000)
+                            iter_messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc_msg["id"],
+                                "content": json.dumps(tool_result, ensure_ascii=False),
+                            })
+                            yield {
+                                "event": "tool_call_result",
+                                "data": json.dumps({
+                                    "name": name,
+                                    "ok": bool(tool_result.get("ok")),
+                                    "duration_ms": tool_dur_ms,
+                                    "error": tool_result.get("error"),
+                                }, ensure_ascii=False),
+                            }
+                        # loop continues — next LLM call sees tool results
+
+                    if iteration >= _MAX_TOOL_ITERATIONS and finish_reason == "tool_calls":
+                        logger.warning(
+                            "chat_stream: hit MAX_TOOL_ITERATIONS=%d for session %s; "
+                            "stopping tool loop and returning what we have",
+                            _MAX_TOOL_ITERATIONS, session_id,
+                        )
+                        yield {
+                            "event": "delta",
+                            "data": json.dumps({"content": (
+                                "\n\n[hit max tool-call depth — stopping. "
+                                "Try rephrasing or asking step-by-step.]"
+                            )}),
+                        }
             except HTTPException as exc:
                 duration_ms = int((time.monotonic() - t0) * 1000)
                 agent_audit.audit_error(
