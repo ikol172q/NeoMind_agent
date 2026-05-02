@@ -255,6 +255,8 @@ agent:
 # LAYER 0/1 sections):
 shared_axioms_inject_modes:
   - fin
+  - chat
+  - coding
 
 shared_axioms_prompt: |
   ══════ NEOMIND 生生塔 LAYER 0+1+2 (共享根基) ══════
