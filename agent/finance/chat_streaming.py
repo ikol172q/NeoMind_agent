@@ -34,7 +34,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
-from agent.constants.models import get_active_model
+from agent.constants.models import get_active_max_context, get_active_model
 from agent.finance import agent_audit, investment_projects
 from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
 from agent_config import agent_config
@@ -114,6 +114,16 @@ def build_chat_stream_router() -> APIRouter:
     async def chat_stream(
         project_id: str = Query(...),
         message: str = Query(...),
+        session_id: Optional[str] = Query(
+            None,
+            description="If set, load prior user/assistant turns from "
+                        "chat_sessions and prepend so the LLM sees the "
+                        "full conversation. chat_sessions is the single "
+                        "source of truth — frontend does not resend "
+                        "history. Standard OpenAI Chat Completions shape "
+                        "(role/content), works on DeepSeek + OpenAI + "
+                        "Anthropic with no vendor-specific fields.",
+        ),
         model: Optional[str] = Query(
             None,
             description="Override the model. When omitted, uses "
@@ -189,8 +199,57 @@ def build_chat_stream_router() -> APIRouter:
         if injected_ctx:
             system_prompt = system_prompt + "\n\n" + injected_ctx
 
+        # Multi-turn: load prior turns from chat_sessions (single source
+        # of truth on the server) and prepend. Filter to user/assistant
+        # only — error / system entries are UI-side and would confuse
+        # the LLM. Dedup the trailing turn against current message in
+        # case the frontend's fire-and-forget persist beat us to it
+        # (otherwise the LLM would see the same user message twice).
+        history: list[dict] = []
+        if session_id:
+            try:
+                from agent.finance.chat_sessions import (
+                    _session_path,
+                    _validate_session_id,
+                )
+                sid = _validate_session_id(session_id)
+                spath = _session_path(pid, sid)
+                if spath.exists():
+                    with spath.open("r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                obj = json.loads(line)
+                            except Exception:
+                                continue
+                            if (
+                                isinstance(obj, dict)
+                                and obj.get("role") in ("user", "assistant")
+                                and isinstance(obj.get("content"), str)
+                            ):
+                                history.append({
+                                    "role": obj["role"],
+                                    "content": obj["content"],
+                                })
+            except Exception as exc:
+                logger.warning(
+                    "session history load failed for %s: %s; continuing without history",
+                    session_id, exc,
+                )
+
+        if (
+            history
+            and history[-1]["role"] == "user"
+            and history[-1]["content"] == message
+        ):
+            # Frontend persist already wrote current message; drop dup
+            history.pop()
+
         messages = [
             {"role": "system", "content": system_prompt},
+            *history,
             {"role": "user", "content": message},
         ]
 
@@ -309,13 +368,19 @@ def build_chat_stream_router() -> APIRouter:
                 project_id=pid,
             )
 
-            # Final marker carries req_id so UI can link to audit entry
+            # Final marker carries req_id so UI can link to audit entry,
+            # plus token usage so the chat header can show the context-
+            # window status bar (cumulative prompt tokens vs model's
+            # advertised max_context — single source via constants.models
+            # so both CLI and web see the same budget).
             yield {
                 "event": "done",
                 "data": json.dumps({
                     "req_id": req_id,
                     "duration_ms": duration_ms,
                     "total_tokens": (usage or {}).get("total_tokens"),
+                    "prompt_tokens": (usage or {}).get("prompt_tokens"),
+                    "max_context": get_active_max_context("neomind"),
                     "content_length": len(final_content),
                 }),
             }

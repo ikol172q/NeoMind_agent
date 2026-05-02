@@ -104,6 +104,14 @@ export function ChatPanel({
   // appearing after a reload.
   const [sessionId, setSessionId] = useState<string | null>(() => loadCache(projectId).sessionId)
   const [msgs, setMsgs] = useState<Msg[]>(() => loadCache(projectId).msgs)
+  // Context-window status — populated from each /api/chat_stream done
+  // event. promptTokens = the prompt the LLM saw on the last turn
+  // (system + history + new user); maxContext = active model's
+  // advertised window. Header renders a "ctx: X / Y (Z%)" indicator
+  // with warn (>70%) / critical (>90%) coloring so the user sees
+  // when a long conversation is approaching the limit.
+  const [ctxPromptTokens, setCtxPromptTokens] = useState<number | null>(null)
+  const [ctxMaxContext, setCtxMaxContext] = useState<number | null>(null)
   const loadedProjectRef = useRef(projectId)
   const scrollRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -310,6 +318,8 @@ export function ChatPanel({
         },
         onDone: (info) => {
           reqId = info.req_id
+          if (typeof info.prompt_tokens === 'number') setCtxPromptTokens(info.prompt_tokens)
+          if (typeof info.max_context === 'number') setCtxMaxContext(info.max_context)
           updateMsg(msgId, {
             content: accumulated || '(empty reply)',
             pending: false,
@@ -329,7 +339,7 @@ export function ChatPanel({
           void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
           resolve()
         },
-      }, ctx ? { symbol: ctx.symbol, project: ctx.project } : undefined)
+      }, ctx ? { symbol: ctx.symbol, project: ctx.project } : undefined, sid)
     })
   }
 
@@ -369,6 +379,28 @@ export function ChatPanel({
                 </span>
               </>
             )}
+            {ctxPromptTokens !== null && ctxMaxContext && ctxMaxContext > 0 && (() => {
+              const pct = ctxPromptTokens / ctxMaxContext
+              const fmt = (n: number) =>
+                n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n)
+              const color =
+                pct >= 0.9 ? 'var(--color-red)'
+                : pct >= 0.7 ? 'var(--color-amber, #d4a017)'
+                : 'var(--color-dim)'
+              return (
+                <>
+                  {' · '}
+                  <span
+                    style={{ color }}
+                    data-testid="chat-ctx-status"
+                    title={`Last turn used ${ctxPromptTokens.toLocaleString()} prompt tokens; model context window is ${ctxMaxContext.toLocaleString()} tokens. Start a new session if approaching the limit.`}
+                  >
+                    ctx {fmt(ctxPromptTokens)} / {fmt(ctxMaxContext)} ({Math.round(pct * 100)}%)
+                    {pct >= 0.9 ? ' ⛔' : pct >= 0.7 ? ' ⚠' : ''}
+                  </span>
+                </>
+              )
+            })()}
             {' · '}
             <span className="text-[var(--color-dim)]">
               type <code>/help</code> for commands · click <code>raw</code> on a reply to jump to its audit entry
