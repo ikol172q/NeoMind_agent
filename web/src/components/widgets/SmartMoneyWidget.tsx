@@ -38,6 +38,26 @@ function formatValueUSD(k: unknown): string {
 }
 
 
+// 中文名字 + 一句话简介, 让不熟英文名的 user 立刻知道这是谁.
+// Keyed by whale_key from agent/finance/regime/scanners/whale_scanner.py::WHALES.
+const WHALE_CN: Record<string, { cn: string; intro: string }> = {
+  buffett:       { cn: '巴菲特 (伯克希尔)',
+                   intro: '价值投资之王 · 长期持有可口可乐/苹果, 95岁仍在管 $300B+' },
+  druckenmiller: { cn: '德鲁肯米勒 (杜肯家族办公室)',
+                   intro: '索罗斯前合伙人 · 30 年从无年度亏损 · 宏观 + 选股双修' },
+  tepper:        { cn: '特珀 (阿帕卢萨)',
+                   intro: '困境投资 + 宏观 trader · NFL 球队老板 · 2020 抄底美股的人' },
+  ackman:        { cn: '阿克曼 (潘兴广场)',
+                   intro: '激进维权派 · Chipotle 翻盘成名 · 集中持仓 ~10 只股' },
+  klarman:       { cn: '克拉曼 (鲍波斯特)',
+                   intro: '安全边际派 · 巴菲特同辈 · 现金可达 30%, 不便宜不出手' },
+  loeb:          { cn: '罗伯 (第三点)',
+                   intro: '激进维权 + 事件驱动 · 写公开信批管理层风格' },
+  marks:         { cn: '马克斯 (橡树资本)',
+                   intro: '困境债权之王 · 《周期》作者 · 备忘录全华尔街必读' },
+}
+
+
 // Map 13f signal_type → short Chinese label + color hint.
 function changeBadge(signal_type: string): { label: string; color: string } {
   if (signal_type === '13f_new')      return { label: '新建仓', color: 'green' }
@@ -122,13 +142,27 @@ export function SmartMoneyWidget() {
 
 function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] } }) {
   const latest = group.events[0]
+  const whaleKey = String(
+    (latest?.body as Record<string, unknown> | undefined)?.whale_key ?? '',
+  )
   const filingDate = String(
     (latest?.body as Record<string, unknown> | undefined)?.filing_date ?? '',
   )
+  const cn = WHALE_CN[whaleKey]
   return (
     <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
       <div className="flex items-center gap-2 mb-1.5 text-[10px]">
-        <span className="font-semibold text-[var(--color-text)]">{group.whale}</span>
+        <span
+          className="font-semibold text-[var(--color-text)]"
+          title={cn?.intro ?? ''}
+        >
+          {group.whale}
+          {cn && (
+            <span className="ml-1.5 text-[9.5px] text-[var(--color-dim)] font-normal">
+              · {cn.cn}
+            </span>
+          )}
+        </span>
         <span className="text-[8.5px] text-[var(--color-dim)] font-mono">
           {group.events.length} moves
         </span>
@@ -138,6 +172,11 @@ function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] }
           </span>
         )}
       </div>
+      {cn && (
+        <div className="text-[9px] italic text-[var(--color-dim)] mb-1.5 leading-[1.4]">
+          {cn.intro}
+        </div>
+      )}
       <div className="space-y-0.5">
         {group.events.map((e) => (
           <EventRow key={e.event_id} event={e} />
