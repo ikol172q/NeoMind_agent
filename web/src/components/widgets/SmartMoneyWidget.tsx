@@ -77,6 +77,10 @@ export function SmartMoneyWidget() {
   const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
+  // Section-level fold (collapses entire section to its header).
+  // Defaults open; user click toggles.
+  const [collapsed13f, setCollapsed13f] = useState(false)
+  const [collapsedCongress, setCollapsedCongress] = useState(false)
 
   const events = (q13f.data?.events ?? []) as SignalEvent[]
   const congressEvents = (qStockAct.data?.events ?? []) as SignalEvent[]
@@ -119,7 +123,11 @@ export function SmartMoneyWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
       {/* === 13F whale section === */}
-      <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
+      <button
+        onClick={() => setCollapsed13f((v) => !v)}
+        className="w-full flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] text-left"
+      >
+        <span className="text-[9px]">{collapsed13f ? '▸' : '▾'}</span>
         <span className="font-semibold text-[var(--color-text)]">
           🐋 Smart Money — 13F whale moves
         </span>
@@ -129,20 +137,20 @@ export function SmartMoneyWidget() {
         <span className="ml-auto text-[8.5px] italic">
           SEC 45-day delay · long positions only
         </span>
-      </div>
+      </button>
 
-      {q13f.isLoading && (
+      {!collapsed13f && q13f.isLoading && (
         <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
       )}
 
-      {!q13f.isLoading && events.length === 0 && (
+      {!collapsed13f && !q13f.isLoading && events.length === 0 && (
         <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
           No recent 13F filings tracked. Whale scanner runs daily; events
           appear within 1-2 days of SEC publication.
         </div>
       )}
 
-      {!q13f.isLoading && groups.length > 0 && (
+      {!collapsed13f && !q13f.isLoading && groups.length > 0 && (
         <div className="space-y-2">
           {groups.slice(0, expanded ? groups.length : 3).map((g) => (
             <WhaleGroup key={g.whale} group={g} />
@@ -160,7 +168,11 @@ export function SmartMoneyWidget() {
 
       {/* === Congressional STOCK Act section === */}
       <div className="mt-3 pt-3 border-t border-[var(--color-border)]/40">
-        <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
+        <button
+          onClick={() => setCollapsedCongress((v) => !v)}
+          className="w-full flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] text-left"
+        >
+          <span className="text-[9px]">{collapsedCongress ? '▸' : '▾'}</span>
           <span className="font-semibold text-[var(--color-text)]">
             🏛 Congress — STOCK Act trades (Pelosi, etc)
           </span>
@@ -172,13 +184,13 @@ export function SmartMoneyWidget() {
           <span className="ml-auto text-[8.5px] italic">
             45-day disclosure window · amounts are ranges, not exact
           </span>
-        </div>
+        </button>
 
-        {qStockAct.isLoading && (
+        {!collapsedCongress && qStockAct.isLoading && (
           <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
         )}
 
-        {!qStockAct.isLoading && congressEvents.length === 0 && (
+        {!collapsedCongress && !qStockAct.isLoading && congressEvents.length === 0 && (
           <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
             No recent congressional trades tracked in your watchlist. Source:
             Quiver Quant live feed (1000 most-recent records, House + Senate
@@ -186,7 +198,7 @@ export function SmartMoneyWidget() {
           </div>
         )}
 
-        {!qStockAct.isLoading && congressGroups.length > 0 && (
+        {!collapsedCongress && !qStockAct.isLoading && congressGroups.length > 0 && (
           <div className="space-y-2">
             {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
               <CongressGroup key={g.rep} group={g} />
