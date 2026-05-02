@@ -78,6 +78,10 @@ finance = [
     # added 2026-04-26 (Phase B1): WARC reader/writer for the
     # content-addressed raw store under agent/finance/raw_store/.
     "warcio>=1.7",
+    # added 2026-05-02: parse House Clerk PTR PDFs to track Pelosi /
+    # Khanna trades that Quiver Quant gates behind their paid tier.
+    # See agent/finance/regime/scanners/house_clerk_pdf_scanner.py.
+    "pdfplumber>=0.11.0",
 ]
 rag = [
     "faiss-cpu>=1.7.4",
