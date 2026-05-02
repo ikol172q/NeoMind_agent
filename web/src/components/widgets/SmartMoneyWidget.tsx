@@ -1,0 +1,198 @@
+/**
+ * SmartMoneyWidget — surfaces raw 13f whale activity (Buffett, Druckenmiller,
+ * Tepper, Ackman, Klarman, Loeb, Marks) independent of the 24h confluence
+ * TTL that hides things from TodaysSignalsWidget.
+ *
+ * 13F filings drop quarterly with a 45-day SEC delay, so most days there's
+ * nothing new. When a filing lands, the user wants to see WHO bought/sold
+ * WHAT — not wait for a separate scanner to also tag the ticker before it
+ * shows up.
+ *
+ * Same shape as TodaysSignalsWidget — title bar, list of compact cards,
+ * empty state — but reads `useRecentSignals({ scanner: '13f' })` instead
+ * of confluences.
+ */
+import { useState } from 'react'
+import { useRecentSignals, type SignalEvent } from '@/lib/api'
+
+
+function relTime(iso: string): string {
+  if (!iso) return ''
+  const dt = new Date(iso)
+  if (isNaN(dt.getTime())) return iso
+  const secs = (Date.now() - dt.getTime()) / 1000
+  if (secs < 60) return `${Math.floor(secs)}s 前`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m 前`
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h 前`
+  if (secs < 86400 * 14) return `${Math.floor(secs / 86400)}d 前`
+  return `${Math.floor(secs / 86400 / 7)}w 前`
+}
+
+
+function formatValueUSD(k: unknown): string {
+  const n = typeof k === 'string' ? Number(k) : (typeof k === 'number' ? k : NaN)
+  if (!isFinite(n)) return ''
+  if (n >= 1_000_000) return `$${(n / 1_000_000).toFixed(1)}B`
+  if (n >= 1_000)     return `$${(n / 1_000).toFixed(0)}M`
+  return `$${Math.round(n)}K`
+}
+
+
+// Map 13f signal_type → short Chinese label + color hint.
+function changeBadge(signal_type: string): { label: string; color: string } {
+  if (signal_type === '13f_new')      return { label: '新建仓', color: 'green' }
+  if (signal_type === '13f_increase') return { label: '加仓',   color: 'green' }
+  if (signal_type === '13f_decrease') return { label: '减仓',   color: 'amber' }
+  if (signal_type === '13f_exit')     return { label: '清仓',   color: 'red'   }
+  return { label: signal_type, color: 'amber' }
+}
+
+
+export function SmartMoneyWidget() {
+  // Pull plenty so quarterly filings of all 7 whales fit one view; widget
+  // stays compact via collapse-by-default expand.
+  const q = useRecentSignals({ scanner: '13f', limit: 100 })
+  const [expanded, setExpanded] = useState(false)
+
+  const events = (q.data?.events ?? []) as SignalEvent[]
+
+  // Group by whale_key so the user sees per-fund activity rather than a
+  // flat firehose. Sort whales by latest activity desc, events within
+  // each whale by detected_at desc (already from API).
+  const byWhale = new Map<string, { whale: string; events: SignalEvent[] }>()
+  for (const e of events) {
+    const wk = String((e.body as Record<string, unknown> | undefined)?.whale_key ?? 'unknown')
+    const wn = String((e.body as Record<string, unknown> | undefined)?.whale ?? 'Unknown whale')
+    if (!byWhale.has(wk)) byWhale.set(wk, { whale: wn, events: [] })
+    byWhale.get(wk)!.events.push(e)
+  }
+  const groups = Array.from(byWhale.values()).sort((a, b) => {
+    const ta = new Date(a.events[0]?.detected_at ?? 0).getTime()
+    const tb = new Date(b.events[0]?.detected_at ?? 0).getTime()
+    return tb - ta
+  })
+
+  return (
+    <div
+      data-testid="smart-money-widget"
+      className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
+    >
+      <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
+        <span className="font-semibold text-[var(--color-text)]">
+          🐋 Smart Money — 13F whale moves
+        </span>
+        {events.length > 0 && (
+          <span className="font-mono">{events.length} events · {groups.length} funds</span>
+        )}
+        <span className="ml-auto text-[8.5px] italic">
+          SEC 45-day delay · long positions only
+        </span>
+      </div>
+
+      {q.isLoading && (
+        <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+      )}
+
+      {!q.isLoading && events.length === 0 && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+          No recent 13F filings tracked. Whale scanner runs daily; events
+          appear within 1-2 days of SEC publication.
+        </div>
+      )}
+
+      {!q.isLoading && groups.length > 0 && (
+        <div className="space-y-2">
+          {groups.slice(0, expanded ? groups.length : 3).map((g) => (
+            <WhaleGroup key={g.whale} group={g} />
+          ))}
+          {groups.length > 3 && (
+            <button
+              onClick={() => setExpanded((v) => !v)}
+              className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+            >
+              {expanded ? `▴ collapse` : `▾ show ${groups.length - 3} more whales`}
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] } }) {
+  const latest = group.events[0]
+  const filingDate = String(
+    (latest?.body as Record<string, unknown> | undefined)?.filing_date ?? '',
+  )
+  return (
+    <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
+      <div className="flex items-center gap-2 mb-1.5 text-[10px]">
+        <span className="font-semibold text-[var(--color-text)]">{group.whale}</span>
+        <span className="text-[8.5px] text-[var(--color-dim)] font-mono">
+          {group.events.length} moves
+        </span>
+        {filingDate && (
+          <span className="ml-auto text-[8.5px] text-[var(--color-dim)] font-mono">
+            13F filed {filingDate}
+          </span>
+        )}
+      </div>
+      <div className="space-y-0.5">
+        {group.events.map((e) => (
+          <EventRow key={e.event_id} event={e} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+function EventRow({ event }: { event: SignalEvent }) {
+  const body = (event.body ?? {}) as Record<string, unknown>
+  const badge = changeBadge(event.signal_type)
+  const valueK = body.value_usd_k
+  const shares = body.shares
+  const name = body.name as string | undefined
+
+  const badgeClass =
+    badge.color === 'green' ? 'text-[var(--color-green,#7ed98c)] border-[var(--color-green,#7ed98c)]/40' :
+    badge.color === 'red'   ? 'text-[var(--color-red,#e07070)] border-[var(--color-red,#e07070)]/40' :
+                              'text-[var(--color-amber,#e5a200)] border-[var(--color-amber,#e5a200)]/40'
+
+  return (
+    <div className="flex items-center gap-2 text-[10px] py-0.5">
+      <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${badgeClass}`}>
+        {badge.label}
+      </span>
+      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
+        {event.ticker ?? '—'}
+      </span>
+      {name && (
+        <span className="text-[9px] text-[var(--color-dim)] truncate flex-1">{name}</span>
+      )}
+      <span className="text-[9.5px] text-[var(--color-dim)] font-mono flex-shrink-0">
+        {formatValueUSD(valueK)}
+        {typeof shares === 'number' && shares > 0 && (
+          <span className="ml-1 text-[8.5px]">
+            ({(shares / 1000).toFixed(0)}k sh)
+          </span>
+        )}
+      </span>
+      {event.source_url && (
+        <a
+          href={event.source_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[8.5px] text-[var(--color-accent)] hover:underline flex-shrink-0"
+          title="Open SEC filing"
+        >
+          🔗
+        </a>
+      )}
+      <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-10 text-right flex-shrink-0">
+        {relTime(event.detected_at)}
+      </span>
+    </div>
+  )
+}
