@@ -62,3 +62,29 @@ path = '''(?i)\.(db|sqlite3?)$'''
 id = "private-key-content"
 description = "Private Key Content"
 regex = '''-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'''
+
+# ── User-specific PII (added 2026-05-02) ────────────────────────────
+# These catch personal data that gitleaks default rules miss. Triggered
+# by 2026-05-02 audit — leak_scan_hook + gitleaks default rules don't
+# catch absolute home paths or machine hostnames in committed content,
+# only in author metadata. Without these, code comments / docs that
+# accidentally include the user's home path or machine hostname would
+# slip through. Patterns themselves live below as rule literals.
+
+[[rules]]
+id = "user-personal-absolute-path"
+description = "User personal home directory absolute path"
+regex = '''/Users/paomian_kong'''
+keywords = ["paomian_kong", "Users"]
+
+[[rules]]
+id = "user-personal-hostname"
+description = "User machine hostname"
+regex = '''paomian-kongdeMac'''
+keywords = ["paomian"]
+
+[[rules]]
+id = "user-personal-email-explicit"
+description = "Known user personal email addresses"
+regex = '''(irenez202021|ikol1729)@gmail\.com'''
+keywords = ["irenez", "ikol"]

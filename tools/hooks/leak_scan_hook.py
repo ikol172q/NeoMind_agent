@@ -135,6 +135,50 @@ def have_gitleaks() -> bool:
     return shutil.which("gitleaks") is not None
 
 
+# Bash commands that warrant an inline-secret scan. Most commands
+# (ls, cd, git status, ps) don't carry secrets; restricting to these
+# triggers avoids 100ms+ gitleaks overhead on every Bash call.
+_INLINE_SCAN_TRIGGERS = re.compile(
+    r"\b(curl|wget|http|fetch|api[_-]?key|token|secret|password|bearer|authorization|"
+    r"export|set\s|aws|gcloud|gh\s+auth|git\s+config|"
+    r"ANTHROPIC|OPENAI|DEEPSEEK|TAVILY|SERPER|GEMINI|GROK|XAI|HF_|GITHUB_)",
+    re.IGNORECASE,
+)
+
+
+_LEAKS_FOUND_RE = re.compile(r"leaks found:\s*(\d+)", re.IGNORECASE)
+
+
+def scan_bash_inline(cmd: str) -> tuple[bool, str]:
+    """Scan the Bash command string itself for inline secrets like
+    `curl -H 'Bearer sk-XXX'` or `git config user.email "real@x.com"`.
+
+    Triggered only on commands containing one of _INLINE_SCAN_TRIGGERS
+    keywords — keeps the per-call latency floor at zero for the 95%
+    case (ls / cd / git status etc).
+
+    Reuses the .gitleaks.toml ruleset, so the PII rules (user paths /
+    hostname / known emails) applied to git commits also apply here.
+
+    NOTE: gitleaks --pipe always exits 0 even with findings; we parse
+    stderr for "leaks found: N" and treat N>0 as fail.
+    """
+    if not cmd or len(cmd) < 20:
+        return True, ""
+    if not _INLINE_SCAN_TRIGGERS.search(cmd):
+        return True, ""
+    args = ["gitleaks", "detect", "--pipe", "--no-banner", "--redact"]
+    if os.path.exists(GITLEAKS_CONFIG):
+        args.extend(["--config", GITLEAKS_CONFIG])
+    rc, out, err = run(args, input=cmd)
+    combined = out + err
+    m = _LEAKS_FOUND_RE.search(err or "")
+    n_leaks = int(m.group(1)) if m else 0
+    if n_leaks > 0:
+        return False, combined[:1500]
+    return True, ""
+
+
 def scan_staged() -> tuple[bool, str]:
     """Run gitleaks on the staged index. Return (clean?, message)."""
     args = ["gitleaks", "protect", "--staged", "--no-banner", "--redact"]
@@ -214,6 +258,17 @@ def main() -> int:
         return 0
 
     cmd = (payload.get("tool_input") or {}).get("command", "") or ""
+
+    # Inline Bash secret scan — fires on every command (cheap pre-
+    # filter skips 95% of calls). Catches stuff like `curl -H "Bearer
+    # sk-real-key"` or `git config user.email "user@example.com"`
+    # that would never reach the commit/push scan but still leaks the
+    # secret to shell history / audit log / process list.
+    if have_gitleaks():
+        clean, finding = scan_bash_inline(cmd)
+        if not clean:
+            return emit_block("bash-inline-secret", finding, cmd)
+
     is_commit = is_git_commit(cmd)
     is_push = is_git_push(cmd)
     if not (is_commit or is_push):
