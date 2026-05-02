@@ -128,7 +128,11 @@ export function SmartMoneyWidget() {
     return tb - ta
   })
 
-  // Group congress events by representative.
+  // Group congress events by representative. Within each rep, sort
+  // trades by actual transaction_date desc (most-recent trade first) —
+  // detected_at is identical for the whole batch (we ingested all of
+  // Pelosi's PTRs in one scan tick) so without per-rep sort the order
+  // would be PDF iteration order, which has no relationship to recency.
   const byRep = new Map<string, { rep: string; chamber: string; party: string; events: SignalEvent[] }>()
   for (const e of congressEvents) {
     const b = (e.body ?? {}) as Record<string, unknown>
@@ -137,6 +141,17 @@ export function SmartMoneyWidget() {
     const party = String(b.party ?? '')
     if (!byRep.has(rep)) byRep.set(rep, { rep, chamber, party, events: [] })
     byRep.get(rep)!.events.push(e)
+  }
+  // Sort each rep's events: most-recent trade first.
+  for (const g of byRep.values()) {
+    g.events.sort((a, b) => {
+      const ta = String((a.body as Record<string, unknown> | undefined)?.transaction_date ?? a.source_timestamp ?? '')
+      const tb = String((b.body as Record<string, unknown> | undefined)?.transaction_date ?? b.source_timestamp ?? '')
+      // ISO date strings sort lexically — desc means b - a.
+      if (ta < tb) return 1
+      if (ta > tb) return -1
+      return 0
+    })
   }
   const congressGroups = Array.from(byRep.values()).sort((a, b) => {
     // Followed-rep anchors pinned first (Pelosi/Tina Smith/Cleo Fields),
