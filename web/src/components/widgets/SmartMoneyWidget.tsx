@@ -69,12 +69,17 @@ function changeBadge(signal_type: string): { label: string; color: string } {
 
 
 export function SmartMoneyWidget() {
-  // Pull plenty so quarterly filings of all 7 whales fit one view; widget
-  // stays compact via collapse-by-default expand.
-  const q = useRecentSignals({ scanner: '13f', limit: 100 })
+  // Two independent queries — 13F (institutional fund managers, quarterly
+  // filings, 45-day SEC delay) and stock_act (Congress members, 30-45 day
+  // STOCK Act disclosure window). Rendered as two sub-sections so user can
+  // tell at a glance whose money is moving.
+  const q13f = useRecentSignals({ scanner: '13f', limit: 100 })
+  const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
   const [expanded, setExpanded] = useState(false)
+  const [expandedCongress, setExpandedCongress] = useState(false)
 
-  const events = (q.data?.events ?? []) as SignalEvent[]
+  const events = (q13f.data?.events ?? []) as SignalEvent[]
+  const congressEvents = (qStockAct.data?.events ?? []) as SignalEvent[]
 
   // Group by whale_key so the user sees per-fund activity rather than a
   // flat firehose. Sort whales by latest activity desc, events within
@@ -92,11 +97,28 @@ export function SmartMoneyWidget() {
     return tb - ta
   })
 
+  // Group congress events by representative.
+  const byRep = new Map<string, { rep: string; chamber: string; party: string; events: SignalEvent[] }>()
+  for (const e of congressEvents) {
+    const b = (e.body ?? {}) as Record<string, unknown>
+    const rep = String(b.representative ?? b.senator ?? 'Unknown')
+    const chamber = String(b.chamber ?? '')
+    const party = String(b.party ?? '')
+    if (!byRep.has(rep)) byRep.set(rep, { rep, chamber, party, events: [] })
+    byRep.get(rep)!.events.push(e)
+  }
+  const congressGroups = Array.from(byRep.values()).sort((a, b) => {
+    const ta = new Date(a.events[0]?.detected_at ?? 0).getTime()
+    const tb = new Date(b.events[0]?.detected_at ?? 0).getTime()
+    return tb - ta
+  })
+
   return (
     <div
       data-testid="smart-money-widget"
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
+      {/* === 13F whale section === */}
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
         <span className="font-semibold text-[var(--color-text)]">
           🐋 Smart Money — 13F whale moves
@@ -109,18 +131,18 @@ export function SmartMoneyWidget() {
         </span>
       </div>
 
-      {q.isLoading && (
+      {q13f.isLoading && (
         <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
       )}
 
-      {!q.isLoading && events.length === 0 && (
+      {!q13f.isLoading && events.length === 0 && (
         <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
           No recent 13F filings tracked. Whale scanner runs daily; events
           appear within 1-2 days of SEC publication.
         </div>
       )}
 
-      {!q.isLoading && groups.length > 0 && (
+      {!q13f.isLoading && groups.length > 0 && (
         <div className="space-y-2">
           {groups.slice(0, expanded ? groups.length : 3).map((g) => (
             <WhaleGroup key={g.whale} group={g} />
@@ -135,6 +157,126 @@ export function SmartMoneyWidget() {
           )}
         </div>
       )}
+
+      {/* === Congressional STOCK Act section === */}
+      <div className="mt-3 pt-3 border-t border-[var(--color-border)]/40">
+        <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
+          <span className="font-semibold text-[var(--color-text)]">
+            🏛 Congress — STOCK Act trades (Pelosi, etc)
+          </span>
+          {congressEvents.length > 0 && (
+            <span className="font-mono">
+              {congressEvents.length} events · {congressGroups.length} members
+            </span>
+          )}
+          <span className="ml-auto text-[8.5px] italic">
+            45-day disclosure window · amounts are ranges, not exact
+          </span>
+        </div>
+
+        {qStockAct.isLoading && (
+          <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+        )}
+
+        {!qStockAct.isLoading && congressEvents.length === 0 && (
+          <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+            No recent congressional trades tracked in your watchlist. Source:
+            Quiver Quant live feed (1000 most-recent records, House + Senate
+            combined). Filtered to your watchlist + supply chain.
+          </div>
+        )}
+
+        {!qStockAct.isLoading && congressGroups.length > 0 && (
+          <div className="space-y-2">
+            {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
+              <CongressGroup key={g.rep} group={g} />
+            ))}
+            {congressGroups.length > 5 && (
+              <button
+                onClick={() => setExpandedCongress((v) => !v)}
+                className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+              >
+                {expandedCongress
+                  ? `▴ collapse`
+                  : `▾ show ${congressGroups.length - 5} more members`}
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function CongressGroup({
+  group,
+}: {
+  group: { rep: string; chamber: string; party: string; events: SignalEvent[] }
+}) {
+  const chamberLabel = group.chamber === 'senate' ? '参议院' : '众议院'
+  const partyClass =
+    group.party === 'D' ? 'text-blue-400' :
+    group.party === 'R' ? 'text-red-400' : 'text-[var(--color-dim)]'
+  return (
+    <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
+      <div className="flex items-center gap-2 mb-1.5 text-[10px]">
+        <span className="font-semibold text-[var(--color-text)]">{group.rep}</span>
+        {group.party && (
+          <span className={`text-[8.5px] font-mono ${partyClass}`}>[{group.party}]</span>
+        )}
+        {group.chamber && (
+          <span className="text-[8.5px] text-[var(--color-dim)]">{chamberLabel}</span>
+        )}
+        <span className="text-[8.5px] text-[var(--color-dim)] font-mono ml-auto">
+          {group.events.length} 笔
+        </span>
+      </div>
+      <div className="space-y-0.5">
+        {group.events.map((e) => (
+          <CongressRow key={e.event_id} event={e} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+function CongressRow({ event }: { event: SignalEvent }) {
+  const body = (event.body ?? {}) as Record<string, unknown>
+  const txType = String(body.transaction_type ?? '').toLowerCase()
+  const isBuy = txType.includes('purchase')
+  const action = isBuy ? '买入' : (txType.includes('sale') ? '卖出' : '换股')
+  const actionClass = isBuy
+    ? 'text-[var(--color-green,#7ed98c)] border-[var(--color-green,#7ed98c)]/40'
+    : 'text-[var(--color-red,#e07070)] border-[var(--color-red,#e07070)]/40'
+  const amount = String(body.amount_range ?? '')
+  const txDate = String(body.transaction_date ?? '')
+  return (
+    <div className="flex items-center gap-2 text-[10px] py-0.5">
+      <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${actionClass}`}>
+        {action}
+      </span>
+      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
+        {event.ticker ?? '—'}
+      </span>
+      <span className="text-[9.5px] text-[var(--color-dim)] font-mono">
+        {amount}
+      </span>
+      {event.source_url && (
+        <a
+          href={event.source_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[8.5px] text-[var(--color-accent)] hover:underline ml-auto flex-shrink-0"
+          title="View on Quiver Quant"
+        >
+          🔗
+        </a>
+      )}
+      <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-16 text-right flex-shrink-0">
+        {txDate}
+      </span>
     </div>
   )
 }

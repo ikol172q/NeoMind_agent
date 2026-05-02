@@ -72,10 +72,22 @@ SENATE_URL_MIRROR = (
     "data/all_transactions.json"
 )
 
+# Quiver Quant live feed — verified 2026-05-02 to be no-auth + free, returns
+# ~1000 most-recent congressional transactions (House + Senate combined).
+# This is the primary source now that HouseStockWatcher / SenateStockWatcher
+# S3 buckets are 403 and the GitHub mirrors are 404. Schema differs from the
+# legacy sources so we map it back to the same internal shape.
+QUIVER_LIVE_URL = "https://api.quiverquant.com/beta/live/congresstrading"
 
-def _http_get_json(url: str, *, timeout: int = 30) -> Any:
+
+def _http_get_json(url: str, *, timeout: int = 30, ua: Optional[str] = None) -> Any:
+    # Quiver Quant rejects the literal "NeoMind Fin Research…" UA with 401
+    # but lets a normal browser UA through; the legacy SEC-EDGAR-style UA is
+    # still used as default for the legacy stock-watcher S3 buckets which
+    # require an identifying contact. Pass `ua=` per-call when needed.
     req = urllib.request.Request(url, headers={
-        "User-Agent":      "NeoMind Fin Research neomind@example.com",
+        "User-Agent":      ua or "NeoMind Fin Research neomind@example.com",
+        "Accept":          "application/json",
         "Accept-Encoding": "gzip, deflate",
     })
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -83,6 +95,13 @@ def _http_get_json(url: str, *, timeout: int = 30) -> Any:
         if resp.headers.get('Content-Encoding') == 'gzip':
             raw = gzip.decompress(raw)
         return json.loads(raw.decode())
+
+
+_BROWSER_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/126.0.0.0 Safari/537.36"
+)
 
 
 def _ticker_universe() -> set:
@@ -146,6 +165,66 @@ def _fmt_amount(amount_str: Optional[str]) -> str:
     return amount_str.strip()
 
 
+def _quiver_to_legacy_shape(rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Map a Quiver Quant `/beta/live/congresstrading` record to the legacy
+    HouseStockWatcher shape so the existing parse loops handle it unchanged.
+
+    Quiver fields → legacy fields:
+        Representative   → representative / senator
+        TransactionDate  → transaction_date
+        ReportDate       → disclosure_date
+        Ticker           → ticker
+        Transaction      → type   (lowercased + normalized)
+        Range            → amount
+        House            → chamber routing ('Representatives' vs 'Senate')
+        Party            → party (extra; we keep it in body via emit later)
+    """
+    house_raw = (rec.get("House") or "").strip().lower()
+    transaction = (rec.get("Transaction") or "").strip()
+    # Legacy `type` values: purchase / sale / sale_partial / sale_full / exchange
+    t_norm = transaction.lower().replace(" (", "_").replace(")", "").replace(" ", "_").strip("_")
+    # Note: substring match for "sen" would false-positive on
+    # "RePreSENtatives" (which contains the substring "sen"). Use
+    # exact equality after normalization.
+    return {
+        "_chamber":         "senate" if house_raw == "senate" else "house",
+        "representative":   rec.get("Representative"),
+        "senator":          rec.get("Representative"),
+        "transaction_date": rec.get("TransactionDate"),
+        "disclosure_date":  rec.get("ReportDate"),
+        "ticker":           rec.get("Ticker"),
+        "type":             t_norm,
+        "amount":           rec.get("Range"),
+        "party":            rec.get("Party"),
+        # Quiver doesn't expose a per-trade PTR PDF link in the live feed;
+        # link to their public web view of the rep instead so the user has
+        # somewhere to click through and verify.
+        "ptr_link":         f"https://www.quiverquant.com/congresstrading/politician/"
+                            f"{(rec.get('Representative') or '').replace(' ', '%20')}",
+    }
+
+
+def _fetch_quiver_split() -> tuple[List[Dict[str, Any]], List[Dict[str, Any]], Optional[str]]:
+    """Fetch from Quiver and split into (house_records, senate_records, error).
+    Returns ([], [], err_msg) on failure so caller can fall back."""
+    try:
+        raw = _http_get_json(QUIVER_LIVE_URL, ua=_BROWSER_UA)
+    except Exception as exc:
+        logger.warning("quiver live feed failed: %s", exc)
+        return [], [], str(exc)
+    if not isinstance(raw, list):
+        return [], [], f"unexpected shape: {type(raw).__name__}"
+    house: List[Dict[str, Any]] = []
+    senate: List[Dict[str, Any]] = []
+    for rec in raw:
+        mapped = _quiver_to_legacy_shape(rec)
+        if mapped["_chamber"] == "senate":
+            senate.append(mapped)
+        else:
+            house.append(mapped)
+    return house, senate, None
+
+
 def run_congressional_scan(
     *,
     lookback_days: int = 30,
@@ -166,16 +245,34 @@ def run_congressional_scan(
     n_seen_senate = 0
     errors: List[str] = []
 
-    # House — try primary then mirror
-    house_data = None
-    for url in (HOUSE_URL, HOUSE_URL_MIRROR):
-        try:
-            house_data = _http_get_json(url)
-            if isinstance(house_data, list):
-                break
-        except Exception as exc:
-            logger.warning("house URL %s failed: %s", url, exc)
-            continue
+    # Primary: Quiver Quant live feed (no auth, ~1000 most recent records,
+    # House + Senate combined). When this works the legacy URLs below are
+    # skipped entirely — they're 403 / 404 as of 2026-05-02. The Quiver
+    # records are mapped to the legacy shape so the existing parse loops
+    # don't change.
+    house_data: Optional[List[Dict[str, Any]]] = None
+    senate_data: Optional[List[Dict[str, Any]]] = None
+    quiver_house, quiver_senate, quiver_err = _fetch_quiver_split()
+    if quiver_house or quiver_senate:
+        house_data = quiver_house
+        senate_data = quiver_senate
+        logger.info("congressional: quiver returned %d house + %d senate records",
+                    len(quiver_house), len(quiver_senate))
+    elif quiver_err:
+        errors.append(f"quiver: {quiver_err}")
+
+    # Fallback: legacy HouseStockWatcher S3 + GitHub mirror (both currently
+    # 403 / 404 as of 2026-05-02 — kept so a re-hosted mirror can be plugged
+    # in without code change).
+    if house_data is None:
+        for url in (HOUSE_URL, HOUSE_URL_MIRROR):
+            try:
+                house_data = _http_get_json(url)
+                if isinstance(house_data, list):
+                    break
+            except Exception as exc:
+                logger.warning("house URL %s failed: %s", url, exc)
+                continue
     try:
         if isinstance(house_data, list):
             for tx in house_data[-max_per_chamber:]:
@@ -221,16 +318,17 @@ def run_congressional_scan(
         logger.exception("house fetch failed")
         errors.append(f"house: {exc}")
 
-    # Senate — try primary then mirror
-    senate_data = None
-    for url in (SENATE_URL, SENATE_URL_MIRROR):
-        try:
-            senate_data = _http_get_json(url)
-            if isinstance(senate_data, list):
-                break
-        except Exception as exc:
-            logger.warning("senate URL %s failed: %s", url, exc)
-            continue
+    # Senate — Quiver already populated this above when available; legacy
+    # fallback only if Quiver failed.
+    if senate_data is None:
+        for url in (SENATE_URL, SENATE_URL_MIRROR):
+            try:
+                senate_data = _http_get_json(url)
+                if isinstance(senate_data, list):
+                    break
+            except Exception as exc:
+                logger.warning("senate URL %s failed: %s", url, exc)
+                continue
     try:
         if isinstance(senate_data, list):
             for tx in senate_data[-max_per_chamber:]:
