@@ -77,10 +77,26 @@ class AgentConfigManager:
             mode_cfg = self._fin_cfg
         else:
             mode_cfg = self._chat_cfg
-        # _active holds mode-specific settings
-        self._active = mode_cfg
+        # _active holds mode-specific settings (copy so injection below
+        # doesn't mutate the raw _fin_cfg / _chat_cfg / _coding_cfg dicts;
+        # they're cached at __init__ time and re-used on every mode switch)
+        self._active = dict(mode_cfg)
         # _agent holds base agent settings
         self._agent = dict(self._agent_base)
+
+        # === Pyramid prompt — LAYER 0/1 shared injection ===
+        # Full design source: plans/references/pyramid-prompt-architecture.md
+        # Whitelist (base.yaml::shared_axioms_inject_modes) controls which
+        # personalities get the shared block prepended. Initially fin only;
+        # chat/coding will join after their personality prompts are pruned
+        # of duplicate LAYER 0/1 sections (otherwise injection causes
+        # double-PINNACLE noise). Shared content lives in
+        # base.yaml::shared_axioms_prompt.
+        inject_modes = self._base.get("shared_axioms_inject_modes") or []
+        shared = self._base.get("shared_axioms_prompt") or ""
+        if self._mode in inject_modes and shared:
+            existing = self._active.get("system_prompt") or ""
+            self._active["system_prompt"] = shared + "\n\n" + existing
 
     def _apply_env_overrides(self):
         """Apply environment variable overrides."""
@@ -218,14 +234,32 @@ class AgentConfigManager:
         return dict(self._active)
 
     def get_mode_config(self, mode: str) -> dict:
-        """Get config for a specific mode (without switching)."""
+        """Get config for a specific mode (without switching).
+
+        Applies LAYER 0/1 shared_axioms_prompt injection (mirrors
+        _rebuild_active_config) so callers like chat_streaming.py
+        get the **fully assembled** system_prompt regardless of which
+        mode is currently active. Without this, agent_config.system_prompt
+        (active) and get_mode_config("fin")["system_prompt"] would
+        diverge — fine for active mode but the dashboard's
+        chat_streaming endpoint reads via get_mode_config so it must
+        also see injection.
+        """
         if mode == "chat":
-            return dict(self._chat_cfg)
+            cfg = dict(self._chat_cfg)
         elif mode == "coding":
-            return dict(self._coding_cfg)
+            cfg = dict(self._coding_cfg)
         elif mode == "fin":
-            return dict(self._fin_cfg)
-        return {}
+            cfg = dict(self._fin_cfg)
+        else:
+            return {}
+
+        inject_modes = self._base.get("shared_axioms_inject_modes") or []
+        shared = self._base.get("shared_axioms_prompt") or ""
+        if mode in inject_modes and shared:
+            existing = cfg.get("system_prompt") or ""
+            cfg["system_prompt"] = shared + "\n\n" + existing
+        return cfg
 
     @property
     def available_commands(self) -> List[str]:
