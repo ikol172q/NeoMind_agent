@@ -36,6 +36,17 @@ MODE_PROBES = {
     "coding": ("列出 agent/ 目录的子目录", 30),
 }
 
+# Internal-vocab tokens from base.yaml::shared_axioms_prompt that must
+# NEVER appear in user-facing replies. If any does, the LLM is reciting
+# the framework instead of applying it (Internal-vs-External rule
+# violation — see plans/references/pyramid-test-suite.md Test F).
+# chat probe is self-reference, the highest-risk query for this leak.
+VOCAB_LEAK_MARKERS = (
+    "三才", "八卦", "EPISTEMIC HONESTY", "FIRST-PRINCIPLES",
+    "MAIN-CONTRADICTION", "SIBLING-FRAME", "SOURCE-CLASSIFY",
+    "正反合", "卦象",
+)
+
 
 async def smoke_one(mode: str, probe: str, max_wait: int) -> tuple[str, str]:
     """Returns (status, detail). status ∈ {pass, fail, skip}."""
@@ -86,6 +97,9 @@ async def smoke_one(mode: str, probe: str, max_wait: int) -> tuple[str, str]:
                 return "fail", "API auth error"
             if len(full) < 200:
                 return "fail", f"response too short ({len(full)} chars)"
+            leaks = [m for m in VOCAB_LEAK_MARKERS if m in full]
+            if leaks:
+                return "fail", f"vocab leak in reply: {leaks}"
             return "pass", f"{len(full)} chars in {time.time()-t0:.0f}s"
 
     except ITerm2APIUnavailable as e:

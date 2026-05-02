@@ -1,6 +1,14 @@
-"""Real-time streaming chat endpoint — direct DeepSeek call, not
-through fleet. Emits SSE with token-by-token `delta` events so the
-UI gets Telegram-style typing effect, not a 20s-silent-then-dump.
+"""**Web fin chat SSE handler** — async streaming endpoint backing the
+``POST /api/chat_stream`` route consumed by the dashboard SPA. This is
+**not** the CLI chat path (CLI uses ``agent/services/code_commands.py``
+which does sync ``requests.iter_lines`` instead — the two transports
+can't share a wrapper without breaking streaming). File name is kept
+generic for backward-compat import paths; if you grep ``chat_streaming``
+this is web-fin-only, nothing else.
+
+Direct DeepSeek call, not through fleet. Emits SSE with token-by-token
+`delta` events so the UI gets Telegram-style typing effect, not a
+20s-silent-then-dump.
 
 Persona / model / behavior come from the single source of truth:
 - system prompt: ``agent_config.get_mode_config("fin")["system_prompt"]``
@@ -36,6 +44,7 @@ from fastapi import APIRouter, HTTPException, Query
 from sse_starlette.sse import EventSourceResponse
 
 from agent.constants.models import get_active_max_context, get_active_model
+from agent.evolution.episode_capture import record_episode
 from agent.finance import agent_audit, investment_projects
 from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
 from agent_config import agent_config
@@ -613,6 +622,7 @@ def build_chat_stream_router() -> APIRouter:
             iter_messages = list(messages)  # mutated across iterations
             t0 = time.monotonic()
             iteration = 0
+            episode_tool_calls: list[Dict[str, Any]] = []  # for C1 capture
 
             try:
                 async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, read=None)) as client:
@@ -765,6 +775,13 @@ def build_chat_stream_router() -> APIRouter:
                                 "tool_call_id": tc_msg["id"],
                                 "content": json.dumps(tool_result, ensure_ascii=False),
                             })
+                            episode_tool_calls.append({
+                                "name": name,
+                                "args": args,
+                                "ok": bool(tool_result.get("ok")),
+                                "duration_ms": tool_dur_ms,
+                                "error": tool_result.get("error"),
+                            })
                             yield {
                                 "event": "tool_call_result",
                                 "data": json.dumps({
@@ -836,6 +853,32 @@ def build_chat_stream_router() -> APIRouter:
                 duration_ms=duration_ms,
                 project_id=pid,
             )
+
+            # C1 — episode capture (best-effort, never break main flow).
+            # Web-fin-only by design — CLI capture would require duplicating
+            # this in code_commands.py and is deferred until we actually
+            # need cross-surface evolve data.
+            try:
+                record_episode(
+                    mode="fin",
+                    query=message,
+                    reply=final_content,
+                    tool_calls=episode_tool_calls,
+                    signals={
+                        "duration_ms": duration_ms,
+                        "prompt_tokens": (usage or {}).get("prompt_tokens"),
+                        "total_tokens": (usage or {}).get("total_tokens"),
+                        "model": model,
+                        "finish_reason": finish_reason,
+                        "compacted": compacted_this_turn,
+                        "iterations": iteration,
+                    },
+                    session_id=session_id,
+                    project_id=pid,
+                    req_id=req_id,
+                )
+            except Exception as exc:
+                logger.warning("episode capture failed for %s: %s", session_id, exc)
 
             # Final marker carries req_id so UI can link to audit entry,
             # plus token usage so the chat header can show the context-
