@@ -38,6 +38,25 @@ function formatValueUSD(k: unknown): string {
 }
 
 
+// Followed reps the user wants pinned to the top of the Congress section
+// regardless of when they last traded — they're "anchors" not just feed
+// noise. Keys are case-insensitive substring matches against the rep's
+// display name as stored in body_json.representative / body_json.senator.
+const FOLLOWED_CONGRESS = {
+  pelosi:    { cn: '佩洛西',     intro: '众议院前议长 · ETF NANC 跟踪她 · 2024 年回报 +38% 跑赢 SPY · 低频高信念' },
+  tina:      { cn: '蒂娜·史密斯', intro: '参议院 D-MN · Senate Finance 委员 · 现 feed 中披露最快 (中位 3 天) · 稳健分散' },
+  cleo:      { cn: '克里奥·菲尔兹', intro: '众议院 D-LA · 2025 回报 +44.8% 跑赢 SPY 16.8% · 重仓 GOOGL/MSFT/NVDA' },
+} as const
+
+function isFollowedRep(name: string): keyof typeof FOLLOWED_CONGRESS | null {
+  const n = name.toLowerCase()
+  if (n.includes('pelosi')) return 'pelosi'
+  if (n.includes('tina') && n.includes('smith')) return 'tina'
+  if (n.includes('cleo') && n.includes('fields')) return 'cleo'
+  return null
+}
+
+
 // 中文名字 + 一句话简介, 让不熟英文名的 user 立刻知道这是谁.
 // Keyed by whale_key from agent/finance/regime/scanners/whale_scanner.py::WHALES.
 const WHALE_CN: Record<string, { cn: string; intro: string }> = {
@@ -74,7 +93,11 @@ export function SmartMoneyWidget() {
   // STOCK Act disclosure window). Rendered as two sub-sections so user can
   // tell at a glance whose money is moving.
   const q13f = useRecentSignals({ scanner: '13f', limit: 100 })
+  // Two scanner sources cover Congress: Quiver feed (most reps, free,
+  // ~1000 records) + House Clerk PDF parser (text-PDF reps that Quiver
+  // gates behind paid tier — currently just Pelosi). Merge in widget.
   const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
+  const qHouseClerk = useRecentSignals({ scanner: 'house_clerk_pdf', limit: 100 })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
   // Section-level fold (collapses entire section to its header).
@@ -83,7 +106,11 @@ export function SmartMoneyWidget() {
   const [collapsedCongress, setCollapsedCongress] = useState(false)
 
   const events = (q13f.data?.events ?? []) as SignalEvent[]
-  const congressEvents = (qStockAct.data?.events ?? []) as SignalEvent[]
+  const congressEvents = [
+    ...((qStockAct.data?.events ?? []) as SignalEvent[]),
+    ...((qHouseClerk.data?.events ?? []) as SignalEvent[]),
+  ]
+  const congressLoading = qStockAct.isLoading || qHouseClerk.isLoading
 
   // Group by whale_key so the user sees per-fund activity rather than a
   // flat firehose. Sort whales by latest activity desc, events within
@@ -112,6 +139,11 @@ export function SmartMoneyWidget() {
     byRep.get(rep)!.events.push(e)
   }
   const congressGroups = Array.from(byRep.values()).sort((a, b) => {
+    // Followed-rep anchors pinned first (Pelosi/Tina Smith/Cleo Fields),
+    // then everyone else by latest detected_at desc.
+    const fa = isFollowedRep(a.rep) ? 0 : 1
+    const fb = isFollowedRep(b.rep) ? 0 : 1
+    if (fa !== fb) return fa - fb
     const ta = new Date(a.events[0]?.detected_at ?? 0).getTime()
     const tb = new Date(b.events[0]?.detected_at ?? 0).getTime()
     return tb - ta
@@ -186,11 +218,11 @@ export function SmartMoneyWidget() {
           </span>
         </button>
 
-        {!collapsedCongress && qStockAct.isLoading && (
+        {!collapsedCongress && congressLoading && (
           <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
         )}
 
-        {!collapsedCongress && !qStockAct.isLoading && congressEvents.length === 0 && (
+        {!collapsedCongress && !congressLoading && congressEvents.length === 0 && (
           <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
             No recent congressional trades tracked in your watchlist. Source:
             Quiver Quant live feed (1000 most-recent records, House + Senate
@@ -198,7 +230,7 @@ export function SmartMoneyWidget() {
           </div>
         )}
 
-        {!collapsedCongress && !qStockAct.isLoading && congressGroups.length > 0 && (
+        {!collapsedCongress && !congressLoading && congressGroups.length > 0 && (
           <div className="space-y-2">
             {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
               <CongressGroup key={g.rep} group={g} />
@@ -230,10 +262,25 @@ function CongressGroup({
   const partyClass =
     group.party === 'D' ? 'text-blue-400' :
     group.party === 'R' ? 'text-red-400' : 'text-[var(--color-dim)]'
+  const followedKey = isFollowedRep(group.rep)
+  const followed = followedKey ? FOLLOWED_CONGRESS[followedKey] : null
+  // Pinned anchors get a slightly stronger border + ⭐ marker so the
+  // user can find them at a glance without reading every name.
+  const containerClass = followed
+    ? 'rounded border border-[var(--color-accent)]/60 bg-[var(--color-accent)]/[0.04] p-2'
+    : 'rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2'
   return (
-    <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
+    <div className={containerClass}>
       <div className="flex items-center gap-2 mb-1.5 text-[10px]">
-        <span className="font-semibold text-[var(--color-text)]">{group.rep}</span>
+        {followed && <span className="text-[10px]" title="followed anchor">⭐</span>}
+        <span className="font-semibold text-[var(--color-text)]" title={followed?.intro ?? ''}>
+          {group.rep}
+          {followed && (
+            <span className="ml-1.5 text-[9.5px] text-[var(--color-dim)] font-normal">
+              · {followed.cn}
+            </span>
+          )}
+        </span>
         {group.party && (
           <span className={`text-[8.5px] font-mono ${partyClass}`}>[{group.party}]</span>
         )}
@@ -244,6 +291,11 @@ function CongressGroup({
           {group.events.length} 笔
         </span>
       </div>
+      {followed && (
+        <div className="text-[9px] italic text-[var(--color-dim)] mb-1.5 leading-[1.4]">
+          {followed.intro}
+        </div>
+      )}
       <div className="space-y-0.5">
         {group.events.map((e) => (
           <CongressRow key={e.event_id} event={e} />

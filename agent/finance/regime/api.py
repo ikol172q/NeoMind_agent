@@ -345,6 +345,23 @@ def post_scan_policy() -> Dict[str, Any]:
     return result
 
 
+@router.post("/scan/house_clerk_pdf")
+def post_scan_house_clerk_pdf() -> Dict[str, Any]:
+    """Run the House Clerk PTR PDF scanner — covers Pelosi + Khanna
+    (and any other reps in FOLLOWED_REPS) which Quiver Quant's free
+    /beta/live tier doesn't include. Each emitted event links to the
+    official PDF on disclosures-clerk.house.gov so the user can
+    click through to the legal record."""
+    from agent.finance.regime.scanners.house_clerk_pdf_scanner import (
+        run_house_clerk_pdf_scan,
+    )
+    from agent.finance.regime.signals import detect_confluences
+    result = run_house_clerk_pdf_scan()
+    confluences = detect_confluences()
+    result["new_confluences"] = len(confluences)
+    return result
+
+
 @router.post("/scan/all")
 def post_scan_all(
     include_13f: bool = Query(False, description="Include 13F whale scan (~30s SEC HTTP)"),
@@ -400,6 +417,16 @@ def post_scan_all(
         except Exception as exc:
             logger.exception("stock_act scan failed")
             out["scanners"]["congressional_scan"] = {"error": str(exc)}
+
+        # House Clerk PDF scanner — followed reps (Pelosi/Khanna) only.
+        # Quick when caught up (just a 20KB ZIP + DocID diff), only
+        # downloads PDFs for new filings. Safe to include every scan.
+        try:
+            from agent.finance.regime.scanners.house_clerk_pdf_scanner import run_house_clerk_pdf_scan
+            out["scanners"]["house_clerk_pdf_scan"] = run_house_clerk_pdf_scan()
+        except Exception as exc:
+            logger.exception("house clerk pdf scan failed")
+            out["scanners"]["house_clerk_pdf_scan"] = {"error": str(exc)}
 
         try:
             from agent.finance.regime.scanners.policy_scanner import run_policy_scan

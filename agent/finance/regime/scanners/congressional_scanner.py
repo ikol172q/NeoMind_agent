@@ -72,6 +72,20 @@ SENATE_URL_MIRROR = (
     "data/all_transactions.json"
 )
 
+
+# Reps the user is actively following — their trades emit even when the
+# traded ticker isn't in the user's watchlist. Match is case-insensitive
+# substring on the Quiver `Representative` field. Pelosi is handled by
+# the separate house_clerk_pdf_scanner (text-based PDF source).
+#
+# Picked 2026-05-02 (user choice, Path B):
+#   - Tina Smith (Sen D-MN): 3-day median disclosure, fastest in feed,
+#     Senate Finance committee member.
+#   - Cleo Fields (House D-LA): 11-day median, verified 44.8% return
+#     2025 per Unusual Whales; already heavily overlaps user watchlist.
+FOLLOWED_REPS = ("Tina Smith", "Cleo Fields")
+
+
 # Quiver Quant live feed — verified 2026-05-02 to be no-auth + free, returns
 # ~1000 most-recent congressional transactions (House + Senate combined).
 # This is the primary source now that HouseStockWatcher / SenateStockWatcher
@@ -281,9 +295,14 @@ def run_congressional_scan(
                 if not tdate or tdate < cutoff_iso:
                     continue
                 ticker = _normalize_ticker(tx.get("ticker"))
-                if not ticker or ticker not in universe:
+                if not ticker:
                     continue
                 rep = tx.get("representative") or tx.get("name") or "Unknown"
+                # Followed reps bypass the watchlist filter — user wants
+                # to see all their trades regardless of ticker overlap.
+                is_followed = any(f.lower() in rep.lower() for f in FOLLOWED_REPS)
+                if not is_followed and ticker not in universe:
+                    continue
                 tx_type = (tx.get("type") or "").lower().strip()
                 if tx_type not in ("purchase", "sale", "exchange",
                                     "sale_partial", "sale_full"):
@@ -337,10 +356,15 @@ def run_congressional_scan(
                 if not tdate or tdate < cutoff_iso:
                     continue
                 ticker = _normalize_ticker(tx.get("ticker"))
-                if not ticker or ticker not in universe:
+                if not ticker:
                     continue
                 # Senate uses "senator"
                 rep = tx.get("senator") or tx.get("name") or "Unknown"
+                # Followed reps bypass watchlist filter (same logic as
+                # House loop above) — see FOLLOWED_REPS doc at top.
+                is_followed = any(f.lower() in rep.lower() for f in FOLLOWED_REPS)
+                if not is_followed and ticker not in universe:
+                    continue
                 tx_type = (tx.get("type") or "").lower().strip()
                 # Senate type values: "Purchase", "Sale (Full)", "Sale (Partial)", "Exchange"
                 tx_type_clean = re.sub(r"[^a-z]+", "_", tx_type).strip("_")
