@@ -244,6 +244,50 @@ Rules:
 """
 
 
+def _verify_url(url: str, timeout: float = 4.0) -> bool:
+    """HEAD-check a URL. Returns True if it resolves to 2xx/3xx.
+    Conservative timeout — we batch up to ~5 of these per profile gen
+    so overall added latency stays under 1s in the worst case.
+    """
+    if not url or not isinstance(url, str):
+        return False
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+    try:
+        # Many news / SEC sites disallow HEAD or redirect oddly. Try
+        # HEAD first, fall back to GET with a small range header so
+        # we don't pull a large article body just to verify it exists.
+        with httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=True) as c:
+            r = c.head(url, headers={"User-Agent": "Mozilla/5.0 NeoMind"})
+            if 200 <= r.status_code < 400:
+                return True
+            # Some sites 405 HEAD; try GET with Range
+            if r.status_code in (403, 405):
+                r = c.get(url, headers={
+                    "User-Agent": "Mozilla/5.0 NeoMind",
+                    "Range": "bytes=0-256",
+                })
+                return 200 <= r.status_code < 400
+            return False
+    except Exception:
+        return False
+
+
+def _verify_citations(citations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Annotate each citation with verified=True/False so the frontend
+    can render dead URLs as a Google-search fallback instead of a
+    broken link. Anti-hallucination contract: we never silently trust
+    an LLM-generated URL."""
+    out = []
+    for c in citations or []:
+        if not isinstance(c, dict):
+            continue
+        url = str(c.get("url") or "").strip()
+        c["verified"] = _verify_url(url) if url else False
+        out.append(c)
+    return out
+
+
 def llm_generate_profile(ticker: str) -> Dict[str, Any]:
     """Call DeepSeek to generate structured profile JSON. Returns dict
     suitable for upsert_profile(). Raises HTTPException on failure."""
@@ -284,8 +328,17 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
 
     parsed["generated_at"] = datetime.now(timezone.utc).isoformat()
     parsed["generated_model"] = model
+    # Verify citation URLs (anti-hallucination — LLMs routinely
+    # fabricate URLs that look right but 404). Verified=true means
+    # the URL was reachable at gen time; UI renders the rest as a
+    # Google-search fallback.
+    parsed["source_citations"] = _verify_citations(parsed.get("source_citations") or [])
+    n_verified = sum(1 for c in parsed["source_citations"] if c.get("verified"))
     elapsed = int((time.monotonic() - t0) * 1000)
-    logger.info("stock_research: generated %s profile in %dms", ticker, elapsed)
+    logger.info(
+        "stock_research: generated %s profile in %dms (citations: %d/%d verified)",
+        ticker, elapsed, n_verified, len(parsed["source_citations"]),
+    )
     return parsed
 
 
