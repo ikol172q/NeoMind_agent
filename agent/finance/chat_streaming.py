@@ -263,8 +263,12 @@ async def _execute_tool(name: str, args: dict) -> dict:
             from agent.tools.finance_tools import finance_market_overview
             return await finance_market_overview(_get_data_hub(), **args)
         if name == "finance_news_search":
+            # finance_news_search expects a SEARCH ENGINE as first arg,
+            # not data_hub. The earlier copy-paste from the other tool
+            # dispatchers was wrong — data_hub doesn't expose .search()
+            # so the tool always returned "search engine not available".
             from agent.tools.finance_tools import finance_news_search
-            return await finance_news_search(_get_data_hub(), **args)
+            return await finance_news_search(_get_search_engine(), **args)
         return {"ok": False, "error": f"unknown tool: {name}"}
     except Exception as exc:
         logger.exception("tool %s execution failed", name)
