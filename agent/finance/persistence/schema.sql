@@ -487,6 +487,40 @@ CREATE TABLE IF NOT EXISTS url_verification_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_url_cache_checked ON url_verification_cache(checked_at DESC);
 
+-- ─── SEC-Anchored research facts (Phase B — anchor pipeline) ─────────
+--
+-- Each row is one structured fact extracted from a SEC filing
+-- section, with the verbatim source quote and a click-through URL
+-- back to the SEC anchor. Distinct from stock_profiles because:
+--   1. Multiple facts per (ticker, fact_type) — e.g., 8 competitors
+--      vs the old single 'competitors_json' blob
+--   2. Every row carries provenance — UI can show "verified from
+--      SEC 10-K filed 2026-02-13" with verbatim hover quote
+--   3. fact_type extensible: 'competitor', 'risk', 'business_summary',
+--      'segment', 'customer', 'supplier', etc.
+--
+-- The verbatim_quote is what agent/finance/extractors/validation.py
+-- already verified is a literal substring of the source text.
+-- Storing it is what makes the trust gate visible to the user.
+CREATE TABLE IF NOT EXISTS stock_anchored_facts (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker              TEXT NOT NULL,
+    fact_type           TEXT NOT NULL,            -- 'competitor'/'risk'/'business_summary'/...
+    payload_json        TEXT NOT NULL,            -- {name, ticker?, ...} or fact-type specific
+    evidence_quote      TEXT NOT NULL,            -- verbatim from source
+    source_url          TEXT NOT NULL,            -- SEC EDGAR filing URL
+    source_section      TEXT,                     -- 'item1.competition' / 'item1a.risk_factors'
+    source_filing_date  TEXT,                     -- '2026-02-13'
+    source_accession    TEXT,                     -- '0001628280-26-008114'
+    extracted_at        TEXT NOT NULL,
+    extractor_model     TEXT NOT NULL,
+    req_id              TEXT                      -- audit linkage
+);
+CREATE INDEX IF NOT EXISTS idx_saf_ticker_type
+    ON stock_anchored_facts(ticker, fact_type, extracted_at DESC);
+CREATE INDEX IF NOT EXISTS idx_saf_extracted
+    ON stock_anchored_facts(extracted_at DESC);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

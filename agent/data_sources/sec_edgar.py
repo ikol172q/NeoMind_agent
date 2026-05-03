@@ -66,7 +66,8 @@ class FilingRef:
 
 @dataclass
 class SlicedSections:
-    item1_competition: Optional[str]
+    item1_full: Optional[str]          # full Item 1 (Business) region
+    item1_competition: Optional[str]   # Competition subsection only
     item1a_risks: Optional[str]
     source_url: str
     filing_date: str
@@ -182,14 +183,19 @@ def _html_to_text(html: str) -> str:
     return text
 
 
-def slice_competition_sections(html: str, source_url: str,
-                                accession: str, filing_date: str
-                                ) -> SlicedSections:
-    """Extract Item 1 → Competition subsection AND Item 1A → Risk Factors.
+def slice_10k_sections(html: str, source_url: str,
+                       accession: str, filing_date: str
+                       ) -> SlicedSections:
+    """Extract Item 1 (full Business region + Competition subsection)
+    AND Item 1A (Risk Factors) from a 10-K HTML.
 
-    Both can name competitors (ROKU's actual 10-K names Amazon/Apple/
-    Google in 1A, not in 1's Competition subsection). We return both
-    for the extractor to consider together.
+    Returns the slices that downstream extractors consume:
+    - item1_full: full Item 1 region (used by business_summary,
+      and as fallback source if a specific subsection isn't found)
+    - item1_competition: Competition subsection only (used by
+      competitors extractor for tighter context)
+    - item1a_risks: full Risk Factors region (used by risks extractor;
+      also competitors since competitors are often named in 1A)
 
     SEC HTML conventions vary widely; we use permissive regex on the
     flattened text. Returns None for any section we couldn't locate.
@@ -271,6 +277,7 @@ def slice_competition_sections(html: str, source_url: str,
             competition_text = after[:cutoff].strip()
 
     return SlicedSections(
+        item1_full=item1_text,
         item1_competition=competition_text,
         item1a_risks=item1a_text,
         source_url=source_url,
@@ -279,7 +286,7 @@ def slice_competition_sections(html: str, source_url: str,
     )
 
 
-def get_10k_competition_sections(ticker: str) -> Optional[SlicedSections]:
+def get_10k_sections(ticker: str) -> Optional[SlicedSections]:
     """One-shot orchestration: ticker → SlicedSections (or None)."""
     cik = lookup_cik(ticker)
     if cik is None:
@@ -291,7 +298,7 @@ def get_10k_competition_sections(ticker: str) -> Optional[SlicedSections]:
         logger.info("sec_edgar: no 10-K filings for CIK %s", cik)
         return None
     html = fetch_filing_html(cik, f10k.accession, f10k.primary_doc)
-    return slice_competition_sections(
+    return slice_10k_sections(
         html=html,
         source_url=filing_url(cik, f10k.accession, f10k.primary_doc),
         accession=f10k.accession,
