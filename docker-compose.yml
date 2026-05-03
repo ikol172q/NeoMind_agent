@@ -73,6 +73,20 @@ services:
       - ZAI_API_KEY
       - GLM_API_KEY
       - MOONSHOT_API_KEY
+      # ── Search-source keys (consumed by agent.search.engine) ──
+      # Tavily is the agent's primary internet search source. Same
+      # whitelist as scripts/sync_launchd_env.sh so the dashboard,
+      # CLI, and Telegram bot all hit the same set when the user has
+      # the key in their shell. Missing keys stay empty (degraded
+      # gracefully — engine just falls back to next available source).
+      - TAVILY_API_KEY
+      - BRAVE_API_KEY
+      - SERPER_API_KEY
+      - JINA_API_KEY
+      - EXA_API_KEY
+      - NEWSAPI_API_KEY
+      - YOUCOM_API_KEY
+      - PERPLEXITY_API_KEY
     volumes:
       - neomind-data:/data/neomind
       # Shared config dir (provider-state.json — bidirectional sync with xbar)

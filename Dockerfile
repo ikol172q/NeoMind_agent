@@ -34,6 +34,10 @@ RUN pip install --no-cache-dir \
     playwright \
     # Universal Search Engine deps
     flashrank \
+    # Tavily — agent's primary internet search source (LLM-optimized,
+    # 1000 free / month). Without this the engine still works (DDG /
+    # gnews fallback) but quality is noticeably worse.
+    tavily-python \
     && \
     # Optional: search + RAG dependencies (|| true = don't fail build if any fails)
     pip install --no-cache-dir \
