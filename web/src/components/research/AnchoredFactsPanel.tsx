@@ -29,7 +29,11 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
   const competitors = data?.facts.competitor ?? []
   const risks = data?.facts.risk ?? []
   const summary = data?.facts.business_summary ?? []
+  const segments = data?.facts.segment ?? []
+  const customers = data?.facts.customer ?? []
+  const suppliers = data?.facts.supplier ?? []
   const total = competitors.length + risks.length + summary.length
+              + segments.length + customers.length + suppliers.length
 
   const filingDateRel = meta?.source_filing_date
     ? new Date(meta.source_filing_date).toLocaleDateString()
@@ -120,6 +124,24 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
         </Section>
       )}
 
+      {segments.length > 0 && (
+        <Section title={`📊 Segments (${segments.length})`} defaultOpen={true}>
+          <div className="space-y-1">
+            {segments.map((s, i) => (
+              <FactChip
+                key={i}
+                title={s.name}
+                badge={s.revenue_pct != null ? `${s.revenue_pct}%` : undefined}
+                subtitle={s.period || undefined}
+                quote={s.evidence_quote}
+                sourceUrl={s.source_url}
+                sourceSection={s.source_section}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
       {competitors.length > 0 && (
         <Section title={`⚔ Competitors (${competitors.length})`} defaultOpen={true}>
           <div className="space-y-1">
@@ -131,6 +153,44 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 quote={c.evidence_quote}
                 sourceUrl={c.source_url}
                 sourceSection={c.source_section}
+                onTickerClick={onTickerClick}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {customers.length > 0 && (
+        <Section title={`👥 Customers (${customers.length})`} defaultOpen={true}>
+          <div className="space-y-1">
+            {customers.map((c, i) => (
+              <FactChip
+                key={i}
+                title={c.name}
+                ticker={c.ticker || undefined}
+                badge={c.concentration_pct != null ? `${c.concentration_pct}%` : undefined}
+                quote={c.evidence_quote}
+                sourceUrl={c.source_url}
+                sourceSection={c.source_section}
+                onTickerClick={onTickerClick}
+              />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {suppliers.length > 0 && (
+        <Section title={`🏭 Suppliers (${suppliers.length})`} defaultOpen={true}>
+          <div className="space-y-1">
+            {suppliers.map((s, i) => (
+              <FactChip
+                key={i}
+                title={s.name}
+                ticker={s.ticker || undefined}
+                badge={s.criticality || undefined}
+                quote={s.evidence_quote}
+                sourceUrl={s.source_url}
+                sourceSection={s.source_section}
                 onTickerClick={onTickerClick}
               />
             ))}
@@ -178,7 +238,7 @@ function Section({
 }
 
 function FactChip({
-  title, ticker, quote, sourceUrl, sourceSection, badge, severity, onTickerClick,
+  title, ticker, quote, sourceUrl, sourceSection, badge, severity, subtitle, onTickerClick,
 }: {
   title: string
   ticker?: string
@@ -187,6 +247,7 @@ function FactChip({
   sourceSection?: string
   badge?: string
   severity?: string
+  subtitle?: string
   onTickerClick?: (t: string) => void
 }) {
   const [open, setOpen] = useState(false)
@@ -210,7 +271,10 @@ function FactChip({
             {ticker}
           </button>
         )}
-        <span className="text-[11px] flex-1">{title}</span>
+        <span className="text-[11px] flex-1">
+          {title}
+          {subtitle && <span className="text-[9px] text-[var(--color-dim)] ml-1.5">· {subtitle}</span>}
+        </span>
         {badge && (
           <span className={`text-[9px] px-1.5 py-0.5 rounded border ${sevColor}`}>
             {badge}{severity && severity !== 'medium' ? ` · ${severity}` : ''}

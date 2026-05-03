@@ -67,8 +67,11 @@ class FilingRef:
 @dataclass
 class SlicedSections:
     item1_full: Optional[str]          # full Item 1 (Business) region
-    item1_competition: Optional[str]   # Competition subsection only
-    item1a_risks: Optional[str]
+    item1_competition: Optional[str]   # Competition subsection
+    item1_customers: Optional[str]     # Customers / Customer Concentration
+    item1_suppliers: Optional[str]     # Sources of Supply / Manufacturing
+    item1a_risks: Optional[str]        # full Item 1A Risk Factors
+    item7_mda: Optional[str]           # MD&A — segment revenue tables live here
     source_url: str
     filing_date: str
     accession: str
@@ -234,56 +237,92 @@ def slice_10k_sections(html: str, source_url: str,
     # *substantial* run of body text and the Item 1A body start.
     item1_text = None
     if item1a_body_start is not None and item1a_body_start > 5000:
-        # Crude lower bound: skip the first ~3000 chars (usually TOC)
         item1_text = text[3000:item1a_body_start]
 
-    # Inside the Item 1 region, find the Competition subsection
-    competition_text = None
-    if item1_text:
-        cm = re.search(r"(?im)^\s*competition\s*$", item1_text)
-        if cm is None:
-            # Fall back to inline mention if no standalone header
-            cm = re.search(r"(?i)\bcompetition\b", item1_text)
-        if cm:
-            after = item1_text[cm.start():]
-            next_sub = re.search(
-                r"(?im)^\s*(government\s*regulation|regulatory|"
-                r"intellectual\s*property|human\s*capital|employees|"
-                r"available\s*information|environmental|seasonality|"
-                r"sustainability|properties|sales\s*and\s*marketing|"
-                r"research\s*and\s*development|corporate\s*information)\b",
-                after[100:])
-            cutoff = (next_sub.start() + 100) if next_sub else min(
-                12_000, len(after))
-            competition_text = after[:cutoff].strip()
+    # Item 7 (MD&A) — usually has the revenue-by-segment tables that
+    # are the truth source for our segments extractor. Bounded above
+    # by Item 6 (now reserved, often missing) or Item 5, and bounded
+    # below by Item 7A or Item 8.
+    item7_text = None
+    item7_starts = [m.start() for m in re.finditer(
+        r"(?i)\bitem\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)]
+    item7_ends = [m.start() for m in re.finditer(
+        r"(?i)\bitem\s*(7a|8)\b\.?\s*\n*\s*"
+        r"(quantitative|financial\s*statements)", text)]
+    if item7_starts and item7_ends:
+        # "biggest gap" picker, same as item1a
+        for s in item7_starts:
+            ends = [a for a in item7_ends if a > s]
+            if not ends:
+                continue
+            e = min(ends)
+            if item7_text is None or (e - s) > len(item7_text):
+                item7_text = text[s:e]
 
-    # Inside Item 1, slice the Competition subsection
-    competition_text = None
-    if item1_text:
-        cm = re.search(r"(?i)^\s*competition\b", item1_text, re.MULTILINE)
-        if cm is None:
-            cm = re.search(r"(?i)\bcompetition\b", item1_text)
-        if cm:
-            after = item1_text[cm.start():]
-            # Find next subsection header
-            next_sub = re.search(
-                r"(?im)^\s*(government\s*regulation|regulatory|"
-                r"intellectual\s*property|human\s*capital|employees|"
-                r"available\s*information|environmental|seasonality|"
-                r"sustainability|properties|sales\s*and\s*marketing|"
-                r"research\s*and\s*development)\b", after[100:])
-            cutoff = (next_sub.start() + 100) if next_sub else min(
-                12_000, len(after))
-            competition_text = after[:cutoff].strip()
+    competition_text = _slice_subsection(item1_text, "competition")
+    customers_text = _slice_subsection(item1_text, r"customers?")
+    # Suppliers section has many possible header names — try each
+    suppliers_text = (
+        _slice_subsection(item1_text, r"sources\s*(and\s*availability\s*of\s*)?materials?")
+        or _slice_subsection(item1_text, r"manufacturing")
+        or _slice_subsection(item1_text, r"suppliers?")
+        or _slice_subsection(item1_text, r"supply\s*chain")
+    )
 
     return SlicedSections(
         item1_full=item1_text,
         item1_competition=competition_text,
+        item1_customers=customers_text,
+        item1_suppliers=suppliers_text,
         item1a_risks=item1a_text,
+        item7_mda=item7_text,
         source_url=source_url,
         filing_date=filing_date,
         accession=accession,
     )
+
+
+# ─── Subsection slicer (shared across customers / suppliers / etc) ──
+
+# Subsection headers that signal "the previous subsection ended".
+# Used as terminating anchors when we slice a named subsection out
+# of Item 1.
+_ITEM1_NEXT_SUBSECTION_PATTERN = (
+    r"(?im)^\s*(government\s*regulation|regulatory|"
+    r"intellectual\s*property|human\s*capital|employees|"
+    r"available\s*information|environmental|seasonality|"
+    r"sustainability|properties|sales\s*and\s*marketing|"
+    r"research\s*and\s*development|corporate\s*information|"
+    r"competition|customers?|suppliers?|sources\s*and\s*availability|"
+    r"manufacturing|supply\s*chain|backlog|product\s*development|"
+    r"cybersecurity|insurance)\b"
+)
+
+
+def _slice_subsection(parent_text: Optional[str],
+                      header_pattern: str) -> Optional[str]:
+    """Inside a parent section text, find a subsection by its STANDALONE
+    header and return its content up to the next subsection header.
+
+    Strict standalone-only match (not inline) to avoid catching the
+    word "customers" inside body prose like "we serve our customers
+    by…". If a 10-K doesn't structure a section with a header,
+    returning None is the right honest answer — the extractor will
+    receive None and emit []. Sparse > fabricated.
+
+    Returns None if no header found. Capped at ~12K chars to keep
+    extractor prompts bounded.
+    """
+    if not parent_text:
+        return None
+    standalone = re.compile(rf"(?im)^\s*{header_pattern}\s*$")
+    cm = standalone.search(parent_text)
+    if cm is None:
+        return None
+    after = parent_text[cm.start():]
+    next_sub = re.search(_ITEM1_NEXT_SUBSECTION_PATTERN, after[100:])
+    cutoff = (next_sub.start() + 100) if next_sub else min(12_000, len(after))
+    return after[:cutoff].strip()
 
 
 def get_10k_sections(ticker: str) -> Optional[SlicedSections]:

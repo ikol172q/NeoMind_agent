@@ -2667,12 +2667,39 @@ export interface AnchoredBusinessSummary {
   source_url: string
   source_section: string
 }
+export interface AnchoredCustomer {
+  name: string
+  ticker?: string | null
+  concentration_pct?: number | null
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
+export interface AnchoredSupplier {
+  name: string
+  ticker?: string | null
+  criticality?: string | null
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
+export interface AnchoredSegment {
+  name: string
+  revenue_pct?: number | null
+  period?: string | null
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
 export interface AnchoredFacts {
   ticker: string
   facts: {
     competitor?: AnchoredCompetitor[]
     risk?: AnchoredRisk[]
     business_summary?: AnchoredBusinessSummary[]
+    customer?: AnchoredCustomer[]
+    supplier?: AnchoredSupplier[]
+    segment?: AnchoredSegment[]
   }
   meta: {
     source_url: string
@@ -2717,5 +2744,83 @@ export function useRegenAnchored() {
     onSuccess: (_data, ticker) => {
       qc.invalidateQueries({ queryKey: ['anchored-facts', ticker] })
     },
+  })
+}
+
+// ── Live market overlay (yfinance) ───────────────────────────────
+export interface LiveQuote {
+  ticker: string
+  price: number | null
+  market_cap: number | null
+  trailing_pe: number | null
+  forward_pe: number | null
+  fifty_two_week_high: number | null
+  fifty_two_week_low: number | null
+  day_change_pct: number | null
+  year_change_pct: number | null
+  name: string | null
+  sector: string | null
+  industry: string | null
+  currency: string | null
+  exchange: string | null
+  fetched_at: string
+}
+
+export interface NextEarnings {
+  ticker: string
+  next_date: string | null
+  days_until?: number | null
+  eps_estimate_avg?: number | null
+  eps_estimate_low?: number | null
+  eps_estimate_high?: number | null
+  revenue_estimate_avg?: number | null
+  fetched_at?: string
+}
+
+export function useLiveQuote(ticker: string | null) {
+  return useQuery<LiveQuote>({
+    queryKey: ['live-quote', ticker],
+    queryFn: () => fetchJSON<LiveQuote>(`/api/stock/${encodeURIComponent(ticker!)}/quote`),
+    enabled: !!ticker,
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+export function useNextEarnings(ticker: string | null) {
+  return useQuery<NextEarnings>({
+    queryKey: ['next-earnings', ticker],
+    queryFn: () => fetchJSON<NextEarnings>(`/api/stock/${encodeURIComponent(ticker!)}/earnings`),
+    enabled: !!ticker,
+    staleTime: 6 * 3600_000,
+    retry: false,
+  })
+}
+
+// ── Per-ticker news (miniflux native search, both title+content) ──
+export interface TickerNewsEntry {
+  id: number
+  title: string
+  url: string
+  published_at: string
+  feed_title: string
+  snippet: string
+}
+export interface TickerNewsResp {
+  ticker: string
+  count: number
+  entries: TickerNewsEntry[]
+  fetched_at: string
+  fallback_search_url: string
+}
+export function useTickerNews(ticker: string | null, limit = 20) {
+  return useQuery<TickerNewsResp>({
+    queryKey: ['ticker-news', ticker, limit],
+    queryFn: () => fetchJSON<TickerNewsResp>(
+      `/api/news/by_ticker/${encodeURIComponent(ticker!)}?limit=${limit}`),
+    enabled: !!ticker,
+    staleTime: 5 * 60_000,
+    retry: false,
   })
 }

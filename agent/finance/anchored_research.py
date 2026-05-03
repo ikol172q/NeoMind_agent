@@ -29,11 +29,16 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException
 
+from agent.data_sources.market import get_live_quote
 from agent.data_sources.sec_edgar import get_10k_sections
 from agent.finance import agent_audit
 from agent.finance.extractors.business_summary import extract_business_summary
 from agent.finance.extractors.competitors import extract_competitors
+from agent.finance.extractors.customers import extract_customers
 from agent.finance.extractors.risks import extract_risks
+from agent.finance.extractors.segments import extract_segments
+from agent.finance.extractors.style_verdict import synthesize_style_verdict
+from agent.finance.extractors.suppliers import extract_suppliers
 from agent.finance.persistence import connect, ensure_schema
 
 logger = logging.getLogger(__name__)
@@ -134,6 +139,18 @@ def _extract_business_summary_from(s) -> tuple[list[dict], Any]:
     return extract_business_summary(s.item1_full)
 
 
+def _extract_customers_from(s) -> tuple[list[dict], Any]:
+    return extract_customers(s.item1_customers)
+
+
+def _extract_suppliers_from(s) -> tuple[list[dict], Any]:
+    return extract_suppliers(s.item1_suppliers)
+
+
+def _extract_segments_from(s) -> tuple[list[dict], Any]:
+    return extract_segments(s.item7_mda)
+
+
 _PIPELINES: dict[str, dict] = {
     "competitor": {
         "extract": _extract_competitors_from,
@@ -146,6 +163,18 @@ _PIPELINES: dict[str, dict] = {
     "business_summary": {
         "extract": _extract_business_summary_from,
         "section": "item1.business",
+    },
+    "customer": {
+        "extract": _extract_customers_from,
+        "section": "item1.customers",
+    },
+    "supplier": {
+        "extract": _extract_suppliers_from,
+        "section": "item1.suppliers",
+    },
+    "segment": {
+        "extract": _extract_segments_from,
+        "section": "item7.mda",
     },
 }
 
@@ -238,6 +267,95 @@ def _run_pipeline(ticker: str, fact_type: str) -> Dict[str, Any]:
     }
 
 
+def _run_style_verdict(ticker: str) -> Dict[str, Any]:
+    """Synthesize a style verdict from already-cached anchored facts +
+    live quote. Persists as fact_type='style_verdict'.
+
+    Pre-condition: anchored facts already exist for the ticker (run
+    /anchored/regenerate first or POST /anchored/business_summary +
+    /anchored/risk individually). Otherwise the verdict will be
+    'data 不足'."""
+    facts = get_anchored_facts(ticker)
+    by_type = facts.get("facts") or {}
+    live = get_live_quote(ticker)
+    live_dict = live.to_dict() if live else None
+
+    req_id = agent_audit.new_req_id()
+    endpoint = f"/api/stock/{ticker}/anchored/style_verdict/regenerate"
+    agent_audit.audit_request(
+        req_id=req_id, endpoint=endpoint, agent_id="anchored-style_verdict",
+        messages=[], model="deepseek-v4-flash",
+        max_tokens=4000, temperature=0.0,
+        extra={"ticker": ticker,
+               "has_live_quote": live_dict is not None,
+               "n_business_summary": len(by_type.get("business_summary") or []),
+               "n_segments": len(by_type.get("segment") or []),
+               "n_risks": len(by_type.get("risk") or []),
+               "n_competitors": len(by_type.get("competitor") or [])},
+    )
+
+    t0 = time.monotonic()
+    try:
+        verdict, outcome = synthesize_style_verdict(
+            ticker=ticker,
+            live_quote=live_dict,
+            business_summary=by_type.get("business_summary"),
+            segments=by_type.get("segment"),
+            risks=by_type.get("risk"),
+            competitors_count=len(by_type.get("competitor") or []),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("style_verdict failed for %s", ticker)
+        agent_audit.audit_error(
+            req_id=req_id, endpoint=endpoint, agent_id="anchored-style_verdict",
+            error_type=type(exc).__name__, error_msg=str(exc),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
+        raise HTTPException(502, f"style_verdict failed: {exc}")
+
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    agent_audit.audit_response(
+        req_id=req_id, endpoint=endpoint, agent_id="anchored-style_verdict",
+        content=json.dumps(verdict, ensure_ascii=False) if verdict else "",
+        duration_ms=duration_ms,
+        extra={"ticker": ticker,
+               "n_emitted": outcome.n_total,
+               "n_verified": len(outcome.verified),
+               "n_dropped": len(outcome.dropped),
+               "drop_reasons": [r for _, r in outcome.dropped]},
+    )
+
+    n_persisted = 0
+    if verdict is not None:
+        # Synthesis is a single fact, persist as fact_type='style_verdict'.
+        # The "source" here is the bag of anchored facts, not a single
+        # filing section. Source URL points to the most recent filing
+        # the bag was based on (same as other facts).
+        meta = facts.get("meta") or {}
+        n_persisted = _persist_facts(
+            ticker=ticker, fact_type="style_verdict",
+            verified_items=[verdict],
+            source_url=meta.get("source_url", "synthesized"),
+            source_section="synthesized.from_anchored_facts",
+            source_filing_date=meta.get("source_filing_date") or "",
+            source_accession="",
+            extractor_model="deepseek-v4-flash", req_id=req_id,
+        )
+
+    return {
+        "ticker": ticker, "fact_type": "style_verdict",
+        "verdict": verdict,
+        "n_verified": len(outcome.verified),
+        "n_dropped": len(outcome.dropped),
+        "drop_reasons": [r for _, r in outcome.dropped],
+        "n_persisted": n_persisted,
+        "duration_ms": duration_ms,
+        "req_id": req_id,
+    }
+
+
 def build_anchored_research_router() -> APIRouter:
     router = APIRouter(prefix="/api/stock", tags=["anchored-research"])
 
@@ -245,6 +363,11 @@ def build_anchored_research_router() -> APIRouter:
     def get_anchored(ticker: str) -> dict[str, Any]:
         t = _normalize_ticker(ticker)
         return get_anchored_facts(t)
+
+    @router.post("/{ticker}/anchored/style_verdict/regenerate")
+    def regen_style_verdict(ticker: str) -> dict[str, Any]:
+        t = _normalize_ticker(ticker)
+        return _run_style_verdict(t)
 
     @router.post("/{ticker}/anchored/{fact_type}/regenerate")
     def regen_one(ticker: str, fact_type: str) -> dict[str, Any]:
