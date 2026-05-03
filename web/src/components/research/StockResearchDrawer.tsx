@@ -60,6 +60,16 @@ export function StockResearchDrawer() {
   const effectiveStatus = profile?.user_status as Status | undefined
   const exposureEvents: StockExposureEvent[] = exposureQ.data?.events ?? []
   const notes = notesQ.data?.notes ?? []
+  // The drawer doesn't unmount on ticker switch (it's a single instance
+  // mounted at App root), so the regen/status/note mutations are
+  // shared across all tickers viewed in this session. Gate any
+  // pending/error UI on `mutation.variables === ticker` so an
+  // in-flight call for AAPL doesn't render as "生成中…" on GOOGL's
+  // drawer when the user clicks through.
+  const isRegenForThisTicker = regenMu.isPending && regenMu.variables === ticker
+  const regenErrorForThisTicker = regenMu.error && regenMu.variables === ticker
+    ? regenMu.error
+    : null
 
   function commitStatus(skipReason: boolean) {
     if (!ticker || !statusEditing) return
@@ -196,10 +206,10 @@ export function StockResearchDrawer() {
                 <button
                   className="ml-auto px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1 disabled:opacity-50"
                   onClick={regenerate}
-                  disabled={regenMu.isPending}
+                  disabled={isRegenForThisTicker}
                   title="调用 NeoMind LLM 生成 (~$0.01, 15-30s)"
                 >
-                  {regenMu.isPending
+                  {isRegenForThisTicker
                     ? <><Loader2 size={10} className="animate-spin" /> 生成中…</>
                     : <>✨ {hasProfile ? 'regenerate' : 'generate'}</>}
                 </button>
@@ -219,13 +229,13 @@ export function StockResearchDrawer() {
                 </a>
               </div>
 
-              {regenMu.error && (
+              {regenErrorForThisTicker && (
                 <div className="mb-2 p-2 rounded border border-red-500/40 bg-red-500/10 text-[10px] text-red-300">
-                  生成失败: {regenMu.error.message}
+                  生成失败: {regenErrorForThisTicker.message}
                 </div>
               )}
 
-              {!hasProfile && !regenMu.isPending && (
+              {!hasProfile && !isRegenForThisTicker && (
                 <div className="text-[11px] italic text-[var(--color-dim)] py-4 leading-[1.6]">
                   {ticker} 还没有 cached profile. 点上面 ✨ generate, NeoMind LLM 会拉
                   数据生成 business summary / 业务分段 / 上下游 / 催化剂 / 风险, 缓存到
