@@ -74,6 +74,49 @@ const WHALE_CN: Record<string, { cn: string; intro: string }> = {
                    intro: '激进维权 + 事件驱动 · 写公开信批管理层风格' },
   marks:         { cn: '马克斯 (橡树资本)',
                    intro: '困境债权之王 · 《周期》作者 · 备忘录全华尔街必读' },
+  dalio:         { cn: '达里奥 (桥水)',
+                   intro: '全天候投资派 · 2025 Pure Alpha +34% 史上最佳 · All Weather +20%' },
+  griffin:       { cn: '格里芬 (Citadel)',
+                   intro: '多策略量化 · 2025 +10.2% · $570B 管理 · 高频做市起家' },
+  deshaw:        { cn: 'D.E. Shaw',
+                   intro: '量化对冲先驱 · 2025 Composite +18.5% / Oculus +28.2% · 数学博士驱动' },
+}
+
+
+// Investment-style tags so the user can pattern-match risk profile at a
+// glance without reading every intro. Single-character emoji + short
+// label; rendered in the rep/whale header. Adjust as you learn more
+// about each entity's actual style.
+const STYLE_TAG = {
+  conservative: { emoji: '🟢', label: '稳健',   cls: 'text-[var(--color-green,#7ed98c)]' },
+  balanced:     { emoji: '🟠', label: '平衡',   cls: 'text-[var(--color-amber,#e5a200)]' },
+  aggressive:   { emoji: '🔴', label: '激进',   cls: 'text-[var(--color-red,#e07070)]' },
+  quant:        { emoji: '🟣', label: '量化',   cls: 'text-purple-400' },
+  innovation:   { emoji: '🔵', label: '创新',   cls: 'text-blue-400' },
+  insider:      { emoji: '⚪', label: '内部',   cls: 'text-[var(--color-dim)]' },
+} as const
+type StyleKey = keyof typeof STYLE_TAG
+
+const WHALE_STYLE: Record<string, StyleKey> = {
+  buffett: 'conservative', klarman: 'conservative', marks: 'conservative',
+  dalio:   'conservative',
+  griffin: 'quant',        deshaw:  'quant',
+  druckenmiller: 'aggressive', tepper: 'aggressive',
+  ackman:  'aggressive',   loeb:    'aggressive',
+}
+
+const CONGRESS_STYLE: Partial<Record<keyof typeof FOLLOWED_CONGRESS, StyleKey>> = {
+  pelosi: 'conservative', tina: 'conservative', cleo: 'balanced',
+}
+
+function StyleTag({ k }: { k?: StyleKey | null }) {
+  if (!k) return null
+  const s = STYLE_TAG[k]
+  return (
+    <span className={`text-[8.5px] font-mono ${s.cls}`} title={`${s.label} 风格`}>
+      {s.emoji}{s.label}
+    </span>
+  )
 }
 
 
@@ -98,12 +141,16 @@ export function SmartMoneyWidget() {
   // gates behind paid tier — currently just Pelosi). Merge in widget.
   const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
   const qHouseClerk = useRecentSignals({ scanner: 'house_clerk_pdf', limit: 100 })
+  // ARK + Form 4 are tab placeholders for now — scanners pending.
+  const qArk = useRecentSignals({ scanner: 'ark_daily', limit: 100 })
+  const qInsider = useRecentSignals({ scanner: 'insider_form4', limit: 100 })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
-  // Section-level fold (collapses entire section to its header).
-  // Defaults open; user click toggles.
-  const [collapsed13f, setCollapsed13f] = useState(false)
-  const [collapsedCongress, setCollapsedCongress] = useState(false)
+  // Tabs replace the old stacked sections so the widget doesn't grow
+  // taller as we add data sources. Default = whales (Buffett etc) since
+  // that's the section users came here for originally.
+  type Tab = 'whales' | 'congress' | 'ark' | 'insider'
+  const [tab, setTab] = useState<Tab>('whales')
 
   const events = (q13f.data?.events ?? []) as SignalEvent[]
   const congressEvents = [
@@ -164,105 +211,139 @@ export function SmartMoneyWidget() {
     return tb - ta
   })
 
+  const arkEvents = (qArk.data?.events ?? []) as SignalEvent[]
+  const insiderEvents = (qInsider.data?.events ?? []) as SignalEvent[]
+
+  const tabs: Array<{ k: Tab; label: string; count: number; subtitle: string }> = [
+    { k: 'whales',   label: '🐋 13F 机构',     count: events.length,
+      subtitle: 'SEC 45 天延迟 · 仅多头' },
+    { k: 'congress', label: '🏛 国会议员',     count: congressEvents.length,
+      subtitle: '45 天披露窗口 · 金额是区间' },
+    { k: 'ark',      label: '🔵 ARK 创新',     count: arkEvents.length,
+      subtitle: 'Cathie Wood · 每日公开 · 创新型 long bet' },
+    { k: 'insider',  label: '⚪ 内部 (Form 4)', count: insiderEvents.length,
+      subtitle: 'CEO/CFO 自掏腰包 · 2 天披露 · 最快' },
+  ]
+  const activeTab = tabs.find((t) => t.k === tab)!
+
   return (
     <div
       data-testid="smart-money-widget"
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
-      {/* === 13F whale section === */}
-      <button
-        onClick={() => setCollapsed13f((v) => !v)}
-        className="w-full flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] text-left"
-      >
-        <span className="text-[9px]">{collapsed13f ? '▸' : '▾'}</span>
-        <span className="font-semibold text-[var(--color-text)]">
-          🐋 Smart Money — 13F whale moves
-        </span>
-        {events.length > 0 && (
-          <span className="font-mono">{events.length} events · {groups.length} funds</span>
-        )}
-        <span className="ml-auto text-[8.5px] italic">
-          SEC 45-day delay · long positions only
-        </span>
-      </button>
-
-      {!collapsed13f && q13f.isLoading && (
-        <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
-      )}
-
-      {!collapsed13f && !q13f.isLoading && events.length === 0 && (
-        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-          No recent 13F filings tracked. Whale scanner runs daily; events
-          appear within 1-2 days of SEC publication.
-        </div>
-      )}
-
-      {!collapsed13f && !q13f.isLoading && groups.length > 0 && (
-        <div className="space-y-2">
-          {groups.slice(0, expanded ? groups.length : 3).map((g) => (
-            <WhaleGroup key={g.whale} group={g} />
-          ))}
-          {groups.length > 3 && (
+      {/* === Tab bar === */}
+      <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] flex-wrap">
+        <span className="font-semibold text-[var(--color-text)]">Smart Money</span>
+        <div className="flex gap-1 ml-1">
+          {tabs.map((t) => (
             <button
-              onClick={() => setExpanded((v) => !v)}
-              className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+              key={t.k}
+              onClick={() => setTab(t.k)}
+              className={
+                'px-2 py-0.5 rounded border text-[10px] font-mono ' +
+                (t.k === tab
+                  ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-accent)]/10'
+                  : 'border-[var(--color-border)]/60 hover:border-[var(--color-accent)]/60')
+              }
+              title={t.subtitle}
             >
-              {expanded ? `▴ collapse` : `▾ show ${groups.length - 3} more whales`}
+              {t.label}
+              {t.count > 0 && (
+                <span className="ml-1 text-[8.5px] text-[var(--color-dim)]">
+                  {t.count}
+                </span>
+              )}
             </button>
+          ))}
+        </div>
+        <span className="ml-auto text-[8.5px] italic">{activeTab.subtitle}</span>
+      </div>
+
+      {/* === Tab content: 13F whales === */}
+      {tab === 'whales' && (
+        <>
+          {q13f.isLoading && (
+            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
+          {!q13f.isLoading && events.length === 0 && (
+            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+              No recent 13F filings tracked. Whale scanner runs daily; events
+              appear within 1-2 days of SEC publication.
+            </div>
+          )}
+          {!q13f.isLoading && groups.length > 0 && (
+            <div className="space-y-2">
+              {groups.slice(0, expanded ? groups.length : 3).map((g) => (
+                <WhaleGroup key={g.whale} group={g} />
+              ))}
+              {groups.length > 3 && (
+                <button
+                  onClick={() => setExpanded((v) => !v)}
+                  className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+                >
+                  {expanded ? `▴ collapse` : `▾ show ${groups.length - 3} more whales`}
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* === Tab content: Congress === */}
+      {tab === 'congress' && (
+        <>
+          {congressLoading && (
+            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+          )}
+          {!congressLoading && congressEvents.length === 0 && (
+            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+              No recent congressional trades tracked in your watchlist. Source:
+              Quiver Quant live feed (1000 most-recent records, House + Senate
+              combined) + House Clerk PTR PDFs for followed reps.
+            </div>
+          )}
+          {!congressLoading && congressGroups.length > 0 && (
+            <div className="space-y-2">
+              {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
+                <CongressGroup key={g.rep} group={g} />
+              ))}
+              {congressGroups.length > 5 && (
+                <button
+                  onClick={() => setExpandedCongress((v) => !v)}
+                  className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+                >
+                  {expandedCongress
+                    ? `▴ collapse`
+                    : `▾ show ${congressGroups.length - 5} more members`}
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {/* === Tab content: ARK (placeholder until scanner ships) === */}
+      {tab === 'ark' && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.6]">
+          🔵 <b>ARK Innovation</b> (Cathie Wood) — daily holdings disclosure
+          from <code>ark-funds.com</code> covering ARKK / ARKQ / ARKG / ARKW /
+          ARKF / ARKX. Scanner pending — once live this tab will show
+          per-fund net buys/sells with 1-day latency (much fresher than 13F's
+          quarterly cycle). Style: 创新 / disruptive long bets.
         </div>
       )}
 
-      {/* === Congressional STOCK Act section === */}
-      <div className="mt-3 pt-3 border-t border-[var(--color-border)]/40">
-        <button
-          onClick={() => setCollapsedCongress((v) => !v)}
-          className="w-full flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] text-left"
-        >
-          <span className="text-[9px]">{collapsedCongress ? '▸' : '▾'}</span>
-          <span className="font-semibold text-[var(--color-text)]">
-            🏛 Congress — STOCK Act trades (Pelosi, etc)
-          </span>
-          {congressEvents.length > 0 && (
-            <span className="font-mono">
-              {congressEvents.length} events · {congressGroups.length} members
-            </span>
-          )}
-          <span className="ml-auto text-[8.5px] italic">
-            45-day disclosure window · amounts are ranges, not exact
-          </span>
-        </button>
-
-        {!collapsedCongress && congressLoading && (
-          <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
-        )}
-
-        {!collapsedCongress && !congressLoading && congressEvents.length === 0 && (
-          <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-            No recent congressional trades tracked in your watchlist. Source:
-            Quiver Quant live feed (1000 most-recent records, House + Senate
-            combined). Filtered to your watchlist + supply chain.
-          </div>
-        )}
-
-        {!collapsedCongress && !congressLoading && congressGroups.length > 0 && (
-          <div className="space-y-2">
-            {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
-              <CongressGroup key={g.rep} group={g} />
-            ))}
-            {congressGroups.length > 5 && (
-              <button
-                onClick={() => setExpandedCongress((v) => !v)}
-                className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
-              >
-                {expandedCongress
-                  ? `▴ collapse`
-                  : `▾ show ${congressGroups.length - 5} more members`}
-              </button>
-            )}
-          </div>
-        )}
-      </div>
+      {/* === Tab content: Insider Form 4 (placeholder) === */}
+      {tab === 'insider' && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.6]">
+          ⚪ <b>Insider Form 4</b> — SEC-mandated <b>2-day</b> disclosure for
+          corporate officers/directors. Scanner pending. Will surface:
+          (1) <b>cluster buys</b> — ≥3 insiders buying same ticker in 30 days
+          (strong bullish), (2) <b>CEO open-market buys ≥ $100k</b> —
+          executive putting personal cash in. Sells filtered out (often
+          mechanical 10b5-1 plans, low signal).
+        </div>
+      )}
     </div>
   )
 }
@@ -279,6 +360,7 @@ function CongressGroup({
     group.party === 'R' ? 'text-red-400' : 'text-[var(--color-dim)]'
   const followedKey = isFollowedRep(group.rep)
   const followed = followedKey ? FOLLOWED_CONGRESS[followedKey] : null
+  const styleKey = followedKey ? CONGRESS_STYLE[followedKey] : null
   // Pinned anchors get a slightly stronger border + ⭐ marker so the
   // user can find them at a glance without reading every name.
   const containerClass = followed
@@ -296,6 +378,7 @@ function CongressGroup({
             </span>
           )}
         </span>
+        <StyleTag k={styleKey} />
         {group.party && (
           <span className={`text-[8.5px] font-mono ${partyClass}`}>[{group.party}]</span>
         )}
@@ -370,6 +453,7 @@ function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] }
     (latest?.body as Record<string, unknown> | undefined)?.filing_date ?? '',
   )
   const cn = WHALE_CN[whaleKey]
+  const styleKey = WHALE_STYLE[whaleKey]
   return (
     <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
       <div className="flex items-center gap-2 mb-1.5 text-[10px]">
@@ -384,6 +468,7 @@ function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] }
             </span>
           )}
         </span>
+        <StyleTag k={styleKey} />
         <span className="text-[8.5px] text-[var(--color-dim)] font-mono">
           {group.events.length} moves
         </span>
