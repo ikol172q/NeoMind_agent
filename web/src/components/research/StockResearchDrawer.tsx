@@ -16,9 +16,32 @@
  * Mock data deliberately rich for NVDA so the user can judge UX
  * fidelity. Other tickers fall back to a stub.
  */
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useStockResearch } from './StockResearchContext'
+import { ChatPanel } from '@/components/chat/ChatPanel'
 import { X, ExternalLink, Sparkles, BarChart3, Network, Newspaper, NotebookPen, MessagesSquare, Building2 } from 'lucide-react'
+
+type Status = 'researching' | 'watching' | 'pass' | 'own'
+
+interface UserStatus {
+  status: Status
+  reason: string
+  ts: string
+}
+
+// localStorage-backed status store. Keyed by ticker so each stock has
+// its own decision history. Real version moves to stock_profiles table.
+function loadUserStatus(ticker: string): UserStatus | null {
+  try {
+    const raw = localStorage.getItem(`neomind.research.status.${ticker}`)
+    return raw ? JSON.parse(raw) : null
+  } catch { return null }
+}
+function saveUserStatus(ticker: string, s: UserStatus) {
+  try {
+    localStorage.setItem(`neomind.research.status.${ticker}`, JSON.stringify(s))
+  } catch { /* ignore quota */ }
+}
 
 type TabKey = 'overview' | 'smart_money' | 'supply_chain' | 'news' | 'notes' | 'chat'
 
@@ -148,11 +171,41 @@ function fallback(ticker: string): MockProfile {
 
 
 export function StockResearchDrawer() {
-  const { ticker, closeTicker, openTicker } = useStockResearch()
+  const { ticker, projectId, closeTicker, openTicker } = useStockResearch()
   const [tab, setTab] = useState<TabKey>('overview')
+  // User status (persisted to localStorage). Tab switches don't lose
+  // it. Loaded fresh per ticker open.
+  const [userStatus, setUserStatus] = useState<UserStatus | null>(null)
+  const [statusEditing, setStatusEditing] = useState<Status | null>(null)
+  const [statusReasonDraft, setStatusReasonDraft] = useState('')
+
+  useEffect(() => {
+    if (!ticker) return
+    setTab('overview')
+    setUserStatus(loadUserStatus(ticker))
+    setStatusEditing(null)
+    setStatusReasonDraft('')
+  }, [ticker])
 
   if (!ticker) return null
   const profile = MOCK_PROFILES[ticker] ?? fallback(ticker)
+  // Effective status: user override > mock default > 'researching'
+  const effectiveStatus: Status | undefined = userStatus?.status ?? profile.status
+
+  function commitStatus(skipReason: boolean) {
+    if (!ticker || !statusEditing) return
+    const reason = skipReason ? '(no reason given)' : statusReasonDraft.trim()
+    if (!skipReason && !reason) return
+    const newStatus: UserStatus = {
+      status: statusEditing,
+      reason: reason || '(empty)',
+      ts: new Date().toISOString(),
+    }
+    saveUserStatus(ticker, newStatus)
+    setUserStatus(newStatus)
+    setStatusEditing(null)
+    setStatusReasonDraft('')
+  }
 
   const tabs: Array<{ k: TabKey; label: string; icon: typeof BarChart3 }> = [
     { k: 'overview',     label: 'Overview',         icon: Building2 },
@@ -163,12 +216,8 @@ export function StockResearchDrawer() {
     { k: 'chat',         label: 'Chat',              icon: MessagesSquare },
   ]
 
-  const statusColor: Record<string, string> = {
-    researching: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
-    watching:    'bg-blue-500/20 text-blue-300 border-blue-500/40',
-    pass:        'bg-red-500/20 text-red-300 border-red-500/40',
-    own:         'bg-green-500/20 text-green-300 border-green-500/40',
-  }
+  // Status color map moved to STATUS_COLOR constant near
+  // StatusPillSelector below (single source of truth).
 
   return (
     <>
@@ -185,14 +234,14 @@ export function StockResearchDrawer() {
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-xl font-bold text-[var(--color-text)] font-mono">{ticker}</span>
               <span className="text-sm text-[var(--color-text)]">{profile.name}</span>
-              {profile.status && (
-                <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${statusColor[profile.status]}`}>
-                  {profile.status === 'researching' && '🔍 researching'}
-                  {profile.status === 'watching'    && '👀 watching'}
-                  {profile.status === 'pass'        && '✕ pass'}
-                  {profile.status === 'own'         && '✓ own'}
-                </span>
-              )}
+              <StatusPillSelector
+                current={effectiveStatus}
+                userStatus={userStatus}
+                onPick={(s) => {
+                  setStatusEditing(s)
+                  setStatusReasonDraft('')
+                }}
+              />
             </div>
             <div className="text-[10px] text-[var(--color-dim)] mt-1 flex items-center gap-3 flex-wrap">
               <span>{profile.sector}</span>
@@ -212,6 +261,47 @@ export function StockResearchDrawer() {
             <X size={16} />
           </button>
         </div>
+
+        {/* Status reason editor (shown only while user is committing
+            a new status — light-weight friction so 6 months later they
+            remember WHY they marked it pass / own / etc.) */}
+        {statusEditing && (
+          <div className="flex items-center gap-2 px-4 py-2 bg-[var(--color-accent)]/10 border-b border-[var(--color-accent)]/40">
+            <span className="text-[10px] text-[var(--color-text)] font-semibold">
+              {statusEditing === 'researching' && '🔍 researching'}
+              {statusEditing === 'watching'    && '👀 watching'}
+              {statusEditing === 'pass'        && '✕ pass'}
+              {statusEditing === 'own'         && '✓ own'}
+            </span>
+            <span className="text-[10px] text-[var(--color-dim)]">理由 (一句话):</span>
+            <input
+              type="text"
+              autoFocus
+              value={statusReasonDraft}
+              onChange={(e) => setStatusReasonDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitStatus(false)
+                if (e.key === 'Escape') setStatusEditing(null)
+              }}
+              placeholder="e.g. PE 太高 + 等中国出口管制明朗 (Enter 保存, Esc 取消)"
+              className="flex-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-2 py-0.5 text-[10px] outline-none"
+            />
+            <button
+              onClick={() => commitStatus(false)}
+              disabled={!statusReasonDraft.trim()}
+              className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 disabled:opacity-40"
+            >
+              保存
+            </button>
+            <button
+              onClick={() => commitStatus(true)}
+              className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+              title="跳过 (不推荐, 半年后会忘理由)"
+            >
+              跳过
+            </button>
+          </div>
+        )}
 
         {/* Tab strip */}
         <div className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)]">
@@ -450,22 +540,183 @@ export function StockResearchDrawer() {
           )}
 
           {tab === 'chat' && (
-            <>
-              <div className="mb-3 text-[10px] text-[var(--color-dim)]">
-                真实版: 这里 embed fin chat panel, 但 system prompt 自动 inject {ticker} profile + smart money 接触作 context.
-                你问 "估值合理吗?" → NeoMind 知道你在问 NVDA, 回答自动结合上下文.
-              </div>
-              <div className="border border-dashed border-[var(--color-border)] rounded p-3 text-center text-[var(--color-dim)] text-[11px] italic">
-                Chat panel mockup placeholder — 实际会 reuse 现有 ChatPanel
-                组件, 加 ticker context injection 层
-              </div>
-              <div className="mt-3 text-[10px] text-[var(--color-dim)]">
-                Past conversations (mock): "{ticker} 估值跟 AMD 比谁更便宜?" · "{ticker} 上下游受制 TSM 风险评估" · "如果 GOOGL 减 capex 对 {ticker} 影响?"
-              </div>
-            </>
+            <DrawerChatTab ticker={ticker} projectId={projectId} />
           )}
         </div>
       </div>
     </>
+  )
+}
+
+
+// ─── Status pill — clickable, opens 4-option dropdown ─────────────
+
+const STATUS_LABEL: Record<Status, string> = {
+  researching: '🔍 researching',
+  watching:    '👀 watching',
+  pass:        '✕ pass',
+  own:         '✓ own',
+}
+const STATUS_COLOR: Record<Status, string> = {
+  researching: 'bg-amber-500/20 text-amber-300 border-amber-500/40',
+  watching:    'bg-blue-500/20 text-blue-300 border-blue-500/40',
+  pass:        'bg-red-500/20 text-red-300 border-red-500/40',
+  own:         'bg-green-500/20 text-green-300 border-green-500/40',
+}
+
+function StatusPillSelector({
+  current, userStatus, onPick,
+}: {
+  current?: Status
+  userStatus: UserStatus | null
+  onPick: (s: Status) => void
+}) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className={`text-[10px] font-mono px-1.5 py-0.5 rounded border hover:brightness-125 ${
+          current ? STATUS_COLOR[current] : 'border-[var(--color-border)] text-[var(--color-dim)]'
+        }`}
+        title={
+          userStatus
+            ? `状态: ${STATUS_LABEL[userStatus.status]}\n理由: ${userStatus.reason}\n更新: ${new Date(userStatus.ts).toLocaleString()}\n\n点击改变`
+            : '点击设置状态 (researching / watching / pass / own) — 强制要求一句话理由, 6 个月后回看'
+        }
+      >
+        {current ? STATUS_LABEL[current] : '⊕ set status'}
+        <span className="ml-1 text-[8px]">▾</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-50" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded shadow-lg z-50 w-44">
+            {(Object.keys(STATUS_LABEL) as Status[]).map((s) => (
+              <button
+                key={s}
+                onClick={() => { onPick(s); setOpen(false) }}
+                className={`block w-full text-left px-2 py-1 text-[10px] hover:bg-[var(--color-panel)] ${
+                  s === current ? 'bg-[var(--color-panel)]/50' : ''
+                }`}
+              >
+                {STATUS_LABEL[s]}
+                <span className="text-[8px] text-[var(--color-dim)] ml-1">
+                  {s === 'researching' && '研究中, 未决定'}
+                  {s === 'watching'    && '看好, 等 timing'}
+                  {s === 'pass'        && '决定不买'}
+                  {s === 'own'         && '已持有'}
+                </span>
+              </button>
+            ))}
+            {userStatus?.reason && (
+              <div className="border-t border-[var(--color-border)] px-2 py-1.5 text-[8.5px] text-[var(--color-dim)] italic">
+                上次理由: {userStatus.reason}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  )
+}
+
+
+// ─── Drawer Chat Tab — embeds real ChatPanel + ticker context ─────
+
+const DRAWER_SESSIONS_KEY = 'neomind.research.drawer_sessions'
+
+interface DrawerSession {
+  ticker: string
+  pid: string
+  ts: string
+  preview: string  // first user message
+}
+
+function loadDrawerSessions(ticker: string): DrawerSession[] {
+  try {
+    const raw = localStorage.getItem(DRAWER_SESSIONS_KEY)
+    const all = raw ? JSON.parse(raw) as DrawerSession[] : []
+    return all.filter((s) => s.ticker === ticker)
+  } catch { return [] }
+}
+
+function DrawerChatTab({ ticker, projectId }: { ticker: string; projectId: string }) {
+  // Auto-inject ticker context into the next message via the existing
+  // ChatPanel `pendingContext` mechanism. The user types as normal but
+  // the agent's system prompt gets `context_symbol={ticker}` appended,
+  // so it knows we're talking about NVDA.
+  const [pendingPrompt, setPendingPrompt] = useState<string | null>(null)
+  const [pendingContext, setPendingContext] = useState<{ symbol?: string } | null>(null)
+  const [drawerSessions] = useState(() => loadDrawerSessions(ticker))
+
+  // First time the user opens this tab for a fresh ticker, we auto-
+  // prime the context flag so the very first send carries it.
+  useEffect(() => {
+    setPendingContext({ symbol: ticker })
+  }, [ticker])
+
+  return (
+    <div className="flex flex-col h-full -m-4">
+      {/* Tiny ticker-scoped session list at top — drawer-local view
+          of the global chat_sessions store (these sessions also
+          appear in the main Strategies tab session list). */}
+      {drawerSessions.length > 0 && (
+        <div className="px-3 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)]/20">
+          <div className="text-[9.5px] text-[var(--color-dim)] mb-1.5 flex items-center gap-2">
+            <span className="font-semibold">在 drawer 里聊过的 sessions ({drawerSessions.length}):</span>
+            <span className="text-[8.5px] italic">同样出现在主界面 session list</span>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {drawerSessions.slice(0, 5).map((s, i) => (
+              <button
+                key={i}
+                className="text-[9px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] truncate max-w-[200px]"
+                title={`${new Date(s.ts).toLocaleString()}\n${s.preview}`}
+                onClick={() => alert('demo: 真实版会 restore 这个 session 继续聊')}
+              >
+                {s.preview.slice(0, 30)}…
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Real ChatPanel embed — pending context auto-injects ticker */}
+      <div className="flex-1 min-h-0">
+        <ChatPanel
+          projectId={projectId}
+          pendingPrompt={pendingPrompt}
+          pendingContext={pendingContext}
+          onConsumePendingPrompt={() => {
+            setPendingPrompt(null)
+            // Keep symbol context active for follow-up turns in this
+            // ticker session — clear only when drawer closes.
+          }}
+          hideSessions={true}  // drawer has its own session list above
+        />
+      </div>
+
+      {/* Quick prompt suggestions to seed the conversation */}
+      <div className="px-3 py-2 border-t border-[var(--color-border)] bg-[var(--color-panel)]/20">
+        <div className="text-[9px] text-[var(--color-dim)] mb-1">建议问 (点击发送):</div>
+        <div className="flex flex-wrap gap-1">
+          {[
+            `${ticker} 估值合理吗? 给我 PE / PS / 现金流的对比`,
+            `${ticker} 上下游受制于谁? 最大风险节点是?`,
+            `${ticker} vs 直接竞争对手谁的护城河更深?`,
+            `如果 AI capex 周期见顶, ${ticker} 估值压缩多少?`,
+          ].map((p) => (
+            <button
+              key={p}
+              onClick={() => setPendingPrompt(p)}
+              className="text-[9px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+            >
+              {p.slice(0, 30)}…
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
   )
 }
