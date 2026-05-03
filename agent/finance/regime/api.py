@@ -345,6 +345,21 @@ def post_scan_policy() -> Dict[str, Any]:
     return result
 
 
+@router.post("/scan/insider_form4")
+def post_scan_insider_form4() -> Dict[str, Any]:
+    """Run the SEC Form 4 insider trading scanner — pulls cluster buys
+    + large CEO/CFO open-market purchases from openinsider.com. 2-day
+    disclosure window, freshest signal in the Smart Money stack."""
+    from agent.finance.regime.scanners.insider_form4_scanner import (
+        run_insider_form4_scan,
+    )
+    from agent.finance.regime.signals import detect_confluences
+    result = run_insider_form4_scan()
+    confluences = detect_confluences()
+    result["new_confluences"] = len(confluences)
+    return result
+
+
 @router.post("/scan/house_clerk_pdf")
 def post_scan_house_clerk_pdf() -> Dict[str, Any]:
     """Run the House Clerk PTR PDF scanner — covers Pelosi + Khanna
@@ -427,6 +442,15 @@ def post_scan_all(
         except Exception as exc:
             logger.exception("house clerk pdf scan failed")
             out["scanners"]["house_clerk_pdf_scan"] = {"error": str(exc)}
+
+        # Insider Form 4 — openinsider.com cluster buys + large CEO buys.
+        # 2-day SEC disclosure window, freshest signal. Two HTTP fetches.
+        try:
+            from agent.finance.regime.scanners.insider_form4_scanner import run_insider_form4_scan
+            out["scanners"]["insider_form4_scan"] = run_insider_form4_scan()
+        except Exception as exc:
+            logger.exception("insider form 4 scan failed")
+            out["scanners"]["insider_form4_scan"] = {"error": str(exc)}
 
         try:
             from agent.finance.regime.scanners.policy_scanner import run_policy_scan

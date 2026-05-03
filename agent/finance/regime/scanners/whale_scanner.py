@@ -61,6 +61,12 @@ WHALES = [
     {"cik": "0001350694", "short": "Dalio (Bridgewater)",      "key": "dalio"},
     {"cik": "0001423053", "short": "Griffin (Citadel)",        "key": "griffin"},
     {"cik": "0001009268", "short": "D.E. Shaw",                "key": "deshaw"},
+    # Cathie Wood / ARK Investment Management — innovation / disruptive
+    # tech long bets. ARK publishes daily holdings on ark-funds.com but
+    # that domain is Cloudflare-walled (HTTP 403) so we use their 13F
+    # quarterly filing here. A future ark_daily_scanner can layer on
+    # intra-quarter changes if we find a stable scrape path.
+    {"cik": "0001697748", "short": "Cathie Wood (ARK)",        "key": "cathie"},
 ]
 
 
