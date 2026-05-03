@@ -53,6 +53,14 @@ WHALES = [
     {"cik": "0001061165", "short": "Klarman (Baupost)",        "key": "klarman"},
     {"cik": "0001040273", "short": "Loeb (Third Point)",       "key": "loeb"},
     {"cik": "0000949509", "short": "Marks (Oaktree)",          "key": "marks"},
+    # Added 2026-05-02 per user request — multi-strategy / quant /
+    # all-weather macro funds. CIKs verified against SEC EDGAR
+    # company search, all file 13F-HR quarterly.
+    # 2025 returns: Bridgewater Pure Alpha +34%, Citadel +10.2%,
+    # D.E. Shaw Composite +18.5% / Oculus +28.2%.
+    {"cik": "0001350694", "short": "Dalio (Bridgewater)",      "key": "dalio"},
+    {"cik": "0001423053", "short": "Griffin (Citadel)",        "key": "griffin"},
+    {"cik": "0001009268", "short": "D.E. Shaw",                "key": "deshaw"},
 ]
 
 
