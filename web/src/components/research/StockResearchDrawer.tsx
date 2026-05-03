@@ -21,7 +21,7 @@ import {
   useStockProfile, useStockExposure, useStockNotes,
   useRegenStockProfile, useUpdateStockStatus, useAppendStockNote,
   useLiveQuote, useNextEarnings, useAnchoredFacts, useRegenAnchored,
-  useTickerNews,
+  useTickerNews, useChatSessions,
   type StockExposureEvent, type AnchoredFacts, type NextEarnings,
   type StockProfile,
 } from '@/lib/api'
@@ -644,18 +644,39 @@ function StatusPillSelector({
 function DrawerChatTab({ ticker, projectId }: { ticker: string; projectId: string }) {
   const [pendingPrompt, setPendingPrompt] = useState<string | null>(null)
   const [pendingContext, setPendingContext] = useState<{ symbol?: string } | null>(null)
+  // Per-ticker session picker — sessionsBumpKey forces a remount of
+  // ChatPanel when user clicks "+ new", which is the simplest way to
+  // reset its internal sessionId state without exposing more props.
+  const [pendingSessionId, setPendingSessionId] = useState<string | null>(null)
+  const [sessionsBumpKey, setSessionsBumpKey] = useState(0)
 
   useEffect(() => { setPendingContext({ symbol: ticker }) }, [ticker])
 
   return (
     <div className="flex flex-col h-full -m-4">
+      <DrawerSessionsBar
+        ticker={ticker}
+        projectId={projectId}
+        onPickSession={(sid) => setPendingSessionId(sid)}
+        onNewChat={() => {
+          // Force ChatPanel remount: cleared internal state →
+          // next user message creates a fresh session, tagged with
+          // this ticker via the tickerTag prop below.
+          setSessionsBumpKey(k => k + 1)
+          setPendingSessionId(null)
+        }}
+      />
       <div className="flex-1 min-h-0">
         <ChatPanel
+          key={`drawer-${ticker}-${sessionsBumpKey}`}
           projectId={projectId}
           pendingPrompt={pendingPrompt}
           pendingContext={pendingContext}
           onConsumePendingPrompt={() => setPendingPrompt(null)}
           hideSessions={true}
+          tickerTag={ticker}
+          pendingSessionId={pendingSessionId}
+          onConsumePendingSession={() => setPendingSessionId(null)}
         />
       </div>
       <div className="px-3 py-2 border-t border-[var(--color-border)] bg-[var(--color-panel)]/20">
@@ -677,6 +698,89 @@ function DrawerChatTab({ ticker, projectId }: { ticker: string; projectId: strin
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+
+// ── Drawer per-ticker session picker (collapsible, with search) ──
+function DrawerSessionsBar({
+  ticker, projectId, onPickSession, onNewChat,
+}: {
+  ticker: string
+  projectId: string
+  onPickSession: (sessionId: string) => void
+  onNewChat: () => void
+}) {
+  // Lazy-load: only fetch when user expands. Avoids one extra
+  // network round-trip on every drawer open for users who never
+  // care about past sessions.
+  const [open, setOpen] = useState(false)
+  const [search, setSearch] = useState('')
+  const sessionsQ = useChatSessions(open ? projectId : '', open ? ticker : null)
+  const all = sessionsQ.data?.sessions ?? []
+  const filtered = search.trim()
+    ? all.filter(s => (s.title || '').toLowerCase().includes(search.trim().toLowerCase()))
+    : all
+
+  return (
+    <div
+      data-testid="drawer-sessions-bar"
+      className="px-3 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-panel)]/30 text-[10px]"
+    >
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setOpen(o => !o)}
+          className="text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center gap-1"
+          title="过去对这个 ticker 的所有 chat sessions"
+        >
+          <MessagesSquare size={11} />
+          <span>{open ? '▾' : '▸'} past {ticker} sessions{open ? ` (${all.length})` : ''}</span>
+        </button>
+        <button
+          data-testid="drawer-chat-new"
+          onClick={onNewChat}
+          className="ml-auto text-[var(--color-dim)] hover:text-[var(--color-accent)] flex items-center gap-0.5"
+          title="开新 session (会带 ticker_tag 标记)"
+        >
+          + new chat
+        </button>
+      </div>
+      {open && (
+        <div className="mt-1.5 space-y-1">
+          <input
+            type="text"
+            value={search}
+            onChange={e => setSearch(e.target.value)}
+            placeholder={`搜索 ${ticker} 历史 sessions…`}
+            className="w-full px-2 py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[10px] outline-none focus:border-[var(--color-accent)]"
+          />
+          {sessionsQ.isLoading && <div className="italic text-[var(--color-dim)]">loading…</div>}
+          {!sessionsQ.isLoading && filtered.length === 0 && (
+            <div className="italic text-[var(--color-dim)] py-1">
+              {all.length === 0
+                ? `没有过去对 ${ticker} 的 chat. 点 "+ new chat" 开始第一个.`
+                : `搜不到 "${search}".`}
+            </div>
+          )}
+          <div className="max-h-32 overflow-y-auto">
+            {filtered.map(s => (
+              <button
+                key={s.session_id}
+                data-testid={`drawer-session-${s.session_id.slice(0, 8)}`}
+                onClick={() => onPickSession(s.session_id)}
+                className="w-full text-left px-2 py-1 rounded hover:bg-[var(--color-border)]/40 flex items-center gap-2"
+              >
+                <span className="flex-1 truncate text-[10px]">{s.title || '(empty)'}</span>
+                <span className="text-[8.5px] text-[var(--color-dim)]">{s.message_count} msg</span>
+                <span className="text-[8.5px] text-[var(--color-dim)] font-mono">
+                  {(s.updated_at || s.created_at).slice(0, 10)}
+                </span>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   )
 }

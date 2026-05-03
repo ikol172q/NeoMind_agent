@@ -1256,6 +1256,10 @@ export interface ChatSessionSummary {
   updated_at?: string
   title: string
   message_count: number
+  /** Set when the session was started from a Stock Research Drawer's
+   *  Chat tab — used by drawer to filter "past sessions about ROKU".
+   *  Old sessions created before this column existed return null. */
+  ticker_tag?: string | null
 }
 
 export interface StoredMessage {
@@ -1265,15 +1269,24 @@ export interface StoredMessage {
   req_id?: string
 }
 
-export async function createChatSession(project_id: string): Promise<{ session_id: string; created_at: string }> {
-  return fetchJSON(`/api/chat_sessions?project_id=${encodeURIComponent(project_id)}`, { method: 'POST' })
+export async function createChatSession(
+  project_id: string,
+  ticker?: string | null,
+): Promise<{ session_id: string; created_at: string; ticker_tag?: string | null }> {
+  const qs = new URLSearchParams({ project_id })
+  if (ticker) qs.set('ticker', ticker)
+  return fetchJSON(`/api/chat_sessions?${qs}`, { method: 'POST' })
 }
 
-export function useChatSessions(project_id: string) {
+export function useChatSessions(project_id: string, ticker?: string | null) {
+  const qs = new URLSearchParams({ project_id, limit: '100' })
+  if (ticker) qs.set('ticker', ticker)
   return useQuery({
-    queryKey: ['chat_sessions', project_id],
+    // ticker is part of the cache key so different tickers (or the
+    // unfiltered view) don't pollute each other.
+    queryKey: ['chat_sessions', project_id, ticker ?? null],
     queryFn: () => fetchJSON<{ project_id: string; count: number; sessions: ChatSessionSummary[] }>(
-      `/api/chat_sessions?project_id=${encodeURIComponent(project_id)}&limit=100`,
+      `/api/chat_sessions?${qs}`,
     ),
     enabled: !!project_id,
     staleTime: 10_000,
