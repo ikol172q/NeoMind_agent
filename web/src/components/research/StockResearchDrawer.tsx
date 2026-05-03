@@ -304,42 +304,11 @@ export function StockResearchDrawer() {
           )}
 
           {tab === 'smart_money' && (
-            <>
-              <div className="mb-3 text-[10px] text-[var(--color-dim)]">
-                {ticker} 的所有 Smart Money 接触 (跨 13F / Congress / House Clerk PDF / Form 4).
-                实时从 signal_events 表 join, 60 秒自动 refetch.
-              </div>
-              {exposureQ.isLoading && <div className="text-[10px] text-[var(--color-dim)]">loading…</div>}
-              {!exposureQ.isLoading && exposureEvents.length === 0 && (
-                <div className="text-[11px] italic text-[var(--color-dim)]">
-                  无 Smart Money 接触. 让 scanner 跑一轮: Today's Signals widget 点 ↻ 立即扫描.
-                </div>
-              )}
-              {!exposureQ.isLoading && exposureEvents.length > 0 && (
-                <div className="space-y-1">
-                  {exposureEvents.map((e, i) => {
-                    const sourceLabel = e.scanner === '13f' ? '13F' :
-                                        e.scanner === 'stock_act' ? 'Congress' :
-                                        e.scanner === 'house_clerk_pdf' ? 'PDF' :
-                                        e.scanner === 'insider_form4' ? 'Form 4' : e.scanner
-                    const sevClass = e.severity === 'high' ? 'text-[var(--color-green,#7ed98c)]' :
-                                     e.severity === 'med'  ? 'text-[var(--color-amber,#e5a200)]' : 'text-[var(--color-dim)]'
-                    return (
-                      <div key={i} className="flex items-start gap-2 text-[11px] py-1 px-2 border border-[var(--color-border)]/40 rounded">
-                        <span className={`text-[9px] font-mono w-16 flex-shrink-0 ${sevClass}`}>{sourceLabel}</span>
-                        <span className="flex-1">{e.title}</span>
-                        {e.source_url && (
-                          <a href={e.source_url} target="_blank" rel="noopener noreferrer" className="text-[9px] text-[var(--color-accent)] hover:underline flex-shrink-0">🔗</a>
-                        )}
-                        <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-20 text-right flex-shrink-0">
-                          {e.source_timestamp || e.detected_at?.slice(0, 10)}
-                        </span>
-                      </div>
-                    )
-                  })}
-                </div>
-              )}
-            </>
+            <SmartMoneyTabBody
+              isLoading={exposureQ.isLoading}
+              events={exposureEvents}
+              ticker={ticker}
+            />
           )}
 
           {tab === 'supply_chain' && (
@@ -443,6 +412,146 @@ export function StockResearchDrawer() {
           )}
         </div>
       </div>
+    </>
+  )
+}
+
+
+// ─── Smart Money exposure tab body — sort + filter ───────────────
+
+const SOURCE_LABEL: Record<string, string> = {
+  '13f':              '13F',
+  'stock_act':        'Congress',
+  'house_clerk_pdf':  'PDF',
+  'insider_form4':    'Form 4',
+  'news':             'News',
+  'watchlist':        'Watchlist',
+  'policy':           'Policy',
+}
+
+type ExposureSort = 'date_desc' | 'date_asc' | 'severity' | 'source'
+
+function SmartMoneyTabBody({
+  isLoading, events, ticker,
+}: { isLoading: boolean; events: StockExposureEvent[]; ticker: string }) {
+  // Default: most-recent first across all sources. Form-4 / News tend
+  // to drown out 13F / Congress when sorted purely by date, so the
+  // source filter is the main escape hatch when a user wants to
+  // focus on "what funds did with this ticker".
+  const [sortBy, setSortBy] = useState<ExposureSort>('date_desc')
+  const [sourceFilter, setSourceFilter] = useState<string>('all')
+  const [sevFilter, setSevFilter] = useState<string>('all')
+
+  // Distinct sources actually present in the data — drives the
+  // dropdown so we don't show options that have 0 events.
+  const sources = Array.from(new Set(events.map((e) => e.scanner)))
+
+  function dateOf(e: StockExposureEvent): number {
+    const ts = e.source_timestamp || e.detected_at
+    return ts ? new Date(ts).getTime() : 0
+  }
+  function sevRank(e: StockExposureEvent): number {
+    return e.severity === 'high' ? 3 : e.severity === 'med' ? 2 : 1
+  }
+
+  const filtered = events.filter((e) => {
+    if (sourceFilter !== 'all' && e.scanner !== sourceFilter) return false
+    if (sevFilter    !== 'all' && e.severity !== sevFilter)    return false
+    return true
+  })
+
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === 'date_desc') return dateOf(b) - dateOf(a)
+    if (sortBy === 'date_asc')  return dateOf(a) - dateOf(b)
+    if (sortBy === 'severity')  return sevRank(b) - sevRank(a)
+    if (sortBy === 'source')    return (SOURCE_LABEL[a.scanner] ?? a.scanner)
+                                       .localeCompare(SOURCE_LABEL[b.scanner] ?? b.scanner)
+    return 0
+  })
+
+  return (
+    <>
+      <div className="mb-2 text-[10px] text-[var(--color-dim)]">
+        {ticker} 的 Smart Money 接触 (跨 13F / Congress / House Clerk PDF / Form 4 / News / Watchlist).
+        实时 join signal_events, 60 秒自动 refetch.
+      </div>
+
+      {/* Sort + filter controls */}
+      <div className="flex flex-wrap items-center gap-2 mb-2 text-[9.5px] text-[var(--color-dim)] bg-[var(--color-panel)]/30 rounded p-1.5 border border-[var(--color-border)]/40">
+        <span className="font-semibold">排序:</span>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as ExposureSort)}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value="date_desc">日期 desc (最新)</option>
+          <option value="date_asc">日期 asc (最早)</option>
+          <option value="severity">severity desc</option>
+          <option value="source">来源 a-z</option>
+        </select>
+
+        <span className="font-semibold ml-2">来源:</span>
+        <select
+          value={sourceFilter}
+          onChange={(e) => setSourceFilter(e.target.value)}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value="all">All ({events.length})</option>
+          {sources.map((s) => (
+            <option key={s} value={s}>
+              {SOURCE_LABEL[s] ?? s} ({events.filter((e) => e.scanner === s).length})
+            </option>
+          ))}
+        </select>
+
+        <span className="font-semibold ml-2">severity:</span>
+        <select
+          value={sevFilter}
+          onChange={(e) => setSevFilter(e.target.value)}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value="all">All</option>
+          <option value="high">high only</option>
+          <option value="med">med only</option>
+          <option value="low">low only</option>
+        </select>
+
+        <span className="ml-auto text-[8.5px] font-mono">
+          {sorted.length} / {events.length}
+        </span>
+      </div>
+
+      {isLoading && <div className="text-[10px] text-[var(--color-dim)]">loading…</div>}
+      {!isLoading && sorted.length === 0 && (
+        <div className="text-[11px] italic text-[var(--color-dim)]">
+          {events.length === 0
+            ? `无 Smart Money 接触. 让 scanner 跑一轮: Today's Signals widget 点 ↻ 立即扫描.`
+            : `没有 event 满足 filter. 放宽 filter 试试.`}
+        </div>
+      )}
+      {!isLoading && sorted.length > 0 && (
+        <div className="space-y-1">
+          {sorted.map((e, i) => {
+            const sourceLabel = SOURCE_LABEL[e.scanner] ?? e.scanner
+            const sevClass = e.severity === 'high' ? 'text-[var(--color-green,#7ed98c)]' :
+                             e.severity === 'med'  ? 'text-[var(--color-amber,#e5a200)]' : 'text-[var(--color-dim)]'
+            const date = (e.source_timestamp || e.detected_at || '').slice(0, 10)
+            return (
+              <div key={i} className="flex items-start gap-2 text-[11px] py-1 px-2 border border-[var(--color-border)]/40 rounded">
+                <span className={`text-[9px] font-mono w-16 flex-shrink-0 ${sevClass}`}>{sourceLabel}</span>
+                <span className="flex-1">{e.title}</span>
+                {e.source_url && (
+                  <a href={e.source_url} target="_blank" rel="noopener noreferrer"
+                     className="text-[9px] text-[var(--color-accent)] hover:underline flex-shrink-0">🔗</a>
+                )}
+                <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-20 text-right flex-shrink-0">
+                  {date}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      )}
     </>
   )
 }
