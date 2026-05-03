@@ -123,6 +123,27 @@ function StyleTag({ k }: { k?: StyleKey | null }) {
 }
 
 
+// Click any ticker symbol in the widget to open its TradingView chart
+// in a new tab. TradingView's /symbols/{TICKER}/ canonical URL
+// auto-routes to the right exchange (no need to know NASDAQ vs NYSE).
+function TickerLink({
+  ticker, className,
+}: { ticker?: string | null; className?: string }) {
+  if (!ticker) return <span className={className}>—</span>
+  return (
+    <a
+      href={`https://www.tradingview.com/symbols/${encodeURIComponent(ticker)}/`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className={`${className ?? ''} hover:text-[var(--color-accent)] hover:underline`}
+      title={`在 TradingView 看 ${ticker} 走势`}
+    >
+      {ticker}
+    </a>
+  )
+}
+
+
 // Map 13f signal_type → short Chinese label + color hint.
 function changeBadge(signal_type: string): { label: string; color: string } {
   if (signal_type === '13f_new')      return { label: '新建仓', color: 'green' }
@@ -571,9 +592,10 @@ function InsiderRow({ event }: { event: SignalEvent }) {
         <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${sevClass}`}>
           {isCluster ? `${nIns}人买` : '买'}
         </span>
-        <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
-          {event.ticker}
-        </span>
+        <TickerLink
+          ticker={event.ticker}
+          className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0"
+        />
         <span className="text-[9px] text-[var(--color-text)] truncate flex-1">
           {company}
         </span>
@@ -690,9 +712,10 @@ function CongressRow({ event }: { event: SignalEvent }) {
       <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${actionClass}`}>
         {action}
       </span>
-      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
-        {event.ticker ?? '—'}
-      </span>
+      <TickerLink
+        ticker={event.ticker}
+        className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0"
+      />
       <span className="text-[9.5px] text-[var(--color-dim)] font-mono">
         {amount}
       </span>
@@ -781,9 +804,10 @@ function EventRow({ event }: { event: SignalEvent }) {
       <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${badgeClass}`}>
         {badge.label}
       </span>
-      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
-        {event.ticker ?? '—'}
-      </span>
+      <TickerLink
+        ticker={event.ticker}
+        className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0"
+      />
       {name && (
         <span className="text-[9px] text-[var(--color-dim)] truncate flex-1">{name}</span>
       )}
