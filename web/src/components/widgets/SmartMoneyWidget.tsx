@@ -243,14 +243,39 @@ export function SmartMoneyWidget() {
   const arkEvents = arkGroups.flatMap((g) => g.events)
   const insiderEvents = (qInsider.data?.events ?? []) as SignalEvent[]
 
-  // Apply per-tab age filter unless user toggled "show stale".
-  const events_fresh = showStale.whales ? events : events.filter(isFresh)
+  // Followed anchors (Pelosi/Tina Smith/Cleo Fields, plus the
+  // ARK/Cathie Wood case) are explicitly pinned — they bypass the
+  // age filter unconditionally. The whole reason the user picked
+  // them is to keep watching regardless of when they last traded.
+  function congressBypassAge(e: SignalEvent): boolean {
+    const b = (e.body ?? {}) as Record<string, unknown>
+    const rep = String(b.representative ?? b.senator ?? '')
+    return isFollowedRep(rep) !== null
+  }
+  function whaleBypassAge(e: SignalEvent): boolean {
+    // ARK = Cathie Wood is an explicit anchor (own tab). All other
+    // whales follow the standard window.
+    const wk = String((e.body as Record<string, unknown> | undefined)?.whale_key ?? '')
+    return wk === 'cathie'
+  }
+
+  // Apply per-tab age filter unless user toggled "show stale" OR the
+  // event belongs to a followed anchor.
+  const events_fresh = showStale.whales
+    ? events
+    : events.filter((e) => isFresh(e) || whaleBypassAge(e))
   const groups_fresh = showStale.whales ? groups : groups.map((g) => ({
-    ...g, events: g.events.filter(isFresh),
+    ...g,
+    events: g.events.filter((e) => isFresh(e) || whaleBypassAge(e)),
   })).filter((g) => g.events.length > 0)
-  const congressEvents_fresh = showStale.congress ? congressEvents : congressEvents.filter(isFresh)
+  const congressEvents_fresh = showStale.congress
+    ? congressEvents
+    : congressEvents.filter((e) => isFresh(e) || congressBypassAge(e))
   const arkGroups_fresh = showStale.ark ? arkGroups : arkGroups.map((g) => ({
-    ...g, events: g.events.filter(isFresh),
+    ...g,
+    // ARK tab IS the Cathie Wood anchor — bypass age unconditionally,
+    // user explicitly opened her tab.
+    events: g.events,
   })).filter((g) => g.events.length > 0)
   const arkEvents_fresh = arkGroups_fresh.flatMap((g) => g.events)
   const insiderEvents_fresh = showStale.insider ? insiderEvents : insiderEvents.filter(isFresh)
