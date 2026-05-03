@@ -6,6 +6,7 @@ import {
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState, useEffect } from 'react'
+import { ArchitectureView } from '@/components/architecture/ArchitectureView'
 
 interface Props {
   projectId: string
@@ -22,7 +23,8 @@ export function SettingsTab({ projectId, onProjectChange, onOpenLegacy }: Props)
   })
 
   return (
-    <div className="p-4 grid gap-3 max-w-3xl mx-auto">
+    <div className="flex-1 overflow-y-auto">
+      <div className="p-4 grid gap-3 max-w-3xl mx-auto">
       <Card>
         <CardHeader title="Project" />
         <CardBody>
@@ -107,6 +109,22 @@ export function SettingsTab({ projectId, onProjectChange, onOpenLegacy }: Props)
           </div>
         </CardBody>
       </Card>
+      </div>
+
+      {/* Architecture explorer breaks out of max-w-3xl since the
+          force-graph wants horizontal room. Replaces the old
+          plans/architecture_interactive.html standalone file. */}
+      <div className="px-4 pb-4 max-w-7xl mx-auto">
+        <Card>
+          <CardHeader
+            title="Codebase architecture"
+            subtitle="AST-parsed module dependency graph"
+          />
+          <CardBody>
+            <ArchitectureView />
+          </CardBody>
+        </Card>
+      </div>
     </div>
   )
 }

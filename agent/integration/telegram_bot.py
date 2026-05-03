@@ -3183,7 +3183,7 @@ class NeoMindTelegramBot:
                 output += "\n" + result.stderr.strip()
             if result.returncode != 0:
                 return f"❌ Architecture generation failed:\n{output}"
-            return f"📐 Architecture Graph\n\n{output}\n\nOpen plans/architecture_interactive.html to view."
+            return f"📐 Architecture Graph\n\n{output}\n\nView at: web dashboard → Settings → Codebase architecture"
         except subprocess.TimeoutExpired:
             return "❌ Architecture generation timed out."
         except Exception as e:

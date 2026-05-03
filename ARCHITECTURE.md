@@ -104,5 +104,5 @@ The interactive HTML architecture visualization can be regenerated from the live
 
 ```bash
 python scripts/gen_architecture.py
-# Outputs: plans/architecture_interactive.html + plans/architecture_data.json
+# Outputs: plans/architecture_data.json (rendered by web dashboard → Settings → Codebase architecture)
 ```
