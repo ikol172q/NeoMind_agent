@@ -886,11 +886,24 @@ def build_chat_stream_router() -> APIRouter:
             # event so the UI can render a ⚠ notice below the message
             # ("⚠ N URLs in this reply failed verification, click [Google
             # 搜] for each"). Client decides how to surface.
+            # URL guard is sync I/O (HEAD checks) and sequential per
+            # URL (~4s timeout each). Wrapping in to_thread + a 6s
+            # overall budget ensures it never blocks the event loop
+            # for more than a moment — critical because this whole
+            # function is an async SSE generator. If guard times out,
+            # we emit done with empty url_warnings rather than
+            # holding the stream open indefinitely.
             url_warnings: list[dict[str, str]] = []
             try:
                 from agent.llm_url_guard import sanitize_text
-                _sanitized, url_stats = sanitize_text(final_content, context_hint="chat")
+                _sanitized, url_stats = await asyncio.wait_for(
+                    asyncio.to_thread(sanitize_text, final_content, context_hint="chat"),
+                    timeout=6.0,
+                )
                 url_warnings = url_stats.get("dead_urls") or []
+            except asyncio.TimeoutError:
+                logger.warning("url guard timed out for %s — emitting done w/o warnings",
+                               session_id)
             except Exception as exc:
                 logger.warning("url guard failed for %s: %s", session_id, exc)
 

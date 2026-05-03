@@ -166,8 +166,21 @@ def verify_url(url: str, cache_ttl_days: int = 7) -> bool:
 
 
 def verify_urls(urls: List[str]) -> Dict[str, bool]:
-    """Batch verify. Returns {url: verified_bool}."""
-    return {u: verify_url(u) for u in urls}
+    """Batch verify URLs in parallel. Returns {url: verified_bool}.
+
+    Uses a small thread pool because each verify_url is a sync HTTP
+    HEAD with a 4s timeout — running them sequentially makes a chat
+    reply with 5 URLs block 20s. Parallel collapses to ~4s worst case.
+    """
+    from concurrent.futures import ThreadPoolExecutor
+    if not urls:
+        return {}
+    # Cap thread count — avoid spawning hundreds of threads if an LLM
+    # somehow emitted a huge list of URLs.
+    max_workers = min(8, len(urls))
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        results = list(ex.map(verify_url, urls))
+    return dict(zip(urls, results))
 
 
 # ── Sanitization helpers ───────────────────────────────────────
@@ -195,18 +208,26 @@ def sanitize_text(
     if not urls:
         return text, {"n_total": 0, "n_verified": 0, "n_dead": 0, "dead_urls": []}
 
+    # Verify all URLs in parallel — much better worst-case latency
+    # than the sequential loop (5 URLs × 4s timeout each = 20s).
+    verified_map = verify_urls(urls)
+
     out = text
     n_verified = 0
     dead_urls: List[Dict[str, str]] = []
+    seen: set = set()
     for url in urls:
-        if verify_url(url):
+        if url in seen:
+            continue
+        seen.add(url)
+        if verified_map.get(url):
             n_verified += 1
             continue
         host = (urllib.parse.urlparse(url).hostname or url[:30])[:50]
         query = f"{host} {context_hint}".strip()[:120]
         fallback = _google_search_link(query)
         marker = f"[⚠死链:{host} → Google 搜]({fallback})"
-        out = out.replace(url, marker, 1)  # only first occurrence per URL
+        out = out.replace(url, marker, 1)
         dead_urls.append({"url": url, "fallback": fallback, "host": host})
 
     return out, {
