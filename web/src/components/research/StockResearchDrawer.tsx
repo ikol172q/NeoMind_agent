@@ -20,11 +20,14 @@ import { ChatPanel } from '@/components/chat/ChatPanel'
 import {
   useStockProfile, useStockExposure, useStockNotes,
   useRegenStockProfile, useUpdateStockStatus, useAppendStockNote,
-  type StockExposureEvent,
+  useLiveQuote, useNextEarnings, useAnchoredFacts, useRegenAnchored,
+  useTickerNews,
+  type StockExposureEvent, type AnchoredFacts, type NextEarnings,
+  type StockProfile,
 } from '@/lib/api'
 import {
   X, ExternalLink, Sparkles, BarChart3, Network, Newspaper,
-  NotebookPen, MessagesSquare, Building2, Loader2,
+  NotebookPen, MessagesSquare, Building2, Loader2, ShieldCheck,
 } from 'lucide-react'
 import { AnchoredFactsPanel } from './AnchoredFactsPanel'
 
@@ -45,6 +48,11 @@ export function StockResearchDrawer() {
   const regenMu = useRegenStockProfile()
   const statusMu = useUpdateStockStatus()
   const noteMu = useAppendStockNote()
+  const liveQuoteQ = useLiveQuote(ticker)
+  const earningsQ = useNextEarnings(ticker)
+  const anchoredQ = useAnchoredFacts(ticker)
+  const regenAnchoredMu = useRegenAnchored()
+  const isRegenAnchoredForThis = regenAnchoredMu.isPending && regenAnchoredMu.variables === ticker
 
   useEffect(() => {
     if (!ticker) return
@@ -111,7 +119,9 @@ export function StockResearchDrawer() {
             <div className="flex items-center gap-3 flex-wrap">
               <span className="text-xl font-bold text-[var(--color-text)] font-mono">{ticker}</span>
               <span className="text-sm text-[var(--color-text)]">
-                {profile?.name ?? (profileQ.isLoading ? 'loading…' : '(profile not generated yet)')}
+                {liveQuoteQ.data?.name
+                  ?? profile?.name
+                  ?? (profileQ.isLoading || liveQuoteQ.isLoading ? 'loading…' : '(profile not generated yet)')}
               </span>
               <StatusPillSelector
                 current={effectiveStatus}
@@ -121,10 +131,58 @@ export function StockResearchDrawer() {
               />
             </div>
             <div className="text-[10px] text-[var(--color-dim)] mt-1 flex items-center gap-3 flex-wrap">
-              {profile?.sector && <span>{profile.sector}</span>}
-              {profile?.quick_stats?.price     && <span>· {profile.quick_stats.price}</span>}
-              {profile?.quick_stats?.marketCap && <span>· cap {profile.quick_stats.marketCap}</span>}
-              {profile?.quick_stats?.pe        && <span>· PE {profile.quick_stats.pe}</span>}
+              {/* Sector — prefer yfinance live (sector + industry); fall
+                  back to LLM profile only if yfinance has no data. */}
+              {(liveQuoteQ.data?.sector || profile?.sector) && (
+                <span>
+                  {liveQuoteQ.data?.sector ?? profile?.sector}
+                  {liveQuoteQ.data?.industry && ` · ${liveQuoteQ.data.industry}`}
+                </span>
+              )}
+              {/* quick stats — yfinance live, with day-change ▲▼ */}
+              {liveQuoteQ.data?.price != null && (
+                <span data-testid="live-price">
+                  · ${liveQuoteQ.data.price.toFixed(2)}
+                  {liveQuoteQ.data.day_change_pct != null && (
+                    <span className={liveQuoteQ.data.day_change_pct >= 0 ? 'text-emerald-400 ml-1' : 'text-red-400 ml-1'}>
+                      {liveQuoteQ.data.day_change_pct >= 0 ? '▲' : '▼'}
+                      {Math.abs(liveQuoteQ.data.day_change_pct).toFixed(2)}%
+                    </span>
+                  )}
+                </span>
+              )}
+              {liveQuoteQ.data?.market_cap != null && (
+                <span>· cap {fmtCap(liveQuoteQ.data.market_cap)}</span>
+              )}
+              {liveQuoteQ.data?.trailing_pe != null && (
+                <span>· PE {liveQuoteQ.data.trailing_pe.toFixed(1)}</span>
+              )}
+              {liveQuoteQ.data?.forward_pe != null && (
+                <span>· fwd {liveQuoteQ.data.forward_pe.toFixed(1)}</span>
+              )}
+              {/* Year change + 52w range when yfinance has them */}
+              {liveQuoteQ.data?.year_change_pct != null && (
+                <span className={liveQuoteQ.data.year_change_pct >= 0 ? 'text-emerald-400/80' : 'text-red-400/80'}>
+                  · 1y {liveQuoteQ.data.year_change_pct >= 0 ? '+' : ''}
+                  {liveQuoteQ.data.year_change_pct.toFixed(0)}%
+                </span>
+              )}
+              {/* Next earnings */}
+              {earningsQ.data?.next_date && earningsQ.data.days_until != null && (
+                <span data-testid="next-earnings" className="text-amber-300/80">
+                  · earnings {earningsQ.data.days_until > 0
+                    ? `in ${earningsQ.data.days_until}d`
+                    : `${Math.abs(earningsQ.data.days_until)}d ago`}
+                  {' '}
+                  <span className="text-[var(--color-dim)]">({earningsQ.data.next_date})</span>
+                </span>
+              )}
+              {/* Live data attribution */}
+              {liveQuoteQ.data && (
+                <span className="text-[9px] italic text-[var(--color-dim)]/60 ml-1">
+                  live · yfinance
+                </span>
+              )}
               {profile?.style_verdict && <span className="ml-2 italic">{profile.style_verdict}</span>}
             </div>
           </div>
@@ -198,149 +256,21 @@ export function StockResearchDrawer() {
         {/* Content area */}
         <div className="flex-1 overflow-y-auto p-4 text-[var(--color-text)] text-[12px] leading-[1.6]">
           {tab === 'overview' && (
-            <>
-              <div className="mb-3 flex items-center gap-2 text-[10px] text-[var(--color-dim)] flex-wrap">
-                <Sparkles size={10} className="text-[var(--color-accent)]" />
-                {profile?.generated_at
-                  ? `NeoMind generated · ${new Date(profile.generated_at).toLocaleString()} (${profile.generated_model ?? '?'})`
-                  : 'No cached profile yet'}
-                <button
-                  className="ml-auto px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1 disabled:opacity-50"
-                  onClick={regenerate}
-                  disabled={isRegenForThisTicker}
-                  title="调用 NeoMind LLM 生成 (~$0.01, 15-30s)"
-                >
-                  {isRegenForThisTicker
-                    ? <><Loader2 size={10} className="animate-spin" /> 生成中…</>
-                    : <>✨ {hasProfile ? 'regenerate' : 'generate'}</>}
-                </button>
-                <a
-                  href={`https://www.tradingview.com/symbols/${encodeURIComponent(ticker)}/`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1"
-                >
-                  TradingView <ExternalLink size={9} />
-                </a>
-                <a
-                  href={`https://finance.yahoo.com/quote/${encodeURIComponent(ticker)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1"
-                >
-                  Yahoo <ExternalLink size={9} />
-                </a>
-              </div>
-
-              {regenErrorForThisTicker && (
-                <div className="mb-2 p-2 rounded border border-red-500/40 bg-red-500/10 text-[10px] text-red-300">
-                  生成失败: {regenErrorForThisTicker.message}
-                </div>
-              )}
-
-              {!hasProfile && !isRegenForThisTicker && (
-                <div className="text-[11px] italic text-[var(--color-dim)] py-4 leading-[1.6]">
-                  {ticker} 还没有 cached profile. 点上面 ✨ generate, NeoMind LLM 会拉
-                  数据生成 business summary / 业务分段 / 上下游 / 催化剂 / 风险, 缓存到
-                  DB. 下次秒开. 第一次大概 15-30 秒, 花费 ~$0.01.
-                </div>
-              )}
-
-              {hasProfile && (
-                <>
-                  <h3 className="text-[12px] font-semibold mb-1.5">业务概览</h3>
-                  <p className="mb-3 text-[11px] leading-[1.7]">{profile!.summary}</p>
-
-                  {profile!.segments.length > 0 && (
-                    <>
-                      <h3 className="text-[12px] font-semibold mb-1.5">业务分段</h3>
-                      <div className="space-y-1 mb-3">
-                        {profile!.segments.map((s) => (
-                          <div key={s.name} className="flex items-center gap-2 text-[11px]">
-                            <div className="w-24 flex-shrink-0">{s.name}</div>
-                            <div className="flex-1 h-1.5 bg-[var(--color-panel)] rounded">
-                              <div className="h-full bg-[var(--color-accent)] rounded" style={{ width: `${s.pct}%` }} />
-                            </div>
-                            <span className="text-[10px] text-[var(--color-dim)] font-mono w-10 text-right">{s.pct}%</span>
-                            {s.note && <span className="text-[9.5px] text-[var(--color-dim)] flex-1">{s.note}</span>}
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
-                  {profile!.catalysts.length > 0 && (
-                    <>
-                      <h3 className="text-[12px] font-semibold mb-1.5">未来催化剂</h3>
-                      <div className="space-y-1 mb-3">
-                        {profile!.catalysts.map((c, i) => (
-                          <div key={i} className="flex items-start gap-2 text-[11px]">
-                            <span className={`text-[9px] font-mono w-20 flex-shrink-0 ${
-                              c.severity === 'high' ? 'text-red-400' :
-                              c.severity === 'med'  ? 'text-amber-400' : 'text-[var(--color-dim)]'
-                            }`}>{c.when}</span>
-                            <span className="flex-1">{c.what}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </>
-                  )}
-
-                  {profile!.risks.length > 0 && (
-                    <>
-                      <h3 className="text-[12px] font-semibold mb-1.5 text-red-300">主要风险</h3>
-                      <ul className="space-y-1 mb-3 list-disc pl-4">
-                        {profile!.risks.map((r, i) => (
-                          <li key={i} className="text-[11px]">{r}</li>
-                        ))}
-                      </ul>
-                    </>
-                  )}
-
-                  {profile!.source_citations.length > 0 && (
-                    <>
-                      <h3 className="text-[12px] font-semibold mb-1.5 text-[var(--color-dim)]">
-                        引用 (LLM 自报, 服务端 HEAD-验证)
-                      </h3>
-                      <div className="text-[8.5px] text-[var(--color-dim)] italic mb-1 leading-[1.5]">
-                        ✓ verified = 链接服务端 HEAD-check 通过 (200/3xx). ⚠ unverified = LLM 编了 URL,
-                        改成 Google 搜索 fallback 让你自己 verify.
-                      </div>
-                      <ol className="space-y-0.5 mb-3 list-decimal pl-4">
-                        {profile!.source_citations.map((s) => {
-                          const verified = s.verified === true
-                          const text = s.title || s.url || `(citation ${s.id})`
-                          if (verified) {
-                            return (
-                              <li key={s.id} className="text-[10px]">
-                                <span className="text-[var(--color-green,#7ed98c)] mr-1" title="HEAD check passed">✓</span>
-                                <a href={s.url} target="_blank" rel="noopener noreferrer"
-                                   className="text-[var(--color-accent)] hover:underline">
-                                  {text}
-                                </a>
-                              </li>
-                            )
-                          }
-                          // Unverified: dead URL OR no URL at all. Fall back to Google search.
-                          const q = encodeURIComponent(text)
-                          return (
-                            <li key={s.id} className="text-[10px]">
-                              <span className="text-[var(--color-amber,#e5a200)] mr-1"
-                                    title={s.url ? `LLM 给的 URL HEAD 不通: ${s.url}` : 'LLM 没给 URL'}>⚠</span>
-                              <span className="text-[var(--color-text)]">{text}</span>
-                              <a href={`https://www.google.com/search?q=${q}`}
-                                 target="_blank" rel="noopener noreferrer"
-                                 className="ml-2 text-[var(--color-dim)] hover:text-[var(--color-accent)] hover:underline italic"
-                                 title="LLM 给的 URL 死了, 改去 Google 搜">
-                                [Google 搜]
-                              </a>
-                            </li>
-                          )
-                        })}
-                      </ol>
-                    </>
-                  )}
-                </>
-              )}
-            </>
+            <OverviewTabBody
+              ticker={ticker}
+              anchoredFacts={anchoredQ.data}
+              anchoredLoading={anchoredQ.isLoading}
+              earnings={earningsQ.data}
+              regenAnchored={() => regenAnchoredMu.mutate(ticker)}
+              isRegenAnchored={isRegenAnchoredForThis}
+              regenAnchoredError={regenAnchoredMu.error && regenAnchoredMu.variables === ticker
+                ? regenAnchoredMu.error : null}
+              legacyProfile={profile}
+              legacyHasProfile={hasProfile}
+              legacyRegenerate={regenerate}
+              isLegacyRegen={isRegenForThisTicker}
+              legacyRegenError={regenErrorForThisTicker}
+            />
           )}
 
           {tab === 'smart_money' && (
@@ -398,12 +328,7 @@ export function StockResearchDrawer() {
             </>
           )}
 
-          {tab === 'news' && (
-            <div className="text-[11px] italic text-[var(--color-dim)] py-2 leading-[1.6]">
-              📰 News 后续 wire — 会从 news_scanner 按 ticker filter + LLM 二次过滤
-              clickbait. 当前 placeholder, 真实数据接口待补.
-            </div>
-          )}
+          {tab === 'news' && <NewsTabBody ticker={ticker} />}
 
           {tab === 'notes' && (
             <>
@@ -477,6 +402,14 @@ const SOURCE_LABEL: Record<string, string> = {
 }
 
 type ExposureSort = 'date_desc' | 'date_asc' | 'severity' | 'source'
+
+// Format market cap to human-readable: $18.3B / $1.2T / $543M
+function fmtCap(n: number): string {
+  if (n >= 1e12) return `$${(n / 1e12).toFixed(1)}T`
+  if (n >= 1e9)  return `$${(n / 1e9).toFixed(1)}B`
+  if (n >= 1e6)  return `$${(n / 1e6).toFixed(0)}M`
+  return `$${n.toLocaleString()}`
+}
 
 function SmartMoneyTabBody({
   isLoading, events, ticker,
@@ -736,6 +669,308 @@ function DrawerChatTab({ ticker, projectId }: { ticker: string; projectId: strin
           ))}
         </div>
       </div>
+    </div>
+  )
+}
+
+
+// ── Overview tab body — anchored-first, legacy LLM in collapsed footer ──
+interface OverviewBodyProps {
+  ticker: string
+  anchoredFacts: AnchoredFacts | undefined
+  anchoredLoading: boolean
+  earnings: NextEarnings | undefined
+  regenAnchored: () => void
+  isRegenAnchored: boolean
+  regenAnchoredError: Error | null
+  legacyProfile: StockProfile | null | undefined
+  legacyHasProfile: boolean
+  legacyRegenerate: () => void
+  isLegacyRegen: boolean
+  legacyRegenError: Error | null
+}
+
+function OverviewTabBody(p: OverviewBodyProps) {
+  const facts = p.anchoredFacts?.facts ?? {}
+  const meta = p.anchoredFacts?.meta
+  const summary = facts.business_summary ?? []
+  const segments = facts.segment ?? []
+  const risks = facts.risk ?? []
+  const verdict = (facts as any).style_verdict?.[0] as
+    { tag?: string; paragraph?: string; evidence_quote?: string; source_url?: string } | undefined
+  const totalAnchored = summary.length + segments.length + risks.length
+  const hasAnchored = totalAnchored > 0
+
+  return (
+    <>
+      {/* Top action bar — anchored regen + external links */}
+      <div className="mb-3 flex items-center gap-2 text-[10px] text-[var(--color-dim)] flex-wrap">
+        <ShieldCheck size={11} className="text-emerald-400" />
+        {meta?.source_filing_date
+          ? <>SEC-anchored from 10-K filed {new Date(meta.source_filing_date).toLocaleDateString()}</>
+          : 'No SEC-anchored data yet'}
+        <button
+          data-testid="overview-regen-anchored"
+          onClick={p.regenAnchored}
+          disabled={p.isRegenAnchored}
+          className="ml-auto px-2 py-0.5 rounded border border-emerald-500/40 hover:border-emerald-300 text-emerald-300 flex items-center gap-1 disabled:opacity-50"
+          title="Fetch latest 10-K from SEC EDGAR + extract all 6 fact types with verbatim-quote validation. ~60-90s."
+        >
+          {p.isRegenAnchored
+            ? <><Loader2 size={10} className="animate-spin" /> 抽取中…</>
+            : <><Sparkles size={10} /> {hasAnchored ? 're-extract from SEC' : 'extract from SEC 10-K'}</>}
+        </button>
+        <a
+          href={`https://www.tradingview.com/symbols/${encodeURIComponent(p.ticker)}/`}
+          target="_blank" rel="noopener noreferrer"
+          className="px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1"
+        >
+          TradingView <ExternalLink size={9} />
+        </a>
+      </div>
+
+      {p.regenAnchoredError && (
+        <div className="mb-2 p-2 rounded border border-red-500/40 bg-red-500/10 text-[10px] text-red-300">
+          抽取失败: {p.regenAnchoredError.message}
+        </div>
+      )}
+
+      {!hasAnchored && !p.isRegenAnchored && !p.anchoredLoading && (
+        <div className="text-[11px] italic text-[var(--color-dim)] py-3 leading-[1.6]">
+          {p.ticker} 没 SEC-anchored data。点上面 ✨ extract — NeoMind 会从 SEC EDGAR
+          拉最新 10-K，抽取 business summary / segments / risks / competitors / customers
+          / suppliers / style verdict，每条带 verbatim quote。约 60-90 秒。
+        </div>
+      )}
+
+      {/* Style verdict — most prominent when present */}
+      {verdict && (
+        <div data-testid="overview-style-verdict"
+             className="mb-3 p-2.5 rounded border border-emerald-500/30 bg-emerald-500/5">
+          <div className="text-[12px] font-semibold mb-1">{verdict.tag}</div>
+          {verdict.paragraph && (
+            <div className="text-[11px] leading-[1.6] text-[var(--color-text)]/90">{verdict.paragraph}</div>
+          )}
+          {verdict.evidence_quote && (
+            <div className="mt-1.5 text-[9px] text-[var(--color-dim)] italic">
+              ⛓ derived from anchored facts: <code>{verdict.evidence_quote.slice(0, 120)}{verdict.evidence_quote.length > 120 ? '…' : ''}</code>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Anchored business summary */}
+      {summary.length > 0 && (
+        <>
+          <h3 className="text-[12px] font-semibold mb-1.5 flex items-center gap-1">
+            <ShieldCheck size={11} className="text-emerald-400" /> 业务概览
+            <span className="text-[9px] font-normal text-[var(--color-dim)]">· anchored to 10-K Item 1</span>
+          </h3>
+          <div className="mb-3 space-y-1.5">
+            {summary.map((s, i) => (
+              <div key={i} className="text-[11px] leading-[1.65]" title={s.evidence_quote}>
+                {s.sentence}
+                <span className="text-[9px] text-[var(--color-dim)] ml-1.5">⛓</span>
+              </div>
+            ))}
+            {meta?.source_url && (
+              <a href={meta.source_url} target="_blank" rel="noopener noreferrer"
+                 className="text-[9px] text-emerald-400/70 hover:text-emerald-300 inline-flex items-center gap-0.5">
+                view source 10-K <ExternalLink size={8} />
+              </a>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Anchored segments */}
+      {segments.length > 0 && (
+        <>
+          <h3 className="text-[12px] font-semibold mb-1.5 flex items-center gap-1">
+            <ShieldCheck size={11} className="text-emerald-400" /> 业务分段
+            <span className="text-[9px] font-normal text-[var(--color-dim)]">· anchored to 10-K Item 7 MD&amp;A</span>
+          </h3>
+          <div className="space-y-1 mb-3">
+            {segments.map((s, i) => (
+              <div key={i} className="flex items-center gap-2 text-[11px]" title={s.evidence_quote}>
+                <div className="w-24 flex-shrink-0">{s.name}</div>
+                {s.revenue_pct != null && (
+                  <>
+                    <div className="flex-1 h-1.5 bg-[var(--color-panel)] rounded">
+                      <div className="h-full bg-emerald-500/70 rounded" style={{ width: `${s.revenue_pct}%` }} />
+                    </div>
+                    <span className="text-[10px] text-[var(--color-dim)] font-mono w-10 text-right">{s.revenue_pct}%</span>
+                  </>
+                )}
+                {s.period && <span className="text-[9.5px] text-[var(--color-dim)]">{s.period}</span>}
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {/* Real catalyst — next earnings date from yfinance */}
+      {p.earnings?.next_date && p.earnings.days_until != null && (
+        <>
+          <h3 className="text-[12px] font-semibold mb-1.5 flex items-center gap-1">
+            📅 Next catalyst
+            <span className="text-[9px] font-normal text-[var(--color-dim)]">· yfinance live</span>
+          </h3>
+          <div className="mb-3 text-[11px]">
+            <span className="text-amber-300 font-mono">{p.earnings.next_date}</span>
+            <span className="ml-2">
+              {p.earnings.days_until > 0
+                ? `Earnings in ${p.earnings.days_until} days`
+                : `Earnings ${Math.abs(p.earnings.days_until)} days ago`}
+            </span>
+            {p.earnings.eps_estimate_avg != null && (
+              <span className="ml-2 text-[var(--color-dim)]">
+                · EPS est ${p.earnings.eps_estimate_avg.toFixed(2)}
+                {p.earnings.eps_estimate_low != null && p.earnings.eps_estimate_high != null &&
+                  ` (${p.earnings.eps_estimate_low.toFixed(2)} – ${p.earnings.eps_estimate_high.toFixed(2)})`}
+              </span>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Anchored risks */}
+      {risks.length > 0 && (
+        <>
+          <h3 className="text-[12px] font-semibold mb-1.5 text-red-300 flex items-center gap-1">
+            <ShieldCheck size={11} className="text-emerald-400" /> 主要风险
+            <span className="text-[9px] font-normal text-[var(--color-dim)]">· anchored to 10-K Item 1A</span>
+          </h3>
+          <ul className="space-y-1.5 mb-3">
+            {risks.map((r, i) => (
+              <li key={i} className="text-[11px] flex items-start gap-2" title={r.evidence_quote}>
+                <span className={`text-[8px] mt-0.5 px-1 rounded border flex-shrink-0 ${
+                  r.severity_signal === 'high' ? 'text-red-400 border-red-500/40' :
+                  'text-[var(--color-dim)] border-[var(--color-border)]'}`}>
+                  {r.category || 'risk'}
+                </span>
+                <span className="leading-snug">{r.headline}</span>
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+
+      {/* Legacy LLM section — collapsed by default, shown for comparison */}
+      {p.legacyHasProfile && (
+        <details className="mt-4 pt-3 border-t border-[var(--color-border)]/50">
+          <summary className="text-[10px] text-[var(--color-dim)] cursor-pointer hover:text-[var(--color-text)]">
+            ▸ Legacy LLM-only output (no SEC verification) — click to expand
+          </summary>
+          <div className="opacity-60 mt-2">
+            <div className="mb-3 flex items-center gap-2 text-[9px] text-[var(--color-dim)] flex-wrap">
+              <Sparkles size={9} className="text-[var(--color-accent)]" />
+              {p.legacyProfile?.generated_at &&
+                `LLM generated · ${new Date(p.legacyProfile.generated_at).toLocaleString()}`}
+              <button
+                onClick={p.legacyRegenerate}
+                disabled={p.isLegacyRegen}
+                className="ml-auto px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] flex items-center gap-1 disabled:opacity-50"
+              >
+                {p.isLegacyRegen
+                  ? <><Loader2 size={9} className="animate-spin" /> regen</>
+                  : <>✨ legacy regen</>}
+              </button>
+            </div>
+            {p.legacyRegenError && (
+              <div className="mb-2 p-1.5 rounded border border-red-500/40 bg-red-500/10 text-[9px] text-red-300">
+                LLM 失败: {p.legacyRegenError.message}
+              </div>
+            )}
+            {p.legacyProfile?.summary && (
+              <p className="mb-2 text-[10px] leading-[1.6]">{p.legacyProfile.summary}</p>
+            )}
+            {p.legacyProfile?.style_verdict && (
+              <div className="mb-2 text-[10px] italic">{p.legacyProfile.style_verdict}</div>
+            )}
+            {p.legacyProfile?.catalysts.length ? (
+              <>
+                <h4 className="text-[10px] font-semibold mb-1">LLM-guessed catalysts</h4>
+                <ul className="space-y-0.5 mb-2">
+                  {p.legacyProfile.catalysts.map((c, i) => (
+                    <li key={i} className="text-[10px]">
+                      <span className="font-mono text-[9px] text-[var(--color-dim)] mr-2">{c.when}</span>
+                      {c.what}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            ) : null}
+          </div>
+        </details>
+      )}
+    </>
+  )
+}
+
+
+// ── News tab body — miniflux per-ticker search ──
+function NewsTabBody({ ticker }: { ticker: string }) {
+  const newsQ = useTickerNews(ticker)
+  const data = newsQ.data
+  const entries = data?.entries ?? []
+
+  return (
+    <div data-testid="news-tab-body">
+      <div className="mb-3 text-[10px] text-[var(--color-dim)] flex items-center gap-2">
+        <Newspaper size={11} />
+        <span>{data ? `${data.count} items mentioning ${ticker}` : 'loading…'}</span>
+        <span className="text-[9px]">· miniflux RSS (title + content match)</span>
+        {data?.fallback_search_url && (
+          <a
+            href={data.fallback_search_url}
+            target="_blank" rel="noopener noreferrer"
+            className="ml-auto px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)] text-[9px] flex items-center gap-1"
+            title="Search Google News for this ticker (opens in new tab)"
+          >
+            Google News <ExternalLink size={9} />
+          </a>
+        )}
+      </div>
+      {newsQ.isLoading && (
+        <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
+      )}
+      {newsQ.error && (
+        <div className="p-2 rounded border border-red-500/40 bg-red-500/10 text-[10px] text-red-300 mb-2">
+          news fetch failed: {(newsQ.error as Error).message}
+        </div>
+      )}
+      {!newsQ.isLoading && entries.length === 0 && (
+        <div className="text-[11px] italic text-[var(--color-dim)] py-3 leading-[1.6]">
+          没有 miniflux 订阅源最近提到 {ticker}. 你可以:
+          <br />· 加更多财经 RSS 到 miniflux (Settings → Backend health → Miniflux)
+          <br />· 用上面 "Google News" 按钮去外部查
+        </div>
+      )}
+      <ul className="space-y-2">
+        {entries.map((e) => (
+          <li key={e.id} className="border border-[var(--color-border)]/40 rounded p-2">
+            <a
+              href={e.url}
+              target="_blank" rel="noopener noreferrer"
+              className="text-[12px] font-semibold text-[var(--color-text)] hover:text-[var(--color-accent)]"
+            >
+              {e.title}
+            </a>
+            <div className="text-[9px] text-[var(--color-dim)] mt-0.5 flex items-center gap-2">
+              <span>{e.published_at?.slice(0, 10)}</span>
+              <span>·</span>
+              <span>{e.feed_title}</span>
+              <ExternalLink size={9} className="ml-1" />
+            </div>
+            {e.snippet && (
+              <p className="text-[10.5px] text-[var(--color-text)]/75 mt-1.5 leading-snug">
+                {e.snippet}
+              </p>
+            )}
+          </li>
+        ))}
+      </ul>
     </div>
   )
 }

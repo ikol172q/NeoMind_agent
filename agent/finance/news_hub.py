@@ -102,6 +102,43 @@ def _normalise_entry(raw: Dict[str, Any]) -> Optional[NewsEntry]:
         return None
 
 
+def search_entries(query: str, limit: int = _DEFAULT_LIMIT) -> List[NewsEntry]:
+    """Use Miniflux's native /v1/entries?search= which matches both
+    title AND content. Much higher recall than the post-hoc title
+    substring filter in fetch_entries(). Best for ticker-scoped
+    drawer queries where the ticker symbol may not be in the title."""
+    cfg = _get_config()
+    limit = max(1, min(int(limit), _MAX_LIMIT))
+    qs = urllib.parse.urlencode({
+        "search": query,
+        "limit": limit,
+        "order": "published_at",
+        "direction": "desc",
+    })
+    req = urllib.request.Request(
+        f"{cfg['url']}/v1/entries?{qs}",
+        headers={
+            "Authorization": _basic_auth_header(cfg["user"], cfg["pw"]),
+            "Accept": "application/json",
+        },
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_S) as resp:
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 401:
+            raise HTTPException(503, "Miniflux 401 — check credentials")
+        raise HTTPException(502, f"miniflux upstream {exc.code}: {exc.reason}")
+    except urllib.error.URLError as exc:
+        raise HTTPException(503, f"miniflux unreachable: {exc.reason}")
+    entries: List[NewsEntry] = []
+    for r in (payload.get("entries") or []):
+        n = _normalise_entry(r)
+        if n is not None:
+            entries.append(n)
+    return entries
+
+
 def fetch_entries(
     limit: int = _DEFAULT_LIMIT,
     symbols: Optional[List[str]] = None,
@@ -199,6 +236,30 @@ def build_news_router() -> APIRouter:
             "entries": [asdict(e) for e in entries],
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "category_id": category_id,
+        }
+
+    @router.get("/api/news/by_ticker/{ticker}")
+    def news_by_ticker(
+        ticker: str,
+        limit: int = Query(20, ge=1, le=_MAX_LIMIT),
+    ) -> Dict[str, Any]:
+        """Per-ticker news for the Stock Research Drawer News tab.
+
+        Uses Miniflux's native /v1/entries?search= so we match BOTH
+        title and content — much higher recall than the post-hoc
+        substring filter on /api/news (the ticker symbol often
+        appears in body but not headline)."""
+        sym = (ticker or "").strip().upper()
+        if not sym:
+            raise HTTPException(400, "ticker required")
+        entries = search_entries(sym, limit=limit)
+        return {
+            "ticker": sym,
+            "count": len(entries),
+            "entries": [asdict(e) for e in entries],
+            "fetched_at": datetime.now(timezone.utc).isoformat(),
+            "fallback_search_url":
+                f"https://news.google.com/search?q={urllib.parse.quote(sym)}+stock",
         }
 
     @router.get("/api/news/categories")

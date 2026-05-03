@@ -1307,6 +1307,7 @@ def create_app(
         from agent.finance.stock_research import build_stock_research_router
         from agent.finance.architecture_router import build_architecture_router
         from agent.finance.anchored_research import build_anchored_research_router
+        from agent.finance.market_overlay_router import build_market_overlay_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
         app.include_router(_fin_integrity_router)
@@ -1318,6 +1319,7 @@ def create_app(
         app.include_router(build_stock_research_router())
         app.include_router(build_architecture_router())
         app.include_router(build_anchored_research_router())
+        app.include_router(build_market_overlay_router())
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "fin platform routers not mounted: %s "
