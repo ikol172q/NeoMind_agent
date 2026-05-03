@@ -80,6 +80,8 @@ const WHALE_CN: Record<string, { cn: string; intro: string }> = {
                    intro: '多策略量化 · 2025 +10.2% · $570B 管理 · 高频做市起家' },
   deshaw:        { cn: 'D.E. Shaw',
                    intro: '量化对冲先驱 · 2025 Composite +18.5% / Oculus +28.2% · 数学博士驱动' },
+  cathie:        { cn: '凯瑟琳·伍德 (ARK)',
+                   intro: '颠覆性创新派 · ARKK/ARKQ/ARKG 等 · 重仓 TSLA/COIN/PLTR · 高 beta 高波动' },
 }
 
 
@@ -103,6 +105,7 @@ const WHALE_STYLE: Record<string, StyleKey> = {
   griffin: 'quant',        deshaw:  'quant',
   druckenmiller: 'aggressive', tepper: 'aggressive',
   ackman:  'aggressive',   loeb:    'aggressive',
+  cathie:  'innovation',
 }
 
 const CONGRESS_STYLE: Partial<Record<keyof typeof FOLLOWED_CONGRESS, StyleKey>> = {
@@ -141,8 +144,9 @@ export function SmartMoneyWidget() {
   // gates behind paid tier — currently just Pelosi). Merge in widget.
   const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
   const qHouseClerk = useRecentSignals({ scanner: 'house_clerk_pdf', limit: 100 })
-  // ARK + Form 4 are tab placeholders for now — scanners pending.
-  const qArk = useRecentSignals({ scanner: 'ark_daily', limit: 100 })
+  // ARK tab is a filtered view of the 13F whales — ark-funds.com daily
+  // CSV is Cloudflare-walled (HTTP 403) so we use Cathie Wood's
+  // quarterly 13F filing via the same whale_scanner pipeline.
   const qInsider = useRecentSignals({ scanner: 'insider_form4', limit: 100 })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
@@ -211,16 +215,22 @@ export function SmartMoneyWidget() {
     return tb - ta
   })
 
-  const arkEvents = (qArk.data?.events ?? []) as SignalEvent[]
+  // ARK = Cathie Wood subset of 13F whales (whale_key='cathie'),
+  // shown as its own tab so user can drill in without scrolling
+  // past 10 other funds.
+  const arkGroups = groups.filter(
+    (g) => String((g.events[0]?.body as Record<string, unknown> | undefined)?.whale_key ?? '') === 'cathie',
+  )
+  const arkEvents = arkGroups.flatMap((g) => g.events)
   const insiderEvents = (qInsider.data?.events ?? []) as SignalEvent[]
 
   const tabs: Array<{ k: Tab; label: string; count: number; subtitle: string }> = [
     { k: 'whales',   label: '🐋 13F 机构',     count: events.length,
-      subtitle: 'SEC 45 天延迟 · 仅多头' },
+      subtitle: 'SEC 45 天延迟 · 仅多头 · 11 funds (Buffett/Bridgewater/Citadel/...)' },
     { k: 'congress', label: '🏛 国会议员',     count: congressEvents.length,
       subtitle: '45 天披露窗口 · 金额是区间' },
     { k: 'ark',      label: '🔵 ARK 创新',     count: arkEvents.length,
-      subtitle: 'Cathie Wood · 每日公开 · 创新型 long bet' },
+      subtitle: 'Cathie Wood · 13F 季度 (每日 CSV 被 Cloudflare 封) · 创新型 long bet' },
     { k: 'insider',  label: '⚪ 内部 (Form 4)', count: insiderEvents.length,
       subtitle: 'CEO/CFO 自掏腰包 · 2 天披露 · 最快' },
   ]
@@ -322,28 +332,115 @@ export function SmartMoneyWidget() {
         </>
       )}
 
-      {/* === Tab content: ARK (placeholder until scanner ships) === */}
+      {/* === Tab content: ARK = Cathie Wood subset of 13F === */}
       {tab === 'ark' && (
-        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.6]">
-          🔵 <b>ARK Innovation</b> (Cathie Wood) — daily holdings disclosure
-          from <code>ark-funds.com</code> covering ARKK / ARKQ / ARKG / ARKW /
-          ARKF / ARKX. Scanner pending — once live this tab will show
-          per-fund net buys/sells with 1-day latency (much fresher than 13F's
-          quarterly cycle). Style: 创新 / disruptive long bets.
-        </div>
+        <>
+          <div className="text-[9px] italic text-[var(--color-dim)] mb-2 leading-[1.5]">
+            🔵 <b>ARK Innovation (Cathie Wood)</b> — quarterly 13F filing.
+            ark-funds.com daily CSV is Cloudflare-walled (HTTP 403); we use
+            the SEC 13F instead, which gives the same holdings at quarterly
+            cadence with 45-day delay. Future: add a daily scanner if we
+            find a stable scrape path.
+          </div>
+          {q13f.isLoading && (
+            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+          )}
+          {!q13f.isLoading && arkGroups.length === 0 && (
+            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+              No ARK 13F holdings tracked yet. Trigger ↻ 立即扫描 (in
+              Today's Signals widget above) to fetch SEC filings.
+            </div>
+          )}
+          {!q13f.isLoading && arkGroups.length > 0 && (
+            <div className="space-y-2">
+              {arkGroups.map((g) => (
+                <WhaleGroup key={g.whale} group={g} />
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {/* === Tab content: Insider Form 4 (placeholder) === */}
+      {/* === Tab content: Insider Form 4 === */}
       {tab === 'insider' && (
-        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.6]">
-          ⚪ <b>Insider Form 4</b> — SEC-mandated <b>2-day</b> disclosure for
-          corporate officers/directors. Scanner pending. Will surface:
-          (1) <b>cluster buys</b> — ≥3 insiders buying same ticker in 30 days
-          (strong bullish), (2) <b>CEO open-market buys ≥ $100k</b> —
-          executive putting personal cash in. Sells filtered out (often
-          mechanical 10b5-1 plans, low signal).
-        </div>
+        <>
+          <div className="text-[9px] italic text-[var(--color-dim)] mb-2 leading-[1.5]">
+            ⚪ <b>Insider Form 4</b> — SEC-mandated <b>2-day</b> disclosure
+            (the freshest signal in this widget). Source: openinsider.com.
+            Sells filtered out (often mechanical 10b5-1 exits). High =
+            ≥$1M total OR ≥5 insiders. Click 🔗 to see full insider
+            history for that ticker.
+          </div>
+          {qInsider.isLoading && (
+            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+          )}
+          {!qInsider.isLoading && insiderEvents.length === 0 && (
+            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+              No recent insider buys tracked. Trigger ↻ 立即扫描 to fetch
+              cluster buys + large CEO open-market purchases.
+            </div>
+          )}
+          {!qInsider.isLoading && insiderEvents.length > 0 && (
+            <div className="space-y-1">
+              {insiderEvents.slice(0, 30).map((e) => (
+                <InsiderRow key={e.event_id} event={e} />
+              ))}
+              {insiderEvents.length > 30 && (
+                <div className="text-[9px] text-[var(--color-dim)] mt-1">
+                  + {insiderEvents.length - 30} more — refine via openinsider.com
+                </div>
+              )}
+            </div>
+          )}
+        </>
       )}
+    </div>
+  )
+}
+
+
+function InsiderRow({ event }: { event: SignalEvent }) {
+  const body = (event.body ?? {}) as Record<string, unknown>
+  const company = String(body.company ?? '')
+  const nIns = Number(body.n_insiders ?? 1)
+  const valueUsd = Number(body.value_usd ?? 0)
+  const tradeDate = String(body.trade_date ?? '')
+  const isCluster = nIns >= 2
+  const valueDisplay =
+    valueUsd >= 1_000_000 ? `$${(valueUsd / 1_000_000).toFixed(1)}M` :
+    valueUsd >= 1_000     ? `$${Math.round(valueUsd / 1_000)}K` :
+                            `$${Math.round(valueUsd)}`
+  const sevClass = event.severity === 'high'
+    ? 'text-[var(--color-green,#7ed98c)] border-[var(--color-green,#7ed98c)]/40'
+    : 'text-[var(--color-amber,#e5a200)] border-[var(--color-amber,#e5a200)]/40'
+  return (
+    <div className="flex items-center gap-2 text-[10px] py-0.5 px-1.5 rounded border border-[var(--color-border)]/40 bg-[var(--color-panel)]/20">
+      <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${sevClass}`}>
+        {isCluster ? `${nIns}人买` : '买'}
+      </span>
+      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
+        {event.ticker}
+      </span>
+      <span className="text-[9px] text-[var(--color-dim)] truncate flex-1">
+        {company}
+      </span>
+      <span className="text-[9.5px] text-[var(--color-text)] font-mono flex-shrink-0">
+        {valueDisplay}
+      </span>
+      {event.source_url && (
+        <a
+          href={event.source_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-[8.5px] text-[var(--color-accent)] hover:underline flex-shrink-0"
+          title="View ticker insider history on openinsider.com"
+        >
+          🔗
+        </a>
+      )}
+      <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-16 text-right flex-shrink-0">
+        {tradeDate}
+      </span>
     </div>
   )
 }
