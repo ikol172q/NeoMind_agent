@@ -138,16 +138,24 @@ export function SmartMoneyWidget() {
   // filings, 45-day SEC delay) and stock_act (Congress members, 30-45 day
   // STOCK Act disclosure window). Rendered as two sub-sections so user can
   // tell at a glance whose money is moving.
-  const q13f = useRecentSignals({ scanner: '13f', limit: 100 })
+  // Per-scanner pagination — default 100, click "load 100 more" to
+  // bump. Single state per scanner so each tab's pagination is
+  // independent and survives tab switches.
+  const [limit13f, setLimit13f] = useState(100)
+  const [limitStockAct, setLimitStockAct] = useState(100)
+  const [limitHouseClerk, setLimitHouseClerk] = useState(100)
+  const [limitInsider, setLimitInsider] = useState(100)
+
+  const q13f = useRecentSignals({ scanner: '13f', limit: limit13f })
   // Two scanner sources cover Congress: Quiver feed (most reps, free,
   // ~1000 records) + House Clerk PDF parser (text-PDF reps that Quiver
   // gates behind paid tier — currently just Pelosi). Merge in widget.
-  const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: 100 })
-  const qHouseClerk = useRecentSignals({ scanner: 'house_clerk_pdf', limit: 100 })
+  const qStockAct = useRecentSignals({ scanner: 'stock_act', limit: limitStockAct })
+  const qHouseClerk = useRecentSignals({ scanner: 'house_clerk_pdf', limit: limitHouseClerk })
   // ARK tab is a filtered view of the 13F whales — ark-funds.com daily
   // CSV is Cloudflare-walled (HTTP 403) so we use Cathie Wood's
   // quarterly 13F filing via the same whale_scanner pipeline.
-  const qInsider = useRecentSignals({ scanner: 'insider_form4', limit: 100 })
+  const qInsider = useRecentSignals({ scanner: 'insider_form4', limit: limitInsider })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
   // Tabs replace the old stacked sections so the widget doesn't grow
@@ -402,6 +410,12 @@ export function SmartMoneyWidget() {
               )}
             </div>
           )}
+          <LoadMoreButton
+            currentLimit={limit13f}
+            currentCount={events.length}
+            onLoadMore={() => setLimit13f((l) => l + 100)}
+            label="13F"
+          />
         </>
       )}
 
@@ -454,6 +468,15 @@ export function SmartMoneyWidget() {
               </div>
             )
           })()}
+          <LoadMoreButton
+            currentLimit={limitStockAct + limitHouseClerk}
+            currentCount={congressEvents.length}
+            onLoadMore={() => {
+              setLimitStockAct((l) => l + 100)
+              setLimitHouseClerk((l) => l + 100)
+            }}
+            label="Congress"
+          />
         </>
       )}
 
@@ -484,42 +507,25 @@ export function SmartMoneyWidget() {
               ))}
             </div>
           )}
+          <LoadMoreButton
+            currentLimit={limit13f}
+            currentCount={events.length}
+            onLoadMore={() => setLimit13f((l) => l + 100)}
+            label="13F"
+          />
         </>
       )}
 
       {/* === Tab content: Insider Form 4 === */}
       {tab === 'insider' && (
-        <>
-          <div className="text-[9px] italic text-[var(--color-dim)] mb-2 leading-[1.5]">
-            ⚪ <b>Insider Form 4</b> — SEC-mandated <b>2-day</b> disclosure
-            (the freshest signal in this widget). Source: openinsider.com.
-            Sells filtered out (often mechanical 10b5-1 exits). High =
-            ≥$1M total OR ≥5 insiders. Click 🔗 to see full insider
-            history for that ticker.
-          </div>
-          {qInsider.isLoading && (
-            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
-          )}
-          {!qInsider.isLoading && insiderEvents_fresh.length === 0 && (
-            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No insider buys in the last {MAX_AGE_DAYS.insider} days.
-              Trigger ↻ 立即扫描 to fetch latest cluster buys + large CEO
-              open-market purchases.
-            </div>
-          )}
-          {!qInsider.isLoading && insiderEvents_fresh.length > 0 && (
-            <div className="space-y-1">
-              {insiderEvents_fresh.slice(0, 30).map((e) => (
-                <InsiderRow key={e.event_id} event={e} />
-              ))}
-              {insiderEvents_fresh.length > 30 && (
-                <div className="text-[9px] text-[var(--color-dim)] mt-1">
-                  + {insiderEvents_fresh.length - 30} more — refine via openinsider.com
-                </div>
-              )}
-            </div>
-          )}
-        </>
+        <InsiderTabBody
+          isLoading={qInsider.isLoading}
+          events={insiderEvents_fresh}
+          totalRaw={insiderEvents.length}
+          maxAge={MAX_AGE_DAYS.insider}
+          onLoadMore={() => setLimitInsider((l) => l + 100)}
+          currentLimit={limitInsider}
+        />
       )}
     </div>
   )
@@ -804,5 +810,172 @@ function EventRow({ event }: { event: SignalEvent }) {
         {relTime(event.detected_at)}
       </span>
     </div>
+  )
+}
+
+
+function LoadMoreButton({
+  currentLimit, currentCount, onLoadMore, label,
+}: {
+  currentLimit: number
+  currentCount: number
+  onLoadMore: () => void
+  label: string
+}) {
+  // If the API returned fewer events than we asked for, the DB is
+  // exhausted — hide the button so the user knows there's nothing
+  // older to fetch.
+  const exhausted = currentCount < currentLimit
+  if (exhausted) {
+    return (
+      <div className="text-[8.5px] text-[var(--color-dim)] italic mt-2 text-center">
+        — DB 已到底, {currentCount} 条全部加载 ({label}) —
+      </div>
+    )
+  }
+  return (
+    <button
+      onClick={onLoadMore}
+      className="w-full mt-2 px-2 py-1 text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)]/40 hover:border-[var(--color-accent)]/60 rounded font-mono"
+      title={`Currently loaded: ${currentCount} / asked for ${currentLimit}. Click to fetch 100 more from DB.`}
+    >
+      ▾ 加载更早 100 条 ({label}, 当前 {currentCount})
+    </button>
+  )
+}
+
+
+type InsiderSort = 'value' | 'date' | 'cluster' | 'return_1w'
+
+function InsiderTabBody({
+  isLoading, events, totalRaw, maxAge, onLoadMore, currentLimit,
+}: {
+  isLoading: boolean
+  events: SignalEvent[]
+  totalRaw: number
+  maxAge: number
+  onLoadMore: () => void
+  currentLimit: number
+}) {
+  // Form 4 is dense — without sort/filter it's hard to find the high-
+  // signal trades. Defaults: sort by value desc (largest dollar
+  // commitments first), min 2 insiders (real cluster), no value floor.
+  const [sortBy, setSortBy] = useState<InsiderSort>('value')
+  const [minIns, setMinIns] = useState(2)
+  const [minVal, setMinVal] = useState(0)
+
+  function valueOf(e: SignalEvent): number {
+    return Number((e.body as Record<string, unknown> | undefined)?.value_usd ?? 0)
+  }
+  function clusterOf(e: SignalEvent): number {
+    return Number((e.body as Record<string, unknown> | undefined)?.n_insiders ?? 1)
+  }
+  function dateOf(e: SignalEvent): number {
+    const ts = e.source_timestamp || e.detected_at
+    return ts ? new Date(ts).getTime() : 0
+  }
+  function returnOf(e: SignalEvent): number {
+    // Parse '+12.3%' / '-5.4%' / '' → numeric (empty = 0).
+    const r = String((e.body as Record<string, unknown> | undefined)?.return_1w ?? '').replace('%', '').trim()
+    const n = parseFloat(r)
+    return isFinite(n) ? n : -Infinity  // empty returns sort to bottom
+  }
+
+  // Filter
+  const filtered = events.filter(
+    (e) => clusterOf(e) >= minIns && valueOf(e) >= minVal,
+  )
+
+  // Sort
+  const sorted = [...filtered].sort((a, b) => {
+    if (sortBy === 'value')     return valueOf(b)   - valueOf(a)
+    if (sortBy === 'date')      return dateOf(b)    - dateOf(a)
+    if (sortBy === 'cluster')   return clusterOf(b) - clusterOf(a)
+    if (sortBy === 'return_1w') return returnOf(b)  - returnOf(a)
+    return 0
+  })
+
+  return (
+    <>
+      <div className="text-[9px] italic text-[var(--color-dim)] mb-2 leading-[1.5]">
+        ⚪ <b>Insider Form 4</b> — SEC-mandated <b>2-day</b> disclosure
+        (the freshest signal in this widget). Source: openinsider.com.
+        Sells filtered out (often mechanical 10b5-1 exits). High =
+        ≥$1M total OR ≥5 insiders. Click 🔗 to see full insider
+        history for that ticker.
+      </div>
+
+      {/* === Sort + filter controls === */}
+      <div className="flex flex-wrap items-center gap-2 mb-2 text-[9.5px] text-[var(--color-dim)] bg-[var(--color-panel)]/30 rounded p-1.5 border border-[var(--color-border)]/40">
+        <span className="font-semibold">排序:</span>
+        <select
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value as InsiderSort)}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value="value">金额 desc (default)</option>
+          <option value="cluster">人数 desc (cluster size)</option>
+          <option value="date">日期 desc (最新)</option>
+          <option value="return_1w">1 周回报 desc</option>
+        </select>
+
+        <span className="font-semibold ml-2">人数 ≥</span>
+        <select
+          value={minIns}
+          onChange={(e) => setMinIns(Number(e.target.value))}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value={1}>1 (含单笔)</option>
+          <option value={2}>2 (cluster, default)</option>
+          <option value={3}>3 (强 cluster)</option>
+          <option value={5}>5 (集体压注)</option>
+        </select>
+
+        <span className="font-semibold ml-2">金额 ≥</span>
+        <select
+          value={minVal}
+          onChange={(e) => setMinVal(Number(e.target.value))}
+          className="bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1 py-0.5 text-[9.5px]"
+        >
+          <option value={0}>$0 (default)</option>
+          <option value={100_000}>$100K</option>
+          <option value={1_000_000}>$1M</option>
+          <option value={10_000_000}>$10M</option>
+        </select>
+
+        <span className="ml-auto text-[8.5px] font-mono">
+          {sorted.length} / {events.length} fresh / {totalRaw} raw
+        </span>
+      </div>
+
+      {isLoading && (
+        <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+      )}
+      {!isLoading && sorted.length === 0 && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+          {events.length === 0
+            ? `No insider buys in the last ${maxAge} days. Trigger ↻ 立即扫描.`
+            : `没有 event 满足 filter (人数 ≥ ${minIns}, 金额 ≥ $${minVal.toLocaleString()}). 放宽 filter 试试.`}
+        </div>
+      )}
+      {!isLoading && sorted.length > 0 && (
+        <div className="space-y-1">
+          {sorted.slice(0, 50).map((e) => (
+            <InsiderRow key={e.event_id} event={e} />
+          ))}
+          {sorted.length > 50 && (
+            <div className="text-[9px] text-[var(--color-dim)] mt-1 text-center">
+              + {sorted.length - 50} more — 收紧 filter 看 top hits
+            </div>
+          )}
+        </div>
+      )}
+      <LoadMoreButton
+        currentLimit={currentLimit}
+        currentCount={totalRaw}
+        onLoadMore={onLoadMore}
+        label="Form 4"
+      />
+    </>
   )
 }
