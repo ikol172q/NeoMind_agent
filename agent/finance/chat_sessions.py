@@ -107,6 +107,7 @@ def _count_messages(path: Path) -> int:
 class CreateSessionReply(BaseModel):
     session_id: str
     created_at: str
+    ticker_tag: Optional[str] = None
 
 
 class SessionSummary(BaseModel):
@@ -115,6 +116,26 @@ class SessionSummary(BaseModel):
     updated_at: Optional[str] = None
     title: str = ""
     message_count: int = 0
+    # New (D1, 2026-05-03): when a session was started from a Stock
+    # Research Drawer's Chat tab, we tag it with the ticker so the
+    # drawer can later show "past sessions about ROKU" filtered. Old
+    # sessions created before this column exists return None — the UI
+    # filter treats None as "no tag" and excludes from per-ticker view.
+    ticker_tag: Optional[str] = None
+
+
+# Ticker validation — same shape as everywhere else (uppercase, dot/dash OK)
+_TICKER_TAG_RE = re.compile(r"^[A-Z][A-Z0-9.\-]{0,9}$")
+
+
+def _normalize_ticker_tag(t: Optional[str]) -> Optional[str]:
+    if not t:
+        return None
+    t = t.strip().upper()
+    if not _TICKER_TAG_RE.match(t):
+        # Don't fail the request — just drop the tag (defensive)
+        return None
+    return t
 
 
 class Message(BaseModel):
@@ -128,29 +149,51 @@ def build_chat_sessions_router() -> APIRouter:
     router = APIRouter()
 
     @router.post("/api/chat_sessions")
-    def create_session(project_id: str = Query(...)) -> CreateSessionReply:
+    def create_session(
+        project_id: str = Query(...),
+        ticker: Optional[str] = Query(
+            None,
+            description="Optional ticker to tag the session with — "
+                        "used by drawer chat so we can later filter "
+                        "sessions by ticker.",
+        ),
+    ) -> CreateSessionReply:
         pid = _validate_project(project_id)
         sid = _new_session_id()
         path = _session_path(pid, sid)
         now = datetime.now(timezone.utc).isoformat()
-        meta = {"session_id": sid, "created_at": now, "title": ""}
+        tag = _normalize_ticker_tag(ticker)
+        meta: Dict[str, Any] = {"session_id": sid, "created_at": now, "title": ""}
+        if tag:
+            meta["ticker_tag"] = tag
         with path.open("w", encoding="utf-8") as f:
             f.write(json.dumps({"meta": meta}, ensure_ascii=False) + "\n")
-        return CreateSessionReply(session_id=sid, created_at=now)
+        return CreateSessionReply(session_id=sid, created_at=now, ticker_tag=tag)
 
     @router.get("/api/chat_sessions")
     def list_sessions(
         project_id: str = Query(...),
         limit: int = Query(50, ge=1, le=500),
+        ticker: Optional[str] = Query(
+            None,
+            description="If set, only return sessions whose ticker_tag "
+                        "matches (case-insensitive). Sessions with no "
+                        "tag are excluded from per-ticker view.",
+        ),
     ) -> Dict[str, Any]:
         pid = _validate_project(project_id)
         d = _sessions_dir(pid)
+        wanted_tag = _normalize_ticker_tag(ticker) if ticker else None
         rows: List[SessionSummary] = []
         for p in d.glob("*.jsonl"):
             sid = p.stem
             if not _SESSION_ID_RE.match(sid):
                 continue
             meta = _read_meta(p) or {}
+            session_tag = _normalize_ticker_tag(meta.get("ticker_tag"))
+            # Apply per-ticker filter if requested
+            if wanted_tag and session_tag != wanted_tag:
+                continue
             try:
                 mtime = datetime.fromtimestamp(p.stat().st_mtime, tz=timezone.utc).isoformat()
             except Exception:
@@ -161,6 +204,7 @@ def build_chat_sessions_router() -> APIRouter:
                 updated_at=mtime,
                 title=meta.get("title", "") or "",
                 message_count=_count_messages(p),
+                ticker_tag=session_tag,
             ))
         rows.sort(key=lambda r: r.updated_at or r.created_at, reverse=True)
         rows = rows[:limit]

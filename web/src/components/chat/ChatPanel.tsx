@@ -56,6 +56,18 @@ interface Props {
    *  the embedded ChatPanel in Strategies' right rail so that narrow
    *  layouts can hide sessions to give the conversation more width. */
   hideSessions?: boolean
+  /** Tag any newly-created session with this ticker. Used by the
+   *  Stock Research Drawer's Chat tab so all sessions started while
+   *  the drawer is open on ROKU get ticker_tag='ROKU'. Backend
+   *  filters by this on subsequent list calls so the drawer can show
+   *  only ROKU-related sessions. Doesn't affect existing sessions. */
+  tickerTag?: string | null
+  /** One-shot session ID to load (mirrors pendingPrompt pattern).
+   *  When set, ChatPanel calls selectSession(id) once then fires
+   *  onConsumePendingSession so the parent clears it. Used by the
+   *  drawer's per-ticker session picker. */
+  pendingSessionId?: string | null
+  onConsumePendingSession?: () => void
 }
 
 /**
@@ -101,6 +113,9 @@ export function ChatPanel({
   pendingContext,
   onConsumePendingPrompt,
   hideSessions = false,
+  tickerTag = null,
+  pendingSessionId = null,
+  onConsumePendingSession,
 }: Props) {
   const [input, setInput] = useState('')
   const [busy, setBusy] = useState(false)
@@ -182,6 +197,24 @@ export function ChatPanel({
     onConsumePendingPrompt?.()
   }, [pendingPrompt, pendingContext, onConsumePendingPrompt])
 
+  // ── Pending session-id hand-off — same shape as pendingPrompt ──
+  // Used by the drawer's per-ticker session picker: parent sets
+  // pendingSessionId, ChatPanel loads that session into the chat,
+  // then fires onConsumePendingSession so re-renders don't replay.
+  useEffect(() => {
+    if (!pendingSessionId) return
+    if (pendingSessionId === sessionId) {
+      // Already on this session — just consume so we don't loop
+      onConsumePendingSession?.()
+      return
+    }
+    void selectSession(pendingSessionId)
+    onConsumePendingSession?.()
+    // selectSession is defined later; closing over the ref is fine
+    // because React only fires effects after render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingSessionId])
+
   function addMsg(m: Omit<Msg, 'id' | 'ts'>): string {
     const id = `${Date.now()}-${Math.random()}`
     setMsgs(prev => [...prev, { id, ts: new Date().toLocaleTimeString(), ...m }])
@@ -194,9 +227,13 @@ export function ChatPanel({
 
   async function ensureSession(): Promise<string> {
     if (sessionId) return sessionId
-    const res = await createChatSession(projectId)
+    // Pass tickerTag through so drawer-created sessions get tagged
+    // (backward-compat: omitted for non-drawer ChatPanel callers).
+    const res = await createChatSession(projectId, tickerTag ?? undefined)
     setSessionId(res.session_id)
-    // Invalidate the sidebar list so the new session shows up
+    // Invalidate every variant of the sessions cache (unfiltered +
+    // any per-ticker filtered view) so the new session shows up
+    // wherever it's listed.
     qc.invalidateQueries({ queryKey: ['chat_sessions', projectId] })
     return res.session_id
   }
