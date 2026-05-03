@@ -12,17 +12,21 @@ import { createContext, useContext, useState, useCallback, useEffect, type React
 
 interface StockResearchCtx {
   ticker: string | null
+  projectId: string
   openTicker: (t: string) => void
   closeTicker: () => void
 }
 
 const ResearchContext = createContext<StockResearchCtx>({
   ticker: null,
+  projectId: 'fin-core',
   openTicker: () => {},
   closeTicker: () => {},
 })
 
-export function StockResearchProvider({ children }: { children: ReactNode }) {
+export function StockResearchProvider({
+  children, projectId,
+}: { children: ReactNode; projectId: string }) {
   const [ticker, setTicker] = useState<string | null>(null)
   const openTicker = useCallback((t: string) => setTicker(t.toUpperCase()), [])
   const closeTicker = useCallback(() => setTicker(null), [])
@@ -38,7 +42,7 @@ export function StockResearchProvider({ children }: { children: ReactNode }) {
   }, [ticker, closeTicker])
 
   return (
-    <ResearchContext.Provider value={{ ticker, openTicker, closeTicker }}>
+    <ResearchContext.Provider value={{ ticker, projectId, openTicker, closeTicker }}>
       {children}
     </ResearchContext.Provider>
   )

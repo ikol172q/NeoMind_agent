@@ -134,7 +134,7 @@ export default function App() {
   }
 
   return (
-    <StockResearchProvider>
+    <StockResearchProvider projectId={projectId}>
     <div className="h-full flex flex-col">
       <StockResearchDrawer />
       {/* Top nav */}
