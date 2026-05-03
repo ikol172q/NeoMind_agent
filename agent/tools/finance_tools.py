@@ -228,52 +228,86 @@ async def finance_news_search(
     max_results: int = 5,
     days: int = 3,
 ) -> Dict[str, Any]:
-    """Search financial news via miniflux RSS (the user's curated feed).
+    """Search financial news. Two-stage: miniflux first, Tavily fallback.
 
-    Why miniflux instead of the UniversalSearchEngine:
-      1. miniflux is already running and indexed — same source the
-         Stock Research Drawer's News tab uses, so chat answers stay
-         consistent with what the user sees in the UI.
-      2. No external API keys needed (DDG / Tavily / Brave dependencies
-         in the search engine require packages that aren't in the
-         dashboard venv).
-      3. miniflux's native /v1/entries?search= matches both title AND
-         content — much better recall than headline-only filtering.
+    Stage 1 (miniflux): the user's curated RSS feeds, indexed locally.
+    Fast, no external API call, same source the drawer's News tab
+    shows — keeps chat answers consistent with the UI for tickers
+    that appear in user's subscribed feeds.
 
-    The ``search_engine`` arg is kept for signature compatibility
-    with older callers but is no longer consulted; we call into
-    agent.finance.news_hub.search_entries directly.
+    Stage 2 (UniversalSearchEngine — Tavily-primary): when miniflux
+    returns 0 results, fall back to the agent-wide internet search
+    engine. Per the agent's search policy, that engine queries Tavily
+    first; only if Tavily fails does it spread across other sources.
+    This catches queries miniflux can't satisfy: long-tail tickers,
+    macro events, non-financial topics, breaking news from feeds
+    the user hasn't subscribed.
+
+    The ``search_engine`` arg is the engine instance (UniversalSearch
+    Engine) that the chat_streaming dispatcher passes in. Tools
+    keep this signature for backward compatibility.
     """
     if not query or not query.strip():
         return {"ok": False, "error": "empty query"}
+    query = query.strip()
+    requested = max(1, min(max_results, 10))
 
+    # Stage 1: miniflux (curated RSS, instant)
+    miniflux_items: list[dict] = []
     try:
         from agent.finance.news_hub import search_entries
-        entries = search_entries(query.strip(), limit=max(1, min(max_results, 10)))
-        if not entries:
-            return {
-                "ok": True, "query": query, "items": [], "total": 0,
-                "sources_used": ["miniflux"],
-                "note": (f"miniflux 没找到 '{query}' 相关新闻 — "
-                         f"用户可手动查 https://news.google.com/search?q={query}"),
-            }
-        items = [{
+        entries = search_entries(query, limit=requested)
+        miniflux_items = [{
             "title":     e.title,
             "url":       e.url,
             "source":    e.feed_title,
             "snippet":   e.snippet[:300] if e.snippet else "",
             "published": e.published_at,
         } for e in entries]
+    except Exception as exc:
+        logger.warning("finance_news_search miniflux stage failed: %s", exc)
+
+    if miniflux_items:
         return {
-            "ok": True,
-            "query": query,
-            "items": items,
-            "sources_used": ["miniflux"],
+            "ok": True, "query": query, "items": miniflux_items,
+            "sources_used": ["miniflux"], "total": len(miniflux_items),
+        }
+
+    # Stage 2: Tavily-primary internet search via the engine
+    if not search_engine:
+        return {
+            "ok": True, "query": query, "items": [], "total": 0,
+            "sources_used": [],
+            "note": (f"miniflux 没找到 '{query}' 相关新闻；"
+                     f"internet 搜索引擎也不可用 — 手动查 "
+                     f"https://news.google.com/search?q={query}"),
+        }
+    try:
+        result = await search_engine.search_advanced(
+            query=query,
+            max_results=requested,
+            extract_content=False,
+            expand_queries=False,
+        )
+        items = [{
+            "title":     it.title,
+            "url":       it.url,
+            "source":    it.source,
+            "snippet":   (it.snippet or "")[:300],
+            "published": it.published.isoformat() if it.published else None,
+        } for it in (result.items or [])[:requested]]
+        return {
+            "ok": True, "query": query, "items": items,
+            "sources_used": ["miniflux(0)→"] + list(result.sources_used or []),
             "total": len(items),
         }
-    except Exception as e:
-        logger.exception(f"finance_news_search({query!r}) failed")
-        return {"ok": False, "error": f"{type(e).__name__}: {e}"}
+    except Exception as exc:
+        logger.exception("finance_news_search Tavily stage failed")
+        return {
+            "ok": False,
+            "error": f"miniflux returned 0; internet search also failed: {exc}",
+            "query": query,
+        }
 
 
 # ── 5. finance_market_digest ──────────────────────────────────────────
