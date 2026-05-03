@@ -14,6 +14,7 @@
  */
 import { useState } from 'react'
 import { useRecentSignals, type SignalEvent } from '@/lib/api'
+import { useStockResearch } from '@/components/research/StockResearchContext'
 
 
 function relTime(iso: string): string {
@@ -123,23 +124,30 @@ function StyleTag({ k }: { k?: StyleKey | null }) {
 }
 
 
-// Click any ticker symbol in the widget to open its TradingView chart
-// in a new tab. TradingView's /symbols/{TICKER}/ canonical URL
-// auto-routes to the right exchange (no need to know NASDAQ vs NYSE).
+// Click ticker → opens Stock Research Drawer (in-app, deep dive on
+// company / smart money exposure / supply chain / news / your notes).
+// TradingView is reachable from inside the drawer Overview tab as a
+// secondary link. Cmd/Ctrl-click bypasses to TradingView for users
+// who just want a quick chart.
 function TickerLink({
   ticker, className,
 }: { ticker?: string | null; className?: string }) {
+  const { openTicker } = useStockResearch()
   if (!ticker) return <span className={className}>—</span>
   return (
-    <a
-      href={`https://www.tradingview.com/symbols/${encodeURIComponent(ticker)}/`}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`${className ?? ''} hover:text-[var(--color-accent)] hover:underline`}
-      title={`在 TradingView 看 ${ticker} 走势`}
+    <button
+      onClick={(e) => {
+        if (e.metaKey || e.ctrlKey) {
+          window.open(`https://www.tradingview.com/symbols/${encodeURIComponent(ticker)}/`, '_blank')
+        } else {
+          openTicker(ticker)
+        }
+      }}
+      className={`${className ?? ''} text-left hover:text-[var(--color-accent)] hover:underline`}
+      title={`点开 ${ticker} 深度研究 · ⌘ 点击直接去 TradingView`}
     >
       {ticker}
-    </a>
+    </button>
   )
 }
 

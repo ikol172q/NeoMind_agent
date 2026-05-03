@@ -14,6 +14,8 @@ import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database } from 'lucide-react'
+import { StockResearchProvider } from '@/components/research/StockResearchContext'
+import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
@@ -132,7 +134,9 @@ export default function App() {
   }
 
   return (
+    <StockResearchProvider>
     <div className="h-full flex flex-col">
+      <StockResearchDrawer />
       {/* Top nav */}
       <header className="flex items-center gap-4 px-4 py-2 bg-[var(--color-panel)] border-b border-[var(--color-border)] shrink-0">
         <div className="flex items-center gap-2 text-[var(--color-text)]">
@@ -258,5 +262,6 @@ export default function App() {
         )}
       </main>
     </div>
+    </StockResearchProvider>
   )
 }
