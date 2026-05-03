@@ -155,6 +155,33 @@ export function SmartMoneyWidget() {
   // that's the section users came here for originally.
   type Tab = 'whales' | 'congress' | 'ark' | 'insider'
   const [tab, setTab] = useState<Tab>('whales')
+  // Help panel toggle — explains what each tab means + auto-refresh
+  // behavior + staleness policy.
+  const [showHelp, setShowHelp] = useState(false)
+  // Per-tab max-age in days — events older than this are hidden by
+  // default. User can toggle "show stale" to reveal. Different cadence
+  // = different sensible windows. Form 4 is meant to be fresh.
+  const MAX_AGE_DAYS: Record<Tab, number> = {
+    insider:  14,   // 2-day disclosure window, anything > 2w is past acting on
+    congress: 60,   // 45-day window + a couple weeks of post-publish action time
+    ark:      120,  // quarterly cadence + 45-day SEC delay = ~135 days max useful
+    whales:   120,
+  }
+  const [showStale, setShowStale] = useState<Record<Tab, boolean>>({
+    whales: false, congress: false, ark: false, insider: false,
+  })
+
+  // Filter helper: keep events whose source_timestamp (real trade date)
+  // or detected_at falls within the tab's window. Falls back to
+  // detected_at when source_timestamp is missing/parse-fails.
+  const ageMs = MAX_AGE_DAYS[tab] * 86_400_000
+  const cutoff = Date.now() - ageMs
+  function isFresh(e: SignalEvent): boolean {
+    const ts = e.source_timestamp || e.detected_at
+    if (!ts) return false
+    const t = new Date(ts).getTime()
+    return isFinite(t) && t >= cutoff
+  }
 
   const events = (q13f.data?.events ?? []) as SignalEvent[]
   const congressEvents = [
@@ -204,16 +231,8 @@ export function SmartMoneyWidget() {
       return 0
     })
   }
-  const congressGroups = Array.from(byRep.values()).sort((a, b) => {
-    // Followed-rep anchors pinned first (Pelosi/Tina Smith/Cleo Fields),
-    // then everyone else by latest detected_at desc.
-    const fa = isFollowedRep(a.rep) ? 0 : 1
-    const fb = isFollowedRep(b.rep) ? 0 : 1
-    if (fa !== fb) return fa - fb
-    const ta = new Date(a.events[0]?.detected_at ?? 0).getTime()
-    const tb = new Date(b.events[0]?.detected_at ?? 0).getTime()
-    return tb - ta
-  })
+  // (congressGroups removed — Congress tab now re-groups inside the
+  // tab body using the age-filtered congressEvents_fresh.)
 
   // ARK = Cathie Wood subset of 13F whales (whale_key='cathie'),
   // shown as its own tab so user can drill in without scrolling
@@ -224,15 +243,34 @@ export function SmartMoneyWidget() {
   const arkEvents = arkGroups.flatMap((g) => g.events)
   const insiderEvents = (qInsider.data?.events ?? []) as SignalEvent[]
 
+  // Apply per-tab age filter unless user toggled "show stale".
+  const events_fresh = showStale.whales ? events : events.filter(isFresh)
+  const groups_fresh = showStale.whales ? groups : groups.map((g) => ({
+    ...g, events: g.events.filter(isFresh),
+  })).filter((g) => g.events.length > 0)
+  const congressEvents_fresh = showStale.congress ? congressEvents : congressEvents.filter(isFresh)
+  const arkGroups_fresh = showStale.ark ? arkGroups : arkGroups.map((g) => ({
+    ...g, events: g.events.filter(isFresh),
+  })).filter((g) => g.events.length > 0)
+  const arkEvents_fresh = arkGroups_fresh.flatMap((g) => g.events)
+  const insiderEvents_fresh = showStale.insider ? insiderEvents : insiderEvents.filter(isFresh)
+
+  const n_stale = {
+    whales:   events.length - events_fresh.length,
+    congress: congressEvents.length - congressEvents_fresh.length,
+    ark:      arkEvents.length - arkEvents_fresh.length,
+    insider:  insiderEvents.length - insiderEvents_fresh.length,
+  }
+
   const tabs: Array<{ k: Tab; label: string; count: number; subtitle: string }> = [
-    { k: 'whales',   label: '🐋 13F 机构',     count: events.length,
-      subtitle: 'SEC 45 天延迟 · 仅多头 · 11 funds (Buffett/Bridgewater/Citadel/...)' },
-    { k: 'congress', label: '🏛 国会议员',     count: congressEvents.length,
-      subtitle: '45 天披露窗口 · 金额是区间' },
-    { k: 'ark',      label: '🔵 ARK 创新',     count: arkEvents.length,
-      subtitle: 'Cathie Wood · 13F 季度 (每日 CSV 被 Cloudflare 封) · 创新型 long bet' },
-    { k: 'insider',  label: '⚪ 内部 (Form 4)', count: insiderEvents.length,
-      subtitle: 'CEO/CFO 自掏腰包 · 2 天披露 · 最快' },
+    { k: 'whales',   label: '🐋 13F 机构',     count: events_fresh.length,
+      subtitle: `SEC 45 天延迟 · 仅多头 · 11 funds · 仅显示 ${MAX_AGE_DAYS.whales}d 内` },
+    { k: 'congress', label: '🏛 国会议员',     count: congressEvents_fresh.length,
+      subtitle: `45 天披露窗口 · 金额是区间 · 仅显示 ${MAX_AGE_DAYS.congress}d 内` },
+    { k: 'ark',      label: '🔵 ARK 创新',     count: arkEvents_fresh.length,
+      subtitle: `Cathie Wood · 13F 季度 · 仅显示 ${MAX_AGE_DAYS.ark}d 内` },
+    { k: 'insider',  label: '⚪ 内部 (Form 4)', count: insiderEvents_fresh.length,
+      subtitle: `CEO/CFO 自掏腰包 · 2 天披露 · 最快 · 仅显示 ${MAX_AGE_DAYS.insider}d 内` },
   ]
   const activeTab = tabs.find((t) => t.k === tab)!
 
@@ -244,6 +282,13 @@ export function SmartMoneyWidget() {
       {/* === Tab bar === */}
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] flex-wrap">
         <span className="font-semibold text-[var(--color-text)]">Smart Money</span>
+        <button
+          onClick={() => setShowHelp((v) => !v)}
+          className="text-[10px] w-4 h-4 rounded-full border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center justify-center"
+          title="什么是 Smart Money / 各 tab 含义 / 刷新机制"
+        >
+          ?
+        </button>
         <div className="flex gap-1 ml-1">
           {tabs.map((t) => (
             <button
@@ -269,29 +314,65 @@ export function SmartMoneyWidget() {
         <span className="ml-auto text-[8.5px] italic">{activeTab.subtitle}</span>
       </div>
 
+      {/* === Help panel (toggle via ?) === */}
+      {showHelp && (
+        <div className="mb-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)]/40 p-2 text-[9.5px] leading-[1.55] text-[var(--color-dim)]">
+          <div className="font-semibold text-[var(--color-text)] mb-1">📚 Smart Money 是什么</div>
+          <p className="mb-1.5">
+            汇总市场中"信息更靠前"的几类投资者最近在买卖什么. 不是抄作业 — 是<b>看他们看到了什么你还没看到</b>, 把<b>他们的高 conviction signal</b> 跟你自己的 thesis 交叉验证.
+          </p>
+          <ul className="ml-3 list-disc space-y-0.5 mb-1.5">
+            <li><b>🐋 13F 机构</b> — 大型对冲基金 (Buffett/Bridgewater/Druckenmiller 等 11 家) 的季度持仓变化. SEC 强制 45 天内披露. <i>慢但 conviction 高</i>.</li>
+            <li><b>🏛 国会议员</b> — Pelosi 等参/众议员买卖股票的强制披露 (STOCK Act). 最长 45 天延迟. ⭐ 标记的是你 follow 的 anchor.</li>
+            <li><b>🔵 ARK 创新</b> — Cathie Wood 颠覆性创新主题 ETF (ARKK 等). 重仓 AI / 生物科技 / fintech. 跟 Buffett 派完全相反, 高波动.</li>
+            <li><b>⚪ 内部 Form 4</b> — 公司高管 (CEO/CFO/董事) 用自己的钱买自家股票, SEC 强制 <b>2 天</b>披露 — <b>最快</b>的信号. 只显示买入 (卖出常是套现/期权计划, 信号弱).</li>
+          </ul>
+          <div className="font-semibold text-[var(--color-text)] mt-1.5 mb-0.5">🔄 刷新 + 过期</div>
+          <ul className="ml-3 list-disc space-y-0.5">
+            <li>顶部 "↻ 立即扫描" → 跑所有 scanner → 新数据 30s 内自动出现, <b>不用 page reload</b>.</li>
+            <li>每 30s 自动 background poll, 你不用管.</li>
+            <li>各 tab <b>自动隐藏过期 events</b>: Form 4 {MAX_AGE_DAYS.insider}d / 国会 {MAX_AGE_DAYS.congress}d / 13F + ARK {MAX_AGE_DAYS.whales}d. 想看更老的, 点下面 "show {n_stale[tab]} stale" 按钮.</li>
+          </ul>
+        </div>
+      )}
+
+      {/* === Show-stale toggle for current tab === */}
+      {n_stale[tab] > 0 && (
+        <div className="mb-2 text-[9px] text-[var(--color-dim)] flex items-center gap-2">
+          <span>🕐 {n_stale[tab]} 条事件超过 {MAX_AGE_DAYS[tab]} 天 (已隐藏)</span>
+          <button
+            onClick={() => setShowStale((s) => ({ ...s, [tab]: !s[tab] }))}
+            className="text-[9px] underline hover:text-[var(--color-text)]"
+          >
+            {showStale[tab] ? '隐藏 stale' : '显示 stale'}
+          </button>
+        </div>
+      )}
+
       {/* === Tab content: 13F whales === */}
       {tab === 'whales' && (
         <>
           {q13f.isLoading && (
             <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
-          {!q13f.isLoading && events.length === 0 && (
+          {!q13f.isLoading && groups_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No recent 13F filings tracked. Whale scanner runs daily; events
-              appear within 1-2 days of SEC publication.
+              No recent 13F filings in the last {MAX_AGE_DAYS.whales} days.
+              Whale scanner runs daily; events appear within 1-2 days of SEC
+              publication.
             </div>
           )}
-          {!q13f.isLoading && groups.length > 0 && (
+          {!q13f.isLoading && groups_fresh.length > 0 && (
             <div className="space-y-2">
-              {groups.slice(0, expanded ? groups.length : 3).map((g) => (
+              {groups_fresh.slice(0, expanded ? groups_fresh.length : 3).map((g) => (
                 <WhaleGroup key={g.whale} group={g} />
               ))}
-              {groups.length > 3 && (
+              {groups_fresh.length > 3 && (
                 <button
                   onClick={() => setExpanded((v) => !v)}
                   className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
                 >
-                  {expanded ? `▴ collapse` : `▾ show ${groups.length - 3} more whales`}
+                  {expanded ? `▴ collapse` : `▾ show ${groups_fresh.length - 3} more whales`}
                 </button>
               )}
             </div>
@@ -305,30 +386,49 @@ export function SmartMoneyWidget() {
           {congressLoading && (
             <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
-          {!congressLoading && congressEvents.length === 0 && (
+          {!congressLoading && congressEvents_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No recent congressional trades tracked in your watchlist. Source:
-              Quiver Quant live feed (1000 most-recent records, House + Senate
-              combined) + House Clerk PTR PDFs for followed reps.
+              No recent congressional trades in the last {MAX_AGE_DAYS.congress}
+              days. Source: Quiver Quant live feed + House Clerk PTR PDFs.
             </div>
           )}
-          {!congressLoading && congressGroups.length > 0 && (
-            <div className="space-y-2">
-              {congressGroups.slice(0, expandedCongress ? congressGroups.length : 5).map((g) => (
-                <CongressGroup key={g.rep} group={g} />
-              ))}
-              {congressGroups.length > 5 && (
-                <button
-                  onClick={() => setExpandedCongress((v) => !v)}
-                  className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
-                >
-                  {expandedCongress
-                    ? `▴ collapse`
-                    : `▾ show ${congressGroups.length - 5} more members`}
-                </button>
-              )}
-            </div>
-          )}
+          {!congressLoading && congressEvents_fresh.length > 0 && (() => {
+            // Re-group filtered events by rep so the per-rep cards
+            // reflect only the fresh window.
+            const byRepFresh = new Map<string, { rep: string; chamber: string; party: string; events: SignalEvent[] }>()
+            for (const e of congressEvents_fresh) {
+              const b = (e.body ?? {}) as Record<string, unknown>
+              const rep = String(b.representative ?? b.senator ?? 'Unknown')
+              const chamber = String(b.chamber ?? '')
+              const party = String(b.party ?? '')
+              if (!byRepFresh.has(rep)) byRepFresh.set(rep, { rep, chamber, party, events: [] })
+              byRepFresh.get(rep)!.events.push(e)
+            }
+            const congressGroupsFresh = Array.from(byRepFresh.values()).sort((a, b) => {
+              const fa = isFollowedRep(a.rep) ? 0 : 1
+              const fb = isFollowedRep(b.rep) ? 0 : 1
+              if (fa !== fb) return fa - fb
+              return new Date(b.events[0]?.detected_at ?? 0).getTime()
+                   - new Date(a.events[0]?.detected_at ?? 0).getTime()
+            })
+            return (
+              <div className="space-y-2">
+                {congressGroupsFresh.slice(0, expandedCongress ? congressGroupsFresh.length : 5).map((g) => (
+                  <CongressGroup key={g.rep} group={g} />
+                ))}
+                {congressGroupsFresh.length > 5 && (
+                  <button
+                    onClick={() => setExpandedCongress((v) => !v)}
+                    className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+                  >
+                    {expandedCongress
+                      ? `▴ collapse`
+                      : `▾ show ${congressGroupsFresh.length - 5} more members`}
+                  </button>
+                )}
+              </div>
+            )
+          })()}
         </>
       )}
 
@@ -345,15 +445,16 @@ export function SmartMoneyWidget() {
           {q13f.isLoading && (
             <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
-          {!q13f.isLoading && arkGroups.length === 0 && (
+          {!q13f.isLoading && arkGroups_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No ARK 13F holdings tracked yet. Trigger ↻ 立即扫描 (in
-              Today's Signals widget above) to fetch SEC filings.
+              No ARK 13F holdings in the last {MAX_AGE_DAYS.ark} days.
+              Trigger ↻ 立即扫描 (in Today's Signals widget above) to
+              fetch SEC filings.
             </div>
           )}
-          {!q13f.isLoading && arkGroups.length > 0 && (
+          {!q13f.isLoading && arkGroups_fresh.length > 0 && (
             <div className="space-y-2">
-              {arkGroups.map((g) => (
+              {arkGroups_fresh.map((g) => (
                 <WhaleGroup key={g.whale} group={g} />
               ))}
             </div>
@@ -374,20 +475,21 @@ export function SmartMoneyWidget() {
           {qInsider.isLoading && (
             <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
-          {!qInsider.isLoading && insiderEvents.length === 0 && (
+          {!qInsider.isLoading && insiderEvents_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No recent insider buys tracked. Trigger ↻ 立即扫描 to fetch
-              cluster buys + large CEO open-market purchases.
+              No insider buys in the last {MAX_AGE_DAYS.insider} days.
+              Trigger ↻ 立即扫描 to fetch latest cluster buys + large CEO
+              open-market purchases.
             </div>
           )}
-          {!qInsider.isLoading && insiderEvents.length > 0 && (
+          {!qInsider.isLoading && insiderEvents_fresh.length > 0 && (
             <div className="space-y-1">
-              {insiderEvents.slice(0, 30).map((e) => (
+              {insiderEvents_fresh.slice(0, 30).map((e) => (
                 <InsiderRow key={e.event_id} event={e} />
               ))}
-              {insiderEvents.length > 30 && (
+              {insiderEvents_fresh.length > 30 && (
                 <div className="text-[9px] text-[var(--color-dim)] mt-1">
-                  + {insiderEvents.length - 30} more — refine via openinsider.com
+                  + {insiderEvents_fresh.length - 30} more — refine via openinsider.com
                 </div>
               )}
             </div>
@@ -402,45 +504,86 @@ export function SmartMoneyWidget() {
 function InsiderRow({ event }: { event: SignalEvent }) {
   const body = (event.body ?? {}) as Record<string, unknown>
   const company = String(body.company ?? '')
+  const industry = String(body.industry ?? '')
   const nIns = Number(body.n_insiders ?? 1)
   const valueUsd = Number(body.value_usd ?? 0)
   const tradeDate = String(body.trade_date ?? '')
+  const price = Number(body.price ?? 0)
+  const qty = Number(body.qty ?? 0)
+  const return1w = String(body.return_1w ?? '').trim()
+  const return1d = String(body.return_1d ?? '').trim()
   const isCluster = nIns >= 2
   const valueDisplay =
     valueUsd >= 1_000_000 ? `$${(valueUsd / 1_000_000).toFixed(1)}M` :
     valueUsd >= 1_000     ? `$${Math.round(valueUsd / 1_000)}K` :
                             `$${Math.round(valueUsd)}`
+  const qtyDisplay = qty >= 1_000_000 ? `${(qty / 1_000_000).toFixed(1)}M sh` :
+                     qty >= 1_000     ? `${(qty / 1_000).toFixed(0)}K sh` :
+                     qty > 0          ? `${qty} sh` : ''
   const sevClass = event.severity === 'high'
     ? 'text-[var(--color-green,#7ed98c)] border-[var(--color-green,#7ed98c)]/40'
     : 'text-[var(--color-amber,#e5a200)] border-[var(--color-amber,#e5a200)]/40'
+
+  // Color the post-trade returns: green = stock went up (signal paid),
+  // red = stock went down. Empty string = no data yet (very recent buy).
+  function returnClass(s: string) {
+    if (!s || s === 'N/A') return 'text-[var(--color-dim)]'
+    if (s.startsWith('+')) return 'text-[var(--color-green,#7ed98c)]'
+    if (s.startsWith('-')) return 'text-[var(--color-red,#e07070)]'
+    return 'text-[var(--color-dim)]'
+  }
+
   return (
-    <div className="flex items-center gap-2 text-[10px] py-0.5 px-1.5 rounded border border-[var(--color-border)]/40 bg-[var(--color-panel)]/20">
-      <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${sevClass}`}>
-        {isCluster ? `${nIns}人买` : '买'}
-      </span>
-      <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
-        {event.ticker}
-      </span>
-      <span className="text-[9px] text-[var(--color-dim)] truncate flex-1">
-        {company}
-      </span>
-      <span className="text-[9.5px] text-[var(--color-text)] font-mono flex-shrink-0">
-        {valueDisplay}
-      </span>
-      {event.source_url && (
-        <a
-          href={event.source_url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-[8.5px] text-[var(--color-accent)] hover:underline flex-shrink-0"
-          title="View ticker insider history on openinsider.com"
-        >
-          🔗
-        </a>
-      )}
-      <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-16 text-right flex-shrink-0">
-        {tradeDate}
-      </span>
+    <div className="rounded border border-[var(--color-border)]/40 bg-[var(--color-panel)]/20 px-1.5 py-1">
+      {/* Top row: badge + ticker + company + value + 🔗 + date */}
+      <div className="flex items-center gap-2 text-[10px]">
+        <span className={`px-1 py-0 rounded border text-[8.5px] font-mono flex-shrink-0 ${sevClass}`}>
+          {isCluster ? `${nIns}人买` : '买'}
+        </span>
+        <span className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0">
+          {event.ticker}
+        </span>
+        <span className="text-[9px] text-[var(--color-text)] truncate flex-1">
+          {company}
+        </span>
+        <span className="text-[9.5px] text-[var(--color-text)] font-mono flex-shrink-0">
+          {valueDisplay}
+        </span>
+        {event.source_url && (
+          <a
+            href={event.source_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-[8.5px] text-[var(--color-accent)] hover:underline flex-shrink-0"
+            title="点击看该股全部内部交易历史 (openinsider.com)"
+          >
+            🔗
+          </a>
+        )}
+        <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-16 text-right flex-shrink-0">
+          {tradeDate}
+        </span>
+      </div>
+      {/* Bottom row: detail line — price / qty / industry / post-trade returns */}
+      <div className="flex items-center gap-2 text-[8.5px] text-[var(--color-dim)] font-mono mt-0.5 ml-[3.5rem]">
+        {price > 0 && <span>@${price.toFixed(2)}</span>}
+        {qtyDisplay && <span>· {qtyDisplay}</span>}
+        {industry && <span className="truncate">· {industry}</span>}
+        {(return1d || return1w) && (
+          <span className="ml-auto flex-shrink-0">
+            {return1d && (
+              <span className="mr-1">
+                1d <span className={returnClass(return1d)}>{return1d}</span>
+              </span>
+            )}
+            {return1w && (
+              <span>
+                1w <span className={returnClass(return1w)}>{return1w}</span>
+              </span>
+            )}
+          </span>
+        )}
+      </div>
     </div>
   )
 }

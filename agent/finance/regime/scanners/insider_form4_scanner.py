@@ -131,7 +131,14 @@ def _parse_openinsider_table(html: str) -> List[Dict[str, Any]]:
             "trade_type":    cells[7] if len(cells) > 7 else "",
             "price":         _parse_value_to_usd(cells[8] if len(cells) > 8 else ""),
             "qty":           _parse_qty(cells[9] if len(cells) > 9 else ""),
+            "owned":         _parse_qty(cells[10] if len(cells) > 10 else ""),
+            "delta_own_pct": cells[11].strip() if len(cells) > 11 else "",
             "value_usd":     _parse_value_to_usd(cells[12] if len(cells) > 12 else ""),
+            # Post-trade return columns (openinsider tracks how the
+            # stock moved after the insider bought) — useful sanity
+            # check for "did this signal actually pay off?".
+            "return_1d":     cells[13].strip() if len(cells) > 13 else "",
+            "return_1w":     cells[14].strip() if len(cells) > 14 else "",
         })
     return rows
 
@@ -246,7 +253,11 @@ def run_insider_form4_scan(
                     "trade_type":    row["trade_type"],
                     "price":         row["price"],
                     "qty":           row["qty"],
+                    "owned":         row.get("owned", 0),
+                    "delta_own_pct": row.get("delta_own_pct", ""),
                     "value_usd":     value_usd,
+                    "return_1d":     row.get("return_1d", ""),
+                    "return_1w":     row.get("return_1w", ""),
                     "trade_date":    trade_date,
                     "filing_date":   row["filing_date"],
                     "screen":        screen_name,
