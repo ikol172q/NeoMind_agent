@@ -2479,7 +2479,7 @@ export interface StockProfile {
   user_status_ts?: string | null
   generated_at?: string | null
   generated_model?: string | null
-  source_citations: Array<{ id: number; url: string; title: string }>
+  source_citations: Array<{ id: number; url: string; title: string; verified?: boolean }>
 }
 
 export interface StockExposureEvent {

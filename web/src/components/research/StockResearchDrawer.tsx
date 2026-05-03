@@ -286,15 +286,44 @@ export function StockResearchDrawer() {
 
                   {profile!.source_citations.length > 0 && (
                     <>
-                      <h3 className="text-[12px] font-semibold mb-1.5 text-[var(--color-dim)]">引用 (LLM 自报)</h3>
+                      <h3 className="text-[12px] font-semibold mb-1.5 text-[var(--color-dim)]">
+                        引用 (LLM 自报, 服务端 HEAD-验证)
+                      </h3>
+                      <div className="text-[8.5px] text-[var(--color-dim)] italic mb-1 leading-[1.5]">
+                        ✓ verified = 链接服务端 HEAD-check 通过 (200/3xx). ⚠ unverified = LLM 编了 URL,
+                        改成 Google 搜索 fallback 让你自己 verify.
+                      </div>
                       <ol className="space-y-0.5 mb-3 list-decimal pl-4">
-                        {profile!.source_citations.map((s) => (
-                          <li key={s.id} className="text-[10px]">
-                            <a href={s.url} target="_blank" rel="noopener noreferrer" className="text-[var(--color-accent)] hover:underline">
-                              {s.title || s.url}
-                            </a>
-                          </li>
-                        ))}
+                        {profile!.source_citations.map((s) => {
+                          const verified = s.verified === true
+                          const text = s.title || s.url || `(citation ${s.id})`
+                          if (verified) {
+                            return (
+                              <li key={s.id} className="text-[10px]">
+                                <span className="text-[var(--color-green,#7ed98c)] mr-1" title="HEAD check passed">✓</span>
+                                <a href={s.url} target="_blank" rel="noopener noreferrer"
+                                   className="text-[var(--color-accent)] hover:underline">
+                                  {text}
+                                </a>
+                              </li>
+                            )
+                          }
+                          // Unverified: dead URL OR no URL at all. Fall back to Google search.
+                          const q = encodeURIComponent(text)
+                          return (
+                            <li key={s.id} className="text-[10px]">
+                              <span className="text-[var(--color-amber,#e5a200)] mr-1"
+                                    title={s.url ? `LLM 给的 URL HEAD 不通: ${s.url}` : 'LLM 没给 URL'}>⚠</span>
+                              <span className="text-[var(--color-text)]">{text}</span>
+                              <a href={`https://www.google.com/search?q=${q}`}
+                                 target="_blank" rel="noopener noreferrer"
+                                 className="ml-2 text-[var(--color-dim)] hover:text-[var(--color-accent)] hover:underline italic"
+                                 title="LLM 给的 URL 死了, 改去 Google 搜">
+                                [Google 搜]
+                              </a>
+                            </li>
+                          )
+                        })}
                       </ol>
                     </>
                   )}
