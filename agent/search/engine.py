@@ -24,6 +24,7 @@ Design principles:
   - All tiers fire in parallel for minimum latency
 """
 
+import logging
 import os
 import re
 import time
@@ -31,6 +32,8 @@ import asyncio
 from datetime import datetime, timezone
 from functools import lru_cache
 from typing import Dict, List, Optional, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .sources import (
     SearchItem, SearchResult, ContentExtractor, Crawl4AIExtractor,
@@ -296,6 +299,73 @@ class UniversalSearchEngine:
                 latency_ms=(time.time() - _search_start) * 1000,
             )
             return cached
+
+        # Step 0.5: Tavily-primary fast path
+        # Per the agent's search policy, Tavily is the authoritative
+        # internet search source when available (LLM-optimized, free
+        # 1000/mo tier, generally higher quality than DDG/gnews RSS).
+        # Try Tavily first; if it returns useful results, skip the
+        # parallel multi-source fan-out entirely. The multi-source
+        # machinery remains as graceful fallback when Tavily is
+        # missing, errors, or returns empty.
+        tavily = self.tier2_sources.get("tavily")
+        if tavily is not None:
+            try:
+                tav_items = await tavily.search(query, max_results=max_results)
+            except Exception as exc:
+                logger.debug("tavily-primary failed for %r: %s — falling back",
+                             query, exc)
+                tav_items = None
+            if tav_items:
+                # Run the same temporal-recency boost the merger applies
+                for item in tav_items:
+                    item.recency_boost = compute_recency_boost(
+                        item.published, domain=self.domain)
+                tav_items.sort(key=lambda x: (x.recency_boost or 1.0), reverse=True)
+                tav_items = tav_items[:max_results]
+
+                # Optional reranking — same step the multi-source path runs
+                tav_reranked = False
+                if rerank and len(tav_items) > 1:
+                    if self.cohere_reranker.available:
+                        tav_items = self.cohere_reranker.rerank(
+                            query, tav_items, top_n=min(20, len(tav_items)))
+                        tav_reranked = True
+                    elif self.flash_reranker.available:
+                        tav_items = self.flash_reranker.rerank(
+                            query, tav_items, top_n=min(20, len(tav_items)))
+                        tav_reranked = True
+
+                # Optional content extraction — same step
+                tav_ext = 0
+                if extract_content:
+                    if self.extractor.available:
+                        tav_ext = await self.extractor.extract_batch(tav_items, top_n=5)
+                    if self.crawl4ai.available:
+                        remaining = [it for it in tav_items[:5] if not it.full_text]
+                        if remaining:
+                            tav_ext += await self.crawl4ai.extract_batch(remaining, top_n=3)
+
+                tav_result = SearchResult(
+                    items=tav_items,
+                    sources_used=["tavily"],
+                    sources_failed=[],
+                    expanded_queries=[query],
+                    query=query,
+                    extraction_count=tav_ext,
+                    reranked=tav_reranked,
+                )
+                self.cache.set(query, tav_result)
+                self.metrics.record(
+                    query=query, query_type="tavily_primary",
+                    sources_used=["tavily"], sources_failed=[],
+                    result_count=len(tav_items),
+                    extraction_count=tav_ext, reranked=tav_reranked, cached=False,
+                    latency_ms=(time.time() - _search_start) * 1000,
+                    expanded_queries=[query],
+                )
+                return tav_result
+            # else: Tavily returned 0 results → fall through to multi-source
 
         # Step 1: Query expansion
         if expand_queries:

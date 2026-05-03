@@ -22,6 +22,20 @@ SHELL_KEYS=(
   MOONSHOT_API_KEY
   ANTHROPIC_API_KEY
   OPENAI_API_KEY
+  # ── Search-source keys (consumed by agent.search.engine) ──
+  # Tavily is the agent's primary internet search source. Free
+  # 1000 search/month tier; the dev key starts with `tvly-dev-`.
+  # Adding more search providers? Append here AND make sure the
+  # corresponding *Source class in agent/search/sources.py reads
+  # the matching env var.
+  TAVILY_API_KEY
+  BRAVE_API_KEY
+  SERPER_API_KEY
+  JINA_API_KEY
+  EXA_API_KEY
+  NEWSAPI_API_KEY
+  YOUCOM_API_KEY
+  PERPLEXITY_API_KEY
 )
 
 # Keys that live in .env (not shell) — Miniflux, future feed creds, etc.
