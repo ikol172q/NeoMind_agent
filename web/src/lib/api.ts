@@ -2457,3 +2457,138 @@ export function pickLang(
   if (zhS && enS) return `${zhS} / ${enS}`
   return zhS || enS
 }
+
+
+// ─── Stock Research Drawer (Phase R1) ─────────────────────────────
+
+export interface StockProfile {
+  ticker: string
+  name?: string | null
+  sector?: string | null
+  summary?: string | null
+  segments: Array<{ name: string; pct: number; note?: string }>
+  upstream: Array<{ ticker: string; name: string; role: string }>
+  downstream: Array<{ ticker: string; name: string; role: string }>
+  competitors: Array<{ ticker: string; name: string; note?: string }>
+  catalysts: Array<{ when: string; what: string; severity: 'high' | 'med' | 'low' }>
+  risks: string[]
+  style_verdict?: string | null
+  quick_stats?: { price?: string; marketCap?: string; pe?: string }
+  user_status?: 'researching' | 'watching' | 'pass' | 'own' | null
+  user_status_reason?: string | null
+  user_status_ts?: string | null
+  generated_at?: string | null
+  generated_model?: string | null
+  source_citations: Array<{ id: number; url: string; title: string }>
+}
+
+export interface StockExposureEvent {
+  scanner: string
+  signal_type: string
+  severity: 'high' | 'med' | 'low'
+  title: string
+  body: Record<string, unknown>
+  source_url?: string | null
+  source_timestamp?: string | null
+  detected_at: string
+}
+
+export interface StockNote {
+  id: number
+  ticker: string
+  ts: string
+  body: string
+  tag?: string | null
+  source: 'user' | 'llm-extract'
+}
+
+export function useStockProfile(ticker: string | null) {
+  return useQuery<StockProfile | null>({
+    queryKey: ['stock-profile', ticker],
+    queryFn: async () => {
+      if (!ticker) return null
+      try {
+        return await fetchJSON<StockProfile>(`/api/stock/${encodeURIComponent(ticker)}/profile`)
+      } catch (e: any) {
+        // 404 = no cached profile yet — UI shows "click ✨ regenerate"
+        if (String(e?.message || '').includes('404')) return null
+        throw e
+      }
+    },
+    enabled: !!ticker,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+export function useStockExposure(ticker: string | null) {
+  return useQuery<{ ticker: string; n: number; events: StockExposureEvent[] }>({
+    queryKey: ['stock-exposure', ticker],
+    queryFn: () => fetchJSON(`/api/stock/${encodeURIComponent(ticker!)}/exposure?max_age_days=365`),
+    enabled: !!ticker,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+export function useStockNotes(ticker: string | null) {
+  return useQuery<{ ticker: string; notes: StockNote[] }>({
+    queryKey: ['stock-notes', ticker],
+    queryFn: () => fetchJSON(`/api/stock/${encodeURIComponent(ticker!)}/notes`),
+    enabled: !!ticker,
+    staleTime: 30_000,
+    retry: false,
+  })
+}
+
+export function useRegenStockProfile() {
+  const qc = useQueryClient()
+  return useMutation<StockProfile, Error, string>({
+    mutationFn: (ticker) => fetchJSON<StockProfile>(
+      `/api/stock/${encodeURIComponent(ticker)}/profile`,
+      { method: 'POST' },
+    ),
+    onSuccess: (data, ticker) => {
+      qc.setQueryData(['stock-profile', ticker], data)
+    },
+  })
+}
+
+export function useUpdateStockStatus() {
+  const qc = useQueryClient()
+  return useMutation<StockProfile, Error, { ticker: string; status: string; reason: string }>({
+    mutationFn: ({ ticker, status, reason }) => fetchJSON<StockProfile>(
+      `/api/stock/${encodeURIComponent(ticker)}/status`,
+      {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status, reason }),
+      },
+    ),
+    onSuccess: (data, vars) => {
+      qc.setQueryData(['stock-profile', vars.ticker], (prev: StockProfile | null) => ({
+        ...(prev ?? { ticker: vars.ticker, segments: [], upstream: [], downstream: [],
+                     competitors: [], catalysts: [], risks: [], source_citations: [] } as any),
+        ...data,
+      }))
+    },
+  })
+}
+
+export function useAppendStockNote() {
+  const qc = useQueryClient()
+  return useMutation<StockNote, Error, { ticker: string; body: string; tag?: string }>({
+    mutationFn: ({ ticker, body, tag }) => fetchJSON<StockNote>(
+      `/api/stock/${encodeURIComponent(ticker)}/notes`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ body, tag }),
+      },
+    ),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['stock-notes', vars.ticker] })
+    },
+  })
+}

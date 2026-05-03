@@ -427,6 +427,53 @@ CREATE TABLE IF NOT EXISTS signal_confluences (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_detected ON signal_confluences(detected_at DESC);
 
+-- ─── Stock Research Drawer (Phase R1) ─────────────────────────────────
+-- Per-ticker LLM-generated research profile. Cached so the LLM call
+-- (~$0.01 per regen) only fires when user clicks ✨ regenerate or row
+-- is missing. Source citations enforced (anti-hallucination rule).
+CREATE TABLE IF NOT EXISTS stock_profiles (
+    ticker            TEXT PRIMARY KEY,
+    name              TEXT,
+    sector            TEXT,
+    summary           TEXT,                     -- LLM 1-paragraph
+    segments_json     TEXT,                     -- [{name, pct, note}]
+    upstream_json     TEXT,                     -- [{ticker, name, role}]
+    downstream_json   TEXT,                     -- [{ticker, name, role}]
+    competitors_json  TEXT,                     -- [{ticker, name, note}]
+    catalysts_json    TEXT,                     -- [{when, what, severity}]
+    risks_json        TEXT,                     -- [string]
+    style_verdict     TEXT,
+    quick_stats_json  TEXT,                     -- {price, marketCap, pe, ...}
+    user_status       TEXT,                     -- 'researching'/'watching'/'pass'/'own'
+    user_status_reason TEXT,
+    user_status_ts    TEXT,
+    generated_at      TEXT,
+    generated_model   TEXT,
+    source_citations_json TEXT
+);
+
+-- User free-form notes on a ticker (many per ticker).
+CREATE TABLE IF NOT EXISTS stock_notes (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker  TEXT NOT NULL,
+    ts      TEXT NOT NULL,
+    body    TEXT NOT NULL,
+    tag     TEXT,
+    source  TEXT NOT NULL DEFAULT 'user'         -- 'user'/'llm-extract'
+);
+CREATE INDEX IF NOT EXISTS idx_stock_notes_ticker ON stock_notes(ticker, ts DESC);
+
+-- Versioned profile history for "what changed since 6 months ago".
+CREATE TABLE IF NOT EXISTS stock_profile_versions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker    TEXT NOT NULL,
+    ts        TEXT NOT NULL,
+    field     TEXT NOT NULL,
+    content   TEXT NOT NULL,
+    model     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stock_versions_ticker ON stock_profile_versions(ticker, ts DESC);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.
