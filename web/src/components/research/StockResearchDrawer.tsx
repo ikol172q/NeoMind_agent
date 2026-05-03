@@ -26,6 +26,7 @@ import {
   X, ExternalLink, Sparkles, BarChart3, Network, Newspaper,
   NotebookPen, MessagesSquare, Building2, Loader2,
 } from 'lucide-react'
+import { AnchoredFactsPanel } from './AnchoredFactsPanel'
 
 type Status = 'researching' | 'watching' | 'pass' | 'own'
 type TabKey = 'overview' | 'smart_money' | 'supply_chain' | 'news' | 'notes' | 'chat'
@@ -352,41 +353,48 @@ export function StockResearchDrawer() {
 
           {tab === 'supply_chain' && (
             <>
-              <div className="mb-3 text-[10px] text-[var(--color-dim)]">
-                LLM-extracted from SEC 10-K + 行业知识. 每个 ticker 可点 → 打开它的 drawer.
-              </div>
-              {!hasProfile && (
-                <div className="text-[11px] italic text-[var(--color-dim)]">
-                  上下游数据来自 LLM-生成 profile. 切到 Overview tab 点 ✨ generate.
+              {/* Phase B: SEC-anchored facts. Top panel is the trust
+                  source. Legacy LLM-only section is below for
+                  comparison so user can see what each layer adds. */}
+              <AnchoredFactsPanel ticker={ticker} onTickerClick={openTicker} />
+
+              <div className="mt-6 pt-4 border-t border-[var(--color-border)]">
+                <div className="mb-3 text-[10px] text-[var(--color-dim)] flex items-center gap-2">
+                  <span>⚠️ 下方为 legacy LLM-only 输出（无 SEC 验证）—— 仅作对比保留</span>
                 </div>
-              )}
-              {hasProfile && (
-                <>
-                  <h3 className="text-[12px] font-semibold mb-2 text-green-300">⬆ Upstream (供应商)</h3>
-                  <div className="space-y-1 mb-4">
-                    {profile!.upstream.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
-                    {profile!.upstream.map((u) => (
-                      <SupplyRow key={u.ticker} ticker={u.ticker} name={u.name} note={u.role} onClick={openTicker} />
-                    ))}
+                {!hasProfile && (
+                  <div className="text-[11px] italic text-[var(--color-dim)]">
+                    Legacy LLM profile 未生成. 切到 Overview tab 点 ✨ generate.
                   </div>
+                )}
+                {hasProfile && (
+                  <div className="opacity-60">
+                    <h3 className="text-[11px] font-semibold mb-1.5 text-green-300">⬆ Upstream (供应商) · LLM</h3>
+                    <div className="space-y-1 mb-3">
+                      {profile!.upstream.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
+                      {profile!.upstream.map((u) => (
+                        <SupplyRow key={u.ticker} ticker={u.ticker} name={u.name} note={u.role} onClick={openTicker} />
+                      ))}
+                    </div>
 
-                  <h3 className="text-[12px] font-semibold mb-2 text-blue-300">⬇ Downstream (大客户)</h3>
-                  <div className="space-y-1 mb-4">
-                    {profile!.downstream.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
-                    {profile!.downstream.map((d) => (
-                      <SupplyRow key={d.ticker} ticker={d.ticker} name={d.name} note={d.role} onClick={openTicker} />
-                    ))}
-                  </div>
+                    <h3 className="text-[11px] font-semibold mb-1.5 text-blue-300">⬇ Downstream (大客户) · LLM</h3>
+                    <div className="space-y-1 mb-3">
+                      {profile!.downstream.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
+                      {profile!.downstream.map((d) => (
+                        <SupplyRow key={d.ticker} ticker={d.ticker} name={d.name} note={d.role} onClick={openTicker} />
+                      ))}
+                    </div>
 
-                  <h3 className="text-[12px] font-semibold mb-2 text-amber-300">⚔ Competitors</h3>
-                  <div className="space-y-1">
-                    {profile!.competitors.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
-                    {profile!.competitors.map((c) => (
-                      <SupplyRow key={c.ticker} ticker={c.ticker} name={c.name} note={c.note ?? ''} onClick={openTicker} />
-                    ))}
+                    <h3 className="text-[11px] font-semibold mb-1.5 text-amber-300">⚔ Competitors · LLM</h3>
+                    <div className="space-y-1">
+                      {profile!.competitors.length === 0 && <div className="text-[10px] italic text-[var(--color-dim)]">LLM 未列出</div>}
+                      {profile!.competitors.map((c) => (
+                        <SupplyRow key={c.ticker} ticker={c.ticker} name={c.name} note={c.note ?? ''} onClick={openTicker} />
+                      ))}
+                    </div>
                   </div>
-                </>
-              )}
+                )}
+              </div>
             </>
           )}
 

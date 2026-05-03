@@ -2641,3 +2641,81 @@ export function useRegenArchitecture() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ['architecture'] }),
   })
 }
+
+// ── SEC-anchored research (Phase B) ─────────────────────────────
+// Parallel to useStockProfile (LLM-only, fast). These hooks read
+// agent.finance.anchored_research output, which is anchored to real
+// SEC 10-K text with verbatim-quote validation.
+export interface AnchoredCompetitor {
+  name: string
+  ticker?: string | null
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
+export interface AnchoredRisk {
+  headline: string
+  category: string
+  severity_signal?: string | null
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
+export interface AnchoredBusinessSummary {
+  sentence: string
+  evidence_quote: string
+  source_url: string
+  source_section: string
+}
+export interface AnchoredFacts {
+  ticker: string
+  facts: {
+    competitor?: AnchoredCompetitor[]
+    risk?: AnchoredRisk[]
+    business_summary?: AnchoredBusinessSummary[]
+  }
+  meta: {
+    source_url: string
+    source_filing_date: string
+    extracted_at: string
+    req_id?: string
+  } | null
+}
+
+export function useAnchoredFacts(ticker: string | null) {
+  return useQuery<AnchoredFacts>({
+    queryKey: ['anchored-facts', ticker],
+    queryFn: () => fetchJSON<AnchoredFacts>(
+      `/api/stock/${encodeURIComponent(ticker!)}/anchored`),
+    enabled: !!ticker,
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+
+export interface AnchoredRegenResult {
+  ticker: string
+  results: Record<string, {
+    fact_type?: string
+    n_emitted?: number
+    n_verified?: number
+    n_dropped?: number
+    drop_reasons?: string[]
+    duration_ms?: number
+    error?: string
+    status?: number
+  }>
+}
+
+export function useRegenAnchored() {
+  const qc = useQueryClient()
+  return useMutation<AnchoredRegenResult, Error, string>({
+    mutationFn: (ticker) => fetchJSON<AnchoredRegenResult>(
+      `/api/stock/${encodeURIComponent(ticker)}/anchored/regenerate`,
+      { method: 'POST' },
+    ),
+    onSuccess: (_data, ticker) => {
+      qc.invalidateQueries({ queryKey: ['anchored-facts', ticker] })
+    },
+  })
+}
