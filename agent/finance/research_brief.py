@@ -203,6 +203,11 @@ def build_research_brief_router() -> APIRouter:
             content = response["choices"][0]["message"]["content"].strip()
         except Exception as exc:
             raise HTTPException(502, f"malformed deepseek response: {exc}")
+        # URL hallucination guard — system-wide enforcement via
+        # agent.llm_url_guard.sanitize_text. Dead URLs become
+        # [⚠死链:host → Google 搜] markers, never broken links.
+        from agent.llm_url_guard import sanitize_text
+        content, _url_stats = sanitize_text(content, context_hint="research brief")
         usage = response.get("usage") or {}
         finish = (response.get("choices") or [{}])[0].get("finish_reason")
 

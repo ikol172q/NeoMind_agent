@@ -880,6 +880,20 @@ def build_chat_stream_router() -> APIRouter:
             except Exception as exc:
                 logger.warning("episode capture failed for %s: %s", session_id, exc)
 
+            # URL hallucination guard — single chokepoint at
+            # agent.llm_url_guard. Streaming text already shown to user
+            # token-by-token; we attach the dead-URL list to the done
+            # event so the UI can render a ⚠ notice below the message
+            # ("⚠ N URLs in this reply failed verification, click [Google
+            # 搜] for each"). Client decides how to surface.
+            url_warnings: list[dict[str, str]] = []
+            try:
+                from agent.llm_url_guard import sanitize_text
+                _sanitized, url_stats = sanitize_text(final_content, context_hint="chat")
+                url_warnings = url_stats.get("dead_urls") or []
+            except Exception as exc:
+                logger.warning("url guard failed for %s: %s", session_id, exc)
+
             # Final marker carries req_id so UI can link to audit entry,
             # plus token usage so the chat header can show the context-
             # window status bar (cumulative prompt tokens vs model's
@@ -895,6 +909,7 @@ def build_chat_stream_router() -> APIRouter:
                     "max_context": get_active_max_context("neomind"),
                     "compacted": compacted_this_turn,
                     "content_length": len(final_content),
+                    "url_warnings": url_warnings,
                 }),
             }
 

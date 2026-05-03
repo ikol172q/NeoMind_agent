@@ -474,6 +474,19 @@ CREATE TABLE IF NOT EXISTS stock_profile_versions (
 );
 CREATE INDEX IF NOT EXISTS idx_stock_versions_ticker ON stock_profile_versions(ticker, ts DESC);
 
+-- ─── LLM URL Guard cache (Phase Z) ────────────────────────────────────
+-- Every URL emitted by any LLM call goes through agent.llm_url_guard
+-- to be HEAD-checked before display. We cache the result here so we
+-- don't re-check sec.gov/whatever on every refresh. 7-day TTL is the
+-- soft default but caller can tighten.
+CREATE TABLE IF NOT EXISTS url_verification_cache (
+    url        TEXT PRIMARY KEY,
+    verified   INTEGER NOT NULL,                -- 0 / 1
+    status_code INTEGER,                         -- HTTP code seen (or -1 on exception)
+    checked_at TEXT NOT NULL                     -- ISO UTC, used for TTL math
+);
+CREATE INDEX IF NOT EXISTS idx_url_cache_checked ON url_verification_cache(checked_at DESC);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

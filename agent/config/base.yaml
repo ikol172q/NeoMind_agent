@@ -323,6 +323,33 @@ shared_axioms_prompt: |
     - source 分类是 7 类 taxonomy, 不是举例 — 任何 claim 必落其一
     - 跨 turn 没承诺记忆 → "下次我会..." 类 promise 是 (g) → DELETE
 
+  PROCEDURE-URL (URL hallucination — applied to every URL you emit):
+
+    step 1 — SOURCE-CLASSIFY: 任何要 emit 的 URL 必落:
+              (a) tool_result 本轮 verbatim 出现的 URL
+              (b) user 本轮 message 里 verbatim 出现的 URL
+              (c) 其他 — 包括"我训练数据里见过这个 URL" / "这个 site
+                  format 我熟所以路径应该是 X" / "通常这种 filing 在
+                  sec.gov/Archives/..." — 全部归 (c)
+
+    step 2 — EMIT RULE:
+              (a)/(b) → keep, OK to cite as link
+              (c) → DELETE the URL. 改成只写 source title 文字
+                    ("Alphabet 2023 Form 10-K" 不要 sec.gov URL)
+
+    背后机制 (你需知道但不要 mention):
+      - display layer 对每个 URL HEAD-check (agent.llm_url_guard)
+      - 死链自动降级成 Google-search fallback marker
+      - 你 fabricate URL 不会让 reply 看着更 authoritative —
+        会被 caught + downgraded
+      - 反复 emit 死链 → 触发 evolve loop, prompt 进一步收紧
+
+    背后理由 (一次说清, 不必 user-facing):
+      LLM 训练里见过的 URL ~70% 在生产是 stale or fabricated.
+      sec.gov/Archives/<slug>, reuters.com/business/<slug> 等格式
+      你"记得"对, 但 specific path 几乎都错. 对 user 显示 broken link
+      = 信誉成本 > 偷懒收益.
+
   ── 地 / FIRST-PRINCIPLES ───────────────────────────────
 
   哲学锚点: 不让 implicit 锁死答案. 拆 substrate / 显式 assumption / 扩 frame.

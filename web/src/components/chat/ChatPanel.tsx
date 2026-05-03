@@ -15,6 +15,12 @@ import {
 } from '@/lib/api'
 import { Send } from 'lucide-react'
 
+interface UrlWarning {
+  url: string
+  fallback: string
+  host: string
+}
+
 interface Msg {
   id: string
   role: Role
@@ -22,6 +28,11 @@ interface Msg {
   ts?: string
   pending?: boolean
   reqId?: string
+  // Set on done event when LLM emitted URLs that failed HEAD
+  // verification (agent.llm_url_guard). UI renders a ⚠ notice below
+  // the message with Google-search fallback per dead URL so the user
+  // never sees a broken link as if it were verified.
+  urlWarnings?: UrlWarning[]
 }
 
 interface Props {
@@ -329,10 +340,14 @@ export function ChatPanel({
           if (typeof info.prompt_tokens === 'number') setCtxPromptTokens(info.prompt_tokens)
           if (typeof info.max_context === 'number') setCtxMaxContext(info.max_context)
           if (info.compacted) setCompactCount(c => c + 1)
+          const urlWarnings = info.url_warnings && info.url_warnings.length > 0
+            ? info.url_warnings
+            : undefined
           updateMsg(msgId, {
             content: accumulated || '(empty reply)',
             pending: false,
             reqId,
+            urlWarnings,
           })
           void persist(sid, {
             role: 'assistant',
@@ -445,37 +460,50 @@ export function ChatPanel({
             </div>
           )}
           {msgs.map(m => (
-            <MessageBubble
-              key={m.id}
-              role={m.role}
-              content={m.content}
-              ts={m.ts}
-              pending={m.pending}
-              reqId={m.reqId}
-              onJumpToAudit={onJumpToAudit}
-              onCiteClick={(cite) => {
-                // Two things happen on a cite click:
-                // (1) The next message's synthesis context is set
-                //     to the cited symbol/project, so if the user
-                //     comes back and types "trim it?" the agent
-                //     already has the dashboard state.
-                // (2) The user is routed to the Research tab, with
-                //     DigestView scrolling to + highlighting the
-                //     evidence behind the citation. This is the
-                //     plan's L3→L0 traceability direction — the
-                //     cite in the narrative lands you in the tree.
-                if (cite.kind === 'sector') {
-                  setNextSendContext({ project: true })
-                  // Sector cites don't map cleanly to a DigestView
-                  // node yet; leave the focus pathway to symbol
-                  // cites only.
-                } else {
-                  setNextSendContext({ symbol: cite.id })
-                  onNavigateToResearch?.({ symbol: cite.id })
-                }
-                inputRef.current?.focus()
-              }}
-            />
+            <div key={m.id}>
+              <MessageBubble
+                role={m.role}
+                content={m.content}
+                ts={m.ts}
+                pending={m.pending}
+                reqId={m.reqId}
+                onJumpToAudit={onJumpToAudit}
+                onCiteClick={(cite) => {
+                  if (cite.kind === 'sector') {
+                    setNextSendContext({ project: true })
+                  } else {
+                    setNextSendContext({ symbol: cite.id })
+                    onNavigateToResearch?.({ symbol: cite.id })
+                  }
+                  inputRef.current?.focus()
+                }}
+              />
+              {m.urlWarnings && m.urlWarnings.length > 0 && (
+                <div
+                  data-testid={`url-warnings-${m.id}`}
+                  className="ml-3 mt-1 mb-2 px-2 py-1.5 rounded border border-[var(--color-amber,#b45309)]/50 bg-[var(--color-amber,#b45309)]/10 text-[11px] text-[var(--color-amber,#b45309)]"
+                  title="NeoMind 试图引用的链接 HEAD 检查未通过 — 已替换为 Google 搜索 fallback"
+                >
+                  <div className="font-semibold mb-0.5">⚠ {m.urlWarnings.length} 个死链已拦截</div>
+                  <ul className="space-y-0.5">
+                    {m.urlWarnings.map((w, i) => (
+                      <li key={i} className="font-mono">
+                        <span className="line-through opacity-70">{w.host}</span>
+                        {' → '}
+                        <a
+                          href={w.fallback}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="underline hover:opacity-80"
+                        >
+                          Google 搜
+                        </a>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
           ))}
         </div>
 

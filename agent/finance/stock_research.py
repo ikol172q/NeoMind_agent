@@ -31,6 +31,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
+from agent.finance import agent_audit
 from agent.finance.persistence import connect, ensure_schema
 
 logger = logging.getLogger(__name__)
@@ -244,50 +245,6 @@ Rules:
 """
 
 
-def _verify_url(url: str, timeout: float = 4.0) -> bool:
-    """HEAD-check a URL. Returns True if it resolves to 2xx/3xx.
-    Conservative timeout — we batch up to ~5 of these per profile gen
-    so overall added latency stays under 1s in the worst case.
-    """
-    if not url or not isinstance(url, str):
-        return False
-    if not (url.startswith("http://") or url.startswith("https://")):
-        return False
-    try:
-        # Many news / SEC sites disallow HEAD or redirect oddly. Try
-        # HEAD first, fall back to GET with a small range header so
-        # we don't pull a large article body just to verify it exists.
-        with httpx.Client(timeout=httpx.Timeout(timeout), follow_redirects=True) as c:
-            r = c.head(url, headers={"User-Agent": "Mozilla/5.0 NeoMind"})
-            if 200 <= r.status_code < 400:
-                return True
-            # Some sites 405 HEAD; try GET with Range
-            if r.status_code in (403, 405):
-                r = c.get(url, headers={
-                    "User-Agent": "Mozilla/5.0 NeoMind",
-                    "Range": "bytes=0-256",
-                })
-                return 200 <= r.status_code < 400
-            return False
-    except Exception:
-        return False
-
-
-def _verify_citations(citations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Annotate each citation with verified=True/False so the frontend
-    can render dead URLs as a Google-search fallback instead of a
-    broken link. Anti-hallucination contract: we never silently trust
-    an LLM-generated URL."""
-    out = []
-    for c in citations or []:
-        if not isinstance(c, dict):
-            continue
-        url = str(c.get("url") or "").strip()
-        c["verified"] = _verify_url(url) if url else False
-        out.append(c)
-    return out
-
-
 def llm_generate_profile(ticker: str) -> Dict[str, Any]:
     """Call DeepSeek to generate structured profile JSON. Returns dict
     suitable for upsert_profile(). Raises HTTPException on failure."""
@@ -295,6 +252,19 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
     key = os.getenv("LLM_ROUTER_API_KEY") or os.getenv("DEEPSEEK_API_KEY") or "dummy"
     model = os.getenv("STOCK_RESEARCH_MODEL") or "deepseek-v4-flash"
     prompt = PROFILE_PROMPT.format(ticker=ticker)
+    messages = [{"role": "user", "content": prompt}]
+
+    req_id = agent_audit.new_req_id()
+    agent_audit.audit_request(
+        req_id=req_id,
+        endpoint=f"/api/stock/{ticker}/profile",
+        agent_id="stock-research",
+        messages=messages,
+        model=model,
+        max_tokens=3000,
+        temperature=0.2,
+        extra={"ticker": ticker},
+    )
 
     t0 = time.monotonic()
     try:
@@ -305,7 +275,7 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
                          "Content-Type": "application/json"},
                 json={
                     "model": model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": messages,
                     "temperature": 0.2,
                     "max_tokens": 3000,
                 },
@@ -314,6 +284,14 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
             data = resp.json()
     except Exception as exc:
         logger.exception("LLM profile gen failed for %s", ticker)
+        agent_audit.audit_error(
+            req_id=req_id,
+            endpoint=f"/api/stock/{ticker}/profile",
+            agent_id="stock-research",
+            error_type=type(exc).__name__,
+            error_msg=str(exc),
+            duration_ms=int((time.monotonic() - t0) * 1000),
+        )
         raise HTTPException(502, f"LLM call failed: {exc}")
 
     raw = (data["choices"][0]["message"]["content"] or "").strip()
@@ -328,17 +306,39 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
 
     parsed["generated_at"] = datetime.now(timezone.utc).isoformat()
     parsed["generated_model"] = model
-    # Verify citation URLs (anti-hallucination — LLMs routinely
-    # fabricate URLs that look right but 404). Verified=true means
-    # the URL was reachable at gen time; UI renders the rest as a
-    # Google-search fallback.
-    parsed["source_citations"] = _verify_citations(parsed.get("source_citations") or [])
+    # URL hallucination guard (system-wide policy enforced by
+    # agent.llm_url_guard — single chokepoint for ALL LLM URL output).
+    from agent.llm_url_guard import verify_citations, sanitize_text
+    parsed["source_citations"] = verify_citations(parsed.get("source_citations") or [])
     n_verified = sum(1 for c in parsed["source_citations"] if c.get("verified"))
+    # Also sanitize the summary field if it contains URLs (LLMs sometimes
+    # inline-cite alongside the [^N] markers).
+    if parsed.get("summary"):
+        sanitized, stats = sanitize_text(parsed["summary"], context_hint=ticker)
+        parsed["summary"] = sanitized
+        if stats["n_dead"]:
+            logger.info("stock_research: %s summary had %d dead URLs replaced",
+                        ticker, stats["n_dead"])
     elapsed = int((time.monotonic() - t0) * 1000)
     logger.info(
         "stock_research: generated %s profile in %dms (citations: %d/%d verified)",
         ticker, elapsed, n_verified, len(parsed["source_citations"]),
     )
+    agent_audit.audit_response(
+        req_id=req_id,
+        endpoint=f"/api/stock/{ticker}/profile",
+        agent_id="stock-research",
+        content=raw,
+        finish_reason=(data.get("choices") or [{}])[0].get("finish_reason"),
+        usage=data.get("usage"),
+        duration_ms=elapsed,
+        extra={
+            "ticker": ticker,
+            "n_citations": len(parsed["source_citations"]),
+            "n_verified_citations": n_verified,
+        },
+    )
+    parsed["req_id"] = req_id
     return parsed
 
 
@@ -383,6 +383,10 @@ def build_stock_research_router() -> APIRouter:
                      existing.get("user_status_ts"), t),
                 )
             merged = get_profile(t) or merged
+        # req_id isn't a DB column — surface it from the LLM gen so
+        # the UI can click-jump to /audit/req/{id} for this run.
+        if gen.get("req_id"):
+            merged["req_id"] = gen["req_id"]
         return merged
 
     @router.get("/{ticker}/exposure")

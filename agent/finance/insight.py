@@ -159,6 +159,11 @@ def build_insight_router() -> APIRouter:
         t0 = time.monotonic()
         try:
             text = await _call(system, _INSIGHT_PROMPT, model)
+            # URL hallucination guard — every LLM-generated text that
+            # gets shown to the user goes through agent.llm_url_guard
+            # so dead URLs are replaced with Google-search fallbacks.
+            from agent.llm_url_guard import sanitize_text
+            text, _url_stats = sanitize_text(text, context_hint=sym or "")
         except HTTPException as exc:
             agent_audit.audit_error(
                 req_id=req_id,
