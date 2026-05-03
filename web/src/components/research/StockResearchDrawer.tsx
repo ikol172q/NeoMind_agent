@@ -120,8 +120,7 @@ export function StockResearchDrawer() {
               <span className="text-xl font-bold text-[var(--color-text)] font-mono">{ticker}</span>
               <span className="text-sm text-[var(--color-text)]">
                 {liveQuoteQ.data?.name
-                  ?? profile?.name
-                  ?? (profileQ.isLoading || liveQuoteQ.isLoading ? 'loading…' : '(profile not generated yet)')}
+                  ?? (liveQuoteQ.isLoading ? 'loading…' : '—')}
               </span>
               <StatusPillSelector
                 current={effectiveStatus}
@@ -131,12 +130,15 @@ export function StockResearchDrawer() {
               />
             </div>
             <div className="text-[10px] text-[var(--color-dim)] mt-1 flex items-center gap-3 flex-wrap">
-              {/* Sector — prefer yfinance live (sector + industry); fall
-                  back to LLM profile only if yfinance has no data. */}
-              {(liveQuoteQ.data?.sector || profile?.sector) && (
+              {/* Sector — yfinance live only. We deliberately do NOT
+                  fall back to LLM profile.sector because the user
+                  can't tell the source from the rendered chip. If
+                  yfinance has no sector for this ticker, show
+                  nothing (chip omitted). */}
+              {liveQuoteQ.data?.sector && (
                 <span>
-                  {liveQuoteQ.data?.sector ?? profile?.sector}
-                  {liveQuoteQ.data?.industry && ` · ${liveQuoteQ.data.industry}`}
+                  {liveQuoteQ.data.sector}
+                  {liveQuoteQ.data.industry && ` · ${liveQuoteQ.data.industry}`}
                 </span>
               )}
               {/* quick stats — yfinance live, with day-change ▲▼ */}
@@ -183,7 +185,13 @@ export function StockResearchDrawer() {
                   live · yfinance
                 </span>
               )}
-              {profile?.style_verdict && <span className="ml-2 italic">{profile.style_verdict}</span>}
+              {/* Old LLM-only profile.style_verdict deliberately
+                  removed from header — the SEC-anchored verdict is
+                  now displayed in the Overview tab body (emerald
+                  box) where it has proper provenance. Showing two
+                  competing verdicts in different places would be
+                  confusing, and the unmarked LLM one in the header
+                  blended into the live yfinance data. */}
             </div>
           </div>
           <button
