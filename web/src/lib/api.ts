@@ -326,7 +326,12 @@ export interface StreamCallbacks {
     /** True when the backend auto-compacted this turn (older history
      *  was summarized to keep prompt tokens under the threshold). */
     compacted?: boolean;
-    content_length: number
+    content_length: number;
+    /** URLs the LLM emitted that failed HEAD verification — surfaced
+     *  by agent.llm_url_guard. Per-URL fallback is a Google search
+     *  URL the UI can render so the user is never silently shown a
+     *  broken link. */
+    url_warnings?: Array<{ url: string; fallback: string; host: string }>;
   }) => void
   onError: (err: string) => void
 }
