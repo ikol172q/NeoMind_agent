@@ -973,6 +973,43 @@ class HybridSearchEngine:
 
         languages = languages or ["en", "zh"]
 
+        # Step 0.5: Tavily-primary fast path (matches the agent-wide
+        # search policy). Same logic as UniversalSearchEngine — query
+        # Tavily alone first, return its results without fanning out
+        # if it gives ≥1 hit. Multi-source fan-out below is the
+        # graceful fallback when Tavily fails / 0 results / not set up.
+        tavily = self.tier2_sources.get("tavily")
+        if tavily is not None:
+            try:
+                tav_items = await asyncio.wait_for(
+                    tavily.search(query, max_results=max_results),
+                    timeout=10.0,
+                )
+            except Exception as exc:
+                tav_items = None
+                print(f"[search] tavily-primary failed: {exc} — falling back to multi-source", flush=True)
+            if tav_items:
+                # Optional content extraction same as multi-source path
+                ext_count = 0
+                if extract_content and getattr(self, "extractor", None):
+                    try:
+                        ext_count = await self.extractor.extract_batch(
+                            tav_items, top_n=5)
+                    except Exception:
+                        pass
+                tav_result = SearchResult(
+                    items=tav_items[:max_results],
+                    sources_used=["tavily"],
+                    sources_failed=[],
+                    expanded_queries=[query],
+                    query=query,
+                    extraction_count=ext_count,
+                )
+                self.cache.set(query, tav_result)
+                print(f"[search] tavily-primary returned {len(tav_items)} items — skipping fan-out", flush=True)
+                return tav_result
+            # else: 0 results → fall through to multi-source path
+
         # Step 1: Query Expansion
         if expand_queries:
             queries = self.expander.expand(query, max_variants=2)

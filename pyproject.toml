@@ -47,6 +47,10 @@ full = [
     "duckduckgo-search>=4.0.0",
     "feedparser>=6.0.0",
     "flashrank>=0.2.0",
+    # Tavily — agent's primary internet search source (LLM-optimized,
+    # 1000 free searches/month). agent/search/sources.py reads
+    # TAVILY_API_KEY at import time; missing key → tier2 fallback.
+    "tavily-python>=0.5.0",
 ]
 web = [
     "trafilatura>=1.4.0",
@@ -68,6 +72,8 @@ finance = [
     "websockets>=12.0",
     "trafilatura>=1.4.0",
     "duckduckgo-search>=4.0.0",
+    # Tavily — primary search source (also see [search] extra)
+    "tavily-python>=0.5.0",
     "python-telegram-bot>=20.0",
     "playwright>=1.40.0",
     # added 2026-04-25: scheduler for periodic data pulls + analysis

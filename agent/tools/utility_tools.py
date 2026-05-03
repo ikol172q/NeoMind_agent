@@ -288,7 +288,13 @@ class WebSearchTool:
         """
         Search the web.
 
-        For DuckDuckGo: uses the HTML lite endpoint (no API key needed).
+        Resolution order (matches the agent-wide search policy):
+          1. UniversalSearchEngine (Tavily-primary; LLM-optimized,
+             higher quality than DDG). Used when the package +
+             TAVILY_API_KEY are available — happens silently if so.
+          2. DuckDuckGo HTML lite endpoint — original CLI fallback,
+             no API key required, kept so the tool still works in
+             environments without Tavily set up.
 
         Args:
             query: Search query string.
@@ -304,6 +310,19 @@ class WebSearchTool:
                 error="Query cannot be empty",
             )
 
+        # Try Tavily-primary engine first (silently degrades if not set up)
+        try:
+            engine_result = await self._search_via_universal_engine(
+                query, num_results)
+            if engine_result is not None:
+                return engine_result
+        except Exception as exc:
+            # Don't let engine init failures break CLI search — fall back
+            import logging as _lg
+            _lg.getLogger(__name__).debug(
+                "WebSearchTool universal engine path failed: %s — "
+                "falling back to %s", exc, self.engine)
+
         if self.engine == "duckduckgo":
             return await self._search_duckduckgo(query, num_results)
 
@@ -312,6 +331,46 @@ class WebSearchTool:
             query=query,
             error=f"Unsupported search engine: {self.engine}",
         )
+
+    async def _search_via_universal_engine(
+        self, query: str, num_results: int,
+    ) -> Optional[WebSearchResult]:
+        """Use UniversalSearchEngine (Tavily-primary). Returns None if
+        the engine has no available sources (e.g. missing tavily-python
+        + missing duckduckgo_search/feedparser). Returns a populated
+        WebSearchResult otherwise. Raises on init / network failure
+        so the caller can fall back."""
+        from agent.search.engine import UniversalSearchEngine
+        # Singleton-per-process is fine; engine init is cheap when
+        # source classes' .available checks fail fast.
+        global _UNIVERSAL_ENGINE_SINGLETON
+        try:
+            engine = _UNIVERSAL_ENGINE_SINGLETON
+        except NameError:
+            engine = None
+        if engine is None:
+            engine = UniversalSearchEngine(domain="general")
+            globals()["_UNIVERSAL_ENGINE_SINGLETON"] = engine
+        # If neither tier has any source available, return None to
+        # let caller fall back to its own DDG implementation.
+        if not (engine.tier1_sources or engine.tier2_sources or engine.tier3_sources):
+            return None
+        result = await engine.search_advanced(
+            query=query,
+            max_results=num_results,
+            extract_content=False,
+            expand_queries=False,
+        )
+        if not result or not result.items:
+            return None
+        hits: List[SearchHit] = []
+        for it in result.items[:num_results]:
+            hits.append(SearchHit(
+                title=it.title or "",
+                url=it.url or "",
+                snippet=(it.snippet or "")[:300],
+            ))
+        return WebSearchResult(success=True, query=query, results=hits)
 
     async def _search_duckduckgo(
         self,
