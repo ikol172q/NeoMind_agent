@@ -966,7 +966,7 @@ See `tests/COMPREHENSIVE_TEST_PLAN.md` for the full module-by-module test matrix
 | Feature Docs | `plans/FEATURE_DOCUMENTATION.md` | Usage, pros/cons for every module |
 | Troubleshooting | `plans/COMPREHENSIVE_TROUBLESHOOTING.md` | Master troubleshooting guide |
 | Architecture (Mermaid) | `plans/ARCHITECTURE_VISUALIZATION.md` | 9 detailed Mermaid diagrams |
-| Architecture (Interactive) | `plans/architecture_interactive.html` | D3.js force-directed module graph |
+| Architecture (Interactive) | web dashboard → Settings → Codebase architecture | Force-directed module graph (data: `plans/architecture_data.json`) |
 | Changelog | `plans/CHANGELOG.md` | Version history |
 
 ### Academic Papers

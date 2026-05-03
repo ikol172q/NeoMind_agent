@@ -2597,3 +2597,47 @@ export function useAppendStockNote() {
     },
   })
 }
+
+// ── Architecture graph (Settings → Architecture sub-page) ────────
+export interface ArchModule {
+  id: string
+  name: string
+  group: string
+  groupLabel: string
+  color: string
+  path: string
+  lines: number
+  totalClasses: number
+  totalFunctions: number
+  moduleDoc?: string
+  classes?: string[]
+}
+
+export interface ArchEdge {
+  source: string
+  target: string
+  synthetic?: boolean
+}
+
+export interface ArchitectureData {
+  modules: ArchModule[]
+  edges: ArchEdge[]
+  generated_at: number
+  size_bytes: number
+}
+
+export function useArchitecture() {
+  return useQuery<ArchitectureData>({
+    queryKey: ['architecture'],
+    queryFn: () => fetchJSON<ArchitectureData>('/api/architecture'),
+    staleTime: 60_000,
+  })
+}
+
+export function useRegenArchitecture() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean; duration_ms: number }, Error, void>({
+    mutationFn: () => fetchJSON('/api/architecture/regenerate', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['architecture'] }),
+  })
+}

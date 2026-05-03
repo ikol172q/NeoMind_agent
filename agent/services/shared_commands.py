@@ -430,7 +430,7 @@ class SharedCommandsMixin:
                     f"Architecture generation failed:\n{output}")
             return self.core.formatter.format_result(
                 "Architecture Graph",
-                output + "\n\nOpen plans/architecture_interactive.html to view."
+                output + "\n\nView at: web dashboard → Settings → Codebase architecture"
             )
         except subprocess.TimeoutExpired:
             return self.core.formatter.error("Architecture generation timed out.")
