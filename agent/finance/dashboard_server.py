@@ -1324,13 +1324,14 @@ def create_app(
         app.include_router(build_learning_router())
 
         # Auto-seed the learning library on first run (or after bumping
-        # seed_cases.py). Idempotent — upserts by slug, so re-running
-        # at every dashboard start is fine. Cheap (in-process DB write).
+        # seed_cases.py / seed_classics.py). Idempotent — upserts by
+        # slug, so re-running at every dashboard start is fine.
         try:
             from agent.finance.learning.seed_cases import all_seeds
+            from agent.finance.learning.seed_classics import all_classics
             from agent.finance.learning import persistence as _learning_dao
             _learning_dao.ensure_schema()
-            for _s in all_seeds():
+            for _s in (all_seeds() + all_classics()):
                 _learning_dao.upsert_case(
                     slug=_s["slug"], title=_s["title"], title_zh=_s["title_zh"],
                     summary_zh=_s["summary_zh"],

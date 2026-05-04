@@ -27,6 +27,7 @@ import {
 const ERA_LABEL: Record<string, string> = {
   'modern_cn':    '现代中国',
   'classic_intl': '国际经典',
+  'classic_cn':   '中文经典',
   'recent_2024':  '2024',
   'recent_2025':  '2025',
   'recent_2026':  '2026',
@@ -35,6 +36,7 @@ const ERA_LABEL: Record<string, string> = {
 const ERA_COLOR: Record<string, string> = {
   'modern_cn':    'border-amber-500/40 text-amber-300',
   'classic_intl': 'border-emerald-500/40 text-emerald-300',
+  'classic_cn':   'border-emerald-500/40 text-emerald-300',
   'recent_2024':  'border-blue-500/40 text-blue-300',
   'recent_2025':  'border-blue-500/40 text-blue-300',
   'recent_2026':  'border-violet-500/40 text-violet-300',
@@ -162,6 +164,7 @@ export function LearningTab() {
                 <option value="">全部时代</option>
                 <option value="modern_cn">现代中国</option>
                 <option value="classic_intl">国际经典</option>
+                <option value="classic_cn">中文经典</option>
                 <option value="recent_2024">2024</option>
                 <option value="recent_2025">2025</option>
                 <option value="recent_2026">2026</option>

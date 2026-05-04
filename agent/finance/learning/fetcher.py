@@ -8,9 +8,12 @@ Pipeline:
      ticker price moves with no story, repeat news).
   3. LLM extract — title_zh / summary_zh / themes / tickers in one
      shot. Translates to Chinese if source is English.
-  4. Optionally fetch full article body for the cache (best-effort —
-     a Tavily snippet alone is fine if extraction fails).
-  5. Upsert into learning_cases with is_fresh=1.
+  4. Tavily extract: fetch full article text for the URL (works on
+     open pages; gracefully falls back to snippet for paywalled
+     sources like Bloomberg / WSJ / FT).
+  5. LLM translate full content to Chinese (skip if already zh).
+  6. Upsert into learning_cases with is_fresh=1, body containing
+     both the Chinese rendition and the original.
 
 Designed to be safe to re-run — slug dedup means same article
 won't be added twice.
@@ -217,28 +220,135 @@ def _llm_gate_and_extract(candidate: Dict[str, Any]) -> Optional[Dict[str, Any]]
     return raw
 
 
-# ─── Step 5: persist ───────────────────────────────────────────
+# ─── Step 4: full-text fetch (Tavily extract) ────────────────────
+
+def _fetch_full_text(url: Optional[str]) -> Optional[str]:
+    """Tavily extract gives us cleaned page text for any URL. Works on
+    most open pages (Wikipedia / TechCrunch / Yahoo Finance / company
+    pressrooms). Paywalled sites (Bloomberg / WSJ / FT) typically
+    end up in failed_results — we return None and the caller falls
+    back to the search-result snippet.
+
+    Counts as 1 Tavily credit per call — the user's free tier is
+    1000/month, more than enough for ~8 fresh per day."""
+    if not url or not url.strip():
+        return None
+    import os
+    key = os.environ.get("TAVILY_API_KEY")
+    if not key:
+        return None
+    try:
+        from tavily import TavilyClient
+        client = TavilyClient(api_key=key)
+        result = client.extract(urls=[url.strip()])
+    except Exception as exc:
+        logger.debug("tavily extract failed for %s: %s", url, exc)
+        return None
+    results = (result or {}).get("results") or []
+    if not results:
+        return None
+    raw = (results[0].get("raw_content") or "").strip()
+    if len(raw) < 200:
+        return None
+    return raw
+
+
+# ─── Step 5: full-content translate (LLM, EN→ZH only) ────────────
+
+def _translate_to_chinese(text: str, *, source_lang: str = "en") -> Optional[str]:
+    """Translate a (possibly long) article to Chinese. Skip if source
+    is already Chinese. Truncates input to 12K chars (Tavily extract
+    occasionally returns 100K+ — page nav / footer / sidebar noise),
+    asks LLM for a clean Chinese rendition keeping facts + structure.
+    Returns None on failure (caller falls back to snippet)."""
+    if source_lang.startswith("zh") or not text:
+        return text if source_lang.startswith("zh") else None
+    text = text[:12_000]
+    try:
+        from agent.finance.extractors.base import call_strict_json
+        result = call_strict_json(
+            system_prompt=(
+                "把下面英文文章/网页内容翻译成中文。"
+                "目标读者是想学投资的中文使用者。要求："
+                "(1) 保留所有数字、公司名、日期、专有名词。"
+                "(2) 删掉网页导航 / 广告 / 评论 / 页脚等噪音, 只留正文。"
+                "(3) 保留段落结构, 用 markdown。"
+                "(4) 1500-3000 字之间, 不要逐字翻译, 要把噪音清理掉。"
+                "(5) 输出 JSON: {translated: \"...\"}"
+            ),
+            user_content=text,
+            json_schema={
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["translated"],
+                "properties": {"translated": {"type": "string"}},
+            },
+            schema_name="translate_article",
+            max_tokens=8000,
+        )
+        out = (result.get("translated") or "").strip()
+        return out if len(out) >= 100 else None
+    except Exception as exc:
+        logger.debug("translate failed: %s", exc)
+        return None
+
+
+# ─── Step 6: persist ───────────────────────────────────────────
 
 def _persist_one(candidate: Dict[str, Any], extracted: Dict[str, Any]) -> str:
-    """Build the slug + body and upsert. Returns slug."""
+    """Build the slug + body and upsert. Returns slug.
+
+    Body shape:
+      # title
+      meta block (source / link / published)
+      ## 中文摘要 (LLM 200-400 char gist)
+      ## 中文全文 (LLM-translated full article — IF Tavily extract
+                  succeeded AND source was English. For Chinese
+                  sources we paste the original here. For paywalled
+                  sources where extract failed, this section is
+                  omitted and the snippet shows below.)
+      ## Original / Snippet (raw text fallback)
+    """
     base = (extracted.get("title_zh") or candidate.get("title") or "case").strip()
     slug = slugify(base)
-    # Body: source snippet + extracted summary. Keep it lean —
-    # the user can always click the source URL for the full text.
-    body_parts = [
+    src_url = candidate.get("url")
+    src_lang = (extracted.get("language") or "zh").lower()
+
+    # Step 4: try full extract
+    full_text = _fetch_full_text(src_url)
+    # Step 5: translate if English source
+    full_text_zh: Optional[str] = None
+    if full_text:
+        if src_lang.startswith("zh"):
+            full_text_zh = full_text[:6000]  # Chinese text already; just cap
+        else:
+            full_text_zh = _translate_to_chinese(full_text, source_lang=src_lang)
+
+    body_parts: List[str] = [
         f"# {extracted.get('title_zh','?')}",
         f"**来源**: {candidate.get('source','?')}",
         (f"**原标题**: {candidate.get('title','')}"
-         if extracted.get('language') != 'zh' else ""),
+         if not src_lang.startswith("zh") else ""),
         f"**链接**: {candidate.get('url','')}",
         f"**发布**: {candidate.get('published','?')}",
         "",
         "## 中文摘要",
         extracted.get("summary_zh", ""),
-        "",
-        "## 原文 snippet",
-        candidate.get("snippet", ""),
     ]
+    if full_text_zh:
+        body_parts += ["", "## 中文全文" + (
+            "（LLM 翻译自原文）" if not src_lang.startswith("zh") else "（原文为中文）"
+        ), full_text_zh]
+    if full_text and not src_lang.startswith("zh"):
+        # Original English available — keep abbreviated for reference
+        body_parts += ["", "## Original (English)", full_text[:5000]]
+    elif not full_text:
+        # Extract failed (paywall / blocked) — still show the snippet
+        body_parts += [
+            "",
+            "## 原文 snippet（全文获取失败 — 可能因为付费墙；点击上方链接查看原文）",
+            candidate.get("snippet", ""),
+        ]
     body = "\n\n".join([p for p in body_parts if p])
 
     upsert_case(
@@ -246,7 +356,7 @@ def _persist_one(candidate: Dict[str, Any], extracted: Dict[str, Any]) -> str:
         title=candidate.get("title") or extracted.get("title_zh") or slug,
         title_zh=extracted.get("title_zh", ""),
         summary_zh=extracted.get("summary_zh", "")[:1500],
-        source_url=candidate.get("url"),
+        source_url=src_url,
         source_name=candidate.get("source"),
         body=body,
         language=extracted.get("language", "zh"),
