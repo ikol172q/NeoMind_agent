@@ -54,14 +54,31 @@ async def run() -> Dict[str, Any]:
                                         summary_json=summary)
             return summary
 
+        # Each scanner wrapped in audited_call so it shows as its own
+        # entry in NeoMind Live (agent_id="scanner:13f" etc). Without
+        # this they were invisible — only the parent signal_hourly
+        # job's analysis_runs row was tracked.
+        from agent.finance.agent_audit import audited_call
         try:
-            wl_result = run_watchlist_scan()
+            wl_result = audited_call(
+                agent_id="scanner:watchlist",
+                endpoint="scanner:watchlist",
+                fn=run_watchlist_scan,
+                extra_request={"job": JOB_NAME, "n_tickers": len(wl)},
+                summarize_result=lambda r: f"watchlist scan: {r.get('n_emitted', 0)} events",
+            )
         except Exception as exc:
             logger.exception("watchlist scanner failed")
             wl_result = {"error": str(exc)}
 
         try:
-            news_result = run_news_scan()
+            news_result = audited_call(
+                agent_id="scanner:news",
+                endpoint="scanner:news",
+                fn=run_news_scan,
+                extra_request={"job": JOB_NAME},
+                summarize_result=lambda r: f"news scan: {r.get('n_emitted', 0)} events",
+            )
         except Exception as exc:
             logger.exception("news scanner failed")
             news_result = {"error": str(exc)}
@@ -69,14 +86,27 @@ async def run() -> Dict[str, Any]:
         # Congressional + policy: fast HTTP, low rate-limit risk
         try:
             from agent.finance.regime.scanners.congressional_scanner import run_congressional_scan
-            cong_result = run_congressional_scan(lookback_days=30)
+            cong_result = audited_call(
+                agent_id="scanner:congressional",
+                endpoint="scanner:congressional",
+                fn=run_congressional_scan,
+                kwargs={"lookback_days": 30},
+                extra_request={"job": JOB_NAME, "lookback_days": 30},
+                summarize_result=lambda r: f"congressional scan: {r.get('n_emitted', 0)} events",
+            )
         except Exception as exc:
             logger.exception("congressional scanner failed")
             cong_result = {"error": str(exc)}
 
         try:
             from agent.finance.regime.scanners.policy_scanner import run_policy_scan
-            policy_result = run_policy_scan()
+            policy_result = audited_call(
+                agent_id="scanner:policy",
+                endpoint="scanner:policy",
+                fn=run_policy_scan,
+                extra_request={"job": JOB_NAME},
+                summarize_result=lambda r: f"policy scan: {r.get('n_emitted', 0)} events",
+            )
         except Exception as exc:
             logger.exception("policy scanner failed")
             policy_result = {"error": str(exc)}

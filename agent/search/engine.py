@@ -287,6 +287,44 @@ class UniversalSearchEngine:
         """
         _search_start = time.time()
 
+        # Audit start — every internet search visible in NeoMind Live
+        # as agent_id="search-engine". Lazy import + try/except so
+        # audit failures don't break search.
+        _audit_req_id = None
+        try:
+            from agent.finance import agent_audit as _audit
+            _audit_req_id = _audit.new_req_id()
+            _audit.audit_request(
+                req_id=_audit_req_id,
+                endpoint=f"search:{self.domain}",
+                agent_id="search-engine",
+                messages=[{"role": "user", "content": query}],
+                model="(no llm — multi-source aggregator)",
+                extra={"max_results": max_results, "expand_queries": expand_queries,
+                       "extract_content": extract_content, "domain": self.domain},
+            )
+        except Exception:
+            pass
+
+        def _audit_finish(result_obj, path: str):
+            if _audit_req_id is None:
+                return
+            try:
+                _audit.audit_response(
+                    req_id=_audit_req_id,
+                    endpoint=f"search:{self.domain}",
+                    agent_id="search-engine",
+                    content=f"{path}: {len(result_obj.items)} results",
+                    duration_ms=int((time.time() - _search_start) * 1000),
+                    extra={"path": path,
+                           "sources_used": result_obj.sources_used,
+                           "sources_failed": getattr(result_obj, "sources_failed", []),
+                           "n_items": len(result_obj.items),
+                           "query": query[:200]},
+                )
+            except Exception:
+                pass
+
         # Step 0: Check cache
         cached = self.cache.get(query)
         if cached is not None:
@@ -298,6 +336,7 @@ class UniversalSearchEngine:
                 reranked=cached.reranked, cached=True,
                 latency_ms=(time.time() - _search_start) * 1000,
             )
+            _audit_finish(cached, "cached")
             return cached
 
         # Step 0.5: Tavily-primary fast path
@@ -364,6 +403,7 @@ class UniversalSearchEngine:
                     latency_ms=(time.time() - _search_start) * 1000,
                     expanded_queries=[query],
                 )
+                _audit_finish(tav_result, "tavily-primary")
                 return tav_result
             # else: Tavily returned 0 results → fall through to multi-source
 
@@ -492,6 +532,7 @@ class UniversalSearchEngine:
             expanded_queries=queries,
         )
 
+        _audit_finish(result, "multi-source")
         return result
 
     # ── Status & diagnostics ─────────────────────────────────────────

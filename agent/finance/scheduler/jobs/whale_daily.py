@@ -39,8 +39,17 @@ async def run() -> Dict[str, Any]:
     try:
         from agent.finance.regime.scanners.whale_scanner import run_whale_scan
         from agent.finance.regime.signals import detect_confluences
+        from agent.finance.agent_audit import audited_call
 
-        result = run_whale_scan()
+        # Wrap so 13F whale scanner shows as own entry in NeoMind Live
+        # (agent_id="scanner:13f"), separate from this job's wrapper.
+        result = audited_call(
+            agent_id="scanner:13f",
+            endpoint="scanner:13f",
+            fn=run_whale_scan,
+            extra_request={"job": JOB_NAME},
+            summarize_result=lambda r: f"13F scan: {r.get('n_emitted', 0)} events across {r.get('n_whales', 0)} whales",
+        )
         confluences = detect_confluences()
         summary.update({
             "status":          "completed",

@@ -117,6 +117,27 @@ async def _invoke(runner: Callable[..., Awaitable[Any]], **kwargs: Any) -> Any:
     return await runner(**kwargs)
 
 
+async def _invoke_audited(name: str, runner: Callable[..., Awaitable[Any]],
+                          **kwargs: Any) -> Any:
+    """Audit-wrapped invocation. Every scheduler job becomes a NeoMind
+    Live entry (agent_id=scheduler:<name>). Per-scanner sub-audits
+    inside the job (signal_hourly's wl/news/cong/policy) still fire
+    independently — they show up as scanner:<name> entries that the
+    operator can use to drill from the parent job into per-scanner
+    runs."""
+    from agent.finance.agent_audit import audited_call_async
+    return await audited_call_async(
+        agent_id=f"scheduler:{name}",
+        endpoint=f"scheduler:{name}",
+        fn=runner,
+        kwargs=kwargs,
+        extra_request={"trigger": "scheduler"},
+        summarize_result=lambda r: (
+            f"job {name}: status={r.get('status', '?')}"
+            if isinstance(r, dict) else str(r)[:200]),
+    )
+
+
 def run_job_once(name: str, **kwargs: Any) -> Dict[str, Any]:
     """Run a job synchronously (for CLI / API force-rerun).
 
@@ -130,7 +151,7 @@ def run_job_once(name: str, **kwargs: Any) -> Dict[str, Any]:
 
     runner = spec["run"]
     try:
-        result = asyncio.run(_invoke(runner, **kwargs))
+        result = asyncio.run(_invoke_audited(name, runner, **kwargs))
         # Update scheduler_jobs.last_run_* — the runner already wrote
         # an analysis_runs row; we only mirror its identity here.
         # Mirror the actual analysis_runs.status, not just "didn't raise":

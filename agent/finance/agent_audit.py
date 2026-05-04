@@ -364,6 +364,150 @@ def audit_error(**kwargs) -> None:
     get_default_audit().record_error(**kwargs)
 
 
+# ── Convenience wrapper for non-LLM workloads ────────────────────
+
+
+def audited_call(
+    *,
+    agent_id: str,
+    endpoint: str,
+    fn,
+    args: tuple = (),
+    kwargs: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
+    extra_request: Optional[Dict[str, Any]] = None,
+    extra_response: Optional[Dict[str, Any]] = None,
+    summarize_result: Optional[callable] = None,
+):
+    """Run ``fn(*args, **kwargs)`` wrapped in an audit_request +
+    audit_response (or audit_error). Returns whatever fn returns.
+
+    Use this for non-LLM activities the operator should see in
+    NeoMind Live: scanner runs, scheduler jobs, periodic background
+    work, etc.
+
+    summarize_result(result_obj) → str: optional, controls what shows
+    up in the audit_response.content field. If omitted, we serialize
+    a JSON snippet of the result (capped at 4KB).
+
+    Audit failures never propagate — if the audit module errors, the
+    underlying fn's output is still returned. Defense in depth so
+    visibility doesn't break correctness.
+    """
+    kwargs = kwargs or {}
+    import time as _time
+    import json as _json
+    req_id = new_req_id()
+    try:
+        audit_request(
+            req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+            messages=[], model="(no llm — direct call)",
+            project_id=project_id,
+            extra={**(extra_request or {})},
+        )
+    except Exception:
+        pass
+    t0 = _time.monotonic()
+    try:
+        result = fn(*args, **kwargs)
+    except Exception as exc:
+        try:
+            audit_error(
+                req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+                error_type=type(exc).__name__, error_msg=str(exc),
+                duration_ms=int((_time.monotonic() - t0) * 1000),
+                project_id=project_id,
+            )
+        except Exception:
+            pass
+        raise
+    duration_ms = int((_time.monotonic() - t0) * 1000)
+    if summarize_result is not None:
+        try:
+            content = summarize_result(result)
+        except Exception:
+            content = "(summarizer failed)"
+    else:
+        try:
+            content = _json.dumps(result, ensure_ascii=False, default=str)[:4000]
+        except Exception:
+            content = str(result)[:4000]
+    try:
+        audit_response(
+            req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+            content=content, duration_ms=duration_ms,
+            project_id=project_id,
+            extra={**(extra_response or {})},
+        )
+    except Exception:
+        pass
+    return result
+
+
+async def audited_call_async(
+    *,
+    agent_id: str,
+    endpoint: str,
+    fn,
+    args: tuple = (),
+    kwargs: Optional[Dict[str, Any]] = None,
+    project_id: Optional[str] = None,
+    extra_request: Optional[Dict[str, Any]] = None,
+    extra_response: Optional[Dict[str, Any]] = None,
+    summarize_result: Optional[callable] = None,
+):
+    """async variant of audited_call. ``fn`` must be a coroutine
+    function (will be awaited)."""
+    kwargs = kwargs or {}
+    import time as _time
+    import json as _json
+    req_id = new_req_id()
+    try:
+        audit_request(
+            req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+            messages=[], model="(no llm — direct call)",
+            project_id=project_id,
+            extra={**(extra_request or {})},
+        )
+    except Exception:
+        pass
+    t0 = _time.monotonic()
+    try:
+        result = await fn(*args, **kwargs)
+    except Exception as exc:
+        try:
+            audit_error(
+                req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+                error_type=type(exc).__name__, error_msg=str(exc),
+                duration_ms=int((_time.monotonic() - t0) * 1000),
+                project_id=project_id,
+            )
+        except Exception:
+            pass
+        raise
+    duration_ms = int((_time.monotonic() - t0) * 1000)
+    if summarize_result is not None:
+        try:
+            content = summarize_result(result)
+        except Exception:
+            content = "(summarizer failed)"
+    else:
+        try:
+            content = _json.dumps(result, ensure_ascii=False, default=str)[:4000]
+        except Exception:
+            content = str(result)[:4000]
+    try:
+        audit_response(
+            req_id=req_id, endpoint=endpoint, agent_id=agent_id,
+            content=content, duration_ms=duration_ms,
+            project_id=project_id,
+            extra={**(extra_response or {})},
+        )
+    except Exception:
+        pass
+    return result
+
+
 # ── HTTP router (mounted under /api/audit/*) ─────────────────────
 
 

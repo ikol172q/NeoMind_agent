@@ -288,37 +288,45 @@ def post_watchlist_bulk(body: Dict[str, Any]) -> Dict[str, Any]:
             "current": sorted(new_set)}
 
 
+# All manual /scan/* endpoints route through this so each operator-
+# triggered scanner shows up as its own NeoMind Live entry
+# (agent_id="scanner:<name>") with timing + emit count, alongside
+# the periodic scheduler runs.
+def _audited_scan(scanner_label: str, scan_fn, **scan_kwargs) -> Dict[str, Any]:
+    from agent.finance.agent_audit import audited_call
+    from agent.finance.regime.signals import detect_confluences
+    agent_id = f"scanner:{scanner_label}"
+    result = audited_call(
+        agent_id=agent_id, endpoint=agent_id, fn=scan_fn,
+        kwargs=scan_kwargs,
+        extra_request={"trigger": "manual_api"},
+        summarize_result=lambda r: f"{scanner_label} scan: {r.get('n_emitted', 0)} events" if isinstance(r, dict) else str(r)[:200],
+    )
+    confluences = detect_confluences()
+    if isinstance(result, dict):
+        result["new_confluences"] = len(confluences)
+    return result
+
+
 @router.post("/scan/watchlist")
 def post_scan_watchlist() -> Dict[str, Any]:
     """Run the watchlist scanner on demand.  Triggered by cron + UI button."""
     from agent.finance.regime.scanners.watchlist_scanner import run_watchlist_scan
-    from agent.finance.regime.signals import detect_confluences
-    result = run_watchlist_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("watchlist", run_watchlist_scan)
 
 
 @router.post("/scan/news")
 def post_scan_news() -> Dict[str, Any]:
     """Run the news scanner (yfinance per-ticker headlines)."""
     from agent.finance.regime.scanners.news_scanner import run_news_scan
-    from agent.finance.regime.signals import detect_confluences
-    result = run_news_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("news", run_news_scan)
 
 
 @router.post("/scan/whale")
 def post_scan_whale() -> Dict[str, Any]:
     """Run the 13F whale scanner.  ~30 seconds (7 whales × 2 filings × SEC EDGAR HTTP)."""
     from agent.finance.regime.scanners.whale_scanner import run_whale_scan
-    from agent.finance.regime.signals import detect_confluences
-    result = run_whale_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("13f", run_whale_scan)
 
 
 @router.post("/scan/congressional")
@@ -327,22 +335,14 @@ def post_scan_congressional(
 ) -> Dict[str, Any]:
     """Run the Congressional STOCK Act scanner (House + Senate)."""
     from agent.finance.regime.scanners.congressional_scanner import run_congressional_scan
-    from agent.finance.regime.signals import detect_confluences
-    result = run_congressional_scan(lookback_days=lookback_days)
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("congressional", run_congressional_scan, lookback_days=lookback_days)
 
 
 @router.post("/scan/policy")
 def post_scan_policy() -> Dict[str, Any]:
     """Run the China policy + macro RSS scanner."""
     from agent.finance.regime.scanners.policy_scanner import run_policy_scan
-    from agent.finance.regime.signals import detect_confluences
-    result = run_policy_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("policy", run_policy_scan)
 
 
 @router.post("/scan/insider_form4")
@@ -353,11 +353,7 @@ def post_scan_insider_form4() -> Dict[str, Any]:
     from agent.finance.regime.scanners.insider_form4_scanner import (
         run_insider_form4_scan,
     )
-    from agent.finance.regime.signals import detect_confluences
-    result = run_insider_form4_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("insider_form4", run_insider_form4_scan)
 
 
 @router.post("/scan/house_clerk_pdf")
@@ -370,11 +366,7 @@ def post_scan_house_clerk_pdf() -> Dict[str, Any]:
     from agent.finance.regime.scanners.house_clerk_pdf_scanner import (
         run_house_clerk_pdf_scan,
     )
-    from agent.finance.regime.signals import detect_confluences
-    result = run_house_clerk_pdf_scan()
-    confluences = detect_confluences()
-    result["new_confluences"] = len(confluences)
-    return result
+    return _audited_scan("house_clerk_pdf", run_house_clerk_pdf_scan)
 
 
 @router.post("/scan/all")

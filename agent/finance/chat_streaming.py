@@ -764,6 +764,24 @@ def build_chat_stream_router() -> APIRouter:
                                 args = json.loads(raw_args) if raw_args else {}
                             except Exception:
                                 args = {}
+                            # Per-tool-call audit so NeoMind Live shows
+                            # every dispatch (chat audit only covers
+                            # the outer LLM round-trip — the tool calls
+                            # the LLM made inside that round-trip
+                            # otherwise stay invisible to operators).
+                            tool_req_id = agent_audit.new_req_id()
+                            tool_endpoint = f"tool:{name}"
+                            tool_agent_id = f"tool:{name}"
+                            agent_audit.audit_request(
+                                req_id=tool_req_id,
+                                endpoint=tool_endpoint,
+                                agent_id=tool_agent_id,
+                                messages=[{"role": "user",
+                                           "content": json.dumps(args, ensure_ascii=False)}],
+                                model="(no llm — direct dispatch)",
+                                project_id=project_id,
+                                extra={"parent_req_id": req_id, "tool": name},
+                            )
                             yield {
                                 "event": "tool_call_start",
                                 "data": json.dumps({
@@ -786,6 +804,22 @@ def build_chat_stream_router() -> APIRouter:
                                 "duration_ms": tool_dur_ms,
                                 "error": tool_result.get("error"),
                             })
+                            agent_audit.audit_response(
+                                req_id=tool_req_id,
+                                endpoint=tool_endpoint,
+                                agent_id=tool_agent_id,
+                                content=json.dumps(tool_result, ensure_ascii=False)[:4000],
+                                duration_ms=tool_dur_ms,
+                                project_id=project_id,
+                                extra={
+                                    "parent_req_id": req_id,
+                                    "tool": name,
+                                    "ok": bool(tool_result.get("ok")),
+                                    "error": tool_result.get("error"),
+                                    "n_items": len(tool_result.get("items") or []),
+                                    "sources_used": tool_result.get("sources_used"),
+                                },
+                            )
                             yield {
                                 "event": "tool_call_result",
                                 "data": json.dumps({
