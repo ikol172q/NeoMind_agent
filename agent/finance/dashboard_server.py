@@ -1320,6 +1320,22 @@ def create_app(
         app.include_router(build_architecture_router())
         app.include_router(build_anchored_research_router())
         app.include_router(build_market_overlay_router())
+
+        # Mirror the registered scheduler jobs into the scheduler_jobs
+        # DB table at startup. Previously this only happened lazily
+        # (first GET /api/scheduler/jobs or first run_job_once), which
+        # meant the integrity check "every registered job has a
+        # scheduler_jobs row" failed on a fresh DB. Doing it once at
+        # boot keeps the integrity dashboard at 14/14.
+        try:
+            from agent.finance.scheduler.core import build_default_registry
+            from agent.finance.persistence import connect, ensure_schema
+            ensure_schema()
+            with connect() as conn:
+                build_default_registry().upsert_to_db(conn)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("scheduler_jobs upsert at startup failed: %s "
+                           "(integrity check will warn)", exc)
     except Exception as exc:  # noqa: BLE001
         logger.warning(
             "fin platform routers not mounted: %s "

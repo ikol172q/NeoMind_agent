@@ -966,9 +966,51 @@ class HybridSearchEngine:
             extract_content: Whether to fetch full article text for top results
             expand_queries: Whether to generate variant queries
         """
+        # Audit start — every internet search visible in NeoMind
+        # Live as agent_id="search-engine". Mirror of the audit
+        # block in agent/search/engine.py UniversalSearchEngine.
+        import time as _time
+        _t0 = _time.monotonic()
+        _audit_req_id = None
+        try:
+            from agent.finance import agent_audit as _audit
+            _audit_req_id = _audit.new_req_id()
+            _audit.audit_request(
+                req_id=_audit_req_id,
+                endpoint="search:hybrid",
+                agent_id="search-engine",
+                messages=[{"role": "user", "content": query}],
+                model="(no llm — multi-source aggregator)",
+                extra={"max_results": max_results, "expand_queries": expand_queries,
+                       "extract_content": extract_content,
+                       "engine_class": "HybridSearchEngine"},
+            )
+        except Exception:
+            pass
+
+        def _audit_finish(result_obj, path: str):
+            if _audit_req_id is None:
+                return
+            try:
+                _audit.audit_response(
+                    req_id=_audit_req_id,
+                    endpoint="search:hybrid",
+                    agent_id="search-engine",
+                    content=f"{path}: {len(result_obj.items)} results",
+                    duration_ms=int((_time.monotonic() - _t0) * 1000),
+                    extra={"path": path,
+                           "sources_used": result_obj.sources_used,
+                           "sources_failed": getattr(result_obj, "sources_failed", []),
+                           "n_items": len(result_obj.items),
+                           "query": query[:200]},
+                )
+            except Exception:
+                pass
+
         # Check cache first
         cached = self.cache.get(query)
         if cached is not None:
+            _audit_finish(cached, "cached")
             return cached
 
         languages = languages or ["en", "zh"]
@@ -1007,6 +1049,7 @@ class HybridSearchEngine:
                 )
                 self.cache.set(query, tav_result)
                 print(f"[search] tavily-primary returned {len(tav_items)} items — skipping fan-out", flush=True)
+                _audit_finish(tav_result, "tavily-primary")
                 return tav_result
             # else: 0 results → fall through to multi-source path
 
@@ -1028,10 +1071,12 @@ class HybridSearchEngine:
         print(f"[search] Firing {len(all_sources)} sources × {len(queries)} queries: {list(all_sources.keys())}", flush=True)
 
         if not all_sources:
-            return SearchResult(
+            empty = SearchResult(
                 query=query,
                 error="No search sources available. Install duckduckgo-search or configure API keys.",
             )
+            _audit_finish(empty, "no-sources")
+            return empty
 
         # Detect if this is a finance-related query (for RSS source gating)
         _finance_keywords = {
@@ -1153,6 +1198,7 @@ class HybridSearchEngine:
         # Cache the result
         self.cache.set(query, result)
 
+        _audit_finish(result, "multi-source")
         return result
 
     async def _snowball_round(

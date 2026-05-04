@@ -206,7 +206,11 @@ def sanitize_text(
     """
     urls = extract_urls(text)
     if not urls:
+        # No URLs → no verification needed → no audit entry
         return text, {"n_total": 0, "n_verified": 0, "n_dead": 0, "dead_urls": []}
+
+    import time as _time
+    _t0 = _time.monotonic()
 
     # Verify all URLs in parallel — much better worst-case latency
     # than the sequential loop (5 URLs × 4s timeout each = 20s).
@@ -230,12 +234,39 @@ def sanitize_text(
         out = out.replace(url, marker, 1)
         dead_urls.append({"url": url, "fallback": fallback, "host": host})
 
-    return out, {
+    stats = {
         "n_total":   len(urls),
         "n_verified": n_verified,
         "n_dead":    len(dead_urls),
         "dead_urls": dead_urls,
     }
+
+    # Audit entry — visible in NeoMind Live as a "url-guard" agent_id.
+    # Lazy-imported + try/except so url_guard never breaks because of
+    # an audit failure (it's a low-level utility called from many
+    # surfaces; defense in depth).
+    try:
+        from agent.finance import agent_audit
+        req_id = agent_audit.new_req_id()
+        endpoint = f"url-guard:{(context_hint or 'unknown')[:30]}"
+        agent_audit.audit_request(
+            req_id=req_id, endpoint=endpoint, agent_id="url-guard",
+            messages=[],  # no LLM call — this is a verifier
+            model="(no llm — HEAD checks)",
+            extra={"context_hint": context_hint, "n_urls": len(urls)},
+        )
+        agent_audit.audit_response(
+            req_id=req_id, endpoint=endpoint, agent_id="url-guard",
+            content=f"verified {n_verified}/{len(urls)} · dropped {len(dead_urls)}",
+            duration_ms=int((_time.monotonic() - _t0) * 1000),
+            extra={"context_hint": context_hint, **stats,
+                   # Trim dead_urls to host names so audit row stays small
+                   "dead_hosts": [d["host"] for d in dead_urls]},
+        )
+    except Exception as exc:
+        logger.debug("url_guard audit failed (non-fatal): %s", exc)
+
+    return out, stats
 
 
 def verify_citations(citations: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
