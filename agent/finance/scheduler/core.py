@@ -52,6 +52,10 @@ DEFAULT_JOBS = [
     # 7 whales × ~1s each + 0.5s sleep = ~30s.  Idempotent: re-emits
     # only when SEC publishes a new filing.
     "agent.finance.scheduler.jobs.whale_daily",
+    # Learning library (2026-05-04): daily fresh investing-education
+    # case fetch via miniflux + Tavily, LLM-gated, Chinese-translated.
+    # ~$0.01-0.05 per run, runs 06:00 daily.
+    "agent.finance.scheduler.jobs.learning_daily",
 ]
 
 

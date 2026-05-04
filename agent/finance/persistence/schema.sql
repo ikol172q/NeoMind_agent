@@ -487,6 +487,46 @@ CREATE TABLE IF NOT EXISTS url_verification_cache (
 );
 CREATE INDEX IF NOT EXISTS idx_url_cache_checked ON url_verification_cache(checked_at DESC);
 
+-- ─── Investing learning library ─────────────────────────────────────
+--
+-- Curated case studies + daily-fresh investing reading material.
+-- Two populations:
+--   1. Seed (is_classic=1) — hand-curated evergreen cases shipped with
+--      the app (Buffett-Coke, LTCM, 双减, 中特估, etc).
+--   2. Daily fresh (is_fresh=1) — pulled by scheduler/jobs/learning_daily
+--      from RSS / miniflux / Tavily, LLM-gated for relevance, fields
+--      filled in by LLM extract.
+--
+-- All material is Chinese-first: title_zh + summary_zh required;
+-- title (original-language) preserved for citation. body_inline used
+-- when content fits (<10K chars), body_md_path points to a cache
+-- file under ~/.neomind/fin/learning/cache/ otherwise.
+CREATE TABLE IF NOT EXISTS learning_cases (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    slug            TEXT NOT NULL UNIQUE,
+    title           TEXT NOT NULL,            -- original-language title
+    title_zh        TEXT NOT NULL,            -- Chinese title (translated if EN)
+    source_url      TEXT,
+    source_name     TEXT,                     -- "Howard Marks" / "雪球·Foo"
+    summary_zh      TEXT NOT NULL,            -- 1-paragraph Chinese (≤500 chars)
+    body_inline     TEXT,                     -- short body stored inline
+    body_md_path    TEXT,                     -- file path for long body
+    language        TEXT NOT NULL DEFAULT 'zh',  -- 'zh' / 'en' / 'mix'
+    themes_json     TEXT,                     -- JSON array of theme tags
+    tickers_json    TEXT,                     -- JSON array of related tickers
+    era             TEXT,                     -- 'modern_cn' / 'classic_intl' / 'recent_2024' / 'recent_2025' / 'recent_2026'
+    difficulty      TEXT,                     -- 'beginner' / 'intermediate' / 'advanced'
+    is_classic      INTEGER NOT NULL DEFAULT 0 CHECK (is_classic IN (0,1)),
+    is_fresh        INTEGER NOT NULL DEFAULT 0 CHECK (is_fresh IN (0,1)),
+    fetched_at      TEXT NOT NULL,
+    shown_count     INTEGER NOT NULL DEFAULT 0,
+    last_shown_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_learning_fresh    ON learning_cases(is_fresh, fetched_at DESC);
+CREATE INDEX IF NOT EXISTS idx_learning_classic  ON learning_cases(is_classic, last_shown_at);
+CREATE INDEX IF NOT EXISTS idx_learning_fetched  ON learning_cases(fetched_at DESC);
+
+
 -- ─── SEC-Anchored research facts (Phase B — anchor pipeline) ─────────
 --
 -- Each row is one structured fact extracted from a SEC filing

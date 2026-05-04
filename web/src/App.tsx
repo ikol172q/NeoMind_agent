@@ -5,6 +5,7 @@ import { ResearchTab } from '@/tabs/Research'
 import { PaperTab } from '@/tabs/Paper'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
+import { LearningTab } from '@/tabs/Learning'
 import { LegacyTab } from '@/tabs/Legacy'
 import { StrategiesTab } from '@/tabs/Strategies'
 import { DataLakeTab } from '@/tabs/DataLake'
@@ -13,13 +14,13 @@ import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
-import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database } from 'lucide-react'
+import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'settings' | 'legacy'
+type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   { id: 'research',   label: 'Research',   icon: LineChart },
@@ -29,6 +30,10 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // Phase B6-Step2: Data Lake tab — provenance browser over the raw
   // store (B1-B3) and the dep_hash compute cache (B4-B5).
   { id: 'data_lake',  label: 'Data Lake',  icon: Database },
+  // Phase L (2026-05-04): investing case-study library — daily fresh
+  // material from miniflux + Tavily + LLM gate, plus 14 hand-curated
+  // evergreen Chinese-first cases.
+  { id: 'learning',   label: 'Learning',   icon: GraduationCap },
   { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
@@ -246,6 +251,7 @@ export default function App() {
           />
         )}
         {tab === 'data_lake' && <DataLakeTab projectId={projectId} />}
+        {tab === 'learning' && <LearningTab />}
         {tab === 'settings' && (
           <SettingsTab
             projectId={projectId}

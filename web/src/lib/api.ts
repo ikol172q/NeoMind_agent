@@ -2837,3 +2837,102 @@ export function useTickerNews(ticker: string | null, limit = 20) {
     retry: false,
   })
 }
+
+// ── Learning library (Phase L) ──────────────────────────────────
+export interface LearningCase {
+  slug: string
+  title: string
+  title_zh: string
+  source_url?: string | null
+  source_name?: string | null
+  summary_zh: string
+  body?: string | null
+  language: string
+  themes: string[]
+  tickers: string[]
+  era: string | null
+  difficulty: string | null
+  is_classic: boolean
+  is_fresh: boolean
+  fetched_at: string
+  shown_count: number
+  last_shown_at: string | null
+}
+
+export interface LearningToday {
+  fresh: LearningCase[]
+  classic: LearningCase | null
+  fetched_at: string
+}
+
+export interface LearningLibraryResp {
+  total: number
+  count: number
+  cases: LearningCase[]
+}
+
+export interface LearningTheme { theme: string; count: number }
+
+export function useLearningToday() {
+  return useQuery<LearningToday>({
+    queryKey: ['learning-today'],
+    queryFn: () => fetchJSON<LearningToday>('/api/learning/today'),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  })
+}
+
+export function useLearningLibrary(filters: {
+  theme?: string; era?: string; language?: string; q?: string
+  limit?: number; offset?: number
+} = {}) {
+  const qs = new URLSearchParams()
+  if (filters.theme)    qs.set('theme', filters.theme)
+  if (filters.era)      qs.set('era', filters.era)
+  if (filters.language) qs.set('language', filters.language)
+  if (filters.q)        qs.set('q', filters.q)
+  qs.set('limit', String(filters.limit ?? 50))
+  qs.set('offset', String(filters.offset ?? 0))
+  return useQuery<LearningLibraryResp>({
+    queryKey: ['learning-library', filters],
+    queryFn: () => fetchJSON<LearningLibraryResp>(`/api/learning/library?${qs}`),
+    staleTime: 60_000,
+  })
+}
+
+export function useLearningThemes() {
+  return useQuery<{ themes: LearningTheme[] }>({
+    queryKey: ['learning-themes'],
+    queryFn: () => fetchJSON<{ themes: LearningTheme[] }>('/api/learning/themes'),
+    staleTime: 5 * 60_000,
+  })
+}
+
+export function useLearningCase(slug: string | null) {
+  return useQuery<LearningCase>({
+    queryKey: ['learning-case', slug],
+    queryFn: () => fetchJSON<LearningCase>(`/api/learning/cases/${encodeURIComponent(slug!)}`),
+    enabled: !!slug,
+    staleTime: 60_000,
+  })
+}
+
+export function useRefreshLearning() {
+  const qc = useQueryClient()
+  return useMutation<{ new_slugs?: string[]; n_accepted?: number }, Error, void>({
+    mutationFn: () => fetchJSON('/api/learning/refresh', { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['learning-today'] })
+      qc.invalidateQueries({ queryKey: ['learning-library'] })
+      qc.invalidateQueries({ queryKey: ['learning-themes'] })
+    },
+  })
+}
+
+export function useMarkLearningSeen() {
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (slug) => fetchJSON(
+      `/api/learning/cases/${encodeURIComponent(slug)}/seen`,
+      { method: 'POST' }),
+  })
+}

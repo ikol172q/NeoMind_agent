@@ -1308,6 +1308,7 @@ def create_app(
         from agent.finance.architecture_router import build_architecture_router
         from agent.finance.anchored_research import build_anchored_research_router
         from agent.finance.market_overlay_router import build_market_overlay_router
+        from agent.finance.learning import build_learning_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
         app.include_router(_fin_integrity_router)
@@ -1320,6 +1321,29 @@ def create_app(
         app.include_router(build_architecture_router())
         app.include_router(build_anchored_research_router())
         app.include_router(build_market_overlay_router())
+        app.include_router(build_learning_router())
+
+        # Auto-seed the learning library on first run (or after bumping
+        # seed_cases.py). Idempotent — upserts by slug, so re-running
+        # at every dashboard start is fine. Cheap (in-process DB write).
+        try:
+            from agent.finance.learning.seed_cases import all_seeds
+            from agent.finance.learning import persistence as _learning_dao
+            _learning_dao.ensure_schema()
+            for _s in all_seeds():
+                _learning_dao.upsert_case(
+                    slug=_s["slug"], title=_s["title"], title_zh=_s["title_zh"],
+                    summary_zh=_s["summary_zh"],
+                    source_url=_s.get("source_url"),
+                    source_name=_s.get("source_name"),
+                    body=_s.get("summary_zh"),
+                    language=_s.get("language", "zh"),
+                    themes=_s.get("themes", []), tickers=_s.get("tickers", []),
+                    era=_s.get("era"), difficulty=_s.get("difficulty"),
+                    is_classic=True, is_fresh=False,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("learning library auto-seed failed: %s", exc)
 
         # Mirror the registered scheduler jobs into the scheduler_jobs
         # DB table at startup. Previously this only happened lazily
