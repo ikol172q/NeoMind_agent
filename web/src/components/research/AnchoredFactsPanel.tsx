@@ -11,8 +11,11 @@
  * quote + "View source" link to SEC.
  */
 import { useState } from 'react'
-import { ShieldCheck, ExternalLink, Sparkles, Loader2, ChevronDown, ChevronRight } from 'lucide-react'
-import { useAnchoredFacts, useRegenAnchored } from '@/lib/api'
+import {
+  ShieldCheck, ExternalLink, Sparkles, Loader2, ChevronDown, ChevronRight,
+  AlertTriangle, ThumbsDown, RefreshCw,
+} from 'lucide-react'
+import { useAnchoredFacts, useRegenAnchored, useCorrectFact } from '@/lib/api'
 
 interface Props {
   ticker: string
@@ -118,6 +121,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 quote={s.evidence_quote}
                 sourceUrl={s.source_url}
                 sourceSection={s.source_section}
+                factId={s.fact_id}
+                parentTicker={ticker}
+                polarity={s.polarity}
+                confidence={s.confidence}
+                isStale={s.is_stale}
+                requiresReextract={s.requires_reextract}
               />
             ))}
           </div>
@@ -136,6 +145,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 quote={s.evidence_quote}
                 sourceUrl={s.source_url}
                 sourceSection={s.source_section}
+                factId={s.fact_id}
+                parentTicker={ticker}
+                polarity={s.polarity}
+                confidence={s.confidence}
+                isStale={s.is_stale}
+                requiresReextract={s.requires_reextract}
               />
             ))}
           </div>
@@ -154,6 +169,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 sourceUrl={c.source_url}
                 sourceSection={c.source_section}
                 onTickerClick={onTickerClick}
+                factId={c.fact_id}
+                parentTicker={ticker}
+                polarity={c.polarity}
+                confidence={c.confidence}
+                isStale={c.is_stale}
+                requiresReextract={c.requires_reextract}
               />
             ))}
           </div>
@@ -173,6 +194,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 sourceUrl={c.source_url}
                 sourceSection={c.source_section}
                 onTickerClick={onTickerClick}
+                factId={c.fact_id}
+                parentTicker={ticker}
+                polarity={c.polarity}
+                confidence={c.confidence}
+                isStale={c.is_stale}
+                requiresReextract={c.requires_reextract}
               />
             ))}
           </div>
@@ -192,6 +219,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 sourceUrl={s.source_url}
                 sourceSection={s.source_section}
                 onTickerClick={onTickerClick}
+                factId={s.fact_id}
+                parentTicker={ticker}
+                polarity={s.polarity}
+                confidence={s.confidence}
+                isStale={s.is_stale}
+                requiresReextract={s.requires_reextract}
               />
             ))}
           </div>
@@ -210,6 +243,12 @@ export function AnchoredFactsPanel({ ticker, onTickerClick }: Props) {
                 quote={r.evidence_quote}
                 sourceUrl={r.source_url}
                 sourceSection={r.source_section}
+                factId={r.fact_id}
+                parentTicker={ticker}
+                polarity={r.polarity}
+                confidence={r.confidence}
+                isStale={r.is_stale}
+                requiresReextract={r.requires_reextract}
               />
             ))}
           </div>
@@ -239,6 +278,13 @@ function Section({
 
 function FactChip({
   title, ticker, quote, sourceUrl, sourceSection, badge, severity, subtitle, onTickerClick,
+  // Phase W (2026-05-10) Pillar 2 additions
+  factId,
+  parentTicker,
+  polarity,
+  confidence,
+  isStale,
+  requiresReextract,
 }: {
   title: string
   ticker?: string
@@ -249,14 +295,60 @@ function FactChip({
   severity?: string
   subtitle?: string
   onTickerClick?: (t: string) => void
+  factId?: number
+  parentTicker?: string  // owning ticker, needed for cache invalidation on 👎
+  polarity?: 'pro' | 'contra' | 'neutral' | null
+  confidence?: number | null
+  isStale?: boolean
+  requiresReextract?: boolean
 }) {
   const [open, setOpen] = useState(false)
+  const correctMu = useCorrectFact()
   const sevColor =
     severity === 'high'  ? 'text-red-400 border-red-500/40' :
     severity === 'medium'? 'text-amber-300 border-amber-500/40' :
     'text-[var(--color-dim)] border-[var(--color-border)]'
+
+  // Phase W: visual encoding
+  // - polarity → left border accent (green pro / red contra / gray neutral)
+  // - confidence → opacity (low confidence = faded)
+  // - is_stale → amber warning icon
+  // - requires_reextract → strikethrough + dim
+  const polarityBorder =
+    polarity === 'pro'    ? 'border-l-2 border-l-emerald-500/70' :
+    polarity === 'contra' ? 'border-l-2 border-l-red-500/70' :
+                            ''
+  const confidenceOpacity = confidence != null && confidence < 0.5
+    ? 'opacity-60'    // <50% confidence = visibly faded
+    : ''
+  const flaggedClass = requiresReextract
+    ? 'opacity-40 line-through decoration-amber-500/70 decoration-dotted'
+    : ''
+
+  function handleThumbsDown(ev: React.MouseEvent) {
+    ev.stopPropagation()
+    if (!factId || !parentTicker) return
+    const note = prompt(
+      `把这条 fact 标为错误? (后续 re-extract 会跳过它)\n` +
+      `可选: 输入 "为什么错" 一句话 (会记录在 fact_corrections):`,
+      '',
+    )
+    if (note === null) return  // user cancelled
+    correctMu.mutate(
+      {
+        fact_id: factId,
+        ticker: parentTicker,
+        user_action: 'mark_wrong',
+        user_note: note.trim() || undefined,
+      },
+      {
+        onError: (err) => alert(`mark wrong failed: ${err.message}`),
+      },
+    )
+  }
+
   return (
-    <div className="border border-[var(--color-border)]/40 rounded">
+    <div className={`border border-[var(--color-border)]/40 rounded ${polarityBorder} ${confidenceOpacity} ${flaggedClass}`}>
       <button
         onClick={() => setOpen(!open)}
         className="w-full text-left px-2 py-1.5 flex items-center gap-2 hover:bg-[var(--color-panel)]/40"
@@ -275,6 +367,17 @@ function FactChip({
           {title}
           {subtitle && <span className="text-[9px] text-[var(--color-dim)] ml-1.5">· {subtitle}</span>}
         </span>
+        {/* Phase W: stale/reextract icons */}
+        {isStale && (
+          <span className="text-amber-400" title="Source 10-K filed > 18 months ago — content may be outdated">
+            <AlertTriangle size={10} />
+          </span>
+        )}
+        {requiresReextract && (
+          <span className="text-amber-400" title="Flagged for re-extract (model bumped or user marked wrong)">
+            <RefreshCw size={10} />
+          </span>
+        )}
         {badge && (
           <span className={`text-[9px] px-1.5 py-0.5 rounded border ${sevColor}`}>
             {badge}{severity && severity !== 'medium' ? ` · ${severity}` : ''}
@@ -283,18 +386,47 @@ function FactChip({
       </button>
       {open && (
         <div className="px-3 pb-2 pt-0.5 border-t border-[var(--color-border)]/30 bg-[var(--color-bg)]/30">
-          <div className="text-[10px] text-[var(--color-dim)] mb-1">verbatim from {sourceSection ?? '10-K'}:</div>
+          <div className="text-[10px] text-[var(--color-dim)] mb-1 flex items-center gap-2 flex-wrap">
+            <span>verbatim from {sourceSection ?? '10-K'}:</span>
+            {polarity && polarity !== 'neutral' && (
+              <span className={`px-1 rounded text-[8.5px] uppercase tracking-wider ${
+                polarity === 'pro' ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/15 text-red-300'
+              }`}>
+                {polarity === 'pro' ? '✅ pro' : '❌ contra'}
+              </span>
+            )}
+            {confidence != null && (
+              <span className="text-[var(--color-dim)]">
+                conf {(confidence * 100).toFixed(0)}%
+              </span>
+            )}
+            {isStale && (
+              <span className="text-amber-400">⚠ source 10-K stale</span>
+            )}
+          </div>
           <blockquote className="text-[11px] italic text-[var(--color-text)]/85 border-l-2 border-emerald-500/40 pl-2 py-0.5 mb-1.5 leading-snug">
             "{quote}"
           </blockquote>
-          <a
-            href={sourceUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-[10px] text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-0.5"
-          >
-            View on SEC EDGAR <ExternalLink size={9} />
-          </a>
+          <div className="flex items-center gap-3 flex-wrap">
+            <a
+              href={sourceUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] text-emerald-400 hover:text-emerald-300 inline-flex items-center gap-0.5"
+            >
+              View on SEC EDGAR <ExternalLink size={9} />
+            </a>
+            {factId && parentTicker && (
+              <button
+                onClick={handleThumbsDown}
+                disabled={correctMu.isPending}
+                title="标记这条 fact 错误 (会被 hide + 触发 re-extract)"
+                className="text-[10px] text-[var(--color-dim)] hover:text-red-300 inline-flex items-center gap-0.5 disabled:opacity-40"
+              >
+                <ThumbsDown size={9} /> mark wrong
+              </button>
+            )}
+          </div>
         </div>
       )}
     </div>

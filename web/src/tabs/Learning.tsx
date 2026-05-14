@@ -17,11 +17,12 @@ import {
   useLearningCase,
   useRefreshLearning,
   useMarkLearningSeen,
+  useLearningBooks,
   type LearningCase,
 } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import {
-  ExternalLink, Loader2, Search, Sparkles, Clock, X,
+  ExternalLink, Loader2, Search, Sparkles, Clock, X, BookOpen, ShoppingCart, Globe,
 } from 'lucide-react'
 
 const ERA_LABEL: Record<string, string> = {
@@ -71,7 +72,7 @@ export function LearningTab() {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="p-4 max-w-6xl mx-auto space-y-3">
+      <div className="p-2 md:p-4 max-w-6xl mx-auto space-y-3">
         {/* Today */}
         <Card>
           <CardHeader
@@ -79,12 +80,12 @@ export function LearningTab() {
             subtitle={`${fresh.length} 条 fresh + 1 经典轮换 · 最近 7 天 fetch 的为 fresh`}
           />
           <CardBody>
-            <div className="flex items-center gap-2 mb-3 text-[10px] text-[var(--color-dim)]">
+            <div className="flex flex-wrap items-center gap-2 mb-3 text-[11px] md:text-[10px] text-[var(--color-dim)]">
               <button
                 data-testid="learning-refresh"
                 onClick={() => refreshMu.mutate()}
                 disabled={refreshMu.isPending}
-                className="px-2 py-1 rounded border border-emerald-500/40 hover:border-emerald-300 text-emerald-300 flex items-center gap-1 disabled:opacity-50"
+                className="px-2.5 md:px-2 py-1.5 md:py-1 rounded border border-emerald-500/40 hover:border-emerald-300 text-emerald-300 flex items-center gap-1 disabled:opacity-50"
                 title="拉一批新案例 (调用 Tavily + miniflux + LLM gate, ~30-60s, ~$0.01)"
               >
                 {refreshMu.isPending
@@ -127,6 +128,9 @@ export function LearningTab() {
           </CardBody>
         </Card>
 
+        {/* Books — dedicated section grouped by availability */}
+        <BooksSection onOpen={setOpenSlug} />
+
         {/* Library */}
         <Card>
           <CardHeader
@@ -134,22 +138,22 @@ export function LearningTab() {
             subtitle={`${libraryQ.data?.total ?? 0} 条全部案例 · 按 fetched_at 倒序`}
           />
           <CardBody>
-            {/* Filters */}
-            <div className="flex flex-wrap items-center gap-2 mb-3 text-[11px]">
-              <div className="relative flex-1 min-w-[200px]">
-                <Search size={11} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--color-dim)]" />
+            {/* Filters — wrap on mobile; search takes full row, dropdowns wrap below */}
+            <div className="flex flex-wrap items-center gap-2 mb-3 text-[12px] md:text-[11px]">
+              <div className="relative w-full md:flex-1 md:min-w-[200px] md:w-auto">
+                <Search size={12} className="absolute left-2 top-1/2 -translate-y-1/2 text-[var(--color-dim)]" />
                 <input
                   type="text"
                   placeholder="搜标题 / 摘要…"
                   value={searchQ}
                   onChange={e => setSearchQ(e.target.value)}
-                  className="w-full pl-7 pr-2 py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[11px] outline-none focus:border-[var(--color-accent)]"
+                  className="w-full pl-7 pr-2 py-1.5 md:py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[12px] md:text-[11px] outline-none focus:border-[var(--color-accent)]"
                 />
               </div>
               <select
                 value={filterTheme}
                 onChange={e => setFilterTheme(e.target.value)}
-                className="px-2 py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[11px]"
+                className="px-2 py-1.5 md:py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[12px] md:text-[11px]"
               >
                 <option value="">全部主题</option>
                 {(themesQ.data?.themes ?? []).map(t => (
@@ -159,7 +163,7 @@ export function LearningTab() {
               <select
                 value={filterEra}
                 onChange={e => setFilterEra(e.target.value)}
-                className="px-2 py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[11px]"
+                className="px-2 py-1.5 md:py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[12px] md:text-[11px]"
               >
                 <option value="">全部时代</option>
                 <option value="modern_cn">现代中国</option>
@@ -172,7 +176,7 @@ export function LearningTab() {
               <select
                 value={filterLang}
                 onChange={e => setFilterLang(e.target.value)}
-                className="px-2 py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[11px]"
+                className="px-2 py-1.5 md:py-1 bg-[var(--color-bg)] border border-[var(--color-border)] rounded text-[12px] md:text-[11px]"
               >
                 <option value="">全部语言</option>
                 <option value="zh">中文原生</option>
@@ -247,10 +251,10 @@ function CaseCard({
           </span>
         )}
       </div>
-      <h3 className="text-[12px] font-semibold text-[var(--color-text)] mb-1 leading-snug">
+      <h3 className="text-[14px] md:text-[12px] font-semibold text-[var(--color-text)] mb-1 leading-snug">
         {c.title_zh}
       </h3>
-      <p className="text-[10.5px] text-[var(--color-text)]/75 leading-snug line-clamp-3">
+      <p className="text-[12px] md:text-[10.5px] text-[var(--color-text)]/75 leading-snug line-clamp-3">
         {c.summary_zh}
       </p>
       <div className="mt-1.5 flex items-center gap-1.5 flex-wrap">
@@ -294,7 +298,11 @@ function CaseModal({ slug, onClose }: { slug: string; onClose: () => void }) {
   return (
     <>
       <div className="fixed inset-0 bg-black/50 z-40" onClick={onClose} />
-      <div className="fixed top-[5vh] left-1/2 -translate-x-1/2 w-[820px] max-w-[92vw] max-h-[90vh] bg-[var(--color-bg)] border border-[var(--color-border)] rounded shadow-2xl z-50 flex flex-col">
+      {/* Mobile: near-fullscreen with 8px margin (avoids the iOS
+          URL bar / notch eating the bottom). Desktop: original
+          centered 820px modal. dvh > vh on iOS so the modal sizes
+          to the *visible* viewport, not the full-screen viewport. */}
+      <div className="fixed inset-x-2 top-2 bottom-2 md:inset-auto md:top-[5vh] md:left-1/2 md:-translate-x-1/2 md:w-[820px] md:max-w-[92vw] md:max-h-[90dvh] bg-[var(--color-bg)] border border-[var(--color-border)] rounded shadow-2xl z-50 flex flex-col">
         <div className="flex items-start gap-3 px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-panel)]/60">
           <div className="flex-1 min-w-0">
             {caseQ.isLoading && <div className="text-[12px] italic text-[var(--color-dim)]">loading…</div>}
@@ -327,7 +335,19 @@ function CaseModal({ slug, onClose }: { slug: string; onClose: () => void }) {
           </button>
         </div>
 
-        <div className="flex-1 overflow-y-auto p-4 text-[12px] leading-[1.7] text-[var(--color-text)]/90">
+        {/* min-h-0 lets flex-1 actually shrink so overflow-y-auto
+            kicks in (without it, content can blow past the parent
+            on iOS). overscroll-contain keeps swipes from leaking to
+            the underlying page. -webkit-overflow-scrolling for older
+            iOS Safari momentum-scroll. touch-action: pan-y blocks
+            iOS pull-to-refresh interfering. */}
+        <div
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-3 md:p-4 text-[13px] md:text-[12px] leading-[1.7] text-[var(--color-text)]/90"
+          style={{
+            WebkitOverflowScrolling: 'touch',
+            touchAction: 'pan-y',
+          }}
+        >
           {c?.body
             ? <pre className="whitespace-pre-wrap font-sans">{c.body}</pre>
             : c
@@ -353,5 +373,158 @@ function CaseModal({ slug, onClose }: { slug: string; onClose: () => void }) {
         )}
       </div>
     </>
+  )
+}
+
+
+// ── Books section — grouped by availability ────────────────────
+//
+// Per user request: "把书单单独理出来 — 如果有网上的 PDF 或相关
+// web 你可以加上, 否则我得去买". This section makes the book list
+// clearly separate from the case/memo timeline. Free books (PD or
+// publisher's free web edition) get a green 📖 button; paid books
+// get an amber 🛒 button labelled with where to buy.
+function BooksSection({ onOpen }: { onOpen: (slug: string) => void }) {
+  const booksQ = useLearningBooks()
+  const grouped = booksQ.data?.grouped ?? {}
+  const free = [...(grouped.public_domain || []), ...(grouped.free_web || [])]
+  const paid = grouped.paid || []
+
+  // User asked: 中译本和英文原版混在一起看着像复读 — split paid by
+  // language so 中文 (originals + translations) stack on top, then
+  // 英文原版 below. Free section stays flat (only 1 zh entry there;
+  // splitting would look silly).
+  const paidZh = paid.filter(b => b.language === 'zh')
+  const paidEn = paid.filter(b => b.language !== 'zh')
+
+  return (
+    <Card>
+      <CardHeader
+        title="📚 Books"
+        subtitle={`${booksQ.data?.total ?? 0} 本经典投资书 · 免费的可直接读, 付费的标了去哪买`}
+      />
+      <CardBody>
+        {booksQ.isLoading && (
+          <div className="text-[11px] italic text-[var(--color-dim)]">loading…</div>
+        )}
+
+        {/* Free section — flat, mostly EN */}
+        {free.length > 0 && (
+          <>
+            <div className="text-[10px] uppercase tracking-wider text-emerald-300 mb-1.5 flex items-center gap-1">
+              <Globe size={11} /> 免费可读 ({free.length})
+            </div>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-4">
+              {free.map(b => <BookCard key={b.slug} b={b} onOpen={onOpen} />)}
+            </div>
+          </>
+        )}
+
+        {/* Paid section — split by language */}
+        {paid.length > 0 && (
+          <>
+            <div className="text-[10px] uppercase tracking-wider text-amber-300 mb-1.5 flex items-center gap-1">
+              <ShoppingCart size={11} /> 需要购买 ({paid.length})
+            </div>
+
+            {paidZh.length > 0 && (
+              <>
+                <div className="text-[10px] text-[var(--color-text)]/60 mb-1.5 ml-1 flex items-center gap-1">
+                  <span>🇨🇳</span> 中文版 ({paidZh.length})
+                  <span className="text-[var(--color-dim)] italic">— 中文原创 + 中译本</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mb-3">
+                  {paidZh.map(b => <BookCard key={b.slug} b={b} onOpen={onOpen} />)}
+                </div>
+              </>
+            )}
+
+            {paidEn.length > 0 && (
+              <>
+                <div className="text-[10px] text-[var(--color-text)]/60 mb-1.5 ml-1 flex items-center gap-1">
+                  <span>🇺🇸</span> 英文原版 ({paidEn.length})
+                  <span className="text-[var(--color-dim)] italic">— 没有官方中译本或想读原文</span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+                  {paidEn.map(b => <BookCard key={b.slug} b={b} onOpen={onOpen} />)}
+                </div>
+              </>
+            )}
+          </>
+        )}
+      </CardBody>
+    </Card>
+  )
+}
+
+
+function BookCard({
+  b, onOpen,
+}: { b: LearningCase; onOpen: (slug: string) => void }) {
+  const isFree = b.availability === 'public_domain' || b.availability === 'free_web'
+  const availLabel = b.availability === 'public_domain' ? 'Public Domain'
+                  : b.availability === 'free_web'      ? '免费在线'
+                  : '需购买'
+  const availColor = isFree
+    ? 'border-emerald-500/40 text-emerald-300 bg-emerald-500/10'
+    : 'border-amber-500/40 text-amber-300 bg-amber-500/10'
+  return (
+    <div className="p-2.5 rounded border border-[var(--color-border)]/50 bg-[var(--color-panel)]/30 flex flex-col gap-2">
+      <div>
+        <div className="flex items-start gap-1.5 mb-1 flex-wrap">
+          <span
+            className="text-[10px] flex-shrink-0"
+            title={b.language === 'zh' ? '中文版' : '英文原版'}
+          >
+            {b.language === 'zh' ? '🇨🇳' : '🇺🇸'}
+          </span>
+          <span className={`text-[9px] px-1.5 py-0.5 rounded border ${availColor} flex-shrink-0`}>
+            {availLabel}
+          </span>
+          {b.era && (
+            <span className={`text-[9px] px-1.5 py-0.5 rounded border ${
+              ERA_COLOR[b.era] || 'border-[var(--color-border)] text-[var(--color-dim)]'
+            } flex-shrink-0`}>
+              {ERA_LABEL[b.era] || b.era}
+            </span>
+          )}
+        </div>
+        <h3 className="text-[14px] md:text-[12px] font-semibold text-[var(--color-text)] leading-snug mb-1">
+          {b.title_zh}
+        </h3>
+        <p className="text-[12px] md:text-[10.5px] text-[var(--color-text)]/75 leading-snug line-clamp-3">
+          {b.summary_zh}
+        </p>
+      </div>
+      <div className="flex items-center gap-1.5 mt-auto flex-wrap">
+        <button
+          onClick={() => onOpen(b.slug)}
+          className="text-[12px] md:text-[10px] px-2.5 md:px-2 py-1 md:py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)]"
+        >
+          📋 看简介
+        </button>
+        {b.purchase_url && (
+          <a
+            href={b.purchase_url}
+            target="_blank" rel="noopener noreferrer"
+            className={`text-[12px] md:text-[10px] px-2.5 md:px-2 py-1 md:py-0.5 rounded border flex items-center gap-1 ${
+              isFree
+                ? 'border-emerald-500/40 hover:border-emerald-300 text-emerald-300'
+                : 'border-amber-500/40 hover:border-amber-300 text-amber-300'
+            }`}
+          >
+            {isFree
+              ? <><BookOpen size={10} /> 免费读</>
+              : <><ShoppingCart size={10} /> 去购买</>}
+            <ExternalLink size={9} />
+          </a>
+        )}
+        {b.source_name && (
+          <span className="text-[8.5px] text-[var(--color-dim)] italic ml-auto truncate max-w-[140px]">
+            {b.source_name}
+          </span>
+        )}
+      </div>
+    </div>
   )
 }

@@ -34,6 +34,14 @@ LATTICE_REGEX='^(agent/finance/lattice/.*\.py|agent/config/lattice_taxonomy\.yam
 # lattice/smoke flags.
 FIN_PLATFORM_REGEX='^(agent/finance/(persistence|scheduler|integrity)/.*\.py)$'
 
+# Seed-data paths — any change to seed_*.py triggers URL verification
+# (HEAD-checks every deep-link URL, ~5s for ~50 URLs). Catches
+# fabricated douban subject IDs, dead article links, etc. — the
+# 2026-05-03 audit found 5 hallucinated douban URLs and 2 dead
+# article URLs that this guard now blocks. Budget: <10s with
+# network. Bypass shared with lattice/smoke flags.
+SEED_REGEX='^agent/finance/learning/seed_[a-z_]+\.py$'
+
 CHANGED=$(git diff --cached --name-only)
 
 # Lattice validation runs first because it's much faster
@@ -47,6 +55,22 @@ if echo "$CHANGED" | grep -qE "$LATTICE_REGEX"; then
         exit 1
     fi
     echo "✅ [neomind-pre-commit] Lattice fast validation passed"
+fi
+
+# Seed URL verification — block fabricated/dead URLs in seed_*.py
+if echo "$CHANGED" | grep -qE "$SEED_REGEX"; then
+    SEED_FILES=$(echo "$CHANGED" | grep -E "$SEED_REGEX")
+    echo "[neomind-pre-commit] seed_*.py changed — verifying URLs..."
+    if ! .venv/bin/python tools/verify_seed_urls.py $SEED_FILES; then
+        echo ""
+        echo "❌ [neomind-pre-commit] seed URL verification FAILED"
+        echo "   Each failed URL must be either fixed (search the canonical"
+        echo "   page and replace) or removed. See"
+        echo "   ~/.claude/projects/-Users-localuser/memory/feedback_url_fabrication_in_seeds.md"
+        echo "   Bypass: NEOMIND_SKIP_SMOKE=1 git commit ..."
+        exit 1
+    fi
+    echo "✅ [neomind-pre-commit] seed URL verification passed"
 fi
 
 # Fin data-platform integrity check

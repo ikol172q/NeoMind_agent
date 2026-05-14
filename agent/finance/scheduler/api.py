@@ -181,3 +181,85 @@ def list_runs(
             "started_before": started_before,
         },
     }
+
+
+# Phase 3 (2026-05-10) Pillar 3 — scanner health endpoint.
+#
+# Returns last-success time per registered job + how it compares to
+# the expected interval. Dashboard header surfaces a red badge when
+# any scanner is silent > 2× expected interval — defensive
+# observability so the user notices broken scanners before stale
+# data corrupts a decision.
+@router.get("/scanner_health")
+def scanner_health() -> Dict[str, Any]:
+    """Returns {jobs: [{name, last_success_at, expected_interval_min,
+    minutes_since, is_stale, status}, ...], n_stale}."""
+    from datetime import datetime, timezone, timedelta
+    ensure_schema()
+    reg = build_default_registry()
+    job_names = reg.names()
+
+    # Expected intervals derived from cron — rough mapping
+    # cron string → expected interval in minutes between fires
+    def expected_interval_min(cron: str) -> int:
+        # Common patterns we register:
+        if cron.startswith("*/"):
+            try:
+                return int(cron.split()[0][2:])
+            except Exception:
+                return 60
+        if "* * * *" in cron:
+            return 60
+        if cron.startswith("0 ") or cron.startswith("5 ") or cron.startswith("10 "):
+            return 24 * 60
+        if "1-5" in cron:
+            return 24 * 60
+        return 24 * 60
+
+    now = datetime.now(timezone.utc)
+    out = []
+    n_stale = 0
+    with connect() as conn:
+        for jn in job_names:
+            try:
+                cron = reg.get(jn).get("cron") or ""
+            except KeyError:
+                cron = ""
+            interval_min = expected_interval_min(cron)
+            row = conn.execute(
+                "SELECT MAX(completed_at) AS last_ok "
+                "FROM analysis_runs "
+                "WHERE job_name = ? AND status = 'completed'",
+                (jn,),
+            ).fetchone()
+            last_ok = row["last_ok"] if row else None
+            minutes_since = None
+            is_stale = False
+            if last_ok:
+                try:
+                    last_dt = datetime.fromisoformat(last_ok.replace("Z","+00:00"))
+                    if last_dt.tzinfo is None:
+                        last_dt = last_dt.replace(tzinfo=timezone.utc)
+                    minutes_since = int((now - last_dt).total_seconds() / 60)
+                    # 2× expected interval = stale
+                    is_stale = minutes_since > interval_min * 2
+                except Exception:
+                    pass
+            else:
+                is_stale = True   # never ran = stale
+            if is_stale:
+                n_stale += 1
+            out.append({
+                "name":                  jn,
+                "cron":                  cron,
+                "expected_interval_min": interval_min,
+                "last_success_at":       last_ok,
+                "minutes_since_success": minutes_since,
+                "is_stale":              is_stale,
+            })
+    return {
+        "jobs":      out,
+        "n_jobs":    len(out),
+        "n_stale":   n_stale,
+        "checked_at": now.isoformat(),
+    }

@@ -149,8 +149,8 @@ SEEDS: List[Dict[str, Any]] = [
             "(2) 一个龙头公司被严重低估时，整个板块往往一起被低估。(3) 当所有人都"
             "说《中概不能投》时，往往就是机会窗口（contrarian indicator）。"
         ),
-        "source_url": "https://www.hkex.com.hk/Indices/HSI",
-        "source_name": "港交所·恒生科技指数",
+        "source_url": "https://www.hsi.com.hk/eng/indexes/all-indexes/hsTECH",
+        "source_name": "Hang Seng Indexes·恒生科技指数",
         "language": "zh",
         "themes": ["港股", "中概股", "AI", "全球资金", "contrarian"],
         "tickers": ["0700.HK", "9988.HK", "3690.HK"],

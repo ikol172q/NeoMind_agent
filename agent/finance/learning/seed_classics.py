@@ -1,21 +1,23 @@
-"""Classic investing books / blogs / memos — public-domain or
-public-web sources only. Each entry is a CHAPTER / KEY-IDEA digest,
-not the full book — but with a click-through to the public source
-so the user can read the full text directly.
+"""Memos / speeches / shareholder-letter digests — kind='memo'.
 
-These supplement the case-study seeds in seed_cases.py:
-  - seed_cases.py = WHAT happened (events, blow-ups, big trades)
-  - seed_classics.py = HOW to think (Buffett's mental models,
-                       Marks' cycles, Munger's latticework, etc.)
+Three sibling seed files in this directory:
+  - seed_cases.py    — kind='case': event-driven case studies
+  - seed_classics.py — kind='memo': short-form essays, speeches,
+                       letters, blog posts (this file)
+  - seed_books.py    — kind='book': actual books, with availability
+                       (public_domain / free_web / paid) + read-or-
+                       purchase URL
+
+Memos here are short pieces (1-30 page transcripts / single articles)
+that are entirely free to read at the source URL. Books that contain
+collections of memos (Berkshire shareholder letters, Marks memo
+archive, 段永平 雪球 留言精选) live in seed_books.py under kind='book'
+so the user can browse them as books too.
 
 Selection criteria:
-  - Public source URL (no paywall, no scraping needed). Stuff like
-    Berkshire shareholder letters, Marks memos at oaktree.com,
-    Damodaran NYU blog, Munger speeches at USC/Caltech.
-  - Each digest is the ESSENCE of the source, not a teaser. Lead with
-    the takeaway in 1-2 sentences, then explain.
-  - Mark era as "classic_intl" or "classic_cn" so the era filter
-    cleanly separates them from event-cases and recent material.
+  - Public source URL (no paywall).
+  - Each digest is the ESSENCE — lead with the takeaway, then
+    explain.
 
 If you add a new entry: stable slug, summary stays under ~700 chars,
 include source_url to a free-to-read public origin.
@@ -111,7 +113,7 @@ CLASSICS: List[Dict[str, Any]] = [
             "市场进入心理驱动 / 政策驱动 / 技术革命驱动期，纯金融视角就盲了。Munger"
             "本人是这种跨学科思维的活体范本。"
         ),
-        "source_url": "https://fs.blog/great-talks/a-lesson-on-elementary-worldly-wisdom/",
+        "source_url": "https://fs.blog/great-talks/a-lesson-on-worldly-wisdom/",
         "source_name": "Farnam Street · Munger USC 1994",
         "language": "en",
         "themes": ["芒格", "跨学科", "mental models", "认知"],
@@ -170,104 +172,11 @@ CLASSICS: List[Dict[str, Any]] = [
 
     # ── Lefèvre / 老经典 (public domain) ──────────────────────────
 
-    {
-        "slug": "classic-reminiscences-of-stock-operator-livermore",
-        "title": "Reminiscences of a Stock Operator (Lefèvre, 1923)",
-        "title_zh": "《股票操盘手回忆录》——百年前的市场永远在重复",
-        "summary_zh": (
-            "Edwin Lefèvre 1923 年化名记录 Jesse Livermore 的投资生涯。Livermore "
-            "在 14-50 岁经历了从赌客→bucket shop 杀手→华尔街大空头, 1907 年和 1929 年"
-            "两次靠做空赚得当时 1 亿美元 (今值 ~30 亿)。书里最深刻的几句话："
-            "(1) 《市场永远不会错, 错的永远是人的判断》；(2) 《最大的钱不是来自你的"
-            "买卖, 是来自你坐着不动的时候》；(3) 《人性永远不变, 因此投机永远不变》。"
-            "教训：100 年前的市场结构和今天完全不同, 但人的恐惧 + 贪婪 + FOMO + "
-            "确认偏误一模一样。Livermore 最后破产自杀——再大的天才也敌不过"
-            "情绪反复 + 杠杆 + 市场无情。public domain, gutenberg.org 全文免费。"
-        ),
-        "source_url": "https://www.gutenberg.org/ebooks/40766",
-        "source_name": "Project Gutenberg · public domain",
-        "language": "en",
-        "themes": ["心理", "投机史", "Livermore", "古典"],
-        "tickers": [],
-        "era": "classic_intl",
-        "difficulty": "beginner",
-    },
-
     # ── Peter Lynch / Beating the Street ──────────────────────────
-
-    {
-        "slug": "classic-lynch-rule-of-six-step",
-        "title": "Peter Lynch — Buy What You Know + 5 Rules (One Up On Wall Street)",
-        "title_zh": "彼得·林奇《买你了解的》——业余投资者的真实优势",
-        "summary_zh": (
-            "Peter Lynch 在 Fidelity Magellan 基金 1977-1990 年年化 29% 的回报。"
-            "他坚持业余投资者其实有机构投资者没有的优势：(1) 《先消费再投资》——你在"
-            "Costco 看到爆款才决定买 COST 股票, 比华尔街分析师早 6 个月；(2) 你的"
-            "工作领域里你比 99% 的分析师都懂；(3) 没人逼你季度交业绩, 可以真正长持。"
-            "他的 6 类股分类法：slow grower / stalwart / fast grower / cyclical /"
-            "turnaround / asset play. 教训：(1) 别尝试做你不懂的, 哪怕它涨翻天；"
-            "(2) 在你能 edge 的领域 size 加大；(3) 《10 倍股 (tenbagger)》 不需要"
-            "找到, 经常它就在你身边。这本书是 90 年代散户运动的圣经。"
-        ),
-        "source_url": "https://www.fidelity.com/learning-center/personal-finance/peter-lynch-investment-strategy",
-        "source_name": "Fidelity · Lynch overview",
-        "language": "en",
-        "themes": ["林奇", "选股", "tenbagger", "散户"],
-        "tickers": [],
-        "era": "classic_intl",
-        "difficulty": "beginner",
-    },
 
     # ── Ben Graham / 价值投资始祖 ──────────────────────────────────
 
-    {
-        "slug": "classic-graham-mr-market-margin-of-safety",
-        "title": "Ben Graham — Mr. Market + Margin of Safety (Intelligent Investor)",
-        "title_zh": "格雷厄姆《聪明的投资者》——市场先生 + 安全边际",
-        "summary_zh": (
-            "Graham 1949 年首版《Intelligent Investor》, Buffett 称之为 《史上最好"
-            "的投资书》。两个核心比喻：(1) 《市场先生》Mr. Market 是你的合伙人, "
-            "每天给你报价, 但情绪极端 + 反复无常。聪明的投资者只在他给出离谱低价"
-            "时买、离谱高价时卖, 其余时间忽略他；(2) 《安全边际》margin of safety "
-            "= 你买入价 vs 内在价值 (intrinsic value) 之间的缓冲。如果你认为公司值 "
-            "$100 但只在 $60 买, 即使你估算错 30%, 也不会亏。教训：(1) 价格和价值"
-            "是两件事——价格短期由情绪驱动, 长期回归价值；(2) 你不需要预测市场, 只"
-            "需要在价格离谱时反应。这两个概念是所有价值投资者的认知起点。"
-        ),
-        "source_url": "https://en.wikipedia.org/wiki/The_Intelligent_Investor",
-        "source_name": "Wikipedia · Intelligent Investor 概要",
-        "language": "en",
-        "themes": ["价值投资", "格雷厄姆", "心理", "安全边际"],
-        "tickers": [],
-        "era": "classic_intl",
-        "difficulty": "beginner",
-    },
-
     # ── Damodaran (NYU) ──────────────────────────────────────────────
-
-    {
-        "slug": "classic-damodaran-narrative-and-numbers",
-        "title": "Damodaran — Narrative and Numbers (Story-driven Valuation)",
-        "title_zh": "Damodaran《叙事与数字》——估值的本质是讲一个可信的故事",
-        "summary_zh": (
-            "NYU Stern 的 Damodaran 教授 (估值领域最权威学者) 在 2017 年这本书里"
-            "论述：估值不是单纯的 DCF 数学, 而是要讲一个《可信的故事》, 然后用"
-            "数字翻译它。三步法: (1) 《故事》——这家公司在 5/10/20 年后会是什么样的"
-            "公司？(2) 《数字》——把故事翻译成 revenue growth + margin + ROIC + 终值"
-            "(3) 《一致性》——故事和数字必须互相印证, 否则就是空中楼阁 (Tesla 几个"
-            "时期 + WeWork 经典反例)。教训：(1) 同一家公司不同的故事能算出 10 倍"
-            "差异的估值, 所以《故事是估值的核心变量》, 不是数字；(2) 看到分析师"
-            "目标价时, 倒推他的故事是什么——故事不合理则价格不合理。Damodaran 自己"
-            "公开估值过 200+ 公司, 是最透明的估值教学者。"
-        ),
-        "source_url": "https://aswathdamodaran.blogspot.com/",
-        "source_name": "Damodaran 博客 (NYU Stern)",
-        "language": "en",
-        "themes": ["估值", "DCF", "Damodaran", "叙事"],
-        "tickers": [],
-        "era": "classic_intl",
-        "difficulty": "advanced",
-    },
 
     # ── 中文经典 ────────────────────────────────────────────────────
 
@@ -290,30 +199,6 @@ CLASSICS: List[Dict[str, Any]] = [
         "language": "zh",
         "themes": ["段永平", "价值投资", "中文经典", "企业家视角"],
         "tickers": ["AAPL", "NTES"],
-        "era": "classic_cn",
-        "difficulty": "intermediate",
-    },
-
-    {
-        "slug": "classic-cn-zhang-lei-value",
-        "title": "张磊《价值》——长期主义在中国的实践",
-        "title_zh": "张磊《价值》——为什么《Long Hard Effort》在中国也能 work",
-        "summary_zh": (
-            "高瓴资本张磊 2020 年《价值》一书。核心：(1) 《重仓最优秀的人》——"
-            "张磊投资了腾讯、京东、美团、宁德时代早期，关键不是看商业模式, 而是"
-            "看创始人。(2) 《Long Hard Effort, Repeated》——长期主义不是口号, 是 "
-            "20 年只做几件事, 把每件做到极致。(3) 中国市场的特殊性：政府 +"
-            "监管 + 文化, 美式价值投资框架 (Buffett/Munger) 必须本土化。教训："
-            "(1) 在中国, 投资人和企业家的关系比美国更深——美国是甩手掌柜, 中国"
-            "经常深度介入治理；(2) 张磊把 Buffett 的《长期持有》和 a16z 的《重投创始人》"
-            "结合, 是中美投资文化的混合体；(3) 他对腾讯的 17 年长持和宁德时代的"
-            "重仓, 都是在《公司还没被市场看清》时下注——这才是 alpha 的本质。"
-        ),
-        "source_url": "https://book.douban.com/subject/35190354/",
-        "source_name": "豆瓣读书·张磊《价值》",
-        "language": "zh",
-        "themes": ["张磊", "高瓴", "长期主义", "中文经典"],
-        "tickers": ["0700.HK", "JD", "MEIT"],
         "era": "classic_cn",
         "difficulty": "intermediate",
     },

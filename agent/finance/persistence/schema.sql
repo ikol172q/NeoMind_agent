@@ -387,8 +387,145 @@ CREATE TABLE IF NOT EXISTS user_watchlist (
     ticker     TEXT PRIMARY KEY,
     added_at   TEXT NOT NULL,
     note       TEXT,
-    importance INTEGER DEFAULT 1   -- 1 = normal, 2 = priority (more frequent scanning)
+    importance INTEGER DEFAULT 1,  -- 1 = normal, 2 = priority (more frequent scanning)
+    -- 2026-05-07: hub-and-spoke fundamental research tiers
+    --   core      = ≤10 deep-research names, weekly review
+    --   adjacent  = 10-50 names reached via core's competitor/
+    --               customer/supplier from stock_anchored_facts,
+    --               monthly review
+    --   watching  = 50-200 names, alert-only
+    tier            TEXT NOT NULL DEFAULT 'core'
+                      CHECK (tier IN ('core','adjacent','watching')),
+    -- when tier='adjacent' or 'watching': which core ticker did this
+    -- name spread out from. Null for core tickers.
+    parent_ticker   TEXT,
+    -- last time the user opened this ticker's drawer / edited note.
+    -- Used by the "stale thesis" review prompt: any core ticker not
+    -- touched in 14d gets surfaced. Null = never reviewed.
+    last_reviewed_at TEXT
 );
+
+-- ─── Phase W (2026-05-10): Decision feedback loop ─────────────────
+--
+-- See plans/2026-05-10_lattice-onion-integration.md §6.
+-- Three concepts:
+--   investment_theses — what you believe about a ticker; bull case +
+--                       bear case + exit triggers + horizon. Auto-
+--                       monitored for stale supporting evidence.
+--   watchlist_audit   — every promote/demote/drop with the trigger
+--                       reason. Answers "why did I promote ARM 6mo ago".
+--   trigger_*_id on stock_notes — link notes to the signal/fact/thesis
+--                       that prompted them. Optional.
+
+CREATE TABLE IF NOT EXISTS investment_theses (
+    thesis_id            TEXT PRIMARY KEY,        -- uuid4
+    ticker               TEXT NOT NULL,
+    created_at           TEXT NOT NULL,
+    -- Markdown body. CONVENTION: should contain sections
+    --   ## Bull case   (3-5 bullets — why this works)
+    --   ## Bear case   (3-5 bullets — what would break it)
+    --   ## Exit triggers   (- [ ] checkbox list of conditions to sell)
+    --   ## Horizon     (e.g. "12-18 months" / "until next earnings")
+    -- The bear case section is required by the PRO/CONTRA forced
+    -- display in the chain panel — even an empty bear case must be
+    -- visible to fight confirmation bias.
+    body_md              TEXT NOT NULL,
+    -- JSON array of stock_anchored_facts.id values that this thesis
+    -- relies on. Daily health check verifies all are still present
+    -- and not flagged stale.
+    supporting_fact_ids  TEXT,
+    -- JSON array of signal_type strings to monitor. If none of these
+    -- signals fire for 30+ days, thesis flagged requires_review.
+    supporting_signal_types TEXT,
+    status               TEXT NOT NULL DEFAULT 'active'
+                            CHECK (status IN
+                                ('active','invalidated','realized','requires_review')),
+    invalidated_at       TEXT,
+    invalidated_reason   TEXT,
+    last_health_check_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_th_ticker ON investment_theses(ticker, status);
+
+CREATE TABLE IF NOT EXISTS watchlist_audit (
+    audit_id      TEXT PRIMARY KEY,             -- uuid4
+    ticker        TEXT NOT NULL,
+    action        TEXT NOT NULL CHECK (action IN
+                    ('promote','demote','drop','review','note',
+                     'thesis_create','thesis_invalidate')),
+    from_tier     TEXT,                         -- nullable for first promote
+    to_tier       TEXT,                         -- nullable for drop
+    -- 'fact' (FK stock_anchored_facts.id),
+    -- 'signal' (FK signal_events.event_id),
+    -- 'thesis' (FK investment_theses.thesis_id),
+    -- 'manual' (no ref)
+    trigger_kind  TEXT,
+    trigger_ref_id TEXT,
+    ts            TEXT NOT NULL,
+    note          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_wa_ticker ON watchlist_audit(ticker, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_wa_action ON watchlist_audit(action, ts DESC);
+
+-- ─── Phase W: Pillar 5 user_preferences (decision context) ─────────
+--
+-- Single-row key/value store for thresholds the dashboard surfaces in
+-- chain panels. Examples seeded at first ensure_schema:
+--   max_position_pct = 15        (alert when single ticker > 15% of portfolio)
+--   max_sector_pct   = 50        (alert when sector > 50%)
+--   benchmark_ticker = SPY       (vs-benchmark default)
+--
+-- These are NOT enforcement gates; the dashboard surfaces them as
+-- information in the chain. Per plan §2 philosophy.
+
+CREATE TABLE IF NOT EXISTS user_preferences (
+    pref_key     TEXT PRIMARY KEY,
+    pref_value   TEXT NOT NULL,
+    updated_at   TEXT NOT NULL
+);
+
+-- ─── Phase W: Pillar 2 algorithm correctness extras ────────────────
+--
+-- signal_disagreements: mirrors signal_confluences but for
+-- contradicting evidence. Detected by the same downstream pipeline
+-- that builds confluences; populated when ≥2 sources disagree on
+-- direction for the same ticker/theme.
+
+CREATE TABLE IF NOT EXISTS signal_disagreements (
+    disagreement_id TEXT PRIMARY KEY,
+    ticker          TEXT,
+    theme           TEXT,
+    headline        TEXT NOT NULL,
+    sources_json    TEXT NOT NULL,   -- [{scanner, signal_type, position}, ...]
+    detected_at     TEXT NOT NULL,
+    resolved_at     TEXT,            -- nullable; user marks or new evidence resolves
+    resolution_note TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sd_ticker ON signal_disagreements(ticker, detected_at DESC);
+
+-- fact_corrections: user 👎 marks a fact as wrong; flagged facts are
+-- excluded from the chain by default (still in DB for audit).
+CREATE TABLE IF NOT EXISTS fact_corrections (
+    correction_id TEXT PRIMARY KEY,
+    fact_id       INTEGER NOT NULL,
+    user_action   TEXT NOT NULL CHECK (user_action IN
+                    ('mark_wrong','suggest_polarity','suggest_value')),
+    user_note     TEXT,
+    ts            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_fc_fact ON fact_corrections(fact_id);
+
+-- earnings_history: per-ticker beat/miss history for the chain panel.
+-- Cached from yfinance to avoid hitting their API on every chain open.
+CREATE TABLE IF NOT EXISTS earnings_history (
+    ticker         TEXT NOT NULL,
+    earnings_date  TEXT NOT NULL,
+    eps_est        REAL,
+    eps_actual     REAL,
+    surprise_pct   REAL,
+    fetched_at     TEXT NOT NULL,
+    PRIMARY KEY (ticker, earnings_date)
+);
+CREATE INDEX IF NOT EXISTS idx_eh_ticker ON earnings_history(ticker, earnings_date DESC);
 
 -- signal_events: every individual scanner emission.  Multi-source
 -- confluence is computed downstream from these rows.
@@ -514,10 +651,19 @@ CREATE TABLE IF NOT EXISTS learning_cases (
     language        TEXT NOT NULL DEFAULT 'zh',  -- 'zh' / 'en' / 'mix'
     themes_json     TEXT,                     -- JSON array of theme tags
     tickers_json    TEXT,                     -- JSON array of related tickers
-    era             TEXT,                     -- 'modern_cn' / 'classic_intl' / 'recent_2024' / 'recent_2025' / 'recent_2026'
+    era             TEXT,                     -- 'modern_cn' / 'classic_intl' / 'classic_cn' / 'recent_2024' / 'recent_2025' / 'recent_2026'
     difficulty      TEXT,                     -- 'beginner' / 'intermediate' / 'advanced'
     is_classic      INTEGER NOT NULL DEFAULT 0 CHECK (is_classic IN (0,1)),
     is_fresh        INTEGER NOT NULL DEFAULT 0 CHECK (is_fresh IN (0,1)),
+    -- Item type. Drives UI separation: case/memo/news → cards in
+    -- Cases & Memos section; book → dedicated Books section with
+    -- availability badge + read/purchase buttons.
+    kind            TEXT NOT NULL DEFAULT 'case' CHECK (kind IN ('case','memo','book','news')),
+    -- Only for kind='book'. How the user can access the full text.
+    availability    TEXT,                     -- 'public_domain' / 'free_web' / 'paid'
+    -- Only for kind='book'. Where to read for free (PD / free web)
+    -- OR where to buy. source_url is the canonical reference link.
+    purchase_url    TEXT,
     fetched_at      TEXT NOT NULL,
     shown_count     INTEGER NOT NULL DEFAULT 0,
     last_shown_at   TEXT

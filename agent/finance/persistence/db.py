@@ -121,6 +121,64 @@ def ensure_schema(db_path: Optional[Path] = None) -> int:
         # executescript is the right tool for a multi-statement schema.
         conn.executescript(sql)
 
+        # ── In-place column migrations ──────────────────────────────
+        # The schema.sql CREATE TABLE statements all use IF NOT EXISTS
+        # so existing tables don't pick up new columns. Add them here.
+        # SQLite < 3.35 has no IF NOT EXISTS for ALTER TABLE, so we
+        # gate via PRAGMA table_info (free, runs in microseconds).
+        def _ensure_column(table: str, col: str, col_def: str) -> None:
+            cur = conn.execute(f"PRAGMA table_info({table})")
+            existing = {row["name"] for row in cur.fetchall()}
+            if col not in existing:
+                try:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {col_def}")
+                    logger.info("DB migration: added %s.%s", table, col)
+                except Exception as exc:
+                    logger.warning("DB migration: %s.%s failed: %s",
+                                   table, col, exc)
+
+        # 2026-05-04 — learning library: add kind / availability /
+        # purchase_url so books can be a separate UI surface.
+        _ensure_column("learning_cases", "kind",
+                       "TEXT NOT NULL DEFAULT 'case'")
+        _ensure_column("learning_cases", "availability", "TEXT")
+        _ensure_column("learning_cases", "purchase_url", "TEXT")
+
+        # 2026-05-07 — hub-and-spoke watchlist tiers.
+        # Existing 9 rows default to tier='core' (intentional — they
+        # were hand-added before the tier concept existed and are the
+        # user's actual core names). parent_ticker/last_reviewed_at
+        # stay NULL on existing rows (semantically correct: cores
+        # have no parent; "never reviewed" is honest).
+        _ensure_column("user_watchlist", "tier",
+                       "TEXT NOT NULL DEFAULT 'core'")
+        _ensure_column("user_watchlist", "parent_ticker", "TEXT")
+        _ensure_column("user_watchlist", "last_reviewed_at", "TEXT")
+
+        # 2026-05-10 — Phase W (decision feedback loop).
+        # See plans/2026-05-10_lattice-onion-integration.md §6.
+        # Notes can OPTIONALLY link to the trigger that prompted them
+        # (a signal_event, a fact, or an active thesis). Three nullable
+        # FK-style columns — never enforced at DB level since signals
+        # may be deleted by retention jobs and we want note to outlive
+        # its trigger.
+        _ensure_column("stock_notes", "trigger_signal_id", "TEXT")
+        _ensure_column("stock_notes", "trigger_fact_id", "INTEGER")
+        _ensure_column("stock_notes", "trigger_thesis_id", "TEXT")
+
+        # 2026-05-10 — Phase W Pillar 2 (algorithm correctness):
+        # confidence + polarity + requires_reextract on extracted facts.
+        # confidence: 0.0-1.0 LLM self-report or substring-match strength.
+        # polarity: 'pro'/'contra'/'neutral' for PRO vs CONTRA forced
+        #           display. NULL on existing rows (will be backfilled
+        #           by re-extract OR remain unknown).
+        # requires_reextract: 1 when extractor model bumped or user
+        #           flagged via fact_corrections. UI shows warning.
+        _ensure_column("stock_anchored_facts", "confidence", "REAL")
+        _ensure_column("stock_anchored_facts", "polarity", "TEXT")
+        _ensure_column("stock_anchored_facts", "requires_reextract",
+                       "INTEGER NOT NULL DEFAULT 0")
+
         cur = conn.execute("SELECT MAX(version) AS v FROM schema_version")
         row = cur.fetchone()
         existing_version = row["v"] if row and row["v"] is not None else None

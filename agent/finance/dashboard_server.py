@@ -1323,15 +1323,46 @@ def create_app(
         app.include_router(build_market_overlay_router())
         app.include_router(build_learning_router())
 
-        # Auto-seed the learning library on first run (or after bumping
-        # seed_cases.py / seed_classics.py). Idempotent — upserts by
-        # slug, so re-running at every dashboard start is fine.
+        # Auto-seed the learning library on every dashboard boot.
+        # Idempotent — upserts by slug. Three seed sources, each
+        # tagged with the right ``kind`` so the UI can split:
+        #   seed_cases    → kind='case'  (event-driven studies)
+        #   seed_classics → kind='memo'  (free essays / speeches /
+        #                                  shareholder letters)
+        #   seed_books    → kind='book'  (with availability +
+        #                                  read/purchase URL)
         try:
             from agent.finance.learning.seed_cases import all_seeds
             from agent.finance.learning.seed_classics import all_classics
+            from agent.finance.learning.seed_books import all_books
             from agent.finance.learning import persistence as _learning_dao
+            from agent.finance.persistence import connect as _learning_connect
             _learning_dao.ensure_schema()
-            for _s in (all_seeds() + all_classics()):
+            for _s in all_seeds():
+                _learning_dao.upsert_case(
+                    slug=_s["slug"], title=_s["title"], title_zh=_s["title_zh"],
+                    summary_zh=_s["summary_zh"],
+                    source_url=_s.get("source_url"),
+                    source_name=_s.get("source_name"),
+                    body=_s.get("summary_zh"),
+                    language=_s.get("language", "zh"),
+                    themes=_s.get("themes", []), tickers=_s.get("tickers", []),
+                    era=_s.get("era"), difficulty=_s.get("difficulty"),
+                    is_classic=True, is_fresh=False, kind="case",
+                )
+            for _s in all_classics():
+                _learning_dao.upsert_case(
+                    slug=_s["slug"], title=_s["title"], title_zh=_s["title_zh"],
+                    summary_zh=_s["summary_zh"],
+                    source_url=_s.get("source_url"),
+                    source_name=_s.get("source_name"),
+                    body=_s.get("summary_zh"),
+                    language=_s.get("language", "zh"),
+                    themes=_s.get("themes", []), tickers=_s.get("tickers", []),
+                    era=_s.get("era"), difficulty=_s.get("difficulty"),
+                    is_classic=True, is_fresh=False, kind="memo",
+                )
+            for _s in all_books():
                 _learning_dao.upsert_case(
                     slug=_s["slug"], title=_s["title"], title_zh=_s["title_zh"],
                     summary_zh=_s["summary_zh"],
@@ -1342,6 +1373,24 @@ def create_app(
                     themes=_s.get("themes", []), tickers=_s.get("tickers", []),
                     era=_s.get("era"), difficulty=_s.get("difficulty"),
                     is_classic=True, is_fresh=False,
+                    kind="book",
+                    availability=_s.get("availability"),
+                    purchase_url=_s.get("purchase_url"),
+                )
+            # Cleanup: 5 entries previously in seed_classics.py have
+            # been moved to seed_books.py with new slugs. Remove the
+            # old rows so they don't ghost in the Library.
+            _ORPHANED_CLASSIC_SLUGS = (
+                "classic-reminiscences-of-stock-operator-livermore",
+                "classic-lynch-rule-of-six-step",
+                "classic-graham-mr-market-margin-of-safety",
+                "classic-damodaran-narrative-and-numbers",
+                "classic-cn-zhang-lei-value",
+            )
+            with _learning_connect() as _conn:
+                _conn.executemany(
+                    "DELETE FROM learning_cases WHERE slug = ?",
+                    [(s,) for s in _ORPHANED_CLASSIC_SLUGS],
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("learning library auto-seed failed: %s", exc)
@@ -1897,6 +1946,55 @@ def create_app(
         app.include_router(build_watchlist_router())
     except Exception as exc:  # pragma: no cover
         logger.warning("watchlist router unavailable: %s", exc)
+
+    # Tier-aware watchlist (hub-and-spoke): /api/watchlist/tiers,
+    # /promote, /touch, /suggestions, /outside_ring. Uses the SQLite
+    # user_watchlist table directly (NOT the per-project JSON file
+    # that watchlist_web.py wraps). Both routers share the /api/watchlist
+    # path prefix but their endpoint paths don't overlap.
+    try:
+        from agent.finance.watchlist_tiers import build_watchlist_tiers_router
+        app.include_router(build_watchlist_tiers_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("watchlist tiers router unavailable: %s", exc)
+
+    # Phase W (2026-05-10): investment theses CRUD. Per plan
+    # plans/2026-05-10_lattice-onion-integration.md §5 Pillar 4.
+    try:
+        from agent.finance.theses import build_theses_router
+        app.include_router(build_theses_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("theses router unavailable: %s", exc)
+
+    # Phase 1B (2026-05-10): manual position entry into tax_lots +
+    # portfolio summary + per-ticker decision context surfacing. Per
+    # plan §5 Pillar 5 + Pillar 6.
+    try:
+        from agent.finance.positions import build_positions_router
+        app.include_router(build_positions_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("positions router unavailable: %s", exc)
+
+    # Phase 4 (2026-05-10): user preferences (max_position_pct,
+    # max_sector_pct, benchmark_ticker, review windows). Per plan
+    # §5 Pillar 5 — these are thresholds the chain panel surfaces
+    # as INFORMATION, not as enforcement gates.
+    try:
+        from agent.finance.user_prefs import (
+            build_user_prefs_router, seed_defaults as _seed_user_prefs,
+        )
+        _seed_user_prefs()    # idempotent — only inserts missing keys
+        app.include_router(build_user_prefs_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("user_prefs router unavailable: %s", exc)
+
+    # Phase 5 (2026-05-10): unified portfolio onion+chain graph.
+    # Per plan §5 Pillar 1.
+    try:
+        from agent.finance.lattice.portfolio_view import build_portfolio_view_router
+        app.include_router(build_portfolio_view_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("portfolio_view router unavailable: %s", exc)
 
     try:
         from agent.finance.sectors import build_sectors_router

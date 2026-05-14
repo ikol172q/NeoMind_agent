@@ -198,9 +198,9 @@ function RiskCard({
         onClick={onToggle}
         className="w-full text-left px-2.5 py-1.5 hover:bg-[var(--color-panel)]/30 transition"
       >
-        <div className="flex items-center gap-2 text-[10px]">
+        <div className="flex flex-wrap items-center gap-2 text-[10px]">
           <span
-            className="font-mono px-1.5 py-0.5 rounded"
+            className="font-mono px-1.5 py-0.5 rounded flex-shrink-0"
             style={{
               background: isProxy           ? 'var(--color-dim)' :
                           rec?.color === 'green' ? 'var(--color-green)' :
@@ -212,13 +212,16 @@ function RiskCard({
           >
             {isProxy ? 'PROXY' : rec?.color?.toUpperCase()}
           </span>
-          <span className="text-[var(--color-text)] font-medium">
+          <span className="text-[var(--color-text)] font-medium min-w-0 truncate">
             {entry.name_zh ?? entry.name_en ?? entry.strategy_id}
           </span>
-          <span className="text-[8.5px] text-[var(--color-dim)] font-mono truncate">
+          <span className="text-[8.5px] text-[var(--color-dim)] font-mono truncate hidden sm:inline">
             ({entry.strategy_id})
           </span>
-          <div className="ml-auto flex items-center gap-3 text-[9.5px] font-mono text-[var(--color-dim)]">
+          {/* Metrics row: wraps to its own line on mobile so the
+              5 numbers don't overflow the 390px viewport. On desktop,
+              ml-auto keeps them right-aligned on one line. */}
+          <div className="w-full md:w-auto md:ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px] md:text-[9.5px] font-mono text-[var(--color-dim)]">
             {isProxy ? (
               <span className="italic">paper trade required for risk numbers</span>
             ) : (

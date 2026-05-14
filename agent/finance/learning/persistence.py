@@ -70,8 +70,20 @@ def upsert_case(
     difficulty: Optional[str] = None,
     is_classic: bool = False,
     is_fresh: bool = False,
+    kind: str = "case",
+    availability: Optional[str] = None,
+    purchase_url: Optional[str] = None,
 ) -> str:
-    """Insert-or-update a learning case. Body splits to file if long."""
+    """Insert-or-update a learning case. Body splits to file if long.
+
+    kind: 'case' | 'memo' | 'book' | 'news'.
+        - case = event-driven study (default)
+        - memo = essay / speech / shareholder letter (free to read)
+        - book = a book; pair with availability + (optional) purchase_url
+        - news = daily fresh news pulled by the fetcher
+    availability: only for kind='book'. 'public_domain' / 'free_web' / 'paid'.
+    purchase_url: where the user can read for free OR buy the book.
+    """
     ensure_schema()
     body_inline: Optional[str] = None
     body_md_path: Optional[str] = None
@@ -86,16 +98,16 @@ def upsert_case(
     now = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
         # ON CONFLICT DO UPDATE — preserves shown_count + last_shown_at
-        # while overwriting content fields. Use COALESCE so we don't
-        # accidentally null out fields the caller didn't pass.
+        # while overwriting content fields.
         conn.execute(
             """INSERT INTO learning_cases (
                 slug, title, title_zh, source_url, source_name,
                 summary_zh, body_inline, body_md_path, language,
                 themes_json, tickers_json, era, difficulty,
-                is_classic, is_fresh, fetched_at
+                is_classic, is_fresh, kind, availability, purchase_url,
+                fetched_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(slug) DO UPDATE SET
                 title         = excluded.title,
@@ -112,6 +124,9 @@ def upsert_case(
                 difficulty    = excluded.difficulty,
                 is_classic    = excluded.is_classic,
                 is_fresh      = excluded.is_fresh,
+                kind          = excluded.kind,
+                availability  = excluded.availability,
+                purchase_url  = excluded.purchase_url,
                 fetched_at    = excluded.fetched_at""",
             (
                 slug, title, title_zh, source_url, source_name,
@@ -121,6 +136,7 @@ def upsert_case(
                 era, difficulty,
                 1 if is_classic else 0,
                 1 if is_fresh else 0,
+                kind, availability, purchase_url,
                 now,
             ),
         )
@@ -157,6 +173,14 @@ def expire_fresh_flags(days: int = 7) -> int:
 # ─── Read ──────────────────────────────────────────────────────────
 
 def _row_to_dict(row: Any, *, with_body: bool = False) -> Dict[str, Any]:
+    # Defensive get — older test DBs may not have the new columns yet
+    # (the migration in db.ensure_schema adds them, but if we're
+    # called before that ran for some reason, default rather than crash).
+    def _g(name: str, default: Any = None) -> Any:
+        try:
+            return row[name]
+        except (IndexError, KeyError):
+            return default
     out: Dict[str, Any] = {
         "slug":            row["slug"],
         "title":           row["title"],
@@ -171,6 +195,9 @@ def _row_to_dict(row: Any, *, with_body: bool = False) -> Dict[str, Any]:
         "difficulty":      row["difficulty"],
         "is_classic":      bool(row["is_classic"]),
         "is_fresh":        bool(row["is_fresh"]),
+        "kind":            _g("kind", "case"),
+        "availability":    _g("availability"),
+        "purchase_url":    _g("purchase_url"),
         "fetched_at":      row["fetched_at"],
         "shown_count":     row["shown_count"],
         "last_shown_at":   row["last_shown_at"],
@@ -280,6 +307,27 @@ def list_library(
         "count": len(rows),
         "cases": [_row_to_dict(r) for r in rows],
     }
+
+
+def list_books() -> Dict[str, Any]:
+    """Return all books, grouped by availability so the UI can render
+    free-to-read on top, paid books with purchase links below."""
+    ensure_schema()
+    with connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM learning_cases WHERE kind = 'book' "
+            "ORDER BY availability ASC, title_zh ASC"
+        ).fetchall()
+    books = [_row_to_dict(r) for r in rows]
+    grouped: Dict[str, List[Dict[str, Any]]] = {
+        "public_domain": [],
+        "free_web":      [],
+        "paid":          [],
+    }
+    for b in books:
+        avail = b.get("availability") or "paid"
+        grouped.setdefault(avail, []).append(b)
+    return {"total": len(books), "grouped": grouped}
 
 
 def list_themes() -> List[Dict[str, Any]]:

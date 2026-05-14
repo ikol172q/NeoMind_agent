@@ -17,8 +17,8 @@ export function Card({ className, children, ...rest }: React.HTMLAttributes<HTML
 export function CardHeader({
   title, subtitle, right,
 }: {
-  title: string
-  subtitle?: string
+  title: React.ReactNode
+  subtitle?: React.ReactNode
   right?: React.ReactNode
 }) {
   return (

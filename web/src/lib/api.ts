@@ -2501,6 +2501,9 @@ export interface StockProfile {
 }
 
 export interface StockExposureEvent {
+  // 2026-05-10 Phase W: event_id added so chain panel + note trigger
+  // selector can reference real signal_events rows (not array indices).
+  event_id?: string
   scanner: string
   signal_type: string
   severity: 'high' | 'med' | 'low'
@@ -2518,6 +2521,10 @@ export interface StockNote {
   body: string
   tag?: string | null
   source: 'user' | 'llm-extract'
+  // Phase W: optional trigger linkage
+  trigger_signal_id?: string | null
+  trigger_fact_id?: number | null
+  trigger_thesis_id?: string | null
 }
 
 export function useStockProfile(ticker: string | null) {
@@ -2596,15 +2603,26 @@ export function useUpdateStockStatus() {
 
 export function useAppendStockNote() {
   const qc = useQueryClient()
-  return useMutation<StockNote, Error, { ticker: string; body: string; tag?: string }>({
-    mutationFn: ({ ticker, body, tag }) => fetchJSON<StockNote>(
-      `/api/stock/${encodeURIComponent(ticker)}/notes`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ body, tag }),
-      },
-    ),
+  return useMutation<StockNote, Error, {
+    ticker: string; body: string; tag?: string
+    // Phase W: optional trigger linkage
+    trigger_signal_id?: string
+    trigger_fact_id?: number
+    trigger_thesis_id?: string
+  }>({
+    mutationFn: ({ ticker, body, tag,
+                  trigger_signal_id, trigger_fact_id, trigger_thesis_id }) =>
+      fetchJSON<StockNote>(
+        `/api/stock/${encodeURIComponent(ticker)}/notes`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            body, tag,
+            trigger_signal_id, trigger_fact_id, trigger_thesis_id,
+          }),
+        },
+      ),
     onSuccess: (_data, vars) => {
       qc.invalidateQueries({ queryKey: ['stock-notes', vars.ticker] })
     },
@@ -2659,50 +2677,46 @@ export function useRegenArchitecture() {
 // Parallel to useStockProfile (LLM-only, fast). These hooks read
 // agent.finance.anchored_research output, which is anchored to real
 // SEC 10-K text with verbatim-quote validation.
-export interface AnchoredCompetitor {
+// Phase W (2026-05-10) Pillar 2 — every anchored fact carries
+// quality fields used by the chain panel for PRO/CONTRA forced
+// display, opacity-by-confidence, and stale warnings.
+export interface AnchoredFactBase {
+  fact_id?:           number          // SQLite row id, used for 👎 corrections
+  evidence_quote:     string
+  source_url:         string
+  source_section:     string
+  confidence?:        number | null    // 0-1 LLM self-report or proxy
+  polarity?:          'pro' | 'contra' | 'neutral' | null
+  is_stale?:          boolean          // filing_date > 18mo old
+  requires_reextract?: boolean         // user flagged or model bumped
+}
+
+export interface AnchoredCompetitor extends AnchoredFactBase {
   name: string
   ticker?: string | null
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
-export interface AnchoredRisk {
+export interface AnchoredRisk extends AnchoredFactBase {
   headline: string
   category: string
   severity_signal?: string | null
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
-export interface AnchoredBusinessSummary {
+export interface AnchoredBusinessSummary extends AnchoredFactBase {
   sentence: string
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
-export interface AnchoredCustomer {
+export interface AnchoredCustomer extends AnchoredFactBase {
   name: string
   ticker?: string | null
   concentration_pct?: number | null
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
-export interface AnchoredSupplier {
+export interface AnchoredSupplier extends AnchoredFactBase {
   name: string
   ticker?: string | null
   criticality?: string | null
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
-export interface AnchoredSegment {
+export interface AnchoredSegment extends AnchoredFactBase {
   name: string
   revenue_pct?: number | null
   period?: string | null
-  evidence_quote: string
-  source_url: string
-  source_section: string
 }
 export interface AnchoredFacts {
   ticker: string
@@ -2732,6 +2746,95 @@ export function useAnchoredFacts(ticker: string | null) {
     retry: false,
   })
 }
+
+
+// ── Phase W (2026-05-10) Pillar 2: fact corrections (👎 button) ──
+//
+// User flags an extracted fact as wrong → server records in
+// fact_corrections + sets requires_reextract=1 → UI hides flagged
+// fact by default. Per plan §5 Pillar 2 + §2 philosophy: user is
+// quality-control authority, not the LLM.
+
+export type FactCorrectionAction = 'mark_wrong' | 'suggest_polarity' | 'suggest_value'
+
+// ── Phase 3 (2026-05-10): Earnings history + scanner health ──
+//
+// Per plan §5 Pillar 3 + §7 Phase 3.
+
+export interface EarningsHistoryRow {
+  earnings_date:  string
+  eps_est?:       number | null
+  eps_actual?:    number | null
+  surprise_pct?:  number | null
+}
+
+export interface EarningsHistoryResp {
+  ticker:   string
+  history:  EarningsHistoryRow[]
+  count:    number
+}
+
+export function useEarningsHistory(ticker: string | null, limit: number = 8) {
+  return useQuery<EarningsHistoryResp>({
+    queryKey: ['earnings-history', ticker, limit],
+    queryFn:  () => fetchJSON<EarningsHistoryResp>(
+      `/api/stock/${encodeURIComponent(ticker ?? '')}/earnings/history?limit=${limit}`),
+    enabled:  !!ticker,
+    staleTime: 24 * 60 * 60_000,    // earnings_history cached daily
+  })
+}
+
+
+export interface ScannerHealthJob {
+  name:                   string
+  cron:                   string
+  expected_interval_min:  number
+  last_success_at?:       string | null
+  minutes_since_success?: number | null
+  is_stale:               boolean
+}
+
+export interface ScannerHealthResp {
+  jobs:       ScannerHealthJob[]
+  n_jobs:     number
+  n_stale:    number
+  checked_at: string
+}
+
+export function useScannerHealth() {
+  return useQuery<ScannerHealthResp>({
+    queryKey: ['scanner-health'],
+    queryFn:  () => fetchJSON<ScannerHealthResp>('/api/scheduler/scanner_health'),
+    staleTime: 5 * 60_000,
+    refetchInterval: 5 * 60_000,
+  })
+}
+
+
+export function useCorrectFact() {
+  const qc = useQueryClient()
+  return useMutation<
+    { ok: boolean; fact_id: number; action: string },
+    Error,
+    {
+      fact_id: number
+      ticker: string  // for invalidation
+      user_action: FactCorrectionAction
+      user_note?: string
+    }
+  >({
+    mutationFn: ({ fact_id, ticker: _t, user_action, user_note }) =>
+      fetchJSON(`/api/stock/anchored/facts/${fact_id}/correct`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_action, user_note }),
+      }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['anchored-facts', vars.ticker] })
+    },
+  })
+}
+
 
 export interface AnchoredRegenResult {
   ticker: string
@@ -2854,9 +2957,21 @@ export interface LearningCase {
   difficulty: string | null
   is_classic: boolean
   is_fresh: boolean
+  kind?: 'case' | 'memo' | 'book' | 'news'
+  availability?: 'public_domain' | 'free_web' | 'paid' | null
+  purchase_url?: string | null
   fetched_at: string
   shown_count: number
   last_shown_at: string | null
+}
+
+export interface LearningBooksResp {
+  total: number
+  grouped: {
+    public_domain?: LearningCase[]
+    free_web?: LearningCase[]
+    paid?: LearningCase[]
+  }
 }
 
 export interface LearningToday {
@@ -2908,6 +3023,14 @@ export function useLearningThemes() {
   })
 }
 
+export function useLearningBooks() {
+  return useQuery<LearningBooksResp>({
+    queryKey: ['learning-books'],
+    queryFn: () => fetchJSON<LearningBooksResp>('/api/learning/books'),
+    staleTime: 5 * 60_000,
+  })
+}
+
 export function useLearningCase(slug: string | null) {
   return useQuery<LearningCase>({
     queryKey: ['learning-case', slug],
@@ -2934,5 +3057,663 @@ export function useMarkLearningSeen() {
     mutationFn: (slug) => fetchJSON(
       `/api/learning/cases/${encodeURIComponent(slug)}/seen`,
       { method: 'POST' }),
+  })
+}
+
+
+// ── Watchlist tiers (hub-and-spoke) ──────────────────────────────
+//
+// Distinct from the legacy /api/watchlist (JSON file per project).
+// These endpoints work directly against the SQLite user_watchlist
+// table and add tier/parent_ticker/last_reviewed_at semantics that
+// drive the new Watchlist tab + the StockResearchDrawer promote
+// buttons. See agent/finance/watchlist_tiers.py for backend.
+
+export type WatchlistTier = 'core' | 'adjacent' | 'watching'
+
+export interface WatchlistEntry {
+  ticker:           string
+  tier:             WatchlistTier
+  parent_ticker:    string | null
+  note:             string
+  importance:       number
+  added_at:         string
+  last_reviewed_at: string | null
+  days_since_review: number | null
+  n_facts:          number
+}
+
+export interface WatchlistTiersResp {
+  tiers:  Record<WatchlistTier, WatchlistEntry[]>
+  totals: Record<WatchlistTier, number>
+  fetched_at: string
+}
+
+export interface WatchlistSuggestion {
+  name:           string
+  ticker:         string
+  evidence_quote: string
+  source_url:     string
+}
+
+export interface WatchlistSuggestionsResp {
+  ticker: string
+  suggestions: {
+    competitor: WatchlistSuggestion[]
+    customer:   WatchlistSuggestion[]
+    supplier:   WatchlistSuggestion[]
+  }
+}
+
+export interface OutsideRingCandidate {
+  ticker:    string
+  n_events:  number
+  n_sources: number
+  n_high:    number
+  latest_at: string
+}
+
+export interface OutsideRingResp {
+  candidates:    OutsideRingCandidate[]
+  lookback_days: number
+  fetched_at:    string
+}
+
+export function useWatchlistTiers() {
+  return useQuery<WatchlistTiersResp>({
+    queryKey: ['watchlist-tiers'],
+    queryFn:  () => fetchJSON<WatchlistTiersResp>('/api/watchlist/tiers'),
+    staleTime: 30_000,
+  })
+}
+
+export function useWatchlistPromote() {
+  const qc = useQueryClient()
+  return useMutation<
+    { ok: boolean; ticker: string; tier: string; parent_ticker: string | null },
+    Error,
+    { ticker: string; tier: WatchlistTier; parent_ticker?: string; note?: string; importance?: number }
+  >({
+    mutationFn: (a) => fetchJSON(
+      `/api/watchlist/promote/${encodeURIComponent(a.ticker)}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tier:           a.tier,
+          parent_ticker:  a.parent_ticker,
+          note:           a.note,
+          importance:     a.importance ?? 1,
+        }),
+      },
+    ),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['watchlist-tiers'] })
+      qc.invalidateQueries({ queryKey: ['watchlist-outside-ring'] })
+    },
+  })
+}
+
+export function useWatchlistTouch() {
+  return useMutation<{ ok: boolean; in_watchlist: boolean }, Error, string>({
+    mutationFn: (ticker) => fetchJSON(
+      `/api/watchlist/touch/${encodeURIComponent(ticker)}`,
+      { method: 'POST' }),
+  })
+}
+
+export function useWatchlistRemoveTier() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (ticker) => fetchJSON(
+      `/api/watchlist/tickers/${encodeURIComponent(ticker)}`,
+      { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['watchlist-tiers'] }),
+  })
+}
+
+export function useWatchlistSuggestions(ticker: string | null) {
+  return useQuery<WatchlistSuggestionsResp>({
+    queryKey: ['watchlist-suggestions', ticker],
+    queryFn:  () => fetchJSON<WatchlistSuggestionsResp>(
+      `/api/watchlist/suggestions/${encodeURIComponent(ticker ?? '')}`),
+    enabled:  !!ticker,
+    staleTime: 60_000,
+  })
+}
+
+export function useWatchlistOutsideRing() {
+  return useQuery<OutsideRingResp>({
+    queryKey: ['watchlist-outside-ring'],
+    queryFn:  () => fetchJSON<OutsideRingResp>('/api/watchlist/outside_ring'),
+    staleTime: 5 * 60_000,
+  })
+}
+
+
+// ── Phase W (2026-05-10): Investment theses ─────────────────────
+//
+// See plans/2026-05-10_lattice-onion-integration.md §5 Pillar 4.
+// Theses are OPTIONAL — backend will accept body without all sections,
+// but `missing_sections` is returned as a soft warning. UI surfaces
+// it as a non-blocking hint.
+
+export type ThesisStatus = 'active' | 'invalidated' | 'realized' | 'requires_review'
+
+export interface InvestmentThesis {
+  thesis_id:               string
+  ticker:                  string
+  created_at:              string
+  body_md:                 string
+  supporting_fact_ids:     number[]
+  supporting_signal_types: string[]
+  status:                  ThesisStatus
+  invalidated_at?:         string | null
+  invalidated_reason?:     string | null
+  last_health_check_at?:   string | null
+  sections: {
+    bull_case:     string
+    bear_case:     string
+    exit_triggers: string
+    horizon:       string
+  }
+  missing_sections: string[]   // ['Bear case', ...] if not all required present
+  // Phase 4: only present on single-thesis GET (not list)
+  exit_triggers_evaluated?: EvaluatedExitTrigger[]
+}
+
+export interface EvaluatedExitTrigger {
+  raw:             string
+  checked_in_md:   boolean
+  kind:            'drawdown' | 'earnings_miss' | 'regulatory' | 'manual'
+  threshold_pct:   number | null
+  text:            string
+  fired:           boolean | null   // null = manual, can't auto-eval
+  current_value:   number | null
+  explanation:     string
+}
+
+export interface ExitTriggersResp {
+  thesis_id:  string
+  ticker:     string
+  triggers:   EvaluatedExitTrigger[]
+  n_fired:    number
+  n_unfired:  number
+  n_manual:   number
+}
+
+export function useExitTriggers(thesisId: string | null) {
+  return useQuery<ExitTriggersResp>({
+    queryKey: ['exit-triggers', thesisId],
+    queryFn:  () => fetchJSON<ExitTriggersResp>(
+      `/api/theses/${encodeURIComponent(thesisId ?? '')}/exit_triggers`),
+    enabled:  !!thesisId,
+    staleTime: 60_000,
+  })
+}
+
+
+// User preferences (Phase 4) — chain panel thresholds.
+// NOTE: distinct from UserPrefs (which is regime-related risk prefs).
+export interface DecisionPrefs {
+  max_position_pct:        number
+  max_sector_pct:          number
+  benchmark_ticker:        string
+  review_window_core:      number
+  review_window_adjacent:  number
+  review_window_watching:  number
+}
+
+export function useDecisionPrefs() {
+  return useQuery<{ preferences: DecisionPrefs; fetched_at: string }>({
+    queryKey: ['decision-prefs'],
+    queryFn:  () => fetchJSON('/api/preferences'),
+    staleTime: 5 * 60_000,
+  })
+}
+
+
+// ── Phase 5 (2026-05-10): Portfolio onion+chain unified graph ──
+//
+// Per plan §5 Pillar 1. Frontend renders this as concentric rings
+// (onion) with selectively-materialized chain edges.
+
+export interface PortfolioGraphNode {
+  id:               string
+  tier:             'core' | 'adjacent' | 'watching' | 'outside'
+  parent?:          string | null
+  n_facts:          number
+  stale_days?:      number | null
+  is_stale:         boolean
+  fresh_signal_24h: boolean
+  n_active_theses:  number
+  thesis_status?:   'active' | 'requires_review' | null
+  held_qty?:        number | null
+  held_cost?:       number | null
+  n_unresolved_disagreements?: number
+  is_conflicted?:   boolean
+  importance?:      number   // 1=normal, 2=priority — border thickness
+  // Outside-ring fields (only present when tier='outside')
+  n_outside_events?:  number
+  n_outside_sources?: number
+  n_outside_high?:    number
+  outside_latest_at?: string | null
+  // Force-graph adds these at runtime
+  x?:               number
+  y?:               number
+}
+
+export interface PortfolioGraphEdge {
+  source:  string
+  target:  string
+  kind:    'spoke' | 'competitor' | 'customer' | 'supplier'
+  label:   string
+}
+
+export interface PortfolioGraph {
+  nodes:        PortfolioGraphNode[]
+  edges:        PortfolioGraphEdge[]
+  n_nodes:      number
+  n_edges:      number
+  n_spoke:      number
+  n_relations:  number
+  fetched_at:   string
+  as_of?:       string | null
+  is_historical?: boolean
+}
+
+// ── Lazy multi-hop chain expansion ──
+// Per plan §5 Pillar 1 enhancement #1: when user expands selection
+// beyond hop 1, fetch the chain graph including non-watchlist
+// entities (e.g. TSMC's risks) so they render as faint placeholders.
+export interface ChainNode {
+  id:           string   // ticker if available, else `name:<entity-name>`
+  label:        string
+  ticker:       string | null
+  name:         string | null
+  in_watchlist: boolean
+  tier:         'watchlist' | 'external'
+  hop:          number   // 0=origin, 1=direct, 2=neighbors-of
+}
+export interface ChainEdge {
+  source: string
+  target: string
+  kind:   'competitor' | 'customer' | 'supplier'
+  hop:    number
+}
+export interface ChainResp {
+  origin:  string
+  hop:     number
+  nodes:   ChainNode[]
+  edges:   ChainEdge[]
+  n_nodes: number
+  n_edges: number
+}
+export function useChain(ticker: string | null, hop: number) {
+  return useQuery<ChainResp>({
+    queryKey: ['chain', ticker, hop],
+    queryFn:  () => fetchJSON(`/api/lattice/chain/${encodeURIComponent(ticker ?? '')}?hop=${hop}`),
+    enabled:  !!ticker && hop >= 2,   // hop 1 is already in portfolio_view
+    staleTime: 60_000,
+  })
+}
+
+export interface DisagreementSource {
+  scanner:     string
+  signal_type: string
+  position:    string
+}
+export interface DisagreementItem {
+  disagreement_id: string
+  headline:        string
+  sources:         DisagreementSource[]
+  detected_at:     string
+}
+export function useTickerDisagreements(ticker: string | null) {
+  return useQuery<{ ticker: string; items: DisagreementItem[]; n: number }>({
+    queryKey: ['ticker-disagreements', ticker],
+    queryFn:  () => fetchJSON(`/api/lattice/disagreements/${encodeURIComponent(ticker ?? '')}`),
+    enabled:  !!ticker,
+    staleTime: 30_000,
+  })
+}
+
+export function usePortfolioView(asOf?: string | null) {
+  const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''
+  return useQuery<PortfolioGraph>({
+    queryKey: ['portfolio-view', asOf ?? 'now'],
+    queryFn:  () => fetchJSON<PortfolioGraph>(`/api/lattice/portfolio_view${qs}`),
+    staleTime: 60_000,
+  })
+}
+
+export interface ThesesListResp {
+  theses: InvestmentThesis[]
+  count:  number
+}
+
+export function useTheses(ticker: string | null, status: 'active' | 'all' = 'active') {
+  const qs = new URLSearchParams()
+  if (ticker) qs.set('ticker', ticker)
+  qs.set('status', status)
+  return useQuery<ThesesListResp>({
+    queryKey: ['theses', ticker ?? 'all', status],
+    queryFn:  () => fetchJSON<ThesesListResp>(`/api/theses?${qs}`),
+    staleTime: 30_000,
+    enabled:  ticker !== null,   // don't fetch the all-theses list unless explicitly asked
+  })
+}
+
+export function useThesisTemplate() {
+  return useQuery<{ body_md: string }>({
+    queryKey: ['thesis-template'],
+    queryFn:  () => fetchJSON<{ body_md: string }>('/api/theses/template'),
+    staleTime: 24 * 60 * 60_000,    // template is static; cache 24h
+  })
+}
+
+export function useCreateThesis() {
+  const qc = useQueryClient()
+  return useMutation<
+    { thesis_id: string; ticker: string; missing_sections: string[] },
+    Error,
+    {
+      ticker: string
+      body_md: string
+      supporting_fact_ids?: number[]
+      supporting_signal_types?: string[]
+    }
+  >({
+    mutationFn: (a) => fetchJSON('/api/theses', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(a),
+    }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['theses', vars.ticker] })
+      qc.invalidateQueries({ queryKey: ['watchlist-audit', vars.ticker] })
+    },
+  })
+}
+
+export function useUpdateThesis() {
+  const qc = useQueryClient()
+  return useMutation<
+    { ok: boolean; thesis_id: string },
+    Error,
+    {
+      thesis_id: string
+      ticker: string  // for query invalidation only, not sent to server
+      body_md?: string
+      supporting_fact_ids?: number[]
+      supporting_signal_types?: string[]
+    }
+  >({
+    mutationFn: ({ thesis_id, ticker: _ticker, ...patch }) =>
+      fetchJSON(`/api/theses/${encodeURIComponent(thesis_id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['theses', vars.ticker] })
+    },
+  })
+}
+
+export function useInvalidateThesis() {
+  const qc = useQueryClient()
+  return useMutation<
+    { ok: boolean; thesis_id: string; status: string },
+    Error,
+    { thesis_id: string; ticker: string; reason: string }
+  >({
+    mutationFn: ({ thesis_id, reason }) =>
+      fetchJSON(`/api/theses/${encodeURIComponent(thesis_id)}/invalidate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['theses', vars.ticker] })
+      qc.invalidateQueries({ queryKey: ['watchlist-audit', vars.ticker] })
+    },
+  })
+}
+
+
+// ── Phase W: Watchlist audit (history of promote/demote/drop/thesis) ──
+//
+// Powers the chain panel's INCOMING section ("why on radar").
+
+export interface WatchlistAuditEvent {
+  audit_id:       string
+  action:         'promote' | 'demote' | 'drop' | 'review' | 'note' | 'thesis_create' | 'thesis_invalidate'
+  from_tier:      string | null
+  to_tier:        string | null
+  trigger_kind:   string | null   // 'fact' | 'signal' | 'thesis' | 'manual'
+  trigger_ref_id: string | null
+  ts:             string
+  note:           string | null
+}
+
+export interface WatchlistAuditResp {
+  ticker: string
+  events: WatchlistAuditEvent[]
+  count:  number
+}
+
+export function useWatchlistAudit(ticker: string | null) {
+  return useQuery<WatchlistAuditResp>({
+    queryKey: ['watchlist-audit', ticker],
+    queryFn:  () => fetchJSON<WatchlistAuditResp>(
+      `/api/watchlist/audit/${encodeURIComponent(ticker ?? '')}`),
+    enabled:  !!ticker,
+    staleTime: 30_000,
+  })
+}
+
+
+// ── Phase 1B (2026-05-10): Manual positions + portfolio summary ──
+//
+// See plans/2026-05-10_lattice-onion-integration.md §5 Pillar 5/6
+// + §11 OQ "positions data source = manual UI" (default).
+
+export interface TaxLot {
+  lot_id:           number
+  account_id:       string
+  symbol:           string
+  market:           string
+  asset_class:      string
+  open_date:        string
+  open_price:       number
+  open_quantity:    number
+  open_fees:        number
+  close_date?:      string | null
+  close_price?:     number | null
+  close_quantity?:  number | null
+  close_fees?:      number | null
+  realized_gain_loss?: number | null
+  holding_period_qualified?: 'short_term' | 'long_term' | null
+  notes?:           string | null
+  created_at:       string
+  updated_at:       string
+}
+
+export interface EnrichedLot extends TaxLot {
+  days_held:         number
+  is_long_term:      boolean
+  days_until_lt:     number
+  lot_cost_basis:    number
+  lot_market_value?: number | null
+  lot_unrealized?:   number | null
+}
+
+export interface PositionByTickerResp {
+  ticker: string
+  lots:   EnrichedLot[]
+  summary: {
+    total_quantity:   number
+    total_cost:       number
+    avg_cost:         number
+    current_price?:   number | null
+    market_value?:    number | null
+    unrealized?:      number | null
+    unrealized_pct?:  number | null
+    n_lots:           number
+  } | null
+}
+
+export interface PortfolioSummary {
+  n_lots:         number
+  n_tickers:      number
+  total_value:    number
+  total_cost:     number
+  unrealized:     number
+  unrealized_pct: number
+  by_ticker: Array<{
+    ticker:        string
+    quantity:      number
+    cost:          number
+    current_price?: number | null
+    market_value?: number | null
+    unrealized?:   number | null
+    unrealized_pct?: number | null
+    n_lots:        number
+    sector:        string
+    weight_pct?:   number | null
+  }>
+  by_sector: Array<{
+    sector: string
+    value:  number
+    pct:    number
+  }>
+  benchmark:    string
+  vs_benchmark: {
+    benchmark:              string
+    portfolio_lifetime_pct: number
+    windows: Record<string, { benchmark_pct: number | null }>
+    note?:                  string
+  } | null
+  fetched_at:   string
+}
+
+export function usePortfolioSummary(benchmark: string = 'SPY') {
+  return useQuery<PortfolioSummary>({
+    queryKey: ['portfolio-summary', benchmark],
+    queryFn:  () => fetchJSON<PortfolioSummary>(`/api/positions/summary?benchmark=${benchmark}`),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,
+  })
+}
+
+export function usePositionByTicker(ticker: string | null) {
+  return useQuery<PositionByTickerResp>({
+    queryKey: ['position-by-ticker', ticker],
+    queryFn:  () => fetchJSON<PositionByTickerResp>(
+      `/api/positions/by_ticker/${encodeURIComponent(ticker ?? '')}`),
+    enabled:  !!ticker,
+    staleTime: 60_000,
+  })
+}
+
+export function usePositionsLots(filter: {
+  ticker?: string; account_id?: string; open_only?: boolean
+} = {}) {
+  const qs = new URLSearchParams()
+  if (filter.ticker) qs.set('ticker', filter.ticker)
+  if (filter.account_id) qs.set('account_id', filter.account_id)
+  qs.set('open_only', String(filter.open_only ?? true))
+  return useQuery<{ lots: TaxLot[]; count: number }>({
+    queryKey: ['positions-lots', filter],
+    queryFn:  () => fetchJSON(`/api/positions/lots?${qs}`),
+    staleTime: 30_000,
+  })
+}
+
+export function useAddLot() {
+  const qc = useQueryClient()
+  return useMutation<TaxLot, Error, {
+    symbol: string
+    market?: string
+    asset_class?: string
+    open_date: string
+    open_price: number
+    open_quantity: number
+    open_fees?: number
+    account_id?: string
+    notes?: string
+  }>({
+    mutationFn: (a) => fetchJSON('/api/positions/lots', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(a),
+    }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['positions-lots'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+      qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.symbol] })
+    },
+  })
+}
+
+export function useUpdateLot() {
+  const qc = useQueryClient()
+  return useMutation<TaxLot, Error, {
+    lot_id: number
+    open_price?: number
+    open_quantity?: number
+    open_fees?: number
+    open_date?: string
+    notes?: string
+  }>({
+    mutationFn: ({ lot_id, ...patch }) =>
+      fetchJSON(`/api/positions/lots/${lot_id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ['positions-lots'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+      qc.invalidateQueries({ queryKey: ['position-by-ticker', data.symbol] })
+    },
+  })
+}
+
+export function useDeleteLot() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, { lot_id: number; ticker: string }>({
+    mutationFn: ({ lot_id }) =>
+      fetchJSON(`/api/positions/lots/${lot_id}`, { method: 'DELETE' }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['positions-lots'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+      qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.ticker] })
+    },
+  })
+}
+
+export function useCloseLot() {
+  const qc = useQueryClient()
+  return useMutation<TaxLot, Error, {
+    lot_id: number
+    ticker: string  // for invalidation
+    close_date: string
+    close_price: number
+    close_quantity?: number
+    close_fees?: number
+  }>({
+    mutationFn: ({ lot_id, ticker: _t, ...body }) =>
+      fetchJSON(`/api/positions/lots/${lot_id}/close`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['positions-lots'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+      qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.ticker] })
+    },
   })
 }

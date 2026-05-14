@@ -44,4 +44,26 @@ def build_market_overlay_router() -> APIRouter:
             return {"ticker": t, "next_date": None}
         return e.to_dict()
 
+    @router.get("/{ticker}/earnings/history")
+    def earnings_history(ticker: str, limit: int = 12) -> dict:
+        """Phase 3 (2026-05-10): historical beat/miss data from
+        cached earnings_history table (populated by the
+        earnings_calendar daily job). Avoids hitting yfinance per
+        drawer render."""
+        from agent.finance.persistence import connect, ensure_schema
+        t = _normalize_ticker(ticker)
+        ensure_schema()
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT earnings_date, eps_est, eps_actual, surprise_pct "
+                "FROM earnings_history WHERE ticker = ? "
+                "ORDER BY earnings_date DESC LIMIT ?",
+                (t, limit),
+            ).fetchall()
+        return {
+            "ticker": t,
+            "history": [dict(r) for r in rows],
+            "count": len(rows),
+        }
+
     return router

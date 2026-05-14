@@ -9,20 +9,28 @@ import { LearningTab } from '@/tabs/Learning'
 import { LegacyTab } from '@/tabs/Legacy'
 import { StrategiesTab } from '@/tabs/Strategies'
 import { DataLakeTab } from '@/tabs/DataLake'
+import { WatchlistTab } from '@/tabs/Watchlist'
 import { CommandPalette } from '@/components/chat/CommandPalette'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
-import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap } from 'lucide-react'
+import { ScannerHealthBadge } from '@/components/widgets/ScannerHealthBadge'
+import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
-type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'settings' | 'legacy'
+// 'watchlist' kept in the union for any legacy ?tab=watchlist deep
+// link; it routes to <WatchlistTab> which still works as a standalone
+// page even though it's no longer in the nav array.
+type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'watchlist' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
+  // 2026-05-08: Watchlist removed from nav — content embedded as a
+  // section at top of the Strategies tab. User feedback was "零零散散
+  // 不好集中看" (scattered, hard to view together).
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
   { id: 'paper',      label: 'Paper',      icon: Wallet },
@@ -51,6 +59,9 @@ export default function App() {
   const [pendingChatPrompt, setPendingChatPrompt] = useState<string | null>(null)
   const [pendingChatContext, setPendingChatContext] = useState<{ symbol?: string; project?: boolean } | null>(null)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // Mobile nav drawer — hamburger toggles. Auto-closes when user
+  // picks a tab (so the underlying content shows immediately).
+  const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [digestFocus, setDigestFocus] = useState<DigestFocus | null>(null)
   // Phase 5 V4: focused strategy id when arriving from a call's
   // strategy_match chip. Carries a nonce so clicking the same chip
@@ -142,13 +153,31 @@ export default function App() {
     <StockResearchProvider projectId={projectId}>
     <div className="h-full flex flex-col">
       <StockResearchDrawer />
-      {/* Top nav */}
-      <header className="flex items-center gap-4 px-4 py-2 bg-[var(--color-panel)] border-b border-[var(--color-border)] shrink-0">
-        <div className="flex items-center gap-2 text-[var(--color-text)]">
-          <Sparkles size={15} className="text-[var(--color-accent)]" />
-          <span className="font-semibold">neomind / fin</span>
+      {/* Top nav.
+          Layout strategy:
+            - <md (mobile): hamburger button + brand only. Tabs and
+              status widgets all live in the slide-in drawer (rendered
+              below header). Drawer auto-closes on tab pick.
+            - >=md (desktop): full inline nav + status widgets, exactly
+              as before. */}
+      <header className="flex items-center gap-2 md:gap-4 px-3 md:px-4 py-2 bg-[var(--color-panel)] border-b border-[var(--color-border)] shrink-0 min-w-0">
+        {/* Mobile-only hamburger */}
+        <button
+          aria-label="Open navigation"
+          data-testid="mobile-nav-toggle"
+          onClick={() => setMobileNavOpen(true)}
+          className="md:hidden p-1 -ml-1 text-[var(--color-text)] hover:text-[var(--color-accent)] flex-shrink-0"
+        >
+          <Menu size={18} />
+        </button>
+
+        <div className="flex items-center gap-2 text-[var(--color-text)] min-w-0">
+          <Sparkles size={15} className="text-[var(--color-accent)] flex-shrink-0" />
+          <span className="font-semibold truncate">neomind / fin</span>
         </div>
-        <nav className="flex items-center gap-1" data-testid="top-nav">
+
+        {/* Desktop-only inline nav */}
+        <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">
           {TABS.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
@@ -166,26 +195,104 @@ export default function App() {
             </button>
           ))}
         </nav>
+
         <div className="flex-1" />
+
+        {/* Active tab name visible on mobile so user knows where they are */}
+        <span className="md:hidden text-[11px] text-[var(--color-accent)] truncate">
+          {TABS.find(t => t.id === tab)?.label ?? ''}
+        </span>
+
+        {/* ⌘K — desktop only (no keyboard on mobile) */}
         <button
           data-testid="palette-open"
           onClick={() => setPaletteOpen(true)}
-          className="flex items-center gap-1.5 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 transition"
+          className="hidden md:flex items-center gap-1.5 text-[10px] text-[var(--color-dim)] hover:text-[var(--color-text)] border border-[var(--color-border)] rounded px-2 py-1 transition"
           title="Command palette — ⌘K / Ctrl+K"
         >
           <Command size={10} />
           <span>K</span>
         </button>
-        <div className="flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
+
+        {/* Status widgets — desktop only (move to drawer on mobile) */}
+        <div className="hidden md:flex items-center gap-2 text-[10px] text-[var(--color-dim)]">
           <AsOfPicker projectId={projectId} value={appAsOf} onChange={setAsOfPersist} />
           <PdtCounter />
           <FinIntegrityBadge />
+          <ScannerHealthBadge />
           <span>Project: <code className="text-[var(--color-accent)]">{projectId}</code></span>
           <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
             ● {health.data ? `healthy · ${health.data.version}` : 'unreachable'}
           </span>
         </div>
       </header>
+
+      {/* Mobile drawer — slides in from left. Backdrop closes it. */}
+      {mobileNavOpen && (
+        <div className="md:hidden fixed inset-0 z-50 flex" data-testid="mobile-nav-drawer">
+          {/* Drawer panel */}
+          <div className="w-[78vw] max-w-[320px] h-full bg-[var(--color-panel)] border-r border-[var(--color-border)] flex flex-col overflow-y-auto shadow-2xl">
+            <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--color-border)]">
+              <div className="flex items-center gap-2">
+                <Sparkles size={15} className="text-[var(--color-accent)]" />
+                <span className="font-semibold text-[var(--color-text)]">neomind / fin</span>
+              </div>
+              <button
+                aria-label="Close navigation"
+                onClick={() => setMobileNavOpen(false)}
+                className="p-1 text-[var(--color-dim)] hover:text-[var(--color-text)]"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Tabs */}
+            <nav className="flex flex-col py-2">
+              {TABS.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  data-testid={`mobile-tab-${id}`}
+                  onClick={() => { setTab(id); setMobileNavOpen(false) }}
+                  className={cn(
+                    'flex items-center gap-2.5 px-4 py-3 text-[13px] transition text-left',
+                    tab === id
+                      ? 'bg-[var(--color-border)] text-[var(--color-accent)]'
+                      : 'text-[var(--color-text)] hover:bg-[var(--color-border)]/50',
+                  )}
+                >
+                  <Icon size={15} />
+                  {label}
+                </button>
+              ))}
+            </nav>
+
+            {/* Status section */}
+            <div className="mt-auto px-4 py-3 border-t border-[var(--color-border)] space-y-2 text-[11px] text-[var(--color-dim)]">
+              <div className="flex items-center justify-between">
+                <span>Project:</span>
+                <code className="text-[var(--color-accent)]">{projectId}</code>
+              </div>
+              <div className="flex items-center justify-between">
+                <span>Status:</span>
+                <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
+                  ● {health.data ? `healthy · ${health.data.version}` : 'unreachable'}
+                </span>
+              </div>
+              <div className="pt-2 border-t border-[var(--color-border)] flex flex-wrap items-center gap-2">
+                <AsOfPicker projectId={projectId} value={appAsOf} onChange={setAsOfPersist} />
+                <PdtCounter />
+                <FinIntegrityBadge />
+              </div>
+            </div>
+          </div>
+          {/* Backdrop */}
+          <div
+            className="flex-1 bg-black/50"
+            onClick={() => setMobileNavOpen(false)}
+            aria-label="Close navigation backdrop"
+          />
+        </div>
+      )}
 
       <CommandPalette
         open={paletteOpen}
@@ -252,6 +359,7 @@ export default function App() {
         )}
         {tab === 'data_lake' && <DataLakeTab projectId={projectId} />}
         {tab === 'learning' && <LearningTab />}
+        {tab === 'watchlist' && <WatchlistTab />}
         {tab === 'settings' && (
           <SettingsTab
             projectId={projectId}

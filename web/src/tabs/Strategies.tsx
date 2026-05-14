@@ -40,6 +40,9 @@ import {
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
+import { WatchlistSection } from '@/tabs/Watchlist'
+import { PortfolioSummaryWidget } from '@/components/widgets/PortfolioSummaryWidget'
+import { AddLotModal } from '@/components/widgets/AddLotModal'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
 import { RegimeFingerprintWidget } from '@/components/widgets/RegimeFingerprintWidget'
@@ -162,6 +165,8 @@ export function StrategiesTab({
   const activeLang = lang.data?.active
   const [diffFilter, setDiffFilter] = useState<number | null>(null)
   const [feasibleOnly, setFeasibleOnly] = useState<boolean>(true)
+  // Phase 1B (2026-05-10): add-lot modal state
+  const [addLotOpen, setAddLotOpen] = useState<boolean>(false)
   // Default to today_fit sort — answers 'what's relevant right now?'
   // even on days the lattice produces zero L3 calls.
   const [sortKey, setSortKey] = useState<SortKey>('today_fit')
@@ -302,13 +307,20 @@ export function StrategiesTab({
 
   return (
     <div className="h-full flex overflow-hidden">
-      <div className="flex-1 overflow-y-auto p-4 text-[12px]">
+      {/* min-w-0 on flex child + overflow-x-hidden on the scroller
+          — without these, intrinsically-wide cards (strategy tables
+          with many columns) push the flex child past the viewport,
+          allowing the user to swipe the entire page sideways and
+          lose the left edge. With these, wide content gets clipped
+          here; specific wide tables wrap themselves in overflow-x-auto
+          to scroll within their own card. */}
+      <div className="flex-1 min-w-0 overflow-y-auto overflow-x-hidden p-3 md:p-4 text-[12px]">
       {/* B6-Step1: provenance breadcrumb at the very top of the tab.
           Uses the same /api/lattice/calls payload the page already
           fetches, so it surfaces the EXACT same dep_hash + run_id
           the Research tab shows — confirming both tabs are looking at
           the same compute run. */}
-      <div className="max-w-[1100px] mx-auto -mx-4 mb-3">
+      <div className="max-w-[1100px] mx-auto -mx-3 md:-mx-4 mb-3">
         <FreshnessBar
           meta={calls.data?.run_meta}
           pipelineLabel="Strategies"
@@ -322,6 +334,21 @@ export function StrategiesTab({
           }
         />
       </div>
+
+      {/* Phase 1B (2026-05-10): Portfolio summary — actual holdings,
+          ABOVE the watchlist (because positions matter more than
+          potential positions for daily decisions). */}
+      <div className="max-w-[1100px] mx-auto">
+        <PortfolioSummaryWidget onAddLot={() => setAddLotOpen(true)} />
+      </div>
+
+      {/* Watchlist — moved here 2026-05-08 from its own tab so the
+          user has one workspace. Collapsible header lets them focus
+          on strategies; collapse state persists in localStorage. */}
+      <div className="max-w-[1100px] mx-auto">
+        <WatchlistSection />
+      </div>
+
       <div className="max-w-[1100px] mx-auto">
         {/* Header */}
         <div className="flex items-baseline gap-3 mb-2">
@@ -650,6 +677,12 @@ export function StrategiesTab({
         pendingContext={pendingContext}
         onConsumePendingPrompt={onConsumePendingPrompt}
       />
+
+      {/* Phase 1B: add-lot modal mounted at root so it overlays all
+          panels including ChatRail. */}
+      {addLotOpen && (
+        <AddLotModal onClose={() => setAddLotOpen(false)} />
+      )}
     </div>
   )
 }
@@ -679,15 +712,37 @@ function ChatRail({
   const KEY_SS  = 'strategies.chatRail.showSessions'
   const KEY_OPEN = 'strategies.chatRail.open'
 
+  // Detect mobile viewport so chat rail can render as a full-screen
+  // overlay (instead of the desktop side-rail that overflows narrow
+  // screens and traps the close button off-screen).
+  const [isMobile, setIsMobile] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false
+    return window.matchMedia('(max-width: 767px)').matches
+  })
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 767px)')
+    const onChange = (e: MediaQueryListEvent) => setIsMobile(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
+
   const [width, setWidth] = useState<number>(() => {
     const v = Number(localStorage.getItem(KEY_W))
     return v >= 280 && v <= 900 ? v : 400
   })
+  // Sessions sidebar default: visible on desktop, hidden on mobile
+  // (eats half the chat area on a 390px screen otherwise).
   const [showSessions, setShowSessions] = useState<boolean>(() => {
-    return localStorage.getItem(KEY_SS) !== '0'
+    const stored = localStorage.getItem(KEY_SS)
+    if (stored !== null) return stored !== '0'
+    return !window.matchMedia('(max-width: 767px)').matches
   })
+  // Open default: true on desktop, false on mobile (don't ambush
+  // mobile users with a full-screen overlay on first visit).
   const [open, setOpen] = useState<boolean>(() => {
-    return localStorage.getItem(KEY_OPEN) !== '0'
+    const stored = localStorage.getItem(KEY_OPEN)
+    if (stored !== null) return stored !== '0'
+    return !window.matchMedia('(max-width: 767px)').matches
   })
 
   useEffect(() => { localStorage.setItem(KEY_W,  String(width)) }, [width])
@@ -725,7 +780,20 @@ function ChatRail({
   }, [])
 
   if (!open) {
-    // Collapsed strip — just a vertical button to re-open
+    // Mobile: floating-action-button style at bottom-right corner so
+    //   it's a thumb-reachable tap target. Desktop: vertical strip
+    //   on the right edge as before.
+    if (isMobile) {
+      return (
+        <button
+          onClick={() => setOpen(true)}
+          title="打开 Ask NeoMind"
+          className="md:hidden fixed bottom-4 right-4 z-30 rounded-full px-4 py-3 bg-[var(--color-accent)] text-[var(--color-bg)] shadow-lg text-[13px] font-semibold flex items-center gap-1.5"
+        >
+          💬 Ask
+        </button>
+      )
+    }
     return (
       <aside className="w-[28px] flex-shrink-0 border-l border-[var(--color-border)] bg-[var(--color-bg)]/30 flex flex-col items-center pt-2">
         <button
@@ -745,35 +813,52 @@ function ChatRail({
     )
   }
 
+  // Desktop: aside with persisted width. Mobile: full-screen overlay
+  // so the chat header (close + sessions toggle) is always reachable.
+  const asideStyle = isMobile ? {} : { width: `${width}px` }
+  const asideClass = isMobile
+    ? 'fixed inset-0 z-40 flex flex-row bg-[var(--color-bg)]'
+    : 'flex-shrink-0 border-l border-[var(--color-border)] flex flex-row bg-[var(--color-bg)]/30 relative'
+
   return (
-    <aside
-      style={{ width: `${width}px` }}
-      className="flex-shrink-0 border-l border-[var(--color-border)] flex flex-row bg-[var(--color-bg)]/30 relative"
-    >
-      {/* Drag handle on the left edge */}
-      <div
-        onMouseDown={onResizeStart}
-        title="拖动调整宽度"
-        className="absolute left-0 top-0 bottom-0 w-[4px] cursor-col-resize hover:bg-[var(--color-accent)]/40 z-10"
-      />
+    <aside style={asideStyle} className={asideClass}>
+      {/* Drag handle — desktop only (no use on touch devices) */}
+      {!isMobile && (
+        <div
+          onMouseDown={onResizeStart}
+          title="拖动调整宽度"
+          className="absolute left-0 top-0 bottom-0 w-[4px] cursor-col-resize hover:bg-[var(--color-accent)]/40 z-10"
+        />
+      )}
 
       <div className="flex-1 flex flex-col min-w-0">
-        <div className="px-3 py-2 border-b border-[var(--color-border)] text-[10px] text-[var(--color-dim)] flex items-center gap-2">
+        <div className="px-3 py-2 md:py-2 border-b border-[var(--color-border)] text-[11px] md:text-[10px] text-[var(--color-dim)] flex items-center gap-2">
           <span className="font-semibold text-[var(--color-text)]">💬 Ask NeoMind</span>
-          <span className="italic truncate">— 不用切 tab</span>
+          <span className="italic truncate hidden sm:inline">— 不用切 tab</span>
+          {/* sessions toggle. Mobile shows verb explicitly so the
+              user can see the button DOES something — earlier label
+              was just "sessions" with no state hint, looked like a
+              passive label not a toggle. */}
           <button
             onClick={() => setShowSessions(s => !s)}
-            title={showSessions ? '隐藏 sessions' : '显示 sessions'}
-            className="ml-auto px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+            title={showSessions ? '隐藏 sessions 列表' : '显示 sessions 列表'}
+            className={`ml-auto px-2 py-1 md:py-0.5 rounded border text-[11px] md:text-[9.5px] flex items-center gap-1 ${
+              showSessions
+                ? 'border-[var(--color-accent)]/40 bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+                : 'border-[var(--color-border)] hover:bg-[var(--color-panel)]/50'
+            }`}
           >
-            {showSessions ? '◧ hide sessions' : '◨ show sessions'}
+            {showSessions
+              ? <><span>◧</span><span>隐藏</span><span className="hidden sm:inline">sessions</span></>
+              : <><span>◨</span><span>历史</span><span className="hidden sm:inline">sessions</span></>}
           </button>
           <button
             onClick={() => setOpen(false)}
-            title="折叠 chat 栏"
-            className="px-1.5 py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[9.5px]"
+            title={isMobile ? '关闭 chat' : '折叠 chat 栏'}
+            className="px-2.5 md:px-1.5 py-1 md:py-0.5 rounded border border-[var(--color-border)] hover:bg-[var(--color-panel)]/50 text-[14px] md:text-[9.5px] font-bold"
+            data-testid="chat-rail-close"
           >
-            ▶
+            {isMobile ? '✕' : '▶'}
           </button>
         </div>
         <div className="flex-1 overflow-hidden">

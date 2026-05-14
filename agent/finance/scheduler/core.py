@@ -56,6 +56,21 @@ DEFAULT_JOBS = [
     # case fetch via miniflux + Tavily, LLM-gated, Chinese-translated.
     # ~$0.01-0.05 per run, runs 06:00 daily.
     "agent.finance.scheduler.jobs.learning_daily",
+    # Phase W (2026-05-10): daily check of every active investment
+    # thesis — flags thesis as 'requires_review' if supporting facts
+    # went stale or supporting signal types went silent in 30d.
+    # Runs 06:30 daily, after learning_daily.
+    "agent.finance.scheduler.jobs.thesis_health_check",
+    # Phase 3 (2026-05-10): daily earnings calendar scan for Core +
+    # Adjacent watchlist tickers. Emits earnings_upcoming signal_event
+    # when within 14d (severity by proximity). Backfills
+    # earnings_history table from yfinance. Runs 07:10 weekdays.
+    "agent.finance.scheduler.jobs.earnings_calendar",
+    # Phase 3 (2026-05-10): daily macro calendar fetch from Trading
+    # Economics RSS — surfaces FOMC, CPI, NFP, GDP etc within 14d.
+    # Theme-level signal (no ticker), severity always 'high' since
+    # macro releases move whole sectors. Runs 06:45 daily.
+    "agent.finance.scheduler.jobs.macro_calendar",
 ]
 
 

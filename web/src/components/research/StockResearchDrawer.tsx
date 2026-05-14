@@ -22,14 +22,26 @@ import {
   useRegenStockProfile, useUpdateStockStatus, useAppendStockNote,
   useLiveQuote, useNextEarnings, useAnchoredFacts, useRegenAnchored,
   useTickerNews, useChatSessions,
+  useWatchlistTiers, useWatchlistPromote, useWatchlistTouch,
+  useWatchlistRemoveTier, useWatchlistSuggestions,
+  // Phase W (2026-05-10): theses + audit
+  useTheses, useThesisTemplate, useCreateThesis, useInvalidateThesis,
+  useWatchlistAudit,
+  // Phase 4: exit triggers eval
+  useExitTriggers,
+  // Phase 1B (2026-05-10): position state surfacing
+  usePositionByTicker, usePortfolioSummary,
   type StockExposureEvent, type AnchoredFacts, type NextEarnings,
-  type StockProfile,
+  type StockProfile, type WatchlistTier,
+  type InvestmentThesis,
 } from '@/lib/api'
 import {
   X, ExternalLink, Sparkles, BarChart3, Network, Newspaper,
   NotebookPen, MessagesSquare, Building2, Loader2, ShieldCheck,
+  Star, CircleDot, Eye, Lightbulb, History, AlertTriangle, Briefcase,
 } from 'lucide-react'
 import { AnchoredFactsPanel } from './AnchoredFactsPanel'
+import { EarningsHistoryMini } from '@/components/widgets/EarningsHistoryMini'
 
 type Status = 'researching' | 'watching' | 'pass' | 'own'
 type TabKey = 'overview' | 'smart_money' | 'supply_chain' | 'news' | 'notes' | 'chat'
@@ -41,6 +53,10 @@ export function StockResearchDrawer() {
   const [statusEditing, setStatusEditing] = useState<Status | null>(null)
   const [statusReasonDraft, setStatusReasonDraft] = useState('')
   const [noteDraft, setNoteDraft] = useState('')
+  // Phase W: trigger linkage for the note being composed.
+  // Either 'thesis:<id>' or 'signal:<id>' format. UI translates back
+  // to backend's two separate fields. Empty = no trigger.
+  const [noteTriggerSelection, setNoteTriggerSelection] = useState<string>('')
 
   const profileQ = useStockProfile(ticker)
   const exposureQ = useStockExposure(ticker)
@@ -54,12 +70,30 @@ export function StockResearchDrawer() {
   const regenAnchoredMu = useRegenAnchored()
   const isRegenAnchoredForThis = regenAnchoredMu.isPending && regenAnchoredMu.variables === ticker
 
+  // Watchlist tier state — read current tier so we can show
+  // Core/Adjacent/Watching badge + tier-change buttons.
+  const tiersQ = useWatchlistTiers()
+  const promoteMu = useWatchlistPromote()
+  const touchMu = useWatchlistTouch()
+  const removeTierMu = useWatchlistRemoveTier()
+  const currentEntry = ticker
+    ? Object.values(tiersQ.data?.tiers ?? {})
+        .flat()
+        .find(e => e.ticker === ticker.toUpperCase())
+    : undefined
+  const [showSuggestions, setShowSuggestions] = useState(false)
+
   useEffect(() => {
     if (!ticker) return
     setTab('overview')
     setStatusEditing(null)
     setStatusReasonDraft('')
     setNoteDraft('')
+    setShowSuggestions(false)
+    // Bump last_reviewed_at — opening the drawer counts as a thesis
+    // touch. Server returns ok even if ticker not in watchlist.
+    touchMu.mutate(ticker)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker])
 
   if (!ticker) return null
@@ -91,8 +125,20 @@ export function StockResearchDrawer() {
 
   function commitNote() {
     if (!ticker || !noteDraft.trim()) return
-    noteMu.mutate({ ticker, body: noteDraft.trim() })
+    // Phase W: parse trigger selection to backend fields. Format is
+    // 'thesis:<uuid>' or 'signal:<uuid>'. Empty = no trigger linkage.
+    const args: {
+      ticker: string; body: string
+      trigger_thesis_id?: string; trigger_signal_id?: string
+    } = { ticker, body: noteDraft.trim() }
+    if (noteTriggerSelection.startsWith('thesis:')) {
+      args.trigger_thesis_id = noteTriggerSelection.slice(7)
+    } else if (noteTriggerSelection.startsWith('signal:')) {
+      args.trigger_signal_id = noteTriggerSelection.slice(7)
+    }
+    noteMu.mutate(args)
     setNoteDraft('')
+    setNoteTriggerSelection('')
   }
 
   function regenerate() {
@@ -239,14 +285,92 @@ export function StockResearchDrawer() {
           </div>
         )}
 
-        {/* Tab strip */}
-        <div className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)]">
+        {/* Tier strip — Core/Adjacent/Watching badge + change buttons.
+            Bumps the user's last_reviewed_at on every drawer open
+            (touchMu in useEffect above) so the Watchlist tab "stale
+            thesis" review prompts stay accurate. */}
+        <TierStrip
+          ticker={ticker}
+          currentTier={currentEntry?.tier ?? null}
+          parentTicker={currentEntry?.parent_ticker ?? null}
+          onPromote={(tier, parent) => {
+            promoteMu.mutate(
+              { ticker, tier, parent_ticker: parent ?? undefined },
+              { onError: (err) => alert(`promote failed: ${err.message}`) },
+            )
+          }}
+          onRemove={() => {
+            if (confirm(`从 watchlist 移除 ${ticker}?`)) {
+              removeTierMu.mutate(ticker)
+            }
+          }}
+          showSuggestions={showSuggestions}
+          onToggleSuggestions={() => setShowSuggestions(s => !s)}
+          coreTickers={(tiersQ.data?.tiers.core ?? []).map(e => e.ticker)}
+        />
+
+        {/* Suggestions panel — opens when user clicks ✨ Expand on a
+            ticker that has anchored facts. Lists competitor / customer /
+            supplier names extracted from the 10-K, each with verbatim
+            quote, and lets the user one-click promote any to Adjacent
+            (with this ticker as parent). */}
+        {showSuggestions && (
+          <SuggestionsPanel
+            ticker={ticker}
+            existingTickers={new Set([
+              ...(tiersQ.data?.tiers.core ?? []),
+              ...(tiersQ.data?.tiers.adjacent ?? []),
+              ...(tiersQ.data?.tiers.watching ?? []),
+            ].map(e => e.ticker))}
+            onPromote={(s) => {
+              // Pre-fill prompt with the extractor-recorded ticker if
+              // present (e.g. ROKU's competitor row has ticker="AMZN"
+              // for Amazon). For NVDA's supplier rows the ticker is
+              // null (TSMC has no US listing), so user enters manually.
+              const guess = s.ticker
+                || s.name.split(/[\s,.]/)[0].toUpperCase()
+              const symbol = (prompt(
+                `把 "${s.name}" 加为 ${ticker} 的 Adjacent。\n请输入 trading symbol (跳过则不添加):`,
+                guess,
+              ) || '').trim().toUpperCase()
+              if (!symbol) return
+              promoteMu.mutate(
+                { ticker: symbol, tier: 'adjacent', parent_ticker: ticker, note: `from ${ticker} 10-K: ${s.name}` },
+                { onError: (err) => alert(`promote failed: ${err.message}`) },
+              )
+            }}
+          />
+        )}
+
+        {/* Phase 1B (2026-05-10): Position panel — your actual lots
+            for this ticker, with cost basis / P&L / weight / ST-vs-LT.
+            Per plan §5 Pillar 5: information surfaced in chain context,
+            NEVER a gate. If you don't own this ticker, panel hides
+            (no-position state). */}
+        <PositionPanel ticker={ticker} />
+
+        {/* Phase 3 (2026-05-10): EarningsHistoryMini — last 8 quarter
+            beat/miss bar chart. Decision context for thesis health.
+            Per plan §5 Pillar 6 (information dimension coverage). */}
+        <div className="px-4 pb-1 bg-[var(--color-bg)]">
+          <EarningsHistoryMini ticker={ticker} />
+        </div>
+
+        {/* Tab strip — overflow-x-auto so 6 tabs can scroll
+            horizontally on mobile (otherwise they wrap or get
+            clipped); flex-shrink-0 + whitespace-nowrap on buttons so
+            each label stays on one line and isn't compressed.
+            -webkit-overflow-scrolling for iOS momentum. */}
+        <div
+          className="flex border-b border-[var(--color-border)] bg-[var(--color-bg)] overflow-x-auto overscroll-x-contain"
+          style={{ WebkitOverflowScrolling: 'touch' }}
+        >
           {tabs.map((t) => (
             <button
               key={t.k}
               onClick={() => setTab(t.k)}
               className={
-                'flex items-center gap-1.5 px-3 py-2 text-[11px] border-b-2 transition ' +
+                'flex-shrink-0 flex items-center gap-1.5 px-3 py-2 text-[11px] border-b-2 transition whitespace-nowrap ' +
                 (tab === t.k
                   ? 'border-[var(--color-accent)] text-[var(--color-text)]'
                   : 'border-transparent text-[var(--color-dim)] hover:text-[var(--color-text)]')
@@ -340,8 +464,21 @@ export function StockResearchDrawer() {
 
           {tab === 'notes' && (
             <>
-              <div className="mb-3 text-[10px] text-[var(--color-dim)]">
-                你的笔记 (DB 持久化). LLM 抽取的 tag 后续 wire — 现在你输入啥就存啥.
+              {/* Phase W (2026-05-10): theses panel — your hypotheses
+                  about this ticker. OPTIONAL; if no thesis exists, UI
+                  invites you to add one but never blocks anything. */}
+              <ThesesPanel
+                ticker={ticker}
+                exposureEvents={exposureEvents}
+              />
+
+              {/* Phase W: audit history — "why is this ticker on my
+                  radar". Auto-populated from promote/demote/drop +
+                  thesis create/invalidate events. */}
+              <WatchlistAuditPanel ticker={ticker} />
+
+              <div className="mb-2 mt-4 text-[10px] text-[var(--color-dim)] flex items-center gap-1">
+                <NotebookPen size={11} /> 你的笔记 (DB 持久化)
               </div>
               <div className="space-y-2 mb-4">
                 {notes.length === 0 && (
@@ -349,7 +486,7 @@ export function StockResearchDrawer() {
                 )}
                 {notes.map((n) => (
                   <div key={n.id} className="border border-[var(--color-border)]/40 rounded p-2">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="text-[9px] font-mono text-[var(--color-dim)]">{new Date(n.ts).toLocaleString()}</span>
                       {n.tag && (
                         <span className="text-[9px] font-mono px-1.5 py-0 rounded border border-amber-500/40 text-amber-300">
@@ -358,6 +495,16 @@ export function StockResearchDrawer() {
                       )}
                       {n.source === 'llm-extract' && (
                         <span className="text-[8.5px] text-[var(--color-dim)] italic">(LLM)</span>
+                      )}
+                      {n.trigger_thesis_id && (
+                        <span className="text-[8.5px] text-emerald-300/80 italic">
+                          ↳ thesis-triggered
+                        </span>
+                      )}
+                      {n.trigger_signal_id && (
+                        <span className="text-[8.5px] text-blue-300/80 italic">
+                          ↳ signal-triggered
+                        </span>
                       )}
                     </div>
                     <p className="text-[11px] whitespace-pre-wrap">{n.body}</p>
@@ -373,7 +520,16 @@ export function StockResearchDrawer() {
                   onChange={(e) => setNoteDraft(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) commitNote() }}
                 />
-                <div className="flex items-center gap-2 mt-1">
+                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                  {/* Phase W: optional trigger linkage. Pulls active
+                      theses + recent signal_events for this ticker so
+                      user can pick "this note was prompted by X" */}
+                  <NoteTriggerSelector
+                    ticker={ticker}
+                    exposureEvents={exposureEvents}
+                    value={noteTriggerSelection}
+                    onChange={setNoteTriggerSelection}
+                  />
                   <button
                     onClick={commitNote}
                     disabled={!noteDraft.trim() || noteMu.isPending}
@@ -1083,6 +1239,755 @@ function NewsTabBody({ ticker }: { ticker: string }) {
           </li>
         ))}
       </ul>
+    </div>
+  )
+}
+
+
+// ── Tier strip — current tier badge + change buttons ──
+//
+// Renders the strip just below the status reason editor. Three
+// click targets per tier (→ Core / → Adjacent / → Watching) plus a
+// drop button. Adjacent tier requires choosing a parent_ticker
+// from existing core tickers (otherwise the spoke graph is broken).
+function TierStrip({
+  currentTier, parentTicker,
+  onPromote, onRemove,
+  showSuggestions, onToggleSuggestions,
+  coreTickers,
+}: {
+  ticker: string  // unused but kept in API for future per-tier copy
+  currentTier: WatchlistTier | null
+  parentTicker: string | null
+  onPromote: (tier: WatchlistTier, parent?: string | null) => void
+  onRemove: () => void
+  showSuggestions: boolean
+  onToggleSuggestions: () => void
+  coreTickers: string[]
+}) {
+  const TierIcon = currentTier === 'core' ? Star
+    : currentTier === 'adjacent' ? CircleDot
+    : currentTier === 'watching' ? Eye : null
+  const tierLabel = currentTier
+    ? { core: 'Core', adjacent: 'Adjacent', watching: 'Watching' }[currentTier]
+    : '—'
+  const tierColor = {
+    core:     'text-amber-300 border-amber-500/40 bg-amber-500/10',
+    adjacent: 'text-emerald-300 border-emerald-500/40 bg-emerald-500/10',
+    watching: 'text-[var(--color-dim)] border-[var(--color-border)]',
+  }
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10px] flex-wrap">
+      {/* Current state */}
+      {currentTier ? (
+        <span className={`px-1.5 py-0.5 rounded border flex items-center gap-1 ${tierColor[currentTier]}`}>
+          {TierIcon && <TierIcon size={11} />} {tierLabel}
+          {parentTicker && (
+            <span className="text-[9px] opacity-75">↳ {parentTicker}</span>
+          )}
+        </span>
+      ) : (
+        <span className="px-1.5 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)]">
+          unwatched
+        </span>
+      )}
+
+      {/* Change-tier buttons. Skip the one matching current tier. */}
+      <div className="flex items-center gap-1 ml-auto flex-wrap">
+        {currentTier !== 'core' && (
+          <button
+            onClick={() => onPromote('core')}
+            className="px-2 py-0.5 rounded border border-amber-500/40 hover:bg-amber-500/10 text-amber-300"
+            title="Promote to Core (≤10, weekly review)"
+          >
+            <Star size={9} className="inline mr-1" />→ Core
+          </button>
+        )}
+        {currentTier !== 'adjacent' && (
+          <button
+            onClick={() => {
+              if (coreTickers.length === 0) {
+                alert('需要先有 Core ticker 作为 parent。先把一个 ticker 升到 Core 再试。')
+                return
+              }
+              const parent = (prompt(
+                `Adjacent 是 spoke — 选一个 Core ticker 作为它的 parent (来源):\n\nCore tickers: ${coreTickers.join(', ')}`,
+                coreTickers[0],
+              ) || '').trim().toUpperCase()
+              if (!parent) return
+              if (!coreTickers.includes(parent)) {
+                alert(`${parent} 不在 Core 里 — parent 必须是 Core ticker`)
+                return
+              }
+              onPromote('adjacent', parent)
+            }}
+            className="px-2 py-0.5 rounded border border-emerald-500/40 hover:bg-emerald-500/10 text-emerald-300"
+            title="Adjacent — 链到一个 Core ticker"
+          >
+            <CircleDot size={9} className="inline mr-1" />→ Adjacent
+          </button>
+        )}
+        {currentTier !== 'watching' && (
+          <button
+            onClick={() => {
+              if (coreTickers.length === 0) {
+                alert('Watching 也需要 parent ticker (来源 Core)')
+                return
+              }
+              const parent = (prompt(
+                `Watching 是远观察 — 选一个 Core ticker 作为来源:`,
+                coreTickers[0],
+              ) || '').trim().toUpperCase()
+              if (!parent) return
+              if (!coreTickers.includes(parent)) {
+                alert(`${parent} 不在 Core 里`)
+                return
+              }
+              onPromote('watching', parent)
+            }}
+            className="px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-text)] text-[var(--color-dim)]"
+            title="Watching — alert only"
+          >
+            <Eye size={9} className="inline mr-1" />→ Watching
+          </button>
+        )}
+        {currentTier && (
+          <button
+            onClick={onRemove}
+            className="px-2 py-0.5 rounded border border-red-500/40 hover:bg-red-500/10 text-red-300"
+            title="从 watchlist 移除"
+          >
+            ✕ drop
+          </button>
+        )}
+
+        {/* Expand from 10-K — opens the suggestions panel below */}
+        <button
+          onClick={onToggleSuggestions}
+          className={`px-2 py-0.5 rounded border flex items-center gap-1 ${
+            showSuggestions
+              ? 'border-[var(--color-accent)] bg-[var(--color-accent)]/10 text-[var(--color-accent)]'
+              : 'border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-text)]'
+          }`}
+          title="从 10-K 抽出的 competitor / customer / supplier 一键加为 Adjacent"
+        >
+          <Sparkles size={9} /> 从 10-K 扩 ring
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
+// ── Suggestions panel — expand ring from anchored facts ──
+function SuggestionsPanel({
+  ticker, existingTickers, onPromote,
+}: {
+  ticker: string
+  existingTickers: Set<string>
+  onPromote: (suggestion: { name: string; ticker: string }) => void
+}) {
+  const sugQ = useWatchlistSuggestions(ticker)
+  const sugs = sugQ.data?.suggestions
+  const total = sugs
+    ? sugs.competitor.length + sugs.customer.length + sugs.supplier.length
+    : 0
+
+  return (
+    <div className="px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-panel)]/30 text-[11px]">
+      <div className="text-[10px] text-[var(--color-dim)] mb-2">
+        从 {ticker} 的 10-K SEC-anchored facts 抽出的 related companies — 点 + 加为 Adjacent (parent={ticker})。
+        每条都有 verbatim quote 在 hover title 里。
+      </div>
+      {sugQ.isLoading && (
+        <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
+      )}
+      {!sugQ.isLoading && total === 0 && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-1">
+          {ticker} 还没抽过 10-K (或抽出但 0 条 competitor/customer/supplier)。
+          先去 Overview tab 点 ✨ extract from SEC 10-K。
+        </div>
+      )}
+      {!sugQ.isLoading && total > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {(['competitor', 'customer', 'supplier'] as const).map(kind => {
+            const list = sugs?.[kind] ?? []
+            if (list.length === 0) return null
+            const label = { competitor: '竞品', customer: '客户', supplier: '供应商' }[kind]
+            return (
+              <div key={kind}>
+                <div className="text-[9.5px] uppercase tracking-wider text-[var(--color-dim)] mb-1">
+                  {label} ({list.length})
+                </div>
+                <ul className="space-y-1">
+                  {list.map((s, i) => {
+                    // Use extractor-recorded ticker if present;
+                    // otherwise fall back to company-name first word
+                    // (catches "Apple Inc." → AAPL but not multi-word
+                    // companies like "Walmart Stores" → would need a
+                    // resolver; user is prompted in that case).
+                    const guess = s.ticker || s.name.split(/[\s,.]/)[0].toUpperCase()
+                    const alreadyIn = existingTickers.has(guess)
+                    return (
+                      <li key={i} className="flex items-start gap-1">
+                        <button
+                          onClick={() => onPromote({ name: s.name, ticker: s.ticker })}
+                          disabled={alreadyIn}
+                          title={s.evidence_quote || s.name}
+                          className={`flex-1 text-left px-1.5 py-0.5 rounded border text-[10.5px] ${
+                            alreadyIn
+                              ? 'border-[var(--color-border)] text-[var(--color-dim)] cursor-default opacity-60'
+                              : 'border-[var(--color-border)] hover:border-emerald-500/40 hover:bg-emerald-500/10 text-[var(--color-text)]'
+                          }`}
+                        >
+                          {alreadyIn ? '✓ ' : '+ '}{s.name}
+                          {s.ticker && (
+                            <span className="ml-1 opacity-60 text-[9px] font-mono">({s.ticker})</span>
+                          )}
+                        </button>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── Phase W: Theses panel ──
+//
+// Shows active theses for this ticker, plus an "Add thesis" button
+// that opens a markdown form pre-filled with the template. Per plan
+// §2 philosophy: information not gates — having NO thesis is fine,
+// we just label the ticker as "no thesis recorded" so the chain
+// panel can be honest about it.
+function ThesesPanel({
+  ticker, exposureEvents,
+}: {
+  ticker: string
+  exposureEvents: StockExposureEvent[]
+}) {
+  const thesesQ = useTheses(ticker, 'active')
+  const templateQ = useThesisTemplate()
+  const createMu = useCreateThesis()
+  const invalidateMu = useInvalidateThesis()
+
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  function openCreate() {
+    setDraft(templateQ.data?.body_md ?? '')
+    setEditing(true)
+  }
+
+  function commitCreate() {
+    if (!draft.trim()) return
+    createMu.mutate(
+      { ticker, body_md: draft.trim() },
+      {
+        onSuccess: () => { setEditing(false); setDraft('') },
+        onError: (err) => alert(`create failed: ${err.message}`),
+      },
+    )
+  }
+
+  const theses = thesesQ.data?.theses ?? []
+  // exposureEvents kept in props for future use (citing signals as
+  // supporting evidence when thesis is created); not used yet.
+  void exposureEvents
+
+  return (
+    <div className="mb-4 border border-emerald-500/30 rounded p-2 bg-emerald-500/[0.04]">
+      <div className="flex items-center gap-2 mb-2">
+        <Lightbulb size={12} className="text-emerald-300" />
+        <span className="text-[11px] font-semibold text-emerald-300">投资 Theses</span>
+        <span className="text-[9px] italic text-[var(--color-dim)]">
+          —— 你对这只股的核心假设 (含 Bull / Bear / Exit triggers)
+        </span>
+        <button
+          onClick={openCreate}
+          disabled={editing || templateQ.isLoading}
+          className="ml-auto text-[10px] px-2 py-0.5 rounded border border-emerald-500/40 hover:bg-emerald-500/10 text-emerald-300 disabled:opacity-40"
+        >
+          + Add thesis
+        </button>
+      </div>
+
+      {thesesQ.isLoading && (
+        <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
+      )}
+
+      {!thesesQ.isLoading && theses.length === 0 && !editing && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-1">
+          No active thesis yet. Theses are <b>OPTIONAL</b>; if you have a clear bull case
+          + bear case + exit triggers, write them down — chain panel will show them as your
+          decision context.
+        </div>
+      )}
+
+      {/* Existing theses */}
+      <div className="space-y-2">
+        {theses.map(t => (
+          <ThesisCard
+            key={t.thesis_id}
+            t={t}
+            onInvalidate={(reason) => invalidateMu.mutate(
+              { thesis_id: t.thesis_id, ticker, reason },
+              { onError: (err) => alert(`invalidate failed: ${err.message}`) },
+            )}
+          />
+        ))}
+      </div>
+
+      {/* Create form */}
+      {editing && (
+        <div className="mt-2 border border-dashed border-emerald-500/40 rounded p-2">
+          <textarea
+            className="w-full bg-[var(--color-bg)] text-[10.5px] font-mono outline-none resize-y leading-snug p-2 rounded border border-[var(--color-border)]"
+            rows={14}
+            placeholder="thesis 模板加载中..."
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+          />
+          <div className="flex items-center gap-2 mt-1.5 flex-wrap">
+            <button
+              onClick={commitCreate}
+              disabled={!draft.trim() || createMu.isPending}
+              className="text-[10px] px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 disabled:opacity-40"
+            >
+              {createMu.isPending ? '保存中…' : 'create thesis'}
+            </button>
+            <button
+              onClick={() => { setEditing(false); setDraft('') }}
+              className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+            >
+              cancel
+            </button>
+            <span className="text-[9px] italic text-[var(--color-dim)]">
+              建议保留所有 4 节 (Bull / Bear / Exit triggers / Horizon) — Bear case
+              是反 confirmation bias 的关键
+            </span>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+function ThesisCard({
+  t, onInvalidate,
+}: {
+  t: InvestmentThesis
+  onInvalidate: (reason: string) => void
+}) {
+  const [expanded, setExpanded] = useState(false)
+  const hasMissing = t.missing_sections.length > 0
+
+  function handleInvalidate() {
+    const reason = prompt(
+      `失效 thesis "${t.ticker}"?\n请简要说明原因 (会记录在 audit log):`,
+      '',
+    )
+    if (reason && reason.trim()) {
+      onInvalidate(reason.trim())
+    }
+  }
+
+  return (
+    <div className="border border-emerald-500/40 rounded p-2 bg-[var(--color-panel)]/50">
+      <div className="flex items-start gap-2 mb-1">
+        <span className="text-[10px] font-mono text-emerald-300">
+          thesis · created {new Date(t.created_at).toLocaleDateString()}
+        </span>
+        {hasMissing && (
+          <span
+            className="text-[8.5px] text-amber-300 flex items-center gap-1"
+            title={`Missing sections: ${t.missing_sections.join(', ')}`}
+          >
+            <AlertTriangle size={9} /> incomplete
+          </span>
+        )}
+        <button
+          onClick={() => setExpanded(e => !e)}
+          className="ml-auto text-[10px] px-1.5 py-0 text-[var(--color-dim)] hover:text-[var(--color-text)]"
+        >
+          {expanded ? '−' : '+'}
+        </button>
+        <button
+          onClick={handleInvalidate}
+          className="text-[9px] px-1.5 py-0 rounded border border-red-500/40 hover:bg-red-500/10 text-red-300"
+          title="标记 thesis 已失效 (移到 audit log, 不删除)"
+        >
+          ✕ invalidate
+        </button>
+      </div>
+
+      {/* Always-show: Bull / Bear side by side (PRO/CONTRA forced
+          display per plan §5 Pillar 1 chain enhancement #3) */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 mt-1">
+        <div className="border border-emerald-500/30 rounded p-1.5">
+          <div className="text-[9px] uppercase tracking-wider text-emerald-300 mb-1">
+            ✅ Bull case
+          </div>
+          <div className="text-[10.5px] leading-snug whitespace-pre-wrap">
+            {t.sections.bull_case || (
+              <span className="italic text-[var(--color-dim)]">(empty — 写一些)</span>
+            )}
+          </div>
+        </div>
+        <div className="border border-red-500/30 rounded p-1.5">
+          <div className="text-[9px] uppercase tracking-wider text-red-300 mb-1">
+            ❌ Bear case
+          </div>
+          <div className="text-[10.5px] leading-snug whitespace-pre-wrap">
+            {t.sections.bear_case || (
+              <span className="italic text-amber-300">
+                ⚠ NO bear case recorded — 反 confirmation bias 用, 必须强迫自己写
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {expanded && (
+        <div className="mt-2 grid grid-cols-1 md:grid-cols-2 gap-2">
+          <div className="border border-[var(--color-border)]/50 rounded p-1.5">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--color-dim)] mb-1">
+              Exit triggers (evaluated)
+            </div>
+            {/* Phase 4: replace raw markdown with parsed + evaluated
+                triggers showing CURRENT state. Per plan §5 Pillar 5. */}
+            <ExitTriggersStatus thesisId={t.thesis_id} fallbackMd={t.sections.exit_triggers} />
+          </div>
+          <div className="border border-[var(--color-border)]/50 rounded p-1.5">
+            <div className="text-[9px] uppercase tracking-wider text-[var(--color-dim)] mb-1">
+              Horizon
+            </div>
+            <div className="text-[10.5px] leading-snug whitespace-pre-wrap">
+              {t.sections.horizon || (
+                <span className="italic text-[var(--color-dim)]">(empty)</span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── Phase W: Watchlist audit history (chain panel INCOMING) ──
+function WatchlistAuditPanel({ ticker }: { ticker: string }) {
+  const auditQ = useWatchlistAudit(ticker)
+  const events = auditQ.data?.events ?? []
+
+  const ACTION_COLOR: Record<string, string> = {
+    promote:           'border-emerald-500/40 text-emerald-300',
+    demote:            'border-amber-500/40 text-amber-300',
+    drop:              'border-red-500/40 text-red-300',
+    review:            'border-[var(--color-border)] text-[var(--color-dim)]',
+    note:              'border-blue-500/40 text-blue-300',
+    thesis_create:    'border-emerald-500/40 text-emerald-300',
+    thesis_invalidate:'border-red-500/40 text-red-300',
+  }
+
+  return (
+    <div className="mb-4 border border-[var(--color-border)]/50 rounded p-2">
+      <div className="flex items-center gap-2 mb-2">
+        <History size={12} className="text-[var(--color-dim)]" />
+        <span className="text-[11px] font-semibold text-[var(--color-text)]">
+          为什么这只在你 radar 上
+        </span>
+        <span className="text-[9px] italic text-[var(--color-dim)]">
+          —— promote / demote / thesis 历史 (Phase W audit)
+        </span>
+      </div>
+
+      {auditQ.isLoading && (
+        <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
+      )}
+
+      {!auditQ.isLoading && events.length === 0 && (
+        <div className="text-[10px] italic text-[var(--color-dim)] py-1">
+          没有 audit 事件 — 该 ticker 是早期手动加进 watchlist 的, 没记录 trigger.
+          以后的 promote / drop / thesis 会自动记录到这里.
+        </div>
+      )}
+
+      <div className="space-y-1">
+        {events.map(ev => (
+          <div key={ev.audit_id} className="flex items-start gap-2 text-[10px]">
+            <span
+              className={`px-1.5 py-0 rounded border font-mono flex-shrink-0 ${
+                ACTION_COLOR[ev.action] ?? 'border-[var(--color-border)] text-[var(--color-dim)]'
+              }`}
+            >
+              {ev.action}
+            </span>
+            <span className="text-[var(--color-dim)] font-mono flex-shrink-0">
+              {new Date(ev.ts).toLocaleString()}
+            </span>
+            <span className="flex-1">
+              {ev.from_tier && ev.to_tier && `${ev.from_tier} → ${ev.to_tier}`}
+              {ev.trigger_kind && ev.trigger_kind !== 'manual' && (
+                <span className="ml-1 text-[var(--color-dim)] italic">
+                  via {ev.trigger_kind}
+                </span>
+              )}
+              {ev.note && <span className="ml-1 text-[var(--color-text)]/80"> · {ev.note}</span>}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+
+// ── Phase W: Note trigger selector ──
+//
+// Dropdown shown beside the note textarea. Lets the user link the
+// note to: (a) one of their active theses for this ticker, (b) one
+// of recent signal_events on this ticker. Empty option = no link
+// (still allowed — note is fine without a trigger).
+function NoteTriggerSelector({
+  ticker, exposureEvents, value, onChange,
+}: {
+  ticker: string
+  exposureEvents: StockExposureEvent[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  const thesesQ = useTheses(ticker, 'active')
+  const theses = thesesQ.data?.theses ?? []
+  const recentSignals = exposureEvents.slice(0, 10)  // most recent 10
+
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      title="可选: 把笔记关联到一个 thesis 或 signal — 帮你 6 个月后回忆为何写下这个"
+      className="text-[10px] px-1.5 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-dim)] hover:text-[var(--color-text)]"
+    >
+      <option value="">trigger? (optional)</option>
+      {theses.length > 0 && (
+        <optgroup label="Active theses">
+          {theses.map(t => (
+            <option key={t.thesis_id} value={`thesis:${t.thesis_id}`}>
+              💡 thesis · {new Date(t.created_at).toLocaleDateString()}
+              {t.sections.bull_case
+                ? ` · ${t.sections.bull_case.split('\n')[0].slice(0, 30)}`
+                : ''}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {recentSignals.length > 0 && (
+        <optgroup label="Recent signals">
+          {recentSignals
+            .filter(s => s.event_id)   // skip events without real id (defensive)
+            .map((s) => (
+              <option
+                key={s.event_id}
+                value={`signal:${s.event_id}`}
+              >
+                📡 {s.scanner} · {s.signal_type} · {s.title?.slice(0, 30)}
+              </option>
+            ))}
+        </optgroup>
+      )}
+    </select>
+  )
+}
+
+
+// ── Phase 1B: Position panel — per-ticker decision context ──
+//
+// Renders just below TierStrip. Hidden when user owns 0 shares
+// (no_position state). When holdings exist, shows:
+//   • Total qty + avg cost + market value + unrealized P&L
+//   • Weight in portfolio (vs user's max-position pref, info only)
+//   • Each lot: open date / qty / cost / days-held / ST vs LT
+//
+// Per plan §2 philosophy: NO gates. Information only.
+function PositionPanel({ ticker }: { ticker: string }) {
+  const posQ = usePositionByTicker(ticker)
+  const sumQ = usePortfolioSummary('SPY')
+  const d = posQ.data
+  // No-position state: hide entirely (don't clutter the drawer with
+  // "you own 0 shares" — the absence speaks)
+  if (posQ.isLoading) return null
+  if (!d || d.lots.length === 0 || !d.summary) return null
+
+  const totalPortfolio = sumQ.data?.total_value ?? 0
+  const weight = (d.summary.market_value && totalPortfolio > 0)
+    ? (d.summary.market_value / totalPortfolio) * 100
+    : null
+
+  const fmtMoney = (n: number | null | undefined) => {
+    if (n == null) return '—'
+    if (Math.abs(n) >= 1_000_000) return `$${(n/1_000_000).toFixed(2)}M`
+    if (Math.abs(n) >= 1_000) return `$${(n/1_000).toFixed(1)}K`
+    return `$${n.toFixed(0)}`
+  }
+  const fmtPct = (n: number | null | undefined) =>
+    n == null ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(2)}%`
+
+  const pnlColor = (d.summary.unrealized ?? 0) >= 0
+    ? 'text-emerald-300' : 'text-red-300'
+
+  return (
+    <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px]">
+      <div className="flex items-center gap-2 mb-1.5">
+        <Briefcase size={11} className="text-[var(--color-accent)]" />
+        <span className="font-semibold text-[var(--color-text)]">我的持仓</span>
+        <span className="text-[var(--color-dim)] italic">
+          {d.summary.n_lots} lot{d.summary.n_lots > 1 ? 's' : ''} · 总{d.summary.total_quantity.toFixed(0)}sh
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-x-4 gap-y-1 text-[10.5px]">
+        <KV label="avg cost" value={fmtMoney(d.summary.avg_cost)} mono />
+        <KV label="now" value={fmtMoney(d.summary.current_price)} mono />
+        <KV label="market value" value={fmtMoney(d.summary.market_value)} mono />
+        <KV
+          label="unrealized"
+          value={`${fmtMoney(d.summary.unrealized)} (${fmtPct(d.summary.unrealized_pct)})`}
+          mono
+          colorClass={pnlColor}
+        />
+        <KV
+          label="portfolio weight"
+          value={weight != null ? `${weight.toFixed(1)}%` : '—'}
+          mono
+        />
+      </div>
+
+      {/* Per-lot detail — collapsible if many */}
+      {d.lots.length > 0 && (
+        <details className="mt-1.5">
+          <summary className="text-[9.5px] text-[var(--color-dim)] cursor-pointer hover:text-[var(--color-text)]">
+            ▸ 单笔 lot 明细 ({d.lots.length})
+          </summary>
+          <div className="mt-1 space-y-0.5 font-mono text-[10px]">
+            {d.lots.map(l => (
+              <div key={l.lot_id} className="flex items-center gap-2 text-[var(--color-dim)]">
+                <span>{l.open_date}</span>
+                <span className="text-[var(--color-text)]">
+                  {l.open_quantity.toFixed(0)}sh @ ${l.open_price.toFixed(2)}
+                </span>
+                <span className="text-[var(--color-dim)]">
+                  · {l.days_held}d ({l.is_long_term ? 'LT' : `ST, ${l.days_until_lt}d to LT`})
+                </span>
+                <span className={(l.lot_unrealized ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'}>
+                  {fmtMoney(l.lot_unrealized)}
+                </span>
+                {l.account_id && l.account_id !== 'main' && (
+                  <span className="text-[var(--color-dim)] italic">[{l.account_id}]</span>
+                )}
+                {l.notes && (
+                  <span className="text-[var(--color-dim)] italic truncate">— {l.notes}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+
+function KV({
+  label, value, mono, colorClass,
+}: {
+  label: string
+  value: string
+  mono?: boolean
+  colorClass?: string
+}) {
+  return (
+    <div className="flex items-baseline gap-1">
+      <span className="text-[9px] text-[var(--color-dim)] uppercase tracking-wider">
+        {label}
+      </span>
+      <span className={`${mono ? 'font-mono' : ''} ${colorClass || 'text-[var(--color-text)]'}`}>
+        {value}
+      </span>
+    </div>
+  )
+}
+
+
+// ── Phase 4: ExitTriggersStatus — parsed + evaluated exit triggers ──
+//
+// Replaces the raw markdown render of `## Exit triggers` with a
+// per-trigger status: ☐ unfired (with current value vs threshold)
+// or ☑ FIRED (red, alerting). Per plan §5 Pillar 5: information,
+// not gate — we never auto-sell, just surface the firing state.
+function ExitTriggersStatus({
+  thesisId, fallbackMd,
+}: {
+  thesisId: string
+  fallbackMd: string
+}) {
+  const q = useExitTriggers(thesisId)
+  if (q.isLoading) {
+    return (
+      <div className="text-[9.5px] italic text-[var(--color-dim)]">
+        evaluating triggers…
+      </div>
+    )
+  }
+  const triggers = q.data?.triggers ?? []
+  if (triggers.length === 0) {
+    // Fall back to raw markdown if parser found no checkboxes
+    return fallbackMd
+      ? <div className="text-[10.5px] leading-snug whitespace-pre-wrap font-mono">{fallbackMd}</div>
+      : <div className="italic text-[var(--color-dim)]">(empty)</div>
+  }
+  const nFired = q.data?.n_fired ?? 0
+  return (
+    <div className="space-y-1">
+      {nFired > 0 && (
+        <div className="text-[10px] text-red-300 font-semibold mb-1.5 flex items-center gap-1">
+          ⚠ {nFired} trigger{nFired > 1 ? 's' : ''} fired — review thesis
+        </div>
+      )}
+      {triggers.map((tr, i) => {
+        const fired = tr.fired === true
+        const unfired = tr.fired === false
+        const manual = tr.fired === null
+        const icon = fired ? '☑' : '☐'
+        const colorClass = fired
+          ? 'text-red-300 bg-red-500/10 border-red-500/40'
+          : unfired
+            ? 'text-emerald-300/80 border-[var(--color-border)]/50'
+            : 'text-[var(--color-dim)] border-[var(--color-border)]/40'
+        return (
+          <div
+            key={i}
+            className={`text-[10px] px-1.5 py-1 rounded border ${colorClass}`}
+            title={tr.explanation}
+          >
+            <div className="flex items-baseline gap-1.5">
+              <span className="font-mono">{icon}</span>
+              <span className="font-mono flex-1">{tr.text}</span>
+              {fired && <span className="text-[8.5px] uppercase font-bold tracking-wider">FIRED</span>}
+              {manual && <span className="text-[8.5px] italic">manual</span>}
+            </div>
+            <div className="text-[8.5px] text-[var(--color-dim)] mt-0.5 ml-3.5">
+              {tr.explanation}
+            </div>
+          </div>
+        )
+      })}
     </div>
   )
 }

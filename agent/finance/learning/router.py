@@ -50,6 +50,12 @@ def build_learning_router() -> APIRouter:
     def get_themes() -> Dict[str, Any]:
         return {"themes": dao.list_themes()}
 
+    @router.get("/books")
+    def get_books() -> Dict[str, Any]:
+        """Books grouped by availability (public_domain / free_web / paid)
+        for the dedicated 📚 Books section in the UI."""
+        return dao.list_books()
+
     @router.get("/cases/{slug}")
     def get_case(slug: str) -> Dict[str, Any]:
         c = dao.get_case(slug)

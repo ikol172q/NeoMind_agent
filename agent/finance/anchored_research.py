@@ -87,13 +87,35 @@ def _persist_facts(*, ticker: str, fact_type: str,
     return len(verified_items)
 
 
+# 18 months — per plan §5 Pillar 2 staleness threshold. Companies
+# file 10-K annually (some semi-annually 10-Q), so any fact extracted
+# from a filing > 18mo old is materially likely to be outdated.
+_STALE_THRESHOLD_DAYS = 18 * 30
+
+
+def _is_stale(filing_date: Optional[str]) -> bool:
+    """True if the source filing is > 18 months old."""
+    if not filing_date:
+        return False
+    try:
+        # filing_date format: 'YYYY-MM-DD'
+        fd = datetime.fromisoformat(filing_date)
+        if fd.tzinfo is None:
+            fd = fd.replace(tzinfo=timezone.utc)
+        age_days = (datetime.now(timezone.utc) - fd).days
+        return age_days > _STALE_THRESHOLD_DAYS
+    except Exception:
+        return False
+
+
 def get_anchored_facts(ticker: str) -> dict[str, Any]:
     """Read all cached anchored facts for a ticker, grouped by fact_type."""
     ensure_schema()
     with connect() as conn:
         cur = conn.execute(
-            """SELECT fact_type, payload_json, evidence_quote, source_url,
-                      source_section, source_filing_date, extracted_at, req_id
+            """SELECT id, fact_type, payload_json, evidence_quote, source_url,
+                      source_section, source_filing_date, extracted_at, req_id,
+                      confidence, polarity, requires_reextract
                FROM stock_anchored_facts
                WHERE ticker=?
                ORDER BY fact_type, id""",
@@ -108,9 +130,20 @@ def get_anchored_facts(ticker: str) -> dict[str, Any]:
             payload = json.loads(r["payload_json"])
         except json.JSONDecodeError:
             payload = {}
+        # Phase W (2026-05-10): expose Pillar 2 quality fields so UI
+        # can render confidence as opacity, polarity as PRO/CONTRA
+        # color, requires_reextract as warning icon. Per plan §5
+        # Pillar 2 + §5 Pillar 1 chain enhancement #3 (PRO/CONTRA
+        # forced display).
+        payload["fact_id"] = r["id"]
         payload["evidence_quote"] = r["evidence_quote"]
         payload["source_url"] = r["source_url"]
         payload["source_section"] = r["source_section"]
+        payload["confidence"] = r["confidence"]
+        payload["polarity"] = r["polarity"]
+        payload["requires_reextract"] = bool(r["requires_reextract"])
+        # Derived: is_stale if filing_date > 18mo old
+        payload["is_stale"] = _is_stale(r["source_filing_date"])
         by_type.setdefault(ft, []).append(payload)
         # Track latest meta across all rows
         if not latest_meta or r["extracted_at"] > latest_meta.get("extracted_at", ""):
@@ -373,6 +406,55 @@ def build_anchored_research_router() -> APIRouter:
     def regen_one(ticker: str, fact_type: str) -> dict[str, Any]:
         t = _normalize_ticker(ticker)
         return _run_pipeline(t, fact_type)
+
+    # Phase W (2026-05-10): user-driven fact correction. Per plan
+    # §5 Pillar 2 — let user flag wrong facts via 👎; flagged facts
+    # excluded from chain by default + trigger re-extract.
+    @router.post("/anchored/facts/{fact_id}/correct")
+    def correct_fact(fact_id: int, payload: dict[str, Any]) -> dict[str, Any]:
+        action = payload.get("user_action", "mark_wrong")
+        if action not in ("mark_wrong", "suggest_polarity", "suggest_value"):
+            raise HTTPException(400, f"invalid user_action: {action}")
+        note = payload.get("user_note") or ""
+        import uuid as _uuid
+        ensure_schema()
+        with connect() as conn:
+            # Verify fact exists
+            fact_row = conn.execute(
+                "SELECT id FROM stock_anchored_facts WHERE id = ?", (fact_id,)
+            ).fetchone()
+            if not fact_row:
+                raise HTTPException(404, f"fact {fact_id} not found")
+            # Insert correction
+            conn.execute(
+                "INSERT INTO fact_corrections "
+                "(correction_id, fact_id, user_action, user_note, ts) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (str(_uuid.uuid4()), fact_id, action, note,
+                 datetime.now(timezone.utc).isoformat()),
+            )
+            # If marked wrong: flag for re-extract so future runs skip it
+            if action == "mark_wrong":
+                conn.execute(
+                    "UPDATE stock_anchored_facts SET requires_reextract = 1 "
+                    "WHERE id = ?", (fact_id,)
+                )
+        return {"ok": True, "fact_id": fact_id, "action": action}
+
+    @router.get("/anchored/facts/{fact_id}/corrections")
+    def list_fact_corrections(fact_id: int) -> dict[str, Any]:
+        ensure_schema()
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT correction_id, user_action, user_note, ts "
+                "FROM fact_corrections WHERE fact_id = ? ORDER BY ts DESC",
+                (fact_id,),
+            ).fetchall()
+        return {
+            "fact_id": fact_id,
+            "corrections": [dict(r) for r in rows],
+            "count": len(rows),
+        }
 
     @router.post("/{ticker}/anchored/regenerate")
     def regen_all(ticker: str) -> dict[str, Any]:

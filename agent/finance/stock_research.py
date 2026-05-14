@@ -144,25 +144,42 @@ def list_notes(ticker: str, limit: int = 200) -> List[Dict[str, Any]]:
     ensure_schema()
     with connect() as conn:
         cur = conn.execute(
-            "SELECT id, ticker, ts, body, tag, source FROM stock_notes "
-            "WHERE ticker=? ORDER BY ts DESC LIMIT ?",
+            "SELECT id, ticker, ts, body, tag, source, "
+            "       trigger_signal_id, trigger_fact_id, trigger_thesis_id "
+            "FROM stock_notes WHERE ticker=? ORDER BY ts DESC LIMIT ?",
             (ticker, limit),
         )
         return [dict(r) for r in cur.fetchall()]
 
 
-def append_note(ticker: str, body: str, tag: Optional[str] = None,
-                source: str = "user") -> Dict[str, Any]:
+def append_note(
+    ticker: str, body: str, tag: Optional[str] = None,
+    source: str = "user",
+    trigger_signal_id: Optional[str] = None,
+    trigger_fact_id: Optional[int] = None,
+    trigger_thesis_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Append a note. The optional trigger_* fields link the note to
+    the signal_event / fact / thesis that prompted it (Phase W
+    Pillar 4). All three nullable; pass NONE for an unlinked note.
+    Per plan §2 philosophy: information not gates — we record the
+    link if you provide it but never require one."""
     ensure_schema()
     ts = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
         cur = conn.execute(
-            "INSERT INTO stock_notes (ticker, ts, body, tag, source) "
-            "VALUES (?,?,?,?,?)",
-            (ticker, ts, body, tag, source),
+            "INSERT INTO stock_notes "
+            "(ticker, ts, body, tag, source, "
+            " trigger_signal_id, trigger_fact_id, trigger_thesis_id) "
+            "VALUES (?,?,?,?,?,?,?,?)",
+            (ticker, ts, body, tag, source,
+             trigger_signal_id, trigger_fact_id, trigger_thesis_id),
         )
         return {"id": cur.lastrowid, "ticker": ticker, "ts": ts, "body": body,
-                "tag": tag, "source": source}
+                "tag": tag, "source": source,
+                "trigger_signal_id": trigger_signal_id,
+                "trigger_fact_id": trigger_fact_id,
+                "trigger_thesis_id": trigger_thesis_id}
 
 
 def aggregate_exposure(ticker: str, max_age_days: int = 365) -> List[Dict[str, Any]]:
@@ -173,7 +190,11 @@ def aggregate_exposure(ticker: str, max_age_days: int = 365) -> List[Dict[str, A
     cutoff = datetime.now(timezone.utc).isoformat()  # cutoff comparison done via SQL date
     with connect() as conn:
         cur = conn.execute(
-            "SELECT scanner_name, signal_type, severity, title, body_json, "
+            # Phase W (2026-05-10): include event_id so the drawer's
+            # NoteTriggerSelector can pass a real reference into
+            # stock_notes.trigger_signal_id (instead of a useless
+            # array index that breaks audit traceability).
+            "SELECT event_id, scanner_name, signal_type, severity, title, body_json, "
             "       source_url, source_timestamp, detected_at "
             "FROM signal_events "
             "WHERE ticker=? "
@@ -188,6 +209,7 @@ def aggregate_exposure(ticker: str, max_age_days: int = 365) -> List[Dict[str, A
             except json.JSONDecodeError:
                 body = {}
             events.append({
+                "event_id":         r["event_id"],
                 "scanner":          r["scanner_name"],
                 "signal_type":      r["signal_type"],
                 "severity":         r["severity"],
@@ -347,6 +369,12 @@ def llm_generate_profile(ticker: str) -> Dict[str, Any]:
 class NoteIn(BaseModel):
     body: str
     tag: Optional[str] = None
+    # 2026-05-10 Phase W: optional trigger linkage. All three are
+    # nullable; UI may set zero or one of them. Information not gates
+    # — note creates fine without any trigger.
+    trigger_signal_id: Optional[str] = None
+    trigger_fact_id: Optional[int] = None
+    trigger_thesis_id: Optional[str] = None
 
 
 class StatusIn(BaseModel):
@@ -408,7 +436,12 @@ def build_stock_research_router() -> APIRouter:
         t = _normalize(ticker)
         if not payload.body.strip():
             raise HTTPException(400, "note body is empty")
-        return append_note(t, payload.body.strip(), payload.tag, source="user")
+        return append_note(
+            t, payload.body.strip(), payload.tag, source="user",
+            trigger_signal_id=payload.trigger_signal_id,
+            trigger_fact_id=payload.trigger_fact_id,
+            trigger_thesis_id=payload.trigger_thesis_id,
+        )
 
     @router.patch("/{ticker}/status")
     def patch_status(ticker: str, payload: StatusIn) -> Dict[str, Any]:
