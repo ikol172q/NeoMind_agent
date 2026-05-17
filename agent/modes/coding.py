@@ -49,6 +49,16 @@ class CodingPersonality(BasePersonality, SharedCommandsMixin):
             "/find": (self._coding_handle_find_command, True),
             "/fix": (self._coding_handle_auto_fix_command, False),
             "/analyze": (self._coding_handle_auto_fix_command, False),
+            # ── spec-kit commands ──
+            "/speckit.constitution": (self._speckit_handle_constitution, True),
+            "/speckit.specify":       (self._speckit_handle_specify, True),
+            "/speckit.clarify":       (self._speckit_handle_clarify, True),
+            "/speckit.plan":          (self._speckit_handle_plan, True),
+            "/speckit.tasks":         (self._speckit_handle_tasks, True),
+            "/speckit.analyze":       (self._speckit_handle_analyze, True),
+            "/speckit.implement":     (self._speckit_handle_implement, True),
+            "/speckit.checklist":     (self._speckit_handle_checklist, True),
+            "/speckit.status":        (self._speckit_handle_status, True),
         }
 
     def on_activate(self) -> None:
@@ -59,6 +69,9 @@ class CodingPersonality(BasePersonality, SharedCommandsMixin):
 
         # Initialize workspace manager (coding-specific)
         self._initialize_workspace()
+
+        # Inject project constitution if available (spec-kit)
+        self._inject_constitution()
 
         # Re-inject vault context for coding mode
         self._inject_vault_context()
@@ -86,6 +99,22 @@ class CodingPersonality(BasePersonality, SharedCommandsMixin):
         return base
 
     # ── Activation helpers ──────────────────────────────────────────
+
+    def _inject_constitution(self):
+        """Load project constitution from .specify/memory/constitution.md
+        and inject into the system prompt via PromptComposer."""
+        try:
+            from agent.coding.speckit.constitution import ConstitutionManager
+            from agent.coding.speckit.spec_manager import SpecManager
+            ws_root = str(self.core.workspace_manager.project_root)
+            spec_mgr = SpecManager(ws_root)
+            const_mgr = ConstitutionManager(spec_mgr)
+            prompt = const_mgr.get_system_prompt_section()
+            if prompt and hasattr(self.core, 'prompt_composer'):
+                self.core.prompt_composer.set_section(
+                    'constitution', prompt, cacheable=True, priority=15)
+        except Exception:
+            pass  # Project may have no constitution yet — that's fine
 
     def _initialize_workspace(self):
         """Init WorkspaceManager for coding mode (coding-specific)."""
@@ -169,3 +198,41 @@ class CodingPersonality(BasePersonality, SharedCommandsMixin):
 
     def _coding_handle_auto_fix_command(self, arg):
         return self.core.handle_auto_fix_command(arg)
+
+    # ── spec-kit command handlers ──────────────────────────────────
+
+    def _speckit_handle_constitution(self, arg):
+        from agent.coding.speckit.commands import handle_constitution
+        return handle_constitution(self.core, arg)
+
+    def _speckit_handle_specify(self, arg):
+        from agent.coding.speckit.commands import handle_specify
+        return handle_specify(self.core, arg)
+
+    def _speckit_handle_clarify(self, arg):
+        from agent.coding.speckit.commands import handle_clarify
+        return handle_clarify(self.core, arg)
+
+    def _speckit_handle_plan(self, arg):
+        from agent.coding.speckit.commands import handle_plan
+        return handle_plan(self.core, arg)
+
+    def _speckit_handle_tasks(self, arg):
+        from agent.coding.speckit.commands import handle_tasks
+        return handle_tasks(self.core, arg)
+
+    def _speckit_handle_analyze(self, arg):
+        from agent.coding.speckit.commands import handle_analyze
+        return handle_analyze(self.core, arg)
+
+    def _speckit_handle_implement(self, arg):
+        from agent.coding.speckit.commands import handle_implement
+        return handle_implement(self.core, arg)
+
+    def _speckit_handle_checklist(self, arg):
+        from agent.coding.speckit.commands import handle_checklist
+        return handle_checklist(self.core, arg)
+
+    def _speckit_handle_status(self, arg):
+        from agent.coding.speckit.commands import handle_status
+        return handle_status(self.core, arg)
