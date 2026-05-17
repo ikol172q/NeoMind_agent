@@ -114,6 +114,10 @@ export function SettingsTab({ projectId, onProjectChange, onOpenLegacy }: Props)
       {/* Architecture explorer breaks out of max-w-3xl since the
           force-graph wants horizontal room. Replaces the old
           plans/architecture_interactive.html standalone file. */}
+      <div className="px-4 pb-4 max-w-3xl mx-auto">
+        <PlaidIntegrationCard />
+      </div>
+
       <div className="px-4 pb-4 max-w-7xl mx-auto">
         <Card>
           <CardHeader
@@ -377,6 +381,114 @@ function UserPrefsCard() {
             </span>
           </div>
         </div>
+      </CardBody>
+    </Card>
+  )
+}
+
+
+
+// ── 2026-05-16: Plaid Investments connection ──────────────────────
+
+
+function PlaidIntegrationCard() {
+  const q = useQuery<{
+    configured: boolean
+    items: Array<{ item_id: string; institution_name?: string;
+                   last_sync_at?: string; last_sync_status?: string }>
+    setup_hint: string
+  }>({
+    queryKey: ['plaid_status'],
+    queryFn: async () => (await fetch('/api/integrations/plaid/status')).json(),
+    staleTime: 30_000,
+    retry: false,
+  })
+  const qc = useQueryClient()
+
+  const onSync = async () => {
+    await fetch('/api/integrations/plaid/sync', { method: 'POST' })
+    await qc.invalidateQueries({ queryKey: ['plaid_status'] })
+    await qc.invalidateQueries({ queryKey: ['positions-lots'] })
+    await qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+  }
+
+  const onDeleteItem = async (item_id: string) => {
+    if (!confirm(`解绑这个 brokerage? (持仓数据保留, 但下次 sync 不再覆盖)`)) return
+    await fetch(`/api/integrations/plaid/items/${item_id}`, { method: 'DELETE' })
+    await qc.invalidateQueries({ queryKey: ['plaid_status'] })
+  }
+
+  return (
+    <Card>
+      <CardHeader
+        title="🔗 Brokerage sync (Plaid)"
+        subtitle="Schwab / Fidelity / Robinhood / IBKR via Plaid Investments"
+      />
+      <CardBody>
+        {!q.data?.configured ? (
+          <div className="text-xs text-[var(--color-dim)] leading-relaxed" data-testid="plaid-not-configured">
+            <p className="mb-2">
+              Plaid 还没配置。要启用 broker 自动 sync (代替手动 add lot):
+            </p>
+            <ol className="list-decimal pl-5 space-y-1">
+              <li>
+                注册 <a href="https://plaid.com/" target="_blank" rel="noreferrer"
+                       className="text-[var(--color-accent)] underline">plaid.com</a> 开发者账号 (sandbox 免费)
+              </li>
+              <li>
+                在 ~/.zshrc 加 <code className="text-[var(--color-text)]">export PLAID_CLIENT_ID=…</code>
+                {' '}和 <code className="text-[var(--color-text)]">PLAID_SECRET=…</code>
+              </li>
+              <li>
+                重启 dashboard + telegram bot 容器 ({' '}
+                <code className="text-[var(--color-text)] text-[10px]">docker compose restart</code>
+                {' '})
+              </li>
+              <li>这里会出现 "Connect brokerage" 按钮</li>
+            </ol>
+            <p className="mt-2 italic text-[10px]">
+              访问令牌加密存在 ~/.neomind/fin/secrets/plaid.key (chmod 600), 不进 git。
+              每天 21:30 UTC 自动 sync, 不覆盖你手动加的 lot。
+            </p>
+          </div>
+        ) : (
+          <div className="text-xs space-y-3" data-testid="plaid-configured">
+            <div className="text-[var(--color-dim)]">
+              已连接 brokerages: {q.data.items.length}
+            </div>
+            {q.data.items.length === 0 && (
+              <div className="text-[10px] italic text-[var(--color-dim)]">
+                还没绑定任何 brokerage. (UI: Plaid Link 集成是 v1.5 工作; 暂时
+                用 sandbox public_token 通过 /api/integrations/plaid/exchange 测试)
+              </div>
+            )}
+            {q.data.items.map(it => (
+              <div key={it.item_id} className="flex items-center gap-2 px-2 py-1.5 rounded border border-[var(--color-border)]/50">
+                <span className="font-mono text-[11px]">{it.institution_name || it.item_id}</span>
+                <span className="text-[9px] text-[var(--color-dim)] ml-auto">
+                  {it.last_sync_status === 'completed'
+                    ? `✓ ${it.last_sync_at?.slice(0, 16) ?? ''}`
+                    : it.last_sync_status === 'failed'
+                    ? '✗ failed'
+                    : 'never synced'}
+                </span>
+                <button
+                  onClick={() => onDeleteItem(it.item_id)}
+                  className="text-[10px] text-red-300 hover:underline"
+                >
+                  解绑
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={onSync}
+              className="px-3 py-1 rounded border border-[var(--color-accent)]/60 text-[var(--color-accent)] text-[11px] hover:bg-[var(--color-accent)]/10"
+              data-testid="plaid-sync-now"
+            >
+              ↻ 立即 sync
+            </button>
+          </div>
+        )}
       </CardBody>
     </Card>
   )

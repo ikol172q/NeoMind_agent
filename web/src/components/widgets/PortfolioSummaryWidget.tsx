@@ -13,10 +13,11 @@
  */
 import { useState } from 'react'
 import { useStockResearch } from '@/components/research/StockResearchContext'
-import { usePortfolioSummary } from '@/lib/api'
+import { usePortfolioSummary, usePositionsLots, useDeleteLot, type TaxLot } from '@/lib/api'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { AddLotModal } from '@/components/widgets/AddLotModal'
 import {
-  Briefcase, ChevronDown, ChevronRight, Plus,
+  Briefcase, ChevronDown, ChevronRight, Plus, Pencil, Trash2,
 } from 'lucide-react'
 
 const SECTOR_COLORS: Record<string, string> = {
@@ -55,7 +56,6 @@ export function PortfolioSummaryWidget({
   onAddLot?: () => void
 }) {
   const sumQ = usePortfolioSummary('SPY')
-  const { openTicker } = useStockResearch()
   // Persist collapse like Watchlist section
   const [collapsed, setCollapsed] = useState<boolean>(() =>
     typeof window !== 'undefined'
@@ -197,33 +197,15 @@ export function PortfolioSummaryWidget({
                 </div>
                 <div className="space-y-1">
                   {d.by_ticker.slice(0, 5).map(t => (
-                    <button
+                    <PositionRow
                       key={t.ticker}
-                      onClick={() => openTicker(t.ticker)}
-                      title={`点击打开 ${t.ticker} 详细分析`}
-                      className="w-full grid grid-cols-12 gap-2 items-center text-[11px] px-2 py-1 rounded border border-[var(--color-border)]/50 hover:border-[var(--color-accent)]/70 hover:bg-[var(--color-accent)]/10 transition cursor-pointer text-left group"
-                    >
-                      <span className="col-span-2 font-mono font-bold text-[var(--color-text)] group-hover:text-[var(--color-accent)] underline decoration-dotted decoration-[var(--color-dim)] underline-offset-2">
-                        {t.ticker}
-                      </span>
-                      <span className="col-span-2 font-mono text-[10px] text-[var(--color-dim)]">
-                        {t.quantity.toFixed(0)}sh
-                      </span>
-                      <span className="col-span-2 font-mono text-[10px] text-[var(--color-dim)]">
-                        {fmtMoney(t.market_value)}
-                      </span>
-                      <span className={`col-span-2 font-mono text-[10px] ${
-                        (t.unrealized_pct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'
-                      }`}>
-                        {fmtPct(t.unrealized_pct)}
-                      </span>
-                      <span className="col-span-2 text-[9px] text-[var(--color-dim)]">
-                        {t.weight_pct != null ? `${t.weight_pct.toFixed(1)}%` : '—'}
-                      </span>
-                      <span className="col-span-2 text-[9px] text-[var(--color-dim)] truncate">
-                        {t.sector}
-                      </span>
-                    </button>
+                      ticker={t.ticker}
+                      quantity={t.quantity}
+                      marketValue={t.market_value}
+                      unrealizedPct={t.unrealized_pct}
+                      weightPct={t.weight_pct}
+                      sector={t.sector}
+                    />
                   ))}
                 </div>
 
@@ -238,6 +220,96 @@ export function PortfolioSummaryWidget({
         </Card>
       )}
     </div>
+  )
+}
+
+
+function PositionRow({
+  ticker, quantity, marketValue, unrealizedPct, weightPct, sector,
+}: {
+  ticker: string
+  quantity: number
+  marketValue: number | null | undefined
+  unrealizedPct: number | null | undefined
+  weightPct: number | null | undefined
+  sector: string | null | undefined
+}) {
+  const { openTicker } = useStockResearch()
+  const [editing, setEditing] = useState<TaxLot | null>(null)
+  const lotsQ = usePositionsLots({ ticker, open_only: true })
+  const deleteMu = useDeleteLot()
+  const lot = lotsQ.data?.lots?.[0]  // first open lot for this ticker
+
+  function onEdit(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (lot) setEditing(lot)
+  }
+  function onDelete(e: React.MouseEvent) {
+    e.stopPropagation()
+    if (!lot) return
+    if (!confirm(`确认删除 ${ticker} 持仓 (${quantity} 股)?`)) return
+    deleteMu.mutate({ lot_id: lot.lot_id, ticker })
+  }
+
+  return (
+    <>
+      <div
+        onClick={() => openTicker(ticker)}
+        title={`点击打开 ${ticker} 详细分析`}
+        className="w-full grid grid-cols-12 gap-2 items-center text-[11px] px-2 py-1 rounded border border-[var(--color-border)]/50 hover:border-[var(--color-accent)]/70 hover:bg-[var(--color-accent)]/10 transition cursor-pointer text-left group"
+        data-testid={`position-row-${ticker}`}
+      >
+        <span className="col-span-2 font-mono font-bold text-[var(--color-text)] group-hover:text-[var(--color-accent)] underline decoration-dotted decoration-[var(--color-dim)] underline-offset-2">
+          {ticker}
+        </span>
+        <span className="col-span-2 font-mono text-[10px] text-[var(--color-dim)]">
+          {quantity.toFixed(0)}sh
+        </span>
+        <span className="col-span-2 font-mono text-[10px] text-[var(--color-dim)]">
+          {fmtMoney(marketValue)}
+        </span>
+        <span className={`col-span-2 font-mono text-[10px] ${
+          (unrealizedPct ?? 0) >= 0 ? 'text-emerald-300' : 'text-red-300'
+        }`}>
+          {fmtPct(unrealizedPct)}
+        </span>
+        <span className="col-span-1 text-[9px] text-[var(--color-dim)]">
+          {weightPct != null ? `${weightPct.toFixed(1)}%` : '—'}
+        </span>
+        <span className="col-span-1 text-[9px] text-[var(--color-dim)] truncate">
+          {sector}
+        </span>
+        <span className="col-span-2 flex items-center gap-1 justify-end opacity-0 group-hover:opacity-100 transition">
+          {lot && (
+            <>
+              <button
+                onClick={onEdit}
+                title="改这笔持仓"
+                className="p-1 rounded hover:bg-[var(--color-accent)]/20 text-[var(--color-dim)] hover:text-[var(--color-accent)]"
+                data-testid={`edit-position-${ticker}`}
+              >
+                <Pencil size={11} />
+              </button>
+              <button
+                onClick={onDelete}
+                title="删除这笔持仓"
+                className="p-1 rounded hover:bg-red-500/20 text-[var(--color-dim)] hover:text-red-300"
+                disabled={deleteMu.isPending}
+                data-testid={`delete-position-${ticker}`}
+              >
+                <Trash2 size={11} />
+              </button>
+            </>
+          )}
+        </span>
+      </div>
+      {editing && (
+        <AddLotModal
+          lot={editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </>
   )
 }
 

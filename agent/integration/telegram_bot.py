@@ -485,6 +485,11 @@ class NeoMindTelegramBot:
         self._app.add_handler(CallbackQueryHandler(
             self._cb_model_picker, pattern=r"^mp:"
         ))
+        # 2026-05-16: dashboard-agent proposal callbacks (decision /
+        # promote / quickset). callback_data shape: dag:<d|p|q>:<args>.
+        self._app.add_handler(CallbackQueryHandler(
+            self._cb_dashboard_agent, pattern=r"^dag:"
+        ))
         # System commands
         self._app.add_handler(CommandHandler("hooks", self._cmd_hooks))
         self._app.add_handler(CommandHandler("restart", self._cmd_restart))
@@ -3327,7 +3332,14 @@ class NeoMindTelegramBot:
         await self._process_and_reply(update, text, "fin_command")
 
     async def _handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle non-command messages (mentions, auto-detect, etc.)."""
+        """Handle non-command messages (mentions, auto-detect, etc.).
+
+        2026-05-16: in private 1-on-1 chat, natural-language messages
+        are routed to the dashboard-watching agent (pull-only, read-only,
+        every claim cited). This makes the bot a "second you" for
+        investment Q&A without needing slash commands. Group chat keeps
+        the original chat-routing behavior.
+        """
         msg = update.message
         if not msg or not msg.text:
             return
@@ -3357,10 +3369,97 @@ class NeoMindTelegramBot:
             return
         self._last_response_time[msg.chat_id] = now
 
-        # Extract the actual query
         query = self._router.extract_query(msg.text, reason)
 
+        if is_private and not query.lstrip().startswith("/"):
+            await self._handle_dashboard_agent(msg, query)
+            return
+
         await self._process_and_reply(update, query, reason)
+
+    async def _handle_dashboard_agent(self, msg, query: str) -> None:
+        """Route a natural-language query to the dashboard-watching agent."""
+        await self._react(msg, "👀")
+        try:
+            from agent.finance.dashboard_agent import answer
+            reply = await answer(str(msg.chat_id), query)
+        except Exception as exc:
+            logger.exception("dashboard_agent failed")
+            await self._react(msg, "❌")
+            await msg.reply_text(f"⚠️ agent 调用失败: {type(exc).__name__}: {exc}")
+            return
+        await self._react(msg, "✅")
+        # Render proposals (if any) as a keyboard footer to the message.
+        keyboard = None
+        if reply.proposals:
+            rows = []
+            for p in reply.proposals[:5]:  # cap at 5
+                rows.append([InlineKeyboardButton(
+                    p.label[:60], callback_data=p.encode_callback()[:64])])
+            keyboard = InlineKeyboardMarkup(rows)
+        await self._send_long_message(msg, reply.text, reply_markup=keyboard)
+
+    async def _cb_dashboard_agent(self, update: Update,
+                                  context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Execute a dashboard-agent proposal (decision / promote / quickset).
+
+        Callback data shape: 'dag:<kind>:<arg1>:<arg2>'.
+        """
+        cq = update.callback_query
+        if not cq:
+            return
+        await cq.answer()
+        data = cq.data or ""
+        parts = data.split(":")
+        if len(parts) < 4 or parts[0] != "dag":
+            await cq.edit_message_text("❌ unknown proposal", reply_markup=None)
+            return
+        _, kind, arg1, arg2 = parts[0], parts[1], parts[2], parts[3]
+        import httpx
+        base = os.getenv("NEOMIND_FIN_DASHBOARD_URL",
+                         "http://host.docker.internal:8001").rstrip("/")
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0)) as c:
+                if kind == "d":  # decision
+                    r = await c.post(
+                        f"{base}/api/stock/{arg1}/decisions",
+                        json={"kind": arg2, "note": ""},
+                    )
+                    label = f"✅ recorded: {arg2} {arg1}"
+                elif kind == "p":  # promote
+                    r = await c.post(
+                        f"{base}/api/watchlist/promote/{arg1}",
+                        json={"tier": arg2},
+                    )
+                    label = f"✅ promoted {arg1} → {arg2}"
+                elif kind == "q":  # quickset
+                    r = await c.post(
+                        f"{base}/api/positions/quick_set",
+                        json={"ticker": arg1, "shares": float(arg2)},
+                    )
+                    label = f"✅ set {arg1} = {arg2} 股"
+                else:
+                    await cq.edit_message_text("❌ unknown kind",
+                                               reply_markup=None)
+                    return
+                if r.status_code >= 400:
+                    body = r.text[:200]
+                    await cq.edit_message_text(
+                        f"❌ {r.status_code}: {body}", reply_markup=None)
+                    return
+        except Exception as exc:
+            logger.exception("dashboard_agent callback failed")
+            await cq.edit_message_text(f"❌ {type(exc).__name__}: {exc}",
+                                       reply_markup=None)
+            return
+        # Append confirmation to the original message text + clear keyboard.
+        try:
+            orig = cq.message.text or ""
+            await cq.edit_message_text(
+                f"{orig}\n\n{label}", reply_markup=None,
+            )
+        except Exception:
+            await cq.message.reply_text(label)
 
     # ── Message Reactions (Bot API 7.0+) ────────────────────────────
 
@@ -5512,7 +5611,8 @@ class NeoMindTelegramBot:
                 return None
         return None
 
-    async def _send_long_message(self, msg, text: str, html_suffix: str = ""):
+    async def _send_long_message(self, msg, text: str, html_suffix: str = "",
+                                 reply_markup=None):
         """Send a message, splitting if it exceeds Telegram's 4096 char limit.
 
         - Converts markdown to Telegram HTML (with proper escaping)
@@ -5523,6 +5623,7 @@ class NeoMindTelegramBot:
         Args:
             html_suffix: Pre-formatted HTML to append AFTER md→html conversion
                          (e.g., search source footer). Won't be escaped.
+            reply_markup: optional InlineKeyboardMarkup, attached to LAST chunk.
         """
         # Convert markdown-style links to HTML
         text = self._md_to_html(text)
@@ -5532,24 +5633,27 @@ class NeoMindTelegramBot:
         if len(text) <= self.config.max_message_length:
             sent = await self._safe_send(
                 msg, text, parse_mode=ParseMode.HTML,
-                disable_web_page_preview=True,
+                disable_web_page_preview=True, reply_markup=reply_markup,
             )
             if not sent:
                 logger.warning("HTML send failed, retrying as plain text")
                 plain = re.sub(r'<[^>]+>', '', text)
-                await self._safe_send(msg, plain, disable_web_page_preview=True)
+                await self._safe_send(msg, plain, disable_web_page_preview=True,
+                                      reply_markup=reply_markup)
         else:
-            # Split into chunks
+            # Split into chunks; only LAST chunk carries the keyboard.
             chunks = self._split_message(text)
             for i, chunk in enumerate(chunks):
+                rm = reply_markup if i == len(chunks) - 1 else None
                 sent = await self._safe_send(
                     msg, chunk, parse_mode=ParseMode.HTML,
-                    disable_web_page_preview=True,
+                    disable_web_page_preview=True, reply_markup=rm,
                 )
                 if not sent:
                     logger.warning(f"HTML chunk {i+1}/{len(chunks)} failed, sending plain")
                     plain = re.sub(r'<[^>]+>', '', chunk)
-                    await self._safe_send(msg, plain, disable_web_page_preview=True)
+                    await self._safe_send(msg, plain, disable_web_page_preview=True,
+                                          reply_markup=rm)
                 # Small delay between chunks to respect Telegram rate limits
                 if i < len(chunks) - 1:
                     await asyncio.sleep(0.5)

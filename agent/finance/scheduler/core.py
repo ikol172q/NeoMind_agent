@@ -76,6 +76,11 @@ DEFAULT_JOBS = [
     # next 10-K until a manual re-extract click. ~$1.50 per run for
     # ~50-ticker watchlist; Sunday 04:00 UTC.
     "agent.finance.scheduler.jobs.anchored_quarterly",
+    # 2026-05-16: Plaid Investments daily holdings sync. No-op when
+    # Plaid not configured (PLAID_CLIENT_ID + PLAID_SECRET unset);
+    # otherwise pulls positions from each connected brokerage and
+    # reconciles into tax_lots under account_id='plaid:<item_id>'.
+    "agent.finance.scheduler.jobs.holdings_sync_daily",
 ]
 
 

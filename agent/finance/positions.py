@@ -540,6 +540,20 @@ class AddLotBody(BaseModel):
     notes: Optional[str] = None
 
 
+class QuickSetBody(BaseModel):
+    """Minimal "I hold N shares of X" set-or-update.
+
+    Looks up live market price if cost_basis omitted. If a lot for the
+    same (ticker, account_id, open_only=true) already exists, PATCHes
+    the quantity; otherwise inserts a new lot at today's date.
+    """
+    ticker: str
+    shares: float
+    cost_basis: Optional[float] = None
+    account_id: str = "main"
+    notes: Optional[str] = None
+
+
 class UpdateLotBody(BaseModel):
     open_price: Optional[float] = None
     open_quantity: Optional[float] = None
@@ -604,6 +618,58 @@ def build_positions_router() -> APIRouter:
             close_quantity=body.close_quantity,
             close_fees=body.close_fees,
         )
+
+    @router.post("/quick_set")
+    def quick_set_endpoint(body: QuickSetBody) -> Dict[str, Any]:
+        """Minimal '我现在持有 N 股 X' 一键设置 / 更新.
+
+        - cost_basis 留空 → 用当前市价 (live_quote) 当 entry
+        - 已存在同 (ticker, account_id) open lot → PATCH quantity 到目标值
+        - 不存在 → 新建一条 today open_date 的 lot
+        """
+        sym = _normalize_ticker(body.ticker)
+        if body.shares <= 0:
+            raise HTTPException(400, "shares must be > 0")
+        cost = body.cost_basis
+        if cost is None:
+            try:
+                from agent.data_sources.market import get_live_quote
+                q = get_live_quote(sym)
+                cost = float(q.price.value) if q and q.price else None
+            except Exception:
+                cost = None
+            if cost is None:
+                raise HTTPException(
+                    400,
+                    f"no live quote for {sym!r}; please pass cost_basis explicitly",
+                )
+
+        existing = list_lots(open_only=True, ticker=sym,
+                             account_id=body.account_id)
+        if existing:
+            # If multiple open lots exist, target the largest one;
+            # leaving others alone preserves wash-sale lineage.
+            lot = max(existing, key=lambda l: float(l.get("open_quantity") or 0))
+            patch = {"open_quantity": float(body.shares)}
+            if body.cost_basis is not None:
+                patch["open_price"] = float(body.cost_basis)
+            if body.notes is not None:
+                patch["notes"] = body.notes
+            updated = update_lot(int(lot["lot_id"]), patch)
+            return {"action": "patched", "lot_id": lot["lot_id"], "lot": updated}
+
+        new_lot = add_lot(
+            symbol=sym,
+            market="US",
+            asset_class="stock",
+            open_date=_now()[:10],
+            open_price=float(cost),
+            open_quantity=float(body.shares),
+            open_fees=0.0,
+            account_id=body.account_id,
+            notes=body.notes,
+        )
+        return {"action": "created", "lot_id": new_lot.get("lot_id"), "lot": new_lot}
 
     @router.get("/summary")
     def summary_endpoint(

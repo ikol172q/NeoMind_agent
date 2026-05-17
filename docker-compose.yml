@@ -66,6 +66,20 @@ services:
       - TERM=xterm-256color
       - HOME=/data
       - OPENCLAW_GATEWAY_URL=${OPENCLAW_GATEWAY_URL:-ws://openclaw-gateway:18789}
+      # 2026-05-16: dashboard agent reaches the host fin API.
+      # 127.0.0.1 inside the container = container itself, not host;
+      # host.docker.internal resolves to the host's gateway IP.
+      - NEOMIND_FIN_DASHBOARD_URL=${NEOMIND_FIN_DASHBOARD_URL:-http://host.docker.internal:8001}
+      - LLM_ROUTER_BASE_URL=${LLM_ROUTER_BASE_URL:-http://host.docker.internal:8000/v1}
+      # 2026-05-16: dashboard agent privacy mode.
+      # off | balanced (default — $ 模糊到千位) | strict (no $).
+      - NEOMIND_AGENT_PRIVACY_MODE=${NEOMIND_AGENT_PRIVACY_MODE:-balanced}
+      # 2026-05-16: agent's own chat-history DB. Lives in a
+      # CONTAINER-LOCAL docker volume (neomind-data), NOT the
+      # host-bind-mounted ~/.neomind path. Container + host both
+      # writing to the SAME fin.db via different mount paths caused
+      # sporadic "database disk image is malformed" SQLite errors.
+      - NEOMIND_AGENT_DB=/data/neomind/agent_chat.db
       # ── LLM API keys: inherit from shell env (zshrc) — never written to .env ──
       # docker compose reads these from the shell invoking it; if a key is unset
       # in the shell env, it stays empty in the container (no override).

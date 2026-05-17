@@ -732,6 +732,46 @@ CREATE INDEX IF NOT EXISTS idx_ud_ticker
 CREATE INDEX IF NOT EXISTS idx_ud_decided
     ON user_decisions(decided_at DESC);
 
+-- ─── Dashboard agent chat history (2026-05-16) ───────────────────────
+-- One row per conversational turn. Reconstruct a chat by ordering by
+-- (chat_id, turn_idx). Captures OpenAI-compatible function-calling
+-- shape so we can replay a chat through any LLM. cost_usd lets us
+-- enforce per-day budget caps.
+CREATE TABLE IF NOT EXISTS agent_chat_history (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id          TEXT NOT NULL,            -- telegram chat_id or 'cli:<name>'
+    turn_idx         INTEGER NOT NULL,
+    role             TEXT NOT NULL CHECK (role IN ('system','user','assistant','tool')),
+    content          TEXT,
+    tool_call_id     TEXT,                     -- role='tool' only
+    tool_calls_json  TEXT,                     -- role='assistant' with tool_calls
+    model            TEXT,
+    tokens_in        INTEGER,
+    tokens_out       INTEGER,
+    cost_usd         REAL,
+    created_at       TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ach_chat
+    ON agent_chat_history(chat_id, turn_idx);
+CREATE INDEX IF NOT EXISTS idx_ach_day
+    ON agent_chat_history(date(created_at), chat_id);
+
+-- ─── Plaid items (2026-05-16) ───────────────────────────────────────
+-- One row per linked brokerage. access_token is sensitive — store
+-- encrypted at rest (Fernet, key in ~/.neomind/fin/secrets/plaid.key
+-- chmod 600). Cursor lets investments/holdings sync skip unchanged.
+CREATE TABLE IF NOT EXISTS plaid_items (
+    item_id              TEXT PRIMARY KEY,           -- Plaid's item_id
+    access_token_enc     TEXT NOT NULL,              -- Fernet ciphertext
+    institution_id       TEXT,                       -- e.g. ins_56 (Schwab)
+    institution_name     TEXT,                       -- "Charles Schwab"
+    accounts_json        TEXT,                       -- last-seen list of accounts under this item
+    last_sync_at         TEXT,
+    last_sync_status     TEXT,
+    consecutive_failures INTEGER DEFAULT 0,
+    created_at           TEXT NOT NULL
+);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

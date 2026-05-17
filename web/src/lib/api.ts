@@ -3897,6 +3897,27 @@ export function useAddLot() {
   })
 }
 
+export function useQuickSetHoldings() {
+  const qc = useQueryClient()
+  return useMutation<
+    { action: string; lot_id?: number; lot?: TaxLot },
+    Error,
+    { ticker: string; shares: number; cost_basis?: number; notes?: string }
+  >({
+    mutationFn: (body) => fetchJSON('/api/positions/quick_set', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    onSuccess: (_d, vars) => {
+      qc.invalidateQueries({ queryKey: ['positions-lots'] })
+      qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
+      qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.ticker] })
+    },
+  })
+}
+
+
 export function useUpdateLot() {
   const qc = useQueryClient()
   return useMutation<TaxLot, Error, {

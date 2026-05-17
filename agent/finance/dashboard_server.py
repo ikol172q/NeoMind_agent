@@ -2000,6 +2000,15 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("positions router unavailable: %s", exc)
 
+    # 2026-05-16: Plaid Investments integration (Schwab / Fidelity /
+    # Robinhood / IBKR via aggregator). No-op when PLAID_CLIENT_ID +
+    # PLAID_SECRET are unset; status endpoint returns configured=false.
+    try:
+        from agent.finance.integrations.plaid_router import build_plaid_router
+        app.include_router(build_plaid_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("plaid router unavailable: %s", exc)
+
     # Phase 4 (2026-05-10): user preferences (max_position_pct,
     # max_sector_pct, benchmark_ticker, review windows). Per plan
     # §5 Pillar 5 — these are thresholds the chain panel surfaces
