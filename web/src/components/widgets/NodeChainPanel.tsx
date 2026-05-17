@@ -29,6 +29,7 @@
  */
 import { useState } from 'react'
 import { AlertTriangle, X, ArrowRight, Layers } from 'lucide-react'
+import { useStockResearch } from '@/components/research/StockResearchContext'
 import {
   useWatchlistAudit,
   useTheses,
@@ -43,6 +44,7 @@ import {
   useCorrelation,
   usePortfolioView,
   useWatchlistPromote,
+  useResolveDisagreement,
   type WatchlistAuditEvent,
 } from '@/lib/api'
 
@@ -89,6 +91,88 @@ function Section({ title, subtitle, children }: {
 
 function EmptyLine({ note }: { note: string }) {
   return <div className="text-[10px] italic text-[var(--color-dim)] py-0.5">— {note}</div>
+}
+
+
+// ── FactRow — inline-collapsible fact display ──
+// One row per competitor/customer/supplier with an inline "📎"
+// toggle that reveals the verbatim 10-K quote + source URL + filing
+// section. Honors the "信息多一些没事 + 必须有根有据" rule: every
+// claim must be one-click away from its primary source.
+function FactRow({
+  ticker, name, quote, url, section, extra,
+}: {
+  ticker?: string | null
+  name: string
+  quote?: string | null
+  url?: string | null
+  section?: string | null
+  extra?: string | null
+}) {
+  const [open, setOpen] = useState(false)
+  const hasProvenance = !!(quote || url)
+  const { openTicker } = useStockResearch()
+  // EDGAR full-text search URL — when entity has no ticker (LLM only
+  // captured the company name from the 10-K), give the user a 1-click
+  // path to find it on SEC. Closes the anchor-walk 1-hop break:
+  // even non-tradable / ADR-only / private subsidiary names become
+  // explorable instead of dead text.
+  const edgarSearchUrl = !ticker && name
+    ? `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${name}"`)}&forms=10-K`
+    : null
+  return (
+    <div className="text-[10px] pl-2 leading-tight">
+      <div className="flex items-baseline gap-1 flex-wrap">
+        {ticker ? (
+          <button
+            onClick={() => openTicker(ticker)}
+            title={`walk to ${ticker} (打开 chain panel)`}
+            className="text-[var(--color-text)] font-medium underline decoration-dotted decoration-[var(--color-dim)] underline-offset-2 hover:text-[var(--color-accent)] hover:decoration-[var(--color-accent)]"
+          >
+            {ticker}
+          </button>
+        ) : null}
+        {ticker && <span className="text-[var(--color-dim)] mx-1">·</span>}
+        <span className="text-[var(--color-text)]/80">{name}</span>
+        {edgarSearchUrl && (
+          <a
+            href={edgarSearchUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={`SEC EDGAR full-text search for "${name}" — find this company's 10-K filings + ticker`}
+            className="text-[9px] text-[var(--color-accent)] hover:underline ml-0.5"
+          >🔍 EDGAR</a>
+        )}
+        {extra && <span className="text-[var(--color-dim)] ml-1">({extra})</span>}
+        {hasProvenance && (
+          <button
+            onClick={() => setOpen(o => !o)}
+            title={open ? 'collapse 原文 quote' : 'show verbatim 10-K quote + source'}
+            className="text-[9px] text-[var(--color-dim)] hover:text-[var(--color-accent)] ml-1 underline decoration-dotted underline-offset-2"
+          >
+            {open ? '▾ hide' : '📎 quote'}
+          </button>
+        )}
+      </div>
+      {open && hasProvenance && (
+        <div className="mt-0.5 mb-1 ml-1 pl-2 border-l-2 border-[var(--color-border)] text-[9px] leading-snug text-[var(--color-text)]/80">
+          {quote && (
+            <div className="italic">"{quote}"</div>
+          )}
+          <div className="text-[var(--color-dim)] mt-0.5 flex items-center gap-1 flex-wrap">
+            {section && <span>§ {section}</span>}
+            {section && url && <span>·</span>}
+            {url && (
+              <a href={url} target="_blank" rel="noopener noreferrer"
+                 className="underline hover:text-[var(--color-accent)]">
+                source ↗
+              </a>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 // ── INCOMING section ──
@@ -164,15 +248,36 @@ function Incoming({ ticker }: { ticker: string }) {
         </div>
       )}
 
-      {/* Recent signals */}
+      {/* Recent signals — each row exposes severity, scanner, source URL
+          inline so the user can verify the claim without leaving the
+          panel. "有根有据" = every signal traceable in one click. */}
       {sigs.length > 0 && (
         <div className="pt-1 mt-1 border-t border-[var(--color-border)]/40">
           <div className="text-[10px] text-[var(--color-dim)] mb-0.5">Recent signals ({sigs.length}):</div>
           {sigs.slice(0, 5).map(s => (
-            <div key={s.event_id} className="leading-tight pl-1 text-[10px]">
-              <span className="text-[var(--color-dim)] mr-1">{fmtDate(s.detected_at)}</span>
+            <div key={s.event_id} className="leading-tight pl-1 text-[10px] flex items-baseline gap-1 flex-wrap">
+              <span className="text-[var(--color-dim)]">{fmtDate(s.detected_at)}</span>
+              <span className={
+                s.severity === 'high' ? 'text-red-300' :
+                s.severity === 'med'  ? 'text-amber-300' :
+                'text-[var(--color-dim)]'
+              }>[{s.severity}]</span>
               <span className="text-[var(--color-text)]">{s.signal_type}</span>
-              <span className="text-[var(--color-dim)] ml-1">· {s.scanner_name}</span>
+              <span className="text-[var(--color-dim)]">· {s.scanner_name}</span>
+              {s.source_url && (
+                <a
+                  href={s.source_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  title={`open source: ${s.source_url}`}
+                  className="text-[9px] text-[var(--color-accent)] hover:underline ml-0.5"
+                >↗</a>
+              )}
+              {s.title && (
+                <span className="text-[9px] italic text-[var(--color-dim)] ml-1 truncate flex-1 min-w-0">
+                  — {s.title}
+                </span>
+              )}
             </div>
           ))}
         </div>
@@ -185,6 +290,7 @@ function Incoming({ ticker }: { ticker: string }) {
 function Outgoing({ ticker }: { ticker: string }) {
   const factsQ = useAnchoredFacts(ticker)
   const facts = factsQ.data?.facts
+  const meta = factsQ.data?.meta
   // 90-day correlation top peers (only available for tickers in the
   // user's portfolio matrix; computed from market_data_daily history).
   const corrQ = useCorrelation('fin-core', 90, true)
@@ -233,18 +339,32 @@ function Outgoing({ ticker }: { ticker: string }) {
     && seg.length === 0 && topCorrelated.length === 0 && macroHits.length === 0
 
   return (
-    <Section title="Outgoing" subtitle="who it touches (10-K)">
+    <Section
+      title="Outgoing"
+      subtitle={
+        <>
+          who it touches (10-K)
+          {meta?.source_filing_date && (
+            <span className="ml-1.5">
+              · filing <span className="text-[var(--color-text)]/80">{meta.source_filing_date.slice(0, 10)}</span>
+            </span>
+          )}
+          {meta?.extracted_at && (
+            <span className="ml-1.5">
+              · extracted <span className="text-[var(--color-text)]/80">{meta.extracted_at.slice(0, 10)}</span>
+            </span>
+          )}
+        </>
+      }
+    >
       {empty && <EmptyLine note="no 10-K relations extracted yet" />}
 
       {comp.length > 0 && (
         <div>
           <div className="text-[10px] text-red-300 mb-0.5">⚔ Competitors ({comp.length}):</div>
           {comp.slice(0, 5).map((c, i) => (
-            <div key={i} className="text-[10px] pl-2 leading-tight">
-              {c.ticker && <span className="text-[var(--color-text)] font-medium">{c.ticker}</span>}
-              {c.ticker && <span className="text-[var(--color-dim)] mx-1">·</span>}
-              <span className="text-[var(--color-text)]/80">{c.name}</span>
-            </div>
+            <FactRow key={i} ticker={c.ticker} name={c.name}
+              quote={c.evidence_quote} url={c.source_url} section={c.source_section} />
           ))}
         </div>
       )}
@@ -253,14 +373,9 @@ function Outgoing({ ticker }: { ticker: string }) {
         <div>
           <div className="text-[10px] text-blue-300 mb-0.5">→ Customers ({cust.length}):</div>
           {cust.slice(0, 4).map((c, i) => (
-            <div key={i} className="text-[10px] pl-2 leading-tight">
-              {c.ticker && <span className="text-[var(--color-text)] font-medium">{c.ticker}</span>}
-              {c.ticker && <span className="text-[var(--color-dim)] mx-1">·</span>}
-              <span className="text-[var(--color-text)]/80">{c.name}</span>
-              {c.concentration_pct != null && (
-                <span className="text-[var(--color-dim)] ml-1">({c.concentration_pct}% conc)</span>
-              )}
-            </div>
+            <FactRow key={i} ticker={c.ticker} name={c.name}
+              quote={c.evidence_quote} url={c.source_url} section={c.source_section}
+              extra={c.concentration_pct != null ? `${c.concentration_pct}% conc` : null} />
           ))}
         </div>
       )}
@@ -269,14 +384,9 @@ function Outgoing({ ticker }: { ticker: string }) {
         <div>
           <div className="text-[10px] text-violet-300 mb-0.5">← Suppliers ({supp.length}):</div>
           {supp.slice(0, 4).map((c, i) => (
-            <div key={i} className="text-[10px] pl-2 leading-tight">
-              {c.ticker && <span className="text-[var(--color-text)] font-medium">{c.ticker}</span>}
-              {c.ticker && <span className="text-[var(--color-dim)] mx-1">·</span>}
-              <span className="text-[var(--color-text)]/80">{c.name}</span>
-              {c.criticality && (
-                <span className="text-[var(--color-dim)] ml-1">[{c.criticality}]</span>
-              )}
-            </div>
+            <FactRow key={i} ticker={c.ticker} name={c.name}
+              quote={c.evidence_quote} url={c.source_url} section={c.source_section}
+              extra={c.criticality ? `[${c.criticality}]` : null} />
           ))}
         </div>
       )}
@@ -365,10 +475,6 @@ function DecisionContext({ ticker }: { ticker: string }) {
   // alpha computed server-side; surface the portfolio number so the
   // user sees overall performance context next to a single position).
   const vsBench = portfolio?.vs_benchmark
-
-  const firstThesisId = theses[0]?.thesis_id ?? null
-  const exitQ = useExitTriggers(firstThesisId)
-  const triggers = exitQ.data?.triggers ?? []
 
   return (
     <Section title="Decision context" subtitle="current state">
@@ -465,42 +571,83 @@ function DecisionContext({ ticker }: { ticker: string }) {
         </div>
       )}
 
-      {/* Exit triggers (first active thesis) */}
+      {/* Exit triggers — for ALL active theses. Previously only the
+          first thesis was evaluated; users with multiple concurrent
+          theses on a ticker missed the rest. */}
       <div className="pt-1 mt-1 border-t border-[var(--color-border)]/40">
         <div className="text-[10px] text-[var(--color-dim)] mb-0.5">
           Exit triggers
-          {theses.length > 1 && (
-            <span className="text-[9px] italic ml-1">(thesis 1 of {theses.length})</span>
+          {theses.length > 0 && (
+            <span className="text-[9px] italic ml-1">
+              ({theses.length} active thes{theses.length === 1 ? 'is' : 'es'})
+            </span>
           )}:
         </div>
-        {firstThesisId === null ? (
+        {theses.length === 0 ? (
           <EmptyLine note="no active thesis — exit triggers undefined" />
-        ) : exitQ.isLoading ? (
-          <div className="text-[10px] italic text-[var(--color-dim)] pl-1">loading…</div>
-        ) : triggers.length === 0 ? (
-          <EmptyLine note="thesis has no parseable triggers in body_md" />
         ) : (
-          triggers.map((t, i) => {
-            const fired = t.fired === true
-            const safe = t.fired === false
-            const manual = t.fired === null
-            return (
-              <div key={i} className="text-[10px] pl-1 leading-tight">
-                <span className={fired ? 'text-red-300' : safe ? 'text-emerald-300' : 'text-[var(--color-dim)]'}>
-                  {fired ? '🔥' : safe ? '✓' : '◐'}
-                </span>
-                <span className="ml-1">{t.text}</span>
-                {!manual && t.current_value != null && (
-                  <span className="text-[var(--color-dim)] ml-1">(now: {t.current_value.toFixed(1)})</span>
-                )}
-              </div>
-            )
-          })
+          theses.map((thesis) => (
+            <ThesisTriggersBlock key={thesis.thesis_id} thesis={thesis} showThesisHeader={theses.length > 1} />
+          ))
         )}
       </div>
     </Section>
   )
 }
+
+// ── Per-thesis triggers block ──
+// Each active thesis owns its own exit-trigger list; rendering them
+// one-block-per-thesis preserves ownership so the user knows which
+// thesis a fired trigger belongs to (matters when you have e.g. a
+// growth thesis + a hedge thesis on the same ticker — different exit
+// rules apply per thesis).
+function ThesisTriggersBlock({
+  thesis,
+  showThesisHeader,
+}: {
+  thesis: { thesis_id: string; status: string; sections?: Record<string, string> }
+  showThesisHeader: boolean
+}) {
+  const exitQ = useExitTriggers(thesis.thesis_id)
+  const triggers = exitQ.data?.triggers ?? []
+  const firstLine = thesis.sections?.bull_case?.split('\n')[0]?.slice(0, 60)
+                  ?? `thesis ${thesis.thesis_id.slice(0, 8)}`
+  return (
+    <div className={showThesisHeader ? 'mt-1' : ''}>
+      {showThesisHeader && (
+        <div className="text-[9px] text-[var(--color-dim)] italic pl-1 leading-tight border-l-2 border-[var(--color-border)] ml-0.5">
+          {thesis.status === 'requires_review' && (
+            <span className="text-amber-300 mr-1">⚠</span>
+          )}
+          {firstLine}
+        </div>
+      )}
+      {exitQ.isLoading ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] pl-1">loading…</div>
+      ) : triggers.length === 0 ? (
+        <EmptyLine note="thesis has no parseable triggers in body_md" />
+      ) : (
+        triggers.map((t, i) => {
+          const fired = t.fired === true
+          const safe = t.fired === false
+          const manual = t.fired === null
+          return (
+            <div key={i} className="text-[10px] pl-1 leading-tight">
+              <span className={fired ? 'text-red-300' : safe ? 'text-emerald-300' : 'text-[var(--color-dim)]'}>
+                {fired ? '🔥' : safe ? '✓' : '◐'}
+              </span>
+              <span className="ml-1">{t.text}</span>
+              {!manual && t.current_value != null && (
+                <span className="text-[var(--color-dim)] ml-1">(now: {t.current_value.toFixed(1)})</span>
+              )}
+            </div>
+          )
+        })
+      )}
+    </div>
+  )
+}
+
 
 // ── PROVENANCE section ──
 // Collapsible list of every anchored fact with verbatim quote + source
@@ -508,7 +655,11 @@ function DecisionContext({ ticker }: { ticker: string }) {
 // source"). Default collapsed — it's bulky but trust-critical when the
 // user wants to audit any claim made elsewhere in the panel.
 function Provenance({ ticker }: { ticker: string }) {
-  const [expanded, setExpanded] = useState(false)
+  // Default-expanded: "有根有据" is core to the system — hiding the
+  // quote list behind a "+ show all" click made provenance feel
+  // optional rather than canonical. Collapse remains available via
+  // the same button if the user wants to hide noise.
+  const [expanded, setExpanded] = useState(true)
   const factsQ = useAnchoredFacts(ticker)
   const facts = factsQ.data?.facts
   const meta = factsQ.data?.meta
@@ -635,14 +786,21 @@ function ProContra({ ticker }: { ticker: string }) {
   for (const c of facts?.segment ?? [])
     all.push({ type: 'segment', summary: c.name, polarity: c.polarity, quote: c.evidence_quote, url: c.source_url })
 
-  // Apply polarity defaults by fact_type (per plan §5 Pillar 1):
-  //   risk → contra, business_summary/segment → pro, others → neutral.
-  // This matches the existing extraction defaults in the backend
-  // (see plan §6 schema notes on `polarity` column).
+  // Polarity inference (2026-05-16 Need #5): when extractor didn't
+  // label polarity, fall back to fact_type defaults + keyword scan
+  // on the quote text. Better than dumping everything in neutral —
+  // user gets meaningful pro/contra split even on legacy data.
+  const CONTRA_KEYWORDS = /\b(risk|decline|loss|litigation|lawsuit|impair|breach|fraud|shortage|tariff|sanction|fine|regulation|antitrust|restructur|layoff|downgrad|miss(?:ed|es)?|underperform|weak|volatil|adverse)\b/i
+  const PRO_KEYWORDS = /\b(growth|expand|lead|outperform|beat|exceed|innovat|partnership|acquisition|launch|gain|increase|invest|moat|advantage|premium|robust)\b/i
   const inferred = (f: FlatFact): 'pro' | 'contra' | 'neutral' => {
     if (f.polarity) return f.polarity
     if (f.type === 'risk') return 'contra'
     if (f.type === 'business' || f.type === 'segment') return 'pro'
+    // Keyword scan on quote text (verbatim from 10-K) — most reliable
+    // because LLM had no chance to muddy it.
+    const txt = `${f.summary} ${f.quote ?? ''}`
+    if (CONTRA_KEYWORDS.test(txt)) return 'contra'
+    if (PRO_KEYWORDS.test(txt)) return 'pro'
     return 'neutral'
   }
   const factPros = all.filter(f => inferred(f) === 'pro')
@@ -696,32 +854,120 @@ function ProContra({ ticker }: { ticker: string }) {
 }
 
 // ── Conflict banner ──
+// Each disagreement is expandable: click → reveal each scanner's
+// underlying signal_event (title + severity + source URL + timestamp)
+// so the user can audit which side they agree with. Honors "有根有据":
+// no claim shown without one-click traversal to source.
 function ConflictBanner({ ticker }: { ticker: string }) {
   const q = useTickerDisagreements(ticker)
+  const resolveMu = useResolveDisagreement()
+  const [expanded, setExpanded] = useState<Set<string>>(new Set())
   const items = q.data?.items ?? []
   if (items.length === 0) return null
+  function toggle(id: string) {
+    setExpanded(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+  const sevColor = (s?: string | null) =>
+    s === 'high' ? 'text-red-300' :
+    s === 'med'  ? 'text-amber-300' :
+    'text-[var(--color-dim)]'
+  const posColor = (p: string) =>
+    p === 'bullish' ? 'text-emerald-300' :
+    p === 'bearish' ? 'text-red-300' :
+    'text-[var(--color-dim)]'
   return (
     <div className="mx-2 mt-2 mb-1 rounded border border-red-500/50 bg-red-500/10 p-2">
       <div className="flex items-center gap-1 text-[11px] font-semibold text-red-300 mb-1">
         <AlertTriangle size={11} />
         <span>{items.length} unresolved disagreement{items.length === 1 ? '' : 's'}</span>
       </div>
-      {items.slice(0, 3).map(d => (
-        <div key={d.disagreement_id} className="text-[10px] mb-1 last:mb-0">
-          <div className="text-[var(--color-text)] leading-tight">{d.headline}</div>
-          <div className="text-[9px] text-[var(--color-dim)] mt-0.5">
-            {d.sources.map((s, i) => (
-              <span key={i}>
-                {s.scanner}/<span className={
-                  s.position === 'bullish' ? 'text-emerald-300' :
-                  s.position === 'bearish' ? 'text-red-300' : ''
-                }>{s.position}</span>
-                {i < d.sources.length - 1 ? ' ↔ ' : ''}
+      {items.slice(0, 5).map(d => {
+        const isOpen = expanded.has(d.disagreement_id)
+        return (
+          <div key={d.disagreement_id} className="text-[10px] mb-1.5 last:mb-0 border-l-2 border-red-500/40 pl-2">
+            <button
+              onClick={() => toggle(d.disagreement_id)}
+              className="w-full flex items-baseline gap-1.5 text-left"
+            >
+              <span className="text-[var(--color-dim)] flex-shrink-0">{isOpen ? '▾' : '▸'}</span>
+              <span className="text-[var(--color-text)] leading-tight flex-1">{d.headline}</span>
+              <span className="text-[9px] text-[var(--color-dim)] flex-shrink-0">
+                {fmtDate(d.detected_at)}
               </span>
-            ))}
+            </button>
+            <div className="text-[9px] text-[var(--color-dim)] mt-0.5 ml-3">
+              {d.sources.map((s, i) => (
+                <span key={i}>
+                  {s.scanner}/<span className={posColor(s.position)}>{s.position}</span>
+                  {i < d.sources.length - 1 ? ' ↔ ' : ''}
+                </span>
+              ))}
+            </div>
+            {isOpen && (
+              <div className="mt-1 ml-3 space-y-1">
+                {d.sources.map((s, i) => (
+                  <div key={i} className="border-l border-[var(--color-border)] pl-2 py-0.5">
+                    <div className="flex items-baseline gap-1 flex-wrap">
+                      <span className="font-mono text-[var(--color-text)]">{s.scanner}</span>
+                      <span className="text-[var(--color-dim)]">/</span>
+                      <span className="font-mono text-[var(--color-text)]">{s.signal_type}</span>
+                      <span className="text-[var(--color-dim)]">·</span>
+                      <span className={`font-semibold ${posColor(s.position)}`}>{s.position}</span>
+                      {s.severity && (
+                        <span className={sevColor(s.severity)}>[{s.severity}]</span>
+                      )}
+                      {s.ts && (
+                        <span className="text-[var(--color-dim)] ml-auto">{fmtDate(s.ts)}</span>
+                      )}
+                    </div>
+                    {s.title && (
+                      <div className="text-[var(--color-text)]/80 leading-snug">
+                        {s.title}
+                      </div>
+                    )}
+                    {s.source_url ? (
+                      <a
+                        href={s.source_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-[9px] text-[var(--color-accent)] hover:underline"
+                      >source ↗ {s.source_url.slice(0, 60)}…</a>
+                    ) : s.event_id ? (
+                      <span className="text-[9px] italic text-[var(--color-dim)]">
+                        event {s.event_id.slice(0, 8)} (no source_url)
+                      </span>
+                    ) : (
+                      <span className="text-[9px] italic text-[var(--color-dim)]">
+                        original event not matched (scanner ran but no event row found within ±24h)
+                      </span>
+                    )}
+                  </div>
+                ))}
+                <button
+                  onClick={() => resolveMu.mutate({
+                    disagreement_id: d.disagreement_id, ticker,
+                    note: 'manually resolved from panel',
+                  })}
+                  disabled={resolveMu.isPending}
+                  className="text-[9.5px] mt-1 px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] disabled:opacity-50"
+                  title="标记为 resolved (你已自己评估清楚哪边对了)"
+                >
+                  {resolveMu.isPending ? 'resolving…' : '✓ mark resolved'}
+                </button>
+                {resolveMu.isError && (
+                  <span className="text-[9px] text-red-300 ml-2">
+                    ✗ {String((resolveMu.error as Error)?.message).slice(0, 50)}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
-        </div>
-      ))}
+        )
+      })}
     </div>
   )
 }
@@ -755,8 +1001,13 @@ function OutsideDiscovery({
           including <b>{node.n_outside_high ?? 0}</b> high-severity events
           ({node.n_outside_events ?? '?'} total).
         </div>
-        <div className="flex gap-1 text-[10px]">
-          {(['watching', 'adjacent', 'core'] as const).map(tier => (
+        <div className="flex gap-1 text-[10px] items-center">
+          {/* Adjacent intentionally omitted — promoting to adjacent
+              requires a parent_ticker (the core whose 10-K this name
+              came from), which we don't have for outside-ring discoveries.
+              Add as 'watching' first; if it earns research, open the
+              relevant core's drawer and use ✨ Expand from 10-K. */}
+          {(['watching', 'core'] as const).map(tier => (
             <button
               key={tier}
               onClick={() => promoteMu.mutate({ ticker, tier })}
@@ -767,12 +1018,26 @@ function OutsideDiscovery({
               + {tier}
             </button>
           ))}
+          <span className="text-[9px] italic text-[var(--color-dim)] ml-1">
+            (adjacent 需要先打开 core 的 drawer 用 ✨ Expand)
+          </span>
           {promoteMu.isSuccess && (
             <span className="text-emerald-300 text-[10px] italic ml-1 self-center">
               promoted ✓
             </span>
           )}
+          {promoteMu.isError && (
+            <span className="text-red-300 text-[10px] italic ml-1 self-center">
+              ✗ {String((promoteMu.error as Error)?.message).slice(0, 60)}
+            </span>
+          )}
         </div>
+        {/* Velocity warning (Need #7 discipline) */}
+        {promoteMu.isSuccess && promoteMu.data?.velocity_warning && (
+          <div className="mt-1 px-2 py-1 rounded border border-amber-500/40 bg-amber-500/10 text-amber-300 text-[9.5px] leading-snug">
+            {promoteMu.data.velocity_warning}
+          </div>
+        )}
       </div>
 
       <Section title="Recent signals" subtitle="why it surfaced">
@@ -804,20 +1069,104 @@ function OutsideDiscovery({
   )
 }
 
+// ── HeldUnwatched panel ──
+// User owns the ticker (tax_lots open lot) but hasn't promoted it to any
+// watchlist tier → zero research surface. This panel surfaces the
+// position size + a fast-path CTA to either promote-to-research or
+// close the lot.
+function HeldUnwatchedPanel({
+  ticker,
+  node,
+}: {
+  ticker: string
+  node: { held_qty?: number | null; held_cost?: number | null }
+}) {
+  const sigsQ = useRecentSignals({ ticker, limit: 8 })
+  const sigs = sigsQ.data?.events ?? []
+  const promoteMu = useWatchlistPromote()
+  const qty = node.held_qty ?? 0
+  const cost = node.held_cost ?? 0
+  return (
+    <>
+      <div className="mx-2 mt-2 mb-1 rounded border border-red-500/50 bg-red-500/10 p-2.5">
+        <div className="text-[11px] font-semibold text-red-300 mb-1 flex items-center gap-1">
+          <AlertTriangle size={11} /> 持仓但未研究
+        </div>
+        <div className="text-[10px] text-[var(--color-text)]/90 mb-2 leading-snug">
+          你拥有 <b>{qty.toFixed(0)} 股 {ticker}</b>（成本 ${cost.toLocaleString()}），
+          但 <b>{ticker} 不在任何 watchlist tier 里</b> ——
+          意味着<b>没有</b> 10-K facts、active thesis、exit triggers、scanner pulse。
+          下个决策点（卖出/加仓/止损）你手里没数据。
+        </div>
+        <div className="flex gap-1 text-[10px] items-center flex-wrap">
+          <span className="text-[var(--color-dim)] mr-1">加进:</span>
+          {(['core', 'watching'] as const).map(tier => (
+            <button
+              key={tier}
+              onClick={() => promoteMu.mutate({ ticker, tier })}
+              disabled={promoteMu.isPending}
+              className="px-2 py-1 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 disabled:opacity-40"
+              title={`Add ${ticker} to ${tier} — 让研究系统开始追踪 thesis + signals + 10-K facts`}
+            >
+              + {tier}
+            </button>
+          ))}
+          {promoteMu.isSuccess && (
+            <span className="text-emerald-300 text-[10px] italic ml-1">promoted ✓</span>
+          )}
+          {promoteMu.isError && (
+            <span className="text-red-300 text-[10px] italic ml-1">
+              ✗ {String((promoteMu.error as Error)?.message).slice(0, 60)}
+            </span>
+          )}
+        </div>
+        <div className="text-[9px] italic text-[var(--color-dim)] mt-1.5">
+          或者直接关 lot（如果只是错误录入或已经卖出）— 打开 drawer → 单笔 lot 明细 → 🗑
+        </div>
+      </div>
+
+      {sigs.length > 0 && (
+        <Section title="Recent signals" subtitle="scanner-emitted (no thesis to compare against yet)">
+          {sigs.map(s => (
+            <div key={s.event_id} className="text-[10px] leading-tight pl-1">
+              <span className="text-[var(--color-dim)] mr-1">{fmtDate(s.detected_at)}</span>
+              <span className={
+                s.severity === 'high' ? 'text-red-300' :
+                s.severity === 'med'  ? 'text-amber-300' :
+                'text-[var(--color-text)]'
+              }>[{s.severity}]</span>{' '}
+              <span className="text-[var(--color-text)]">{s.signal_type}</span>
+              <span className="text-[var(--color-dim)] ml-1">· {s.scanner_name}</span>
+            </div>
+          ))}
+        </Section>
+      )}
+    </>
+  )
+}
+
+
 export function NodeChainPanel({
   ticker,
   onClose,
   onOpenFullDetail,
+  asOf,
 }: {
   ticker: string
   onClose: () => void
   onOpenFullDetail?: () => void
+  // Tier detection must follow the canvas's time-travel state — when
+  // user pins as_of=30d, a ticker that was 'core' then but 'watching'
+  // now should still show as core. Without this the panel disagreed
+  // with the visual ring the user clicked on.
+  asOf?: string | null
 }) {
   // Detect Outside-ring tier so the panel switches into discovery
   // mode (rather than rendering five empty sections).
-  const pvQ = usePortfolioView()
+  const pvQ = usePortfolioView(asOf)
   const node = pvQ.data?.nodes.find(n => n.id === ticker)
   const isOutside = node?.tier === 'outside'
+  const isHeldUnwatched = node?.tier === 'held_unwatched'
 
   return (
     <div className="flex flex-col h-full bg-[var(--color-panel)]/95 border-l border-[var(--color-border)] backdrop-blur-sm">
@@ -825,8 +1174,10 @@ export function NodeChainPanel({
       <div className="flex items-center gap-2 px-3 py-2 border-b border-[var(--color-border)]">
         <h2 className="text-[14px] font-semibold text-[var(--color-text)] flex-1">
           {ticker}{' '}
-          <span className="text-[10px] text-[var(--color-dim)] font-normal italic">
-            {isOutside ? 'discovery' : 'chain'}
+          <span className={`text-[10px] font-normal italic ${
+            isHeldUnwatched ? 'text-red-300' : 'text-[var(--color-dim)]'
+          }`}>
+            {isHeldUnwatched ? '⚠ held but unwatched' : isOutside ? 'discovery' : 'chain'}
           </span>
         </h2>
         {onOpenFullDetail && (
@@ -851,6 +1202,8 @@ export function NodeChainPanel({
       <div className="flex-1 overflow-y-auto">
         {isOutside ? (
           <OutsideDiscovery ticker={ticker} node={node!} />
+        ) : isHeldUnwatched ? (
+          <HeldUnwatchedPanel ticker={ticker} node={node!} />
         ) : (
           <>
             <ConflictBanner ticker={ticker} />

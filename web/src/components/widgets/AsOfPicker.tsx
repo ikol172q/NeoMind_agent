@@ -10,7 +10,7 @@
  * Design doc: docs/design/2026-04-26_temporal-replay-architecture.md
  */
 
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Calendar, ChevronDown, Loader2, Radio, RefreshCw } from 'lucide-react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import {
@@ -29,9 +29,28 @@ export interface AsOfPickerProps {
 
 export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
   const [open, setOpen] = useState(false)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const helpRef = useRef<HTMLDivElement | null>(null)
+  const helpBtnRef = useRef<HTMLButtonElement | null>(null)
   const q = useLatticeSnapshots(projectId)
   const snapshots: LatticeSnapshotEntry[] = q.data?.snapshots ?? []
   const qc = useQueryClient()
+
+  // Close help popover on outside click. Listener attaches only when
+  // open so it doesn't run constantly. Mousedown (not click) so the
+  // close fires before the next button's click handler — that way the
+  // first click on another button is honored, not eaten by an overlay.
+  useEffect(() => {
+    if (!helpOpen) return
+    function onDown(e: MouseEvent) {
+      const t = e.target as Node
+      if (helpRef.current?.contains(t)) return
+      if (helpBtnRef.current?.contains(t)) return
+      setHelpOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [helpOpen])
 
   // Force a non-cached lattice build.  Hits /api/lattice/calls with
   // ``fresh=true``; backend bypasses dep_hash cache, runs L1+L2+L3
@@ -107,17 +126,19 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
         data-testid="as-of-force-fresh"
         className="flex items-center gap-1 px-1.5 py-0.5 text-[10px] font-mono rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60 text-[var(--color-text)] disabled:opacity-50 disabled:cursor-not-allowed transition"
         title={
-          'Force fresh build — 绕过 dep_hash cache, 跑 L1+L2+L3 重新生成 lattice，' +
-          '写一条今天的 snapshot。耗时约 30–60 秒（2-3 个 LLM 调用）。\n' +
-          '完成后下拉里会自动多出今天那一行；视图会切回 LIVE。\n' +
-          '与上面日期选择无关 — 这个按钮永远生成"现在"。'
+          '🧠 重算 lattice (LLM) — 跑 L1+L2+L3 生成今天的 lattice snapshot，' +
+          '写一条今天的 row 到下拉。耗时 30–60 秒（2-3 个 LLM 调用）。\n\n' +
+          '⚠ 这跟 Strategies tab 顶部 "↻ 拉取全部数据源" 是两回事：\n' +
+          '  • 这里：lattice 重算（influences 你看到的 strategy 推荐）\n' +
+          '  • 那里：scanner 数据拉取（whale / news / insider 等）\n\n' +
+          '完成后视图自动切回 LIVE。'
         }
       >
         {forceFresh.isPending
           ? <Loader2 size={10} className="animate-spin" />
           : <RefreshCw size={10} />
         }
-        <span>{forceFresh.isPending ? 'building…' : 'fresh'}</span>
+        <span>{forceFresh.isPending ? 'building…' : '🧠 rebuild lattice'}</span>
       </button>
 
       {forceFresh.isError && (
@@ -127,6 +148,49 @@ export function AsOfPicker({ projectId, value, onChange }: AsOfPickerProps) {
         >
           fresh failed
         </span>
+      )}
+
+      {/* Inline ? — clickable help popover. Hover-title alone is invisible
+          on touch devices and easy to miss. Dismiss via document
+          mousedown listener (see useEffect above) so the next button's
+          click isn't eaten by a full-screen overlay. */}
+      <button
+        ref={helpBtnRef}
+        onClick={() => setHelpOpen(o => !o)}
+        className="text-[10px] w-4 h-4 rounded-full border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center justify-center"
+        title="这两个按钮分别 refresh 什么？"
+      >?</button>
+
+      {helpOpen && (
+          <div ref={helpRef} className="absolute right-0 top-full mt-1 w-[360px] bg-[var(--color-panel)] border border-[var(--color-border)] rounded shadow-xl z-50 text-[10px] p-3 leading-[1.5]">
+            <div className="font-semibold text-[var(--color-text)] mb-1.5">🔄 两类 Refresh 的区别</div>
+            <div className="mb-2">
+              <div className="text-[var(--color-accent)] font-semibold">🧠 rebuild lattice (这里)</div>
+              <div className="text-[var(--color-dim)] ml-2">
+                重算今天的 lattice snapshot · 30–60 秒 · 2-3 个 LLM 调用<br/>
+                影响: <b>strategy 推荐 / fit 评分 / themes / observations</b><br/>
+                调用: <code>POST /api/lattice/calls?fresh=true</code>
+              </div>
+            </div>
+            <div className="mb-2">
+              <div className="text-[var(--color-accent)] font-semibold">↻ 拉取全部数据源 (Strategies tab → Today's Signals 顶部)</div>
+              <div className="text-[var(--color-dim)] ml-2">
+                跑 7 个 scanner · 约 30 秒 · 不调 LLM<br/>
+                影响: <b>Smart Money / NeoMind Live / Today's Signals 里的 events</b><br/>
+                调用: <code>POST /api/regime/scan/all?include_13f=true</code>
+              </div>
+            </div>
+            <div>
+              <div className="text-[var(--color-accent)] font-semibold">↻ 单 scanner (顶栏 scanners 徽章 → 每行 ↻)</div>
+              <div className="text-[var(--color-dim)] ml-2">
+                只刷某一个 scheduler job (whale_daily / insider_form4 等)<br/>
+                调用: <code>POST /api/scheduler/run/&lt;job_name&gt;</code>
+              </div>
+            </div>
+            <div className="mt-2 italic text-[var(--color-dim)]">
+              不知道哪个? 一般你想看新数据 → 用 ↻ 拉取; 想让 strategy 重新评分 → 用 🧠 rebuild.
+            </div>
+          </div>
       )}
 
       {open && (

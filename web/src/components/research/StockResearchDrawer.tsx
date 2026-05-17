@@ -31,14 +31,25 @@ import {
   useExitTriggers,
   // Phase 1B (2026-05-10): position state surfacing
   usePositionByTicker, usePortfolioSummary,
+  // Lot management (2026-05-16): wire the existing delete/close mutations
+  // — they had been in api.ts for a while but nothing in the UI called
+  // them, leaving users with no way to remove a position.
+  useDeleteLot, useCloseLot,
+  // 2026-05-16: delta-since-review banner at drawer top
+  useDeltaSinceReview,
+  // 2026-05-16: user_decisions audit log
+  useDecisions, useRecordDecision, useDecisionOutcome, type DecisionKind,
+  // 2026-05-16: smart-money cross-cut per ticker
+  useTickerSignalsByScanner,
   type StockExposureEvent, type AnchoredFacts, type NextEarnings,
   type StockProfile, type WatchlistTier,
-  type InvestmentThesis,
+  type InvestmentThesis, type EnrichedLot,
 } from '@/lib/api'
 import {
   X, ExternalLink, Sparkles, BarChart3, Network, Newspaper,
   NotebookPen, MessagesSquare, Building2, Loader2, ShieldCheck,
   Star, CircleDot, Eye, Lightbulb, History, AlertTriangle, Briefcase,
+  Trash2,
 } from 'lucide-react'
 import { AnchoredFactsPanel } from './AnchoredFactsPanel'
 import { EarningsHistoryMini } from '@/components/widgets/EarningsHistoryMini'
@@ -48,7 +59,7 @@ type TabKey = 'overview' | 'smart_money' | 'supply_chain' | 'news' | 'notes' | '
 
 
 export function StockResearchDrawer() {
-  const { ticker, projectId, closeTicker, openTicker } = useStockResearch()
+  const { ticker, projectId, closeTicker, openTicker, navStack, back } = useStockResearch()
   const [tab, setTab] = useState<TabKey>('overview')
   const [statusEditing, setStatusEditing] = useState<Status | null>(null)
   const [statusReasonDraft, setStatusReasonDraft] = useState('')
@@ -95,6 +106,19 @@ export function StockResearchDrawer() {
     touchMu.mutate(ticker)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ticker])
+
+  // 2026-05-16: ESC closes the drawer (UX expectation). Without this,
+  // the backdrop overlay (z-40) lingers and intercepts ALL clicks on
+  // the rest of the page — including top-nav tab buttons — leaving
+  // the app feeling frozen until the user notices the dimmed overlay.
+  useEffect(() => {
+    if (!ticker) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeTicker()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [ticker, closeTicker])
 
   if (!ticker) return null
 
@@ -240,10 +264,25 @@ export function StockResearchDrawer() {
                   blended into the live yfinance data. */}
             </div>
           </div>
+          {/* Walk breadcrumb — supports the user's "from news/anchor →
+              up/down chain" workflow. Each ticker click pushes a
+              frame; ← back pops one. Empty stack hides the button. */}
+          {navStack.length > 0 && (
+            <button
+              onClick={back}
+              title={`back to ${navStack[navStack.length - 1]} (walk history: ${navStack.join(' → ')})`}
+              className="text-[10px] px-2 py-1 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)] mr-1 flex items-center gap-1"
+            >
+              ← {navStack[navStack.length - 1]}
+              {navStack.length > 1 && (
+                <span className="text-[8.5px] italic">({navStack.length})</span>
+              )}
+            </button>
+          )}
           <button
             onClick={closeTicker}
             className="text-[var(--color-dim)] hover:text-[var(--color-text)] p-1 rounded"
-            title="ESC to close"
+            title="ESC to close (clears walk history)"
           >
             <X size={16} />
           </button>
@@ -341,6 +380,23 @@ export function StockResearchDrawer() {
             }}
           />
         )}
+
+        {/* 2026-05-16: Delta-since-review banner — "what changed since
+            you last opened this ticker". Compresses signals + thesis
+            state + price move + closed lots into one row so the user
+            doesn't re-scan the whole drawer every visit. */}
+        <DeltaSinceReviewBanner ticker={ticker} />
+
+        {/* 2026-05-16: DecisionAuditPanel — record + replay decisions
+            with explicit basis. Closes the audit loop: "why did I
+            hold AAPL on 2026-05-10" becomes answerable. */}
+        <DecisionAuditPanel ticker={ticker} />
+
+        {/* 2026-05-16: SmartMoneyCrossCut — per-ticker view of 13F /
+            insider / congress actions in the last 90d. Co-located so
+            user doesn't have to switch to Smart Money tab + filter.
+            Need #3 closure. */}
+        <SmartMoneyCrossCutPanel ticker={ticker} />
 
         {/* Phase 1B (2026-05-10): Position panel — your actual lots
             for this ticker, with cost basis / P&L / weight / ST-vs-LT.
@@ -1816,9 +1872,444 @@ function NoteTriggerSelector({
 //   • Each lot: open date / qty / cost / days-held / ST vs LT
 //
 // Per plan §2 philosophy: NO gates. Information only.
+// ── DecisionHistoryRow ───────────────────────────────────────
+// One row per past decision with click-to-expand outcome:
+//   - price move % since decision date
+//   - thesis state changes since decision
+//   - subsequent high-severity events
+//   - closed lots after decision
+// Closes Need #5/#6: "did my last decision pan out?" auditable.
+function DecisionHistoryRow({
+  ticker,
+  d,
+}: {
+  ticker: string
+  d: { decision_id: string; kind: string; note: string; decided_at: string }
+}) {
+  const [open, setOpen] = useState(false)
+  const outQ = useDecisionOutcome(open ? ticker : null, open ? d.decision_id : null)
+  const o = outQ.data?.outcome
+  const kindColor = {
+    hold: 'text-emerald-300', add: 'text-emerald-300',
+    trim: 'text-amber-300', sell: 'text-red-300',
+    watch_only: 'text-[var(--color-dim)]', pass: 'text-[var(--color-dim)]',
+  }[d.kind] ?? 'text-[var(--color-dim)]'
+  const pctColor = (p: number) =>
+    p > 0 ? 'text-emerald-300' : p < 0 ? 'text-red-300' : 'text-[var(--color-dim)]'
+  return (
+    <div className="text-[10px] leading-tight pl-1 border-l-2 border-[var(--color-border)]/30">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="w-full flex items-baseline gap-2 text-left flex-wrap hover:bg-[var(--color-panel)]/30 px-1 py-0.5 rounded"
+      >
+        <span className="text-[var(--color-dim)] font-mono w-20 flex-shrink-0">
+          {d.decided_at.slice(0, 16).replace('T', ' ')}
+        </span>
+        <span className={`${kindColor} font-semibold uppercase w-16 flex-shrink-0`}>
+          {d.kind}
+        </span>
+        {d.note && (
+          <span className="text-[var(--color-text)]/80 truncate flex-1 min-w-0">
+            {d.note}
+          </span>
+        )}
+        <span className="text-[9px] text-[var(--color-dim)] italic">
+          {open ? '▾' : '→ outcome'}
+        </span>
+      </button>
+      {open && (
+        <div className="ml-3 mt-1 mb-1 pl-2 border-l-2 border-[var(--color-accent)]/30 text-[9.5px] space-y-0.5">
+          {outQ.isLoading && (
+            <div className="italic text-[var(--color-dim)]">loading outcome…</div>
+          )}
+          {o && o.price_move && (
+            <div>
+              <span className="text-[var(--color-dim)]">📈 price since: </span>
+              <span className="font-mono">${o.price_move.start_close.toFixed(2)} → ${o.price_move.end_close.toFixed(2)}</span>
+              <span className={`ml-1 font-mono font-semibold ${pctColor(o.price_move.pct)}`}>
+                {o.price_move.pct > 0 ? '+' : ''}{o.price_move.pct.toFixed(2)}%
+              </span>
+              <span className="ml-1 text-[var(--color-dim)]">over {o.price_move.days}d</span>
+            </div>
+          )}
+          {o && o.price_move == null && (
+            <div className="italic text-[var(--color-dim)]">📈 price: no daily bars cached for this window — run daily_market_pull</div>
+          )}
+          {o && o.thesis_changes.length > 0 && (
+            <div>
+              <span className="text-[var(--color-dim)]">🧪 thesis changes ({o.thesis_changes.length}): </span>
+              {o.thesis_changes.map((tc, i) => (
+                <span key={i} className="mr-1">
+                  <span className={tc.change === 'invalidated' ? 'text-red-300' : 'text-amber-300'}>
+                    {tc.change}
+                  </span>
+                  {i < o.thesis_changes.length - 1 && <span className="text-[var(--color-dim)]"> · </span>}
+                </span>
+              ))}
+            </div>
+          )}
+          {o && o.subsequent.length > 0 && (
+            <div>
+              <span className="text-[var(--color-dim)]">📡 subsequent ({o.subsequent.length} 高严重事件):</span>
+              {o.subsequent.slice(0, 3).map((s, i) => (
+                <div key={i} className="pl-2 leading-tight">
+                  <span className="text-[var(--color-dim)] font-mono mr-1">{s.ts.slice(0, 10)}</span>
+                  <span className={
+                    s.severity === 'high' ? 'text-red-300' : 'text-amber-300'
+                  }>[{s.severity}]</span>
+                  <span className="ml-1">{s.scanner}/{s.type}</span>
+                  {s.source_url && (
+                    <a href={s.source_url} target="_blank" rel="noopener noreferrer"
+                       className="text-[9px] text-[var(--color-accent)] hover:underline ml-1">↗</a>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+          {o && o.closes.length > 0 && (
+            <div>
+              <span className="text-[var(--color-dim)]">📕 lots closed after: </span>
+              {o.closes.map((c, i) => (
+                <span key={i} className="mr-1">
+                  {c.close_date.slice(0, 10)} <span className={pctColor(c.realized_pnl)}>{c.realized_pnl >= 0 ? '+' : ''}${c.realized_pnl.toFixed(0)}</span>
+                  {i < o.closes.length - 1 && <span className="text-[var(--color-dim)]"> · </span>}
+                </span>
+              ))}
+            </div>
+          )}
+          {o && !o.price_move && o.thesis_changes.length === 0 && o.subsequent.length === 0 && o.closes.length === 0 && (
+            <div className="italic text-[var(--color-dim)]">
+              still too early — no measurable outcome data yet
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── SmartMoneyCrossCutPanel ──────────────────────────────────
+// Per-ticker view of smart-money actions in last 90d, co-located in
+// the drawer so user doesn't have to leave to Smart Money tab.
+// 4 scanners union: 13F (whales) / insider_form4 / stock_act / house_clerk_pdf.
+function SmartMoneyCrossCutPanel({ ticker }: { ticker: string }) {
+  const w13f = useTickerSignalsByScanner(ticker, '13f', 8)
+  const wIns = useTickerSignalsByScanner(ticker, 'insider_form4', 8)
+  const wAct = useTickerSignalsByScanner(ticker, 'stock_act', 8)
+  const wPdf = useTickerSignalsByScanner(ticker, 'house_clerk_pdf', 8)
+  const events13f = w13f.data?.events ?? []
+  const eventsIns = wIns.data?.events ?? []
+  const eventsAct = wAct.data?.events ?? []
+  const eventsPdf = wPdf.data?.events ?? []
+  const total = events13f.length + eventsIns.length + eventsAct.length + eventsPdf.length
+  if (total === 0) return null
+  return (
+    <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px]">
+      <div className="flex items-baseline gap-2 mb-1 flex-wrap">
+        <span className="font-semibold text-[var(--color-text)] text-[11px]">
+          💼 Smart money on {ticker}
+        </span>
+        <span className="text-[var(--color-dim)] italic text-[9.5px]">
+          · 跨 4 类大户最近的动作 (90d 内)
+        </span>
+        <span className="ml-auto text-[9px] font-mono text-[var(--color-dim)]">
+          {total} events
+        </span>
+      </div>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-x-3 gap-y-0.5">
+        {events13f.length > 0 && (
+          <SmartMoneyBlock label="🐋 13F (institutions)" events={events13f} />
+        )}
+        {eventsIns.length > 0 && (
+          <SmartMoneyBlock label="⚪ Insider Form 4" events={eventsIns} />
+        )}
+        {eventsAct.length > 0 && (
+          <SmartMoneyBlock label="🏛 Congress (Quiver)" events={eventsAct} />
+        )}
+        {eventsPdf.length > 0 && (
+          <SmartMoneyBlock label="📄 House Clerk PDF" events={eventsPdf} />
+        )}
+      </div>
+    </div>
+  )
+}
+
+
+function SmartMoneyBlock({
+  label, events,
+}: {
+  label: string
+  events: Array<{
+    event_id: string; signal_type: string; severity: string;
+    title: string; source_url?: string | null;
+    detected_at: string; source_timestamp?: string | null;
+  }>
+}) {
+  return (
+    <div>
+      <div className="text-[10px] text-[var(--color-dim)] mb-0.5">{label}</div>
+      {events.slice(0, 4).map(e => {
+        const ts = (e.source_timestamp || e.detected_at).slice(0, 10)
+        return (
+          <div key={e.event_id} className="text-[9.5px] pl-1 leading-tight flex items-baseline gap-1 flex-wrap">
+            <span className="font-mono text-[var(--color-dim)] w-[60px] flex-shrink-0">{ts}</span>
+            <span className={
+              e.severity === 'high' ? 'text-red-300' :
+              e.severity === 'med'  ? 'text-amber-300' :
+              'text-[var(--color-dim)]'
+            }>{e.signal_type}</span>
+            <span className="text-[var(--color-text)]/80 truncate flex-1 min-w-0">{e.title}</span>
+            {e.source_url && (
+              <a href={e.source_url} target="_blank" rel="noopener noreferrer"
+                 className="text-[9px] text-[var(--color-accent)] hover:underline">↗</a>
+            )}
+          </div>
+        )
+      })}
+      {events.length > 4 && (
+        <div className="text-[8.5px] italic text-[var(--color-dim)] pl-1">
+          + {events.length - 4} more
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// ── DecisionAuditPanel ───────────────────────────────────────
+// Record investment decisions (hold/trim/add/sell/watch_only/pass)
+// + free-text note. Reads back the history below so user can compare
+// today's decision to past ones. Closes "信息有根有据" by capturing
+// user INTENT alongside data INPUTS.
+function DecisionAuditPanel({ ticker }: { ticker: string }) {
+  const histQ = useDecisions(ticker)
+  const recordMu = useRecordDecision()
+  const [kind, setKind] = useState<DecisionKind | null>(null)
+  const [note, setNote] = useState('')
+  const items = histQ.data?.items ?? []
+
+  function submit() {
+    if (!kind) return
+    recordMu.mutate(
+      { ticker, kind, note: note.trim() || undefined },
+      {
+        onSuccess: () => { setKind(null); setNote('') },
+      },
+    )
+  }
+
+  return (
+    <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px]">
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="font-semibold text-[var(--color-text)] text-[11px]">📝 决策记录</span>
+        <span className="text-[var(--color-dim)] italic text-[9.5px]">
+          · 记录这次 review 的决定; 复盘时回放
+        </span>
+        {items.length > 0 && (
+          <span className="ml-auto text-[9.5px] font-mono text-[var(--color-dim)]">
+            {items.length} past
+          </span>
+        )}
+      </div>
+
+      {/* Record form */}
+      <div className="flex flex-wrap items-center gap-1 mb-1">
+        {(['hold', 'add', 'trim', 'sell', 'watch_only', 'pass'] as const).map(k => {
+          const isActive = kind === k
+          const colorCls = {
+            hold:       'border-emerald-500/40 text-emerald-300',
+            add:        'border-emerald-500/40 text-emerald-300',
+            trim:       'border-amber-500/40 text-amber-300',
+            sell:       'border-red-500/40 text-red-300',
+            watch_only: 'border-[var(--color-border)] text-[var(--color-dim)]',
+            pass:       'border-[var(--color-border)] text-[var(--color-dim)]',
+          }[k]
+          return (
+            <button
+              key={k}
+              onClick={() => setKind(isActive ? null : k)}
+              disabled={recordMu.isPending}
+              className={`text-[10px] px-2 py-0.5 rounded border ${colorCls} ${
+                isActive ? 'bg-[var(--color-accent)]/15' : 'hover:bg-[var(--color-panel)]/50'
+              }`}
+            >
+              {k}
+            </button>
+          )
+        })}
+        <input
+          type="text"
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="rationale (optional, recommended)"
+          className="flex-1 min-w-[120px] text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)] text-[var(--color-text)]"
+        />
+        <button
+          onClick={submit}
+          disabled={!kind || recordMu.isPending}
+          className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {recordMu.isPending ? 'recording…' : 'record'}
+        </button>
+      </div>
+      {recordMu.isError && (
+        <div className="text-[9.5px] text-red-300 mb-1">
+          ✗ {String((recordMu.error as Error)?.message).slice(0, 100)}
+        </div>
+      )}
+
+      {/* History list */}
+      {items.length === 0 ? (
+        <div className="text-[10px] italic text-[var(--color-dim)] mt-1">
+          — no decisions recorded yet; first record creates audit trail
+        </div>
+      ) : (
+        <details className="mt-1">
+          <summary className="text-[9.5px] text-[var(--color-dim)] cursor-pointer hover:text-[var(--color-text)]">
+            ▸ history ({items.length})
+          </summary>
+          <div className="mt-1 space-y-0.5">
+            {items.slice(0, 8).map(d => (
+              <DecisionHistoryRow key={d.decision_id} ticker={ticker} d={d} />
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  )
+}
+
+
+// ── DeltaSinceReviewBanner ───────────────────────────────────
+// Compressed "what changed since last_reviewed_at" panel at top of
+// drawer. Renders nothing when there are 0 changes — avoids noise
+// for first-time opens with no signal flow.
+function DeltaSinceReviewBanner({ ticker }: { ticker: string }) {
+  const q = useDeltaSinceReview(ticker)
+  if (q.isLoading || !q.data) return null
+  const d = q.data
+  if (d.total_changes === 0) {
+    // First-time/quiet state: still render a thin "no changes" line so
+    // user understands the system DID check, didn't fail.
+    return (
+      <div className="px-4 py-1.5 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10px] text-[var(--color-dim)] italic">
+        ✓ 自 {d.anchor_source === 'last_reviewed_at'
+          ? `${d.days_since.toFixed(0)} 天前你上次复盘`
+          : `${Math.round(d.days_since)} 天回溯窗口`} 没有 signal / thesis / 价格 / 业绩变化
+      </div>
+    )
+  }
+  const sevColor = (s: string) =>
+    s === 'high' ? 'text-red-300' : s === 'med' ? 'text-amber-300' : 'text-[var(--color-dim)]'
+  const pctColor = (p: number) =>
+    p > 0 ? 'text-emerald-300' : p < 0 ? 'text-red-300' : 'text-[var(--color-dim)]'
+  return (
+    <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px] space-y-1">
+      <div className="flex items-baseline gap-2 flex-wrap">
+        <span className="font-semibold text-[var(--color-accent)] text-[11px]">
+          📊 自 {d.anchor_source === 'last_reviewed_at'
+            ? `上次复盘 (${d.days_since.toFixed(0)}d 前)`
+            : `${Math.round(d.days_since)}d 前 (从未复盘)`}
+        </span>
+        <span className="text-[var(--color-dim)] italic">
+          · {d.total_changes} 处变化
+        </span>
+        {/* Scanner tally */}
+        {Object.keys(d.scanner_tally).length > 0 && (
+          <span className="text-[var(--color-dim)] font-mono">
+            {Object.entries(d.scanner_tally).map(([k, v]) => `${k}=${v}`).join(' · ')}
+          </span>
+        )}
+      </div>
+
+      {/* Price move */}
+      {d.price_delta && (
+        <div className="text-[10px] pl-2">
+          <span className="text-[var(--color-dim)]">💹 期间价格 </span>
+          <span className="text-[var(--color-text)] font-mono">
+            ${d.price_delta.start_close.toFixed(2)} → ${d.price_delta.end_close.toFixed(2)}
+          </span>
+          <span className={`ml-1.5 font-mono ${pctColor(d.price_delta.pct)}`}>
+            {d.price_delta.pct > 0 ? '+' : ''}{d.price_delta.pct.toFixed(2)}%
+          </span>
+        </div>
+      )}
+
+      {/* Thesis changes */}
+      {d.thesis_changes.length > 0 && (
+        <div className="text-[10px] pl-2">
+          <span className="text-[var(--color-dim)]">🧪 thesis: </span>
+          {d.thesis_changes.map((tc, i) => (
+            <span key={tc.thesis_id} className="mr-2">
+              <span className={
+                tc.change === 'invalidated' ? 'text-red-300' :
+                tc.change === 'flagged_review' ? 'text-amber-300' :
+                'text-emerald-300'
+              }>
+                {tc.change === 'created' ? '+ 新建' :
+                 tc.change === 'invalidated' ? '× 失效' :
+                 '⚠ 待 review'}
+              </span>
+              {i < d.thesis_changes.length - 1 && <span className="text-[var(--color-dim)]"> · </span>}
+            </span>
+          ))}
+        </div>
+      )}
+
+      {/* Top signals — up to 4, severity-colored */}
+      {d.signals.length > 0 && (
+        <div className="text-[10px] pl-2 space-y-0.5">
+          <span className="text-[var(--color-dim)]">📡 scanner events ({d.signals.length}):</span>
+          {d.signals.slice(0, 4).map((s, i) => (
+            <div key={i} className="pl-2 leading-snug">
+              <span className={sevColor(s.severity)}>[{s.severity}]</span>{' '}
+              <span className="text-[var(--color-text)] font-mono">{s.scanner}/{s.type}</span>
+              <span className="text-[var(--color-dim)] ml-1">— {s.title}</span>
+            </div>
+          ))}
+          {d.signals.length > 4 && (
+            <div className="text-[9.5px] italic text-[var(--color-dim)] pl-2">
+              + {d.signals.length - 4} more — 看 News / Smart Money / Live tabs 全部
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* New facts tally */}
+      {Object.keys(d.new_facts_by_type).length > 0 && (
+        <div className="text-[10px] pl-2">
+          <span className="text-[var(--color-dim)]">📄 新 10-K facts: </span>
+          <span className="text-[var(--color-text)] font-mono">
+            {Object.entries(d.new_facts_by_type).map(([k, v]) => `${k}=${v}`).join(' · ')}
+          </span>
+        </div>
+      )}
+
+      {/* Closed lots in window */}
+      {d.closed_lots.length > 0 && (
+        <div className="text-[10px] pl-2">
+          <span className="text-[var(--color-dim)]">📕 期间卖出 ({d.closed_lots.length}): </span>
+          {d.closed_lots.map((cl, i) => (
+            <span key={i} className="mr-2">
+              <span className="font-mono">{cl.close_date.slice(0, 10)}</span>{' '}
+              <span className={pctColor(cl.realized_pnl)}>
+                {cl.realized_pnl >= 0 ? '+' : ''}${cl.realized_pnl.toFixed(0)}
+              </span>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
 function PositionPanel({ ticker }: { ticker: string }) {
   const posQ = usePositionByTicker(ticker)
   const sumQ = usePortfolioSummary('SPY')
+  // Active lot being managed (delete / close modal target). null = no modal.
+  const [managingLot, setManagingLot] = useState<EnrichedLot | null>(null)
   const d = posQ.data
   // No-position state: hide entirely (don't clutter the drawer with
   // "you own 0 shares" — the absence speaks)
@@ -1844,11 +2335,15 @@ function PositionPanel({ ticker }: { ticker: string }) {
 
   return (
     <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px]">
-      <div className="flex items-center gap-2 mb-1.5">
+      <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         <Briefcase size={11} className="text-[var(--color-accent)]" />
         <span className="font-semibold text-[var(--color-text)]">我的持仓</span>
         <span className="text-[var(--color-dim)] italic">
           {d.summary.n_lots} lot{d.summary.n_lots > 1 ? 's' : ''} · 总{d.summary.total_quantity.toFixed(0)}sh
+        </span>
+        {/* 2026-05-16: provenance — cost from tax_lots, live price from data_hub */}
+        <span className="ml-auto text-[8.5px] italic text-[var(--color-dim)]">
+          source: tax_lots + live quote
         </span>
       </div>
 
@@ -1894,11 +2389,212 @@ function PositionPanel({ ticker }: { ticker: string }) {
                 {l.notes && (
                   <span className="text-[var(--color-dim)] italic truncate">— {l.notes}</span>
                 )}
+                <button
+                  onClick={() => setManagingLot(l)}
+                  title={`管理 lot #${l.lot_id} — 删除 (录入错) / 卖出 (close)`}
+                  className="ml-auto w-5 h-5 rounded border border-[var(--color-border)]/60 hover:border-[var(--color-red,#e07070)] hover:text-[var(--color-red,#e07070)] text-[var(--color-dim)] flex items-center justify-center flex-shrink-0"
+                >
+                  <Trash2 size={9} />
+                </button>
               </div>
             ))}
           </div>
         </details>
       )}
+
+      {managingLot && (
+        <ManageLotModal
+          lot={managingLot}
+          ticker={ticker}
+          currentPrice={d.summary.current_price ?? managingLot.open_price}
+          onClose={() => setManagingLot(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+
+function ManageLotModal({
+  lot, ticker, currentPrice, onClose,
+}: {
+  lot: EnrichedLot
+  ticker: string
+  currentPrice: number
+  onClose: () => void
+}) {
+  // Two modes: 'choose' = pick delete vs close; 'close-form' = fill close
+  // details. Delete confirms inline in 'choose' mode.
+  const [mode, setMode] = useState<'choose' | 'close-form'>('choose')
+  const [closeDate, setCloseDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [closePrice, setClosePrice] = useState(String(currentPrice.toFixed(2)))
+  const [closeQty, setCloseQty] = useState(String(lot.open_quantity))
+  const [closeFees, setCloseFees] = useState('0')
+  const deleteMu = useDeleteLot()
+  const closeMu = useCloseLot()
+
+  const isPending = deleteMu.isPending || closeMu.isPending
+
+  function onDelete() {
+    deleteMu.mutate(
+      { lot_id: lot.lot_id, ticker },
+      { onSuccess: onClose },
+    )
+  }
+  function onSubmitClose() {
+    const price = Number(closePrice)
+    const qty   = Number(closeQty)
+    const fees  = Number(closeFees) || 0
+    if (!isFinite(price) || price <= 0) return alert('卖出价必须是正数')
+    if (!isFinite(qty) || qty <= 0 || qty > lot.open_quantity) {
+      return alert(`卖出股数必须在 1 到 ${lot.open_quantity} 之间`)
+    }
+    closeMu.mutate(
+      { lot_id: lot.lot_id, ticker, close_date: closeDate, close_price: price,
+        close_quantity: qty, close_fees: fees },
+      { onSuccess: onClose },
+    )
+  }
+
+  return (
+    <div
+      onClick={onClose}
+      className="fixed inset-0 z-50 bg-black/60 flex items-center justify-center"
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="bg-[var(--color-panel)] border border-[var(--color-border)] rounded shadow-2xl w-[440px] max-w-[90vw] p-4 text-[11px]"
+      >
+        <div className="flex items-center gap-2 mb-2">
+          <span className="font-semibold text-[var(--color-text)]">管理 lot #{lot.lot_id}</span>
+          <span className="text-[var(--color-dim)]">·</span>
+          <span className="font-mono text-[var(--color-text)]">{ticker}</span>
+          <span className="text-[var(--color-dim)]">·</span>
+          <span className="font-mono text-[var(--color-dim)]">
+            {lot.open_quantity.toFixed(0)}sh @ ${lot.open_price.toFixed(2)} (opened {lot.open_date})
+          </span>
+          <button
+            onClick={onClose}
+            className="ml-auto text-[var(--color-dim)] hover:text-[var(--color-text)]"
+          ><X size={12} /></button>
+        </div>
+
+        {mode === 'choose' && (
+          <>
+            <div className="space-y-2">
+              <button
+                onClick={() => setMode('close-form')}
+                disabled={isPending}
+                className="w-full text-left p-2.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)] hover:bg-[var(--color-accent)]/5 disabled:opacity-50"
+              >
+                <div className="font-semibold text-[var(--color-text)]">📤 卖出 (close lot)</div>
+                <div className="text-[var(--color-dim)] mt-0.5">
+                  真实卖出，记录 P&amp;L、close_date、close_price，留在 paper trades 历史里。需要填卖出价格 / 日期 / 股数。
+                </div>
+              </button>
+
+              <button
+                onClick={onDelete}
+                disabled={isPending}
+                className="w-full text-left p-2.5 rounded border border-[var(--color-border)] hover:border-[var(--color-red,#e07070)] hover:bg-[var(--color-red,#e07070)]/5 disabled:opacity-50"
+              >
+                <div className="font-semibold text-[var(--color-red,#e07070)] flex items-center gap-1">
+                  {deleteMu.isPending
+                    ? <Loader2 size={11} className="animate-spin" />
+                    : <Trash2 size={11} />}
+                  删除 (录入错误)
+                </div>
+                <div className="text-[var(--color-dim)] mt-0.5">
+                  整笔 lot 从 DB 抹除，不留任何痕迹。<b>只用在录入错误</b> (打错 ticker / 数量)。
+                  真卖了请用上面"卖出"，否则 P&amp;L 历史就丢了。
+                </div>
+              </button>
+            </div>
+
+            {deleteMu.isError && (
+              <div className="mt-2 text-[var(--color-red,#e07070)] text-[10px]">
+                删除失败: {String((deleteMu.error as Error)?.message)}
+              </div>
+            )}
+          </>
+        )}
+
+        {mode === 'close-form' && (
+          <>
+            <div className="grid grid-cols-2 gap-2 mt-1">
+              <label className="text-[var(--color-dim)]">
+                <div className="mb-0.5">卖出日期</div>
+                <input
+                  type="date"
+                  value={closeDate}
+                  onChange={(e) => setCloseDate(e.target.value)}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1.5 py-1 text-[var(--color-text)] font-mono"
+                />
+              </label>
+              <label className="text-[var(--color-dim)]">
+                <div className="mb-0.5">
+                  卖出价 <span className="italic">(now ${currentPrice.toFixed(2)})</span>
+                </div>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={closePrice}
+                  onChange={(e) => setClosePrice(e.target.value)}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1.5 py-1 text-[var(--color-text)] font-mono"
+                />
+              </label>
+              <label className="text-[var(--color-dim)]">
+                <div className="mb-0.5">
+                  股数 <span className="italic">(max {lot.open_quantity})</span>
+                </div>
+                <input
+                  type="number"
+                  step="1"
+                  min="1"
+                  max={lot.open_quantity}
+                  value={closeQty}
+                  onChange={(e) => setCloseQty(e.target.value)}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1.5 py-1 text-[var(--color-text)] font-mono"
+                />
+              </label>
+              <label className="text-[var(--color-dim)]">
+                <div className="mb-0.5">手续费</div>
+                <input
+                  type="number"
+                  step="0.01"
+                  value={closeFees}
+                  onChange={(e) => setCloseFees(e.target.value)}
+                  className="w-full bg-[var(--color-bg)] border border-[var(--color-border)] rounded px-1.5 py-1 text-[var(--color-text)] font-mono"
+                />
+              </label>
+            </div>
+
+            <div className="mt-3 flex items-center gap-2">
+              <button
+                onClick={() => setMode('choose')}
+                disabled={isPending}
+                className="px-2 py-1 text-[var(--color-dim)] hover:text-[var(--color-text)] disabled:opacity-50"
+              >
+                ← 返回
+              </button>
+              <button
+                onClick={onSubmitClose}
+                disabled={isPending}
+                className="ml-auto px-3 py-1 rounded border border-[var(--color-accent)] text-[var(--color-accent)] hover:bg-[var(--color-accent)]/10 disabled:opacity-50 flex items-center gap-1"
+              >
+                {closeMu.isPending && <Loader2 size={10} className="animate-spin" />}
+                确认卖出
+              </button>
+            </div>
+
+            {closeMu.isError && (
+              <div className="mt-2 text-[var(--color-red,#e07070)] text-[10px]">
+                卖出失败: {String((closeMu.error as Error)?.message)}
+              </div>
+            )}
+          </>
+        )}
+      </div>
     </div>
   )
 }

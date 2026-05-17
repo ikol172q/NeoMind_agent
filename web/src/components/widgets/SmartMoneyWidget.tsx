@@ -391,8 +391,9 @@ export function SmartMoneyWidget() {
           </ul>
           <div className="font-semibold text-[var(--color-text)] mt-1.5 mb-0.5">🔄 刷新 + 过期</div>
           <ul className="ml-3 list-disc space-y-0.5">
-            <li>顶部 "↻ 立即扫描" → 跑所有 scanner → 新数据 30s 内自动出现, <b>不用 page reload</b>.</li>
-            <li>每 30s 自动 background poll, 你不用管.</li>
+            <li>本 tab 上方 <b>Today's Signals</b> widget 的 "↻ 拉取全部数据源" → 跑全部 7 个 scanner → 新数据 30s 内自动出现, <b>不用 page reload</b>.</li>
+            <li>想只刷某个 scanner: 顶栏 <b>scanners</b> 徽章 → dropdown 每行有 ↻ 按钮.</li>
+            <li>每 30s 自动 background poll + scheduler 每小时 fire 一次, 你不用管.</li>
             <li>各 tab <b>自动隐藏过期 events</b>: Form 4 {MAX_AGE_DAYS.insider}d / 国会 {MAX_AGE_DAYS.congress}d / 13F + ARK {MAX_AGE_DAYS.whales}d. 想看更老的, 点下面 "show {n_stale[tab]} stale" 按钮.</li>
           </ul>
         </div>
@@ -472,6 +473,21 @@ export function SmartMoneyWidget() {
               if (!byRepFresh.has(rep)) byRepFresh.set(rep, { rep, chamber, party, events: [] })
               byRepFresh.get(rep)!.events.push(e)
             }
+            // Sort each rep's events by actual transaction_date desc.
+            // house_clerk_pdf scanner emits in PDF iteration order, NOT
+            // by date, so without this sort Pelosi's rows render in
+            // arbitrary order. stock_act (Quiver) backend already
+            // sorts, but applying the same sort here is idempotent and
+            // future-proof.
+            for (const g of byRepFresh.values()) {
+              g.events.sort((a, b) => {
+                const ta = String((a.body as Record<string, unknown> | undefined)?.transaction_date ?? a.source_timestamp ?? '')
+                const tb = String((b.body as Record<string, unknown> | undefined)?.transaction_date ?? b.source_timestamp ?? '')
+                if (ta < tb) return 1
+                if (ta > tb) return -1
+                return 0
+              })
+            }
             const congressGroupsFresh = Array.from(byRepFresh.values()).sort((a, b) => {
               const fa = isFollowedRep(a.rep) ? 0 : 1
               const fb = isFollowedRep(b.rep) ? 0 : 1
@@ -525,8 +541,8 @@ export function SmartMoneyWidget() {
           {!q13f.isLoading && arkGroups_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
               No ARK 13F holdings in the last {MAX_AGE_DAYS.ark} days.
-              Trigger ↻ 立即扫描 (in Today's Signals widget above) to
-              fetch SEC filings.
+              Trigger "↻ 拉取全部数据源" in the Today's Signals widget
+              above (or 顶栏 scanners 徽章 → 13F 行 ↻) to fetch SEC filings.
             </div>
           )}
           {!q13f.isLoading && arkGroups_fresh.length > 0 && (
@@ -986,7 +1002,7 @@ function InsiderTabBody({
       {!isLoading && sorted.length === 0 && (
         <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
           {events.length === 0
-            ? `No insider buys in the last ${maxAge} days. Trigger ↻ 立即扫描.`
+            ? `No insider buys in the last ${maxAge} days. 点上面 Today's Signals 的 "↻ 拉取全部数据源", 或顶栏 scanners 徽章 → insider_form4 行的 ↻.`
             : `没有 event 满足 filter (人数 ≥ ${minIns}, 金额 ≥ $${minVal.toLocaleString()}). 放宽 filter 试试.`}
         </div>
       )}

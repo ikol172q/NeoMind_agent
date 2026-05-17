@@ -27,10 +27,37 @@ import { Loader2, Eye, EyeOff, Clock, Layers } from 'lucide-react'
 import { NodeChainPanel } from '@/components/widgets/NodeChainPanel'
 
 /**
+ * Common 2-5 letter UPPERCASE English tokens that aren't tickers.
+ * The regex `[A-Z]{2,5}` matches these and would false-positive without
+ * the watchlist intersect — but even with the intersect we can still
+ * hit edge cases where a real ticker like CEO (a tiny Chinese ADR) is
+ * in the watchlist AND the claim text contains "CEO" as an English
+ * abbreviation. This blacklist filters tokens that almost certainly
+ * mean the English meaning when found in financial-analyst prose.
+ *
+ * If you add a ticker that's also in this list, prefer the more
+ * specific theme-tag path (`symbol:CEO`) for the arrow instead.
+ */
+const TICKER_FP_BLACKLIST = new Set([
+  // Pronouns / connectors / units
+  'US', 'EU', 'UK', 'JP', 'CN', 'USD', 'EUR', 'CNY', 'JPY', 'GDP', 'YOY', 'YTD',
+  // Tech / business jargon
+  'AI', 'API', 'CEO', 'CFO', 'CTO', 'CIO', 'COO', 'EPS', 'PE', 'EBIT', 'EBT',
+  'IPO', 'IPO', 'M&A', 'KPI', 'ROI', 'ROE', 'ROA', 'TAM', 'SAM', 'SOM',
+  'B2B', 'B2C', 'SaaS', 'LLM', 'CPU', 'GPU', 'GHG', 'ESG', 'FX',
+  // SEC / accounting
+  'SEC', 'FED', 'IRS', 'GAAP', 'IFRS', 'PCAOB', 'FASB', 'CAPEX', 'OPEX',
+  // Common headline words
+  'NEW', 'OLD', 'TOP', 'BOT', 'BIG', 'CAP', 'GAP', 'WIN', 'LOSS', 'BUY', 'SELL',
+  'HOLD', 'PASS', 'FAIL', 'PRO', 'CON', 'YES', 'NO', 'OK', 'AM', 'PM', 'ET',
+])
+
+/**
  * Extract tickers a given L3 call refers to. Strategy:
- *   1. If claim text contains uppercase 2-5 letter tokens, treat them
- *      as candidate tickers and keep those present in the watchlist.
- *   2. Fall back to walking `grounds` → themes → symbol tags.
+ *   1. theme-tag path (highest precedence) — `symbol:XXX` tags upstream
+ *      are explicit, never false-positive.
+ *   2. claim regex (fallback) — 2-5 letter UPPERCASE tokens, intersected
+ *      with watchlist AND filtered against the FP blacklist.
  * Returns the matched tickers from the supplied watchlist set so we
  * only point arrows at nodes that exist in the onion.
  */
@@ -40,13 +67,7 @@ function extractCallTickers(
   watchlist: Set<string>,
 ): string[] {
   const found = new Set<string>()
-  // 1. claim regex
-  const re = /\b[A-Z]{2,5}\b/g
-  for (const m of call.claim.matchAll(re)) {
-    const tk = m[0]
-    if (watchlist.has(tk)) found.add(tk)
-  }
-  // 2. theme symbol tags
+  // 1. theme symbol tags first — these are explicit and trusted
   for (const themeId of call.grounds) {
     const t = themesById.get(themeId)
     if (!t) continue
@@ -56,6 +77,13 @@ function extractCallTickers(
         if (watchlist.has(tk)) found.add(tk)
       }
     }
+  }
+  // 2. claim regex, blacklist-filtered
+  const re = /\b[A-Z]{2,5}\b/g
+  for (const m of call.claim.matchAll(re)) {
+    const tk = m[0]
+    if (TICKER_FP_BLACKLIST.has(tk)) continue
+    if (watchlist.has(tk)) found.add(tk)
   }
   return Array.from(found)
 }
@@ -97,31 +125,57 @@ const TIER_RADIUS: Record<string, number> = {
   adjacent: 200,
   watching: 280,
   outside:  340,
+  // Held-but-unwatched: pinned between watching and outside so the
+  // gap between "you own this" and "you've researched this" is
+  // visually obvious.
+  held_unwatched: 310,
+  // External: pin outside the outside ring. Same radius used by chain
+  // multi-hop placeholders below, kept here so the main `include_external_edges`
+  // path also has a target radius.
+  external: 410,
 }
 
-// Base radius per tier — used as floor when n_facts == 0. Plan §5
-// says size should reflect `n_facts` (research depth). We add a
-// sqrt-scaled bump on top of the floor so each fact-loaded ticker
-// stands out at a glance, but the curve is shallow enough that a
-// ticker with 50 facts doesn't dwarf one with 10.
+// Base radius per tier — floor when nothing else applies.
 const TIER_NODE_BASE_RADIUS: Record<string, number> = {
-  core:     10,
-  adjacent: 6,
+  core:     8,
+  adjacent: 5,
   watching: 4,
   outside:  5,
   external: 3,    // discovery placeholder (hop-2+ non-watchlist)
+  held_unwatched: 7,
 }
+// Research-depth secondary bump per tier (multiplied by sqrt(n_facts)).
+// Kept smaller than the exposure bump so research depth never
+// out-shouts actual $ at stake.
 const TIER_NODE_FACT_BUMP: Record<string, number> = {
-  core:     3.0,   // sqrt(n_facts) * bump → 10 facts adds ~9.5 px
-  adjacent: 2.0,
-  watching: 1.0,
-  outside:  0,     // outside has no extracted facts in this graph
+  core:     1.5,
+  adjacent: 1.0,
+  watching: 0.5,
+  outside:  0,
   external: 0,
+  held_unwatched: 0,
 }
+
+// 2026-05-16: SIZE NOW REFLECTS $ EXPOSURE, not research depth.
+// Why: when you sit down to make a decision, the question is "where is
+// my money?" — not "what have I researched the most?". A 40%-weight
+// AAPL position should visually dwarf a deeply-researched but
+// 0-position TSM. n_facts still contributes as a small secondary
+// bump so tier nesting reads correctly even for unheld tickers.
+//
+// Formula:
+//   exposure_px = sqrt(held_cost / 100) capped at +20px
+//     (held_cost in dollars; sqrt softens so $1K → 3.2px and $40K → 20px)
+//   facts_px = sqrt(n_facts) × tier_bump (research-depth nudge)
+//   total = base[tier] + exposure_px + facts_px
 function nodeRadius(n: PortfolioGraphNode): number {
   const base = TIER_NODE_BASE_RADIUS[n.tier] ?? 6
-  const bump = TIER_NODE_FACT_BUMP[n.tier] ?? 0
-  return base + bump * Math.sqrt(Math.max(0, n.n_facts))
+  const factsBump = TIER_NODE_FACT_BUMP[n.tier] ?? 0
+  const factsPx = factsBump * Math.sqrt(Math.max(0, n.n_facts))
+  const cost = Math.max(0, n.held_cost ?? 0)
+  // sqrt softens: $100 → 1px, $10K → 10px, $40K → 20px (capped)
+  const exposurePx = Math.min(20, Math.sqrt(cost / 100))
+  return base + exposurePx + factsPx
 }
 
 const TIER_COLOR: Record<string, string> = {
@@ -130,6 +184,10 @@ const TIER_COLOR: Record<string, string> = {
   watching: '#71717a',  // zinc-500
   outside:  '#a78bfa',  // violet-400 — anti-anchoring candidates
   external: '#52525b',  // zinc-600 — discovery placeholder
+  // Red = "you own this but have done no research" — a real warning,
+  // not a research candidate. Distinct from outside (violet, anti-
+  // anchoring) which is research SUGGESTION.
+  held_unwatched: '#f87171',  // red-400
 }
 
 const EDGE_COLOR: Record<string, string> = {
@@ -156,7 +214,8 @@ function daysAgoIso(d: number | null): string | null {
 
 export function PortfolioOnionView({ height = 540 }: { height?: number }) {
   const [asOf, setAsOf] = useState<string | null>(null)
-  const q = usePortfolioView(asOf)
+  const [includeExternal, setIncludeExternal] = useState<boolean>(false)
+  const q = usePortfolioView(asOf, includeExternal)
   const latticeQ = useLatticeCalls('fin-core')
   const portfolioQ = usePortfolioSummary()
   const { openTicker } = useStockResearch()
@@ -236,7 +295,9 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
   // so each spoke reads as a coherent group.
   const graphData = useMemo(() => {
     if (!q.data) return { nodes: [], links: [] }
-    const byTier: Record<string, PortfolioGraphNode[]> = { core: [], adjacent: [], watching: [], outside: [] }
+    const byTier: Record<string, PortfolioGraphNode[]> = {
+      core: [], adjacent: [], watching: [], outside: [], held_unwatched: [], external: [],
+    }
     for (const n of q.data.nodes) {
       const t = n.tier in byTier ? n.tier : 'watching'
       byTier[t].push(n)
@@ -275,6 +336,18 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
     byTier.outside.forEach((n, i) => {
       const t = (2 * Math.PI * i) / Math.max(byTier.outside.length, 1)
       pin(n, TIER_RADIUS.outside, t)
+    })
+    // Held-unwatched ring — pin between watching and outside, red color.
+    byTier.held_unwatched.forEach((n, i) => {
+      const t = (2 * Math.PI * i) / Math.max(byTier.held_unwatched.length, 1)
+      pin(n, TIER_RADIUS.held_unwatched, t)
+    })
+    // External ring — only populated when include_external_edges=true.
+    // Evenly distributed outside the outside ring; no spoke parent
+    // because they're not in any watchlist tier.
+    byTier.external.forEach((n, i) => {
+      const t = (2 * Math.PI * i) / Math.max(byTier.external.length, 1)
+      pin(n, TIER_RADIUS.external, t)
     })
     const links = q.data.edges.map(e => ({
       source: e.source, target: e.target, kind: e.kind, label: e.label,
@@ -406,10 +479,23 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
     )
   }
 
+  // Chain panel pinned to right-0 width 380 (max 40%) when a node is
+  // selected — push the top-right toolbar left by that amount so the
+  // two don't collide on the same pixels. 8 px gap matches `right-2`.
+  // 380 is the panel's hard width from line below; 40% covers narrower
+  // viewports where it scales.
+  const CHAIN_PANEL_W = 380
+  const toolbarRightOffset = selected
+    ? `calc(min(${CHAIN_PANEL_W}px, 40%) + 8px)`
+    : '0.5rem' // = right-2
+
   return (
     <div ref={containerRef} className="relative" style={{ height }}>
       {/* Top-right controls (time-travel, edges toggle) */}
-      <div className="absolute top-2 right-2 z-30 flex items-center gap-2">
+      <div
+        className="absolute top-2 z-30 flex items-center gap-2"
+        style={{ right: toolbarRightOffset }}
+      >
         {/* Time-travel picker — per plan §5 Pillar 1 enhancement #2.
             Quick presets (today / 7d / 30d / 90d) + custom date input.
             Backend filters facts/signals/theses/disagreements/positions
@@ -453,6 +539,24 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
         >
           {showRelations ? <Eye size={11} /> : <EyeOff size={11} />}
           {showRelations ? 'edges shown' : 'edges hidden'}
+        </button>
+        {/* Include-external: show 10-K edges to entities OUTSIDE the
+            user's watchlist (Skyworks, Foxconn et al). Default off
+            because it expands the node count; on for discovery. */}
+        <button
+          onClick={() => setIncludeExternal(v => !v)}
+          className={`text-[10px] px-2 py-1 rounded border flex items-center gap-1 ${
+            includeExternal
+              ? 'border-violet-500/60 bg-violet-500/10 text-violet-300'
+              : 'border-[var(--color-border)] hover:border-[var(--color-text)] text-[var(--color-dim)]'
+          }`}
+          title={
+            includeExternal
+              ? '关：只显示 watchlist 内部边'
+              : '开：把 10-K 提到的外部公司也画出来 (discovery 用，可能很乱)'
+          }
+        >
+          {includeExternal ? '🌐 + external' : '🔒 internal only'}
         </button>
         {/* No separate deselect — panel's own ✕ in header dismisses selection */}
       </div>
@@ -659,12 +763,13 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           // Each rendered on its own line so the user sees diversification.
           const topSectors = (p?.by_sector ?? []).slice(0, 3)
 
-          // Outer faint disc background so the text reads against any
-          // edge clutter behind the center. Grows with how many lines
-          // of text we'll draw so multi-sector mix isn't cramped.
+          // ME center scales with zoom like every other node — sizes
+          // and positions live in SIM coords (no /scale division).
+          // Border stroke + tiny anchor dot keep their /scale so they
+          // stay crisp at high zoom; the disc + text scale with view.
           const nSectorLines = topSectors.length
           const baseR = 36
-          const meR = (baseR + Math.max(0, nSectorLines - 1) * 4) / scale
+          const meR = baseR + Math.max(0, nSectorLines - 1) * 4
           ctx.beginPath()
           ctx.arc(0, 0, meR, 0, 2 * Math.PI)
           ctx.fillStyle = 'rgba(15,23,42,0.65)'   // slate-900 / 65%
@@ -673,22 +778,23 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           ctx.lineWidth = 1 / scale
           ctx.stroke()
 
-          // Small ME anchor dot at exact origin
+          // Small ME anchor dot at exact origin (stays crisp at any zoom)
           ctx.beginPath()
           ctx.arc(0, 0, 2.5 / scale, 0, 2 * Math.PI)
           ctx.fillStyle = 'rgba(34,211,238,0.95)'
           ctx.fill()
 
-          // Stacked text below the anchor
+          // Stacked text — sim coords so the whole ME block scales with
+          // the disc when user ⌘/Ctrl+scrolls in.
           ctx.fillStyle = 'rgba(34,211,238,1)'
-          ctx.font = `bold ${9 / scale}px ui-monospace,monospace`
+          ctx.font = `bold 9px ui-monospace,monospace`
           ctx.textAlign = 'center'
           ctx.textBaseline = 'middle'
-          ctx.fillText('ME', 0, -18 / scale)
+          ctx.fillText('ME', 0, -18)
 
-          ctx.font = `${8 / scale}px ui-monospace,monospace`
+          ctx.font = `8px ui-monospace,monospace`
           ctx.fillStyle = 'rgba(245,245,245,0.95)'
-          ctx.fillText(totalValStr, 0, -8 / scale)
+          ctx.fillText(totalValStr, 0, -8)
 
           if (totalPnlStr) {
             ctx.fillStyle = p!.unrealized_pct >= 0 ? '#34d399' : '#f87171'
@@ -696,15 +802,15 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           }
           if (vsBenchStr) {
             ctx.fillStyle = 'rgba(148,163,184,0.9)'
-            ctx.font = `${7 / scale}px ui-monospace,monospace`
-            ctx.fillText(vsBenchStr, 0, 9 / scale)
+            ctx.font = `7px ui-monospace,monospace`
+            ctx.fillText(vsBenchStr, 0, 9)
           }
           // Top 3 sector mix lines
           ctx.fillStyle = 'rgba(148,163,184,0.9)'
-          ctx.font = `${7 / scale}px ui-monospace,monospace`
+          ctx.font = `7px ui-monospace,monospace`
           topSectors.forEach((s, i) => {
             const label = `${s.sector.slice(0, 12)}: ${s.pct.toFixed(0)}%`
-            ctx.fillText(label, 0, (18 + i * 8) / scale)
+            ctx.fillText(label, 0, 18 + i * 8)
           })
           ctx.restore()
         }}
@@ -721,6 +827,21 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
             ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, 2 * Math.PI)
             ctx.fillStyle = TIER_COLOR[n.tier] + '33'    // alpha 20%
             ctx.fill()
+          }
+          // Earnings catalyst glow — ticker reports within 5d. Drawn
+          // BEFORE the main fill so the ring sits behind the dot and
+          // doesn't clip the label. Cyan distinguishes from the
+          // fresh-signal pulse (which uses the tier color).
+          const ed = n.next_earnings_days
+          if (typeof ed === 'number' && ed >= 0 && ed <= 5 && !dim) {
+            const pulse = 5 + (5 - ed) * 0.8   // closer = thicker ring
+            ctx.beginPath()
+            ctx.arc(n.x ?? 0, n.y ?? 0, r + pulse, 0, 2 * Math.PI)
+            ctx.strokeStyle = '#22d3ee'       // cyan-400
+            ctx.lineWidth = 2 / scale
+            ctx.globalAlpha = 0.7
+            ctx.stroke()
+            ctx.globalAlpha = dim ? 0.18 : 1.0
           }
           // Main circle
           ctx.beginPath()
@@ -772,6 +893,18 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
             : n.id
           ctx.fillText(label, n.x ?? 0, (n.y ?? 0) + r + 1)
           ctx.globalAlpha = 1.0
+        }}
+        // Hit detection — must paint an invisible hit-zone matching
+        // the visible node radius (`r` from nodeRadius), otherwise
+        // react-force-graph defaults to nodeRelSize × √nodeVal = 1 px
+        // and clicks miss everything except the exact center pixel.
+        nodePointerAreaPaint={(node, color, ctx) => {
+          const n = node as PortfolioGraphNode & { x?: number; y?: number }
+          const r = nodeRadius(n) + 4   // small pad for easier clicking
+          ctx.fillStyle = color
+          ctx.beginPath()
+          ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI)
+          ctx.fill()
         }}
         // Link rendering — kind-specific color, hidden unless showRelations
         // or one of its endpoints is selected. Spoke always shown.
@@ -848,6 +981,7 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
             ticker={selected}
             onClose={() => { setSelected(null); setHopDepth(1) }}
             onOpenFullDetail={() => openTicker(selected)}
+            asOf={asOf}
           />
         </div>
       )}

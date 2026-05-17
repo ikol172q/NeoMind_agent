@@ -43,11 +43,16 @@ export function EarningsHistoryMini({ ticker }: { ticker: string }) {
 
   return (
     <div className="border border-[var(--color-border)]/50 rounded p-2 my-2">
-      <div className="flex items-center gap-2 mb-2 text-[10px]">
+      <div className="flex items-center gap-2 mb-2 text-[10px] flex-wrap">
         <TrendingUp size={11} className="text-[var(--color-dim)]" />
         <span className="font-semibold text-[var(--color-text)]">业绩 surprise 历史</span>
         <span className="text-[var(--color-dim)]">
           {beats}/{rows.length} beats · {misses} misses
+        </span>
+        {/* 2026-05-16: provenance stamp — every data panel must show
+            where it came from + when it was pulled. */}
+        <span className="ml-auto text-[8.5px] italic text-[var(--color-dim)]">
+          source: yfinance · earnings_calendar cron
         </span>
       </div>
 

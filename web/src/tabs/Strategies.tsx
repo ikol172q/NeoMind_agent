@@ -50,6 +50,9 @@ import { PortfolioWidget } from '@/components/widgets/PortfolioWidget'
 import { RiskDashboardWidget } from '@/components/widgets/RiskDashboardWidget'
 import { AlgorithmAppendix } from '@/components/widgets/AlgorithmAppendix'
 import { TodaysSignalsWidget } from '@/components/widgets/TodaysSignalsWidget'
+import { PriorityListWidget } from '@/components/widgets/PriorityListWidget'
+import { NewsFlowWidget } from '@/components/widgets/NewsFlowWidget'
+import { CatalystCalendarWidget } from '@/components/widgets/CatalystCalendarWidget'
 import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
 import { ChatPanel } from '@/components/chat/ChatPanel'
@@ -333,6 +336,28 @@ export function StrategiesTab({
             )
           }
         />
+      </div>
+
+      {/* 2026-05-16 (Need #4): catalyst calendar — 30d earnings + macro
+          for held tickers (toggle to anchors/all). Catalysts on YOUR
+          money first. */}
+      <div className="max-w-[1100px] mx-auto">
+        <CatalystCalendarWidget />
+      </div>
+
+      {/* 2026-05-16 (Sprint N): 消息流 widget — primary entry point
+          for the user's "anchor + news → walk along chain" workflow.
+          Mounted ABOVE priority because users start their day reading
+          news; priority is a derived summary. Anchor-filtered by
+          default (only watchlist + held positions). */}
+      <div className="max-w-[1100px] mx-auto">
+        <NewsFlowWidget />
+      </div>
+
+      {/* 2026-05-16: 今日 priority — single ranked top-N merged
+          across the 5 decision-relevant streams. */}
+      <div className="max-w-[1100px] mx-auto">
+        <PriorityListWidget />
       </div>
 
       {/* Phase 1B (2026-05-10): Portfolio summary — actual holdings,

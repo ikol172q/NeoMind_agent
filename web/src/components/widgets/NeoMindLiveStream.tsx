@@ -12,6 +12,7 @@ import {
   useRecentSignals, useUserWatchlist, useAuditRecent, useRecentRuns,
   type SignalEvent, type AuditEntry, type AnalysisRun,
 } from '@/lib/api'
+import { useStockResearch } from '@/components/research/StockResearchContext'
 
 
 const SEV_COLOR: Record<string, string> = {
@@ -197,6 +198,7 @@ export function NeoMindLiveStream() {
 
 function ScannerEventsList({ events }: { events: SignalEvent[] }) {
   const [expanded, setExpanded] = useState<Set<string>>(new Set())
+  const { openTicker } = useStockResearch()
   if (!events.length) {
     return (
       <div className="text-[var(--color-dim)] italic">
@@ -234,9 +236,19 @@ function ScannerEventsList({ events }: { events: SignalEvent[] }) {
                 {ev.scanner_name}
               </span>
               {tag && (
-                <span className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate">
-                  {tag}
-                </span>
+                ev.ticker ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openTicker(ev.ticker!) }}
+                    title={`walk to ${ev.ticker} chain (drawer)`}
+                    className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate underline decoration-dotted underline-offset-2 hover:text-[var(--color-text)] text-left"
+                  >
+                    {tag}
+                  </button>
+                ) : (
+                  <span className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate">
+                    {tag}
+                  </span>
+                )
               )}
               <span className={`flex-1 truncate ${sev}`} title={ev.title}>
                 {ev.title}
@@ -455,9 +467,13 @@ function summarizeRun(r: AnalysisRun): string {
   if (r.error_message) return `⚠ ${r.error_message.slice(0, 200)}`
   const s: any = r.summary ?? {}
   const parts: string[] = []
-  // signal_hourly job stashes per-scanner results in summary
+  // signal_hourly job stashes per-scanner results in summary.
+  // Keep this list in sync with signal_hourly.py's summary.update({...})
+  // — adding a scanner here is what makes its n_emitted show in the
+  // ops-view one-liner ("watchlist=3 news=1 insider=2 …").
   for (const k of ['watchlist_scan', 'news_scan', 'congressional_scan',
-                    'policy_scan', 'whale_scan']) {
+                    'policy_scan', 'whale_scan',
+                    'insider_form4_scan', 'house_clerk_pdf_scan']) {
     const sub = s[k]
     if (sub && typeof sub === 'object') {
       const n = sub.n_emitted ?? sub.n ?? null
@@ -485,6 +501,7 @@ type MergedRow =
 function MergedActivityList({
   events, entries, runs,
 }: { events: SignalEvent[]; entries: AuditEntry[]; runs: AnalysisRun[] }) {
+  const { openTicker } = useStockResearch()
   const merged: MergedRow[] = [
     ...events.map((ev): MergedRow => ({
       kind: 'scanner', ts: ev.detected_at, ev,
@@ -523,9 +540,19 @@ function MergedActivityList({
                 scan
               </span>
               {tag && (
-                <span className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate">
-                  {tag}
-                </span>
+                ev.ticker ? (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openTicker(ev.ticker!) }}
+                    title={`walk to ${ev.ticker} chain (drawer)`}
+                    className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate underline decoration-dotted underline-offset-2 hover:text-[var(--color-text)] text-left"
+                  >
+                    {tag}
+                  </button>
+                ) : (
+                  <span className="flex-shrink-0 text-[var(--color-accent)] font-semibold w-[55px] truncate">
+                    {tag}
+                  </span>
+                )
               )}
               <span className={`flex-1 truncate ${sev}`} title={ev.title}>
                 {ev.title}

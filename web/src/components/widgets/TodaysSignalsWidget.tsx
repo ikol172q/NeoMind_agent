@@ -11,7 +11,7 @@
  *   - drill-in to evidence chain (contributing events + sources)
  *   - dismiss button (hides for 24h)
  */
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   useTodaySignals, dismissSignal, triggerAllScans,
   type SignalConfluence,
@@ -46,6 +46,23 @@ export function TodaysSignalsWidget() {
   const [scanning, setScanning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [report, setReport] = useState<ScanReport | null>(null)
+  const [helpOpen, setHelpOpen] = useState(false)
+  const helpRef = useRef<HTMLDivElement | null>(null)
+  const helpBtnRef = useRef<HTMLButtonElement | null>(null)
+
+  // Outside-click closer: document mousedown, not a full-screen overlay,
+  // so the next button click is honored instead of eaten.
+  useEffect(() => {
+    if (!helpOpen) return
+    function onDown(e: MouseEvent) {
+      const t = e.target as Node
+      if (helpRef.current?.contains(t)) return
+      if (helpBtnRef.current?.contains(t)) return
+      setHelpOpen(false)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [helpOpen])
 
   const signals = q.data?.signals ?? []
 
@@ -115,10 +132,53 @@ export function TodaysSignalsWidget() {
         <button
           onClick={onScan}
           disabled={scanning}
+          title={
+            '↻ 拉取全部数据源 — 同步跑 watchlist + news + 13F whale + 国会 + ' +
+            'policy + insider Form 4 + House Clerk PDF 共 7 个 scanner。\n' +
+            '耗时约 30 秒（取决于 SEC EDGAR 速度）。\n\n' +
+            '⚠ 这跟顶栏 "🧠 rebuild lattice" 是两回事：\n' +
+            '  • 这里：scanner 数据拉取（DB 里加新 events）\n' +
+            '  • 顶栏：lattice 重算（LLM, influences strategy 推荐）'
+          }
           className="ml-auto text-[9.5px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60"
         >
-          {scanning ? '扫描中…' : '↻ 立即扫描'}
+          {scanning ? '扫描中…' : '↻ 拉取全部数据源'}
         </button>
+        <div className="relative">
+          <button
+            ref={helpBtnRef}
+            onClick={() => setHelpOpen(o => !o)}
+            className="text-[10px] w-4 h-4 rounded-full border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center justify-center"
+            title="这个按钮 refresh 什么？"
+          >?</button>
+          {helpOpen && (
+              <div ref={helpRef} className="absolute right-0 top-full mt-1 w-[340px] bg-[var(--color-panel)] border border-[var(--color-border)] rounded shadow-xl z-50 text-[10px] p-3 leading-[1.5]">
+                <div className="font-semibold text-[var(--color-text)] mb-1.5">↻ 拉取全部数据源</div>
+                <div className="text-[var(--color-dim)] mb-2">
+                  调用 <code>POST /api/regime/scan/all?include_13f=true</code> —
+                  同步跑 7 个 scanner，约 30 秒，不调 LLM。每个 scanner 把新 SEC filings / 新闻 / 国会披露写进
+                  <code> signal_events</code> DB；≥2 个 scanner 在 72h 内击中同一 ticker 就触发新 confluence。
+                </div>
+                <div className="font-semibold text-[var(--color-text)] mb-0.5">扫的是这 7 个</div>
+                <ul className="ml-4 list-disc text-[var(--color-dim)] space-y-0.5 mb-2">
+                  <li>watchlist (price/RSI/MA/vol)</li>
+                  <li>news (yfinance headlines)</li>
+                  <li>13F whale (Buffett 等 11 家)</li>
+                  <li>congressional STOCK Act (Quiver)</li>
+                  <li>insider Form 4 (openinsider)</li>
+                  <li>House Clerk PTR PDF (Pelosi)</li>
+                  <li>policy (RSS)</li>
+                </ul>
+                <div className="text-[var(--color-dim)] italic mb-1">
+                  跑完后扫描结果 banner 会显示每个 scanner 的 n_emitted。30s 内 SmartMoney / NeoMind Live 自动 refetch。
+                </div>
+                <div className="text-[var(--color-amber,#e5a200)]">
+                  ⚠ 想让 <b>strategy 推荐 / fit 评分</b> 重算 → 顶栏 "🧠 rebuild lattice"，不是这里。<br/>
+                  ⚠ 想只刷某一个 scanner → 顶栏 scanners 徽章 → 那行的 ↻。
+                </div>
+              </div>
+          )}
+        </div>
       </div>
 
       {report && (

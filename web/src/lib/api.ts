@@ -1883,7 +1883,12 @@ export async function triggerAllScans(): Promise<{
   scanners: Record<string, unknown>
   new_confluences: number
 }> {
-  const r = await fetch('/api/regime/scan/all', { method: 'POST' })
+  // include_13f=true is REQUIRED — backend default is False, so without
+  // this query string the 13F whale scanner (Buffett/Bridgewater/etc) is
+  // silently skipped on every "立即扫描" click. That's why BRK data
+  // stayed stale even though the button "ran". See
+  // agent/finance/regime/api.py:372-475.
+  const r = await fetch('/api/regime/scan/all?include_13f=true', { method: 'POST' })
   if (!r.ok) throw new Error(`scan/all ${r.status}`)
   return r.json()
 }
@@ -3130,7 +3135,8 @@ export function useWatchlistTiers() {
 export function useWatchlistPromote() {
   const qc = useQueryClient()
   return useMutation<
-    { ok: boolean; ticker: string; tier: string; parent_ticker: string | null },
+    { ok: boolean; ticker: string; tier: string; parent_ticker: string | null;
+      velocity_warning?: string | null },
     Error,
     { ticker: string; tier: WatchlistTier; parent_ticker?: string; note?: string; importance?: number }
   >({
@@ -3150,6 +3156,9 @@ export function useWatchlistPromote() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['watchlist-tiers'] })
       qc.invalidateQueries({ queryKey: ['watchlist-outside-ring'] })
+      // Onion graph depends on tier membership — without this the
+      // newly-promoted ticker doesn't render until refetchInterval fires.
+      qc.invalidateQueries({ queryKey: ['portfolio-view'] })
     },
   })
 }
@@ -3168,7 +3177,13 @@ export function useWatchlistRemoveTier() {
     mutationFn: (ticker) => fetchJSON(
       `/api/watchlist/tickers/${encodeURIComponent(ticker)}`,
       { method: 'DELETE' }),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['watchlist-tiers'] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['watchlist-tiers'] })
+      // Removed ticker (and any of its adjacent children's spoke edges)
+      // must disappear from the onion immediately, not after polling.
+      qc.invalidateQueries({ queryKey: ['portfolio-view'] })
+      qc.invalidateQueries({ queryKey: ['watchlist-outside-ring'] })
+    },
   })
 }
 
@@ -3280,16 +3295,27 @@ export function useDecisionPrefs() {
 
 export interface PortfolioGraphNode {
   id:               string
-  tier:             'core' | 'adjacent' | 'watching' | 'outside'
+  // 'held_unwatched' = user owns tax_lots for this ticker but it isn't
+  // in any watchlist tier → no research surface; surfaced explicitly so
+  // the gap is impossible to miss.
+  // 'external' = 10-K relation target NOT in user watchlist; only emitted
+  // when include_external_edges=true on the backend.
+  tier:             'core' | 'adjacent' | 'watching' | 'outside' | 'held_unwatched' | 'external'
   parent?:          string | null
+  // Position overlay — non-null only for tickers user actually owns.
+  held_qty?:        number | null
+  held_cost?:       number | null
+  // Label for external nodes (name from 10-K text when ticker is unresolved).
+  external_label?:  string | null
+  // Earnings catalyst overlay — days until next earnings if known.
+  // Frontend draws a glow ring when ≤5 days (urgent catalyst).
+  next_earnings_days?: number | null
   n_facts:          number
   stale_days?:      number | null
   is_stale:         boolean
   fresh_signal_24h: boolean
   n_active_theses:  number
   thesis_status?:   'active' | 'requires_review' | null
-  held_qty?:        number | null
-  held_cost?:       number | null
   n_unresolved_disagreements?: number
   is_conflicted?:   boolean
   importance?:      number   // 1=normal, 2=priority — border thickness
@@ -3362,6 +3388,12 @@ export interface DisagreementSource {
   scanner:     string
   signal_type: string
   position:    string
+  // Enriched with the underlying signal_event (2026-05-16):
+  event_id?:   string | null
+  source_url?: string | null
+  title?:      string | null
+  severity?:   string | null
+  ts?:         string | null
 }
 export interface DisagreementItem {
   disagreement_id: string
@@ -3378,12 +3410,34 @@ export function useTickerDisagreements(ticker: string | null) {
   })
 }
 
-export function usePortfolioView(asOf?: string | null) {
-  const qs = asOf ? `?as_of=${encodeURIComponent(asOf)}` : ''
+export function useResolveDisagreement() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, { disagreement_id: string; ticker: string; note?: string }>({
+    mutationFn: ({ disagreement_id, note }) => fetchJSON(
+      `/api/lattice/disagreements/${encodeURIComponent(disagreement_id)}/resolve${note ? `?note=${encodeURIComponent(note)}` : ''}`,
+      { method: 'POST' },
+    ),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['ticker-disagreements', vars.ticker] })
+      qc.invalidateQueries({ queryKey: ['portfolio-view'] })
+    },
+  })
+}
+
+export function usePortfolioView(asOf?: string | null, includeExternalEdges?: boolean) {
+  const params = new URLSearchParams()
+  if (asOf) params.set('as_of', asOf)
+  if (includeExternalEdges) params.set('include_external_edges', 'true')
+  const qs = params.toString() ? `?${params.toString()}` : ''
   return useQuery<PortfolioGraph>({
-    queryKey: ['portfolio-view', asOf ?? 'now'],
+    queryKey: ['portfolio-view', asOf ?? 'now', includeExternalEdges ? 'ext' : 'no-ext'],
     queryFn:  () => fetchJSON<PortfolioGraph>(`/api/lattice/portfolio_view${qs}`),
     staleTime: 60_000,
+    // Historical snapshots don't change — only poll the live view.
+    // 30s matches the cadence of useRecentSignals so the
+    // fresh_signal_24h pulse refreshes in roughly the same window
+    // scanner events land in the DB.
+    refetchInterval: asOf ? false : 30_000,
   })
 }
 
@@ -3401,6 +3455,192 @@ export function useTheses(ticker: string | null, status: 'active' | 'all' = 'act
     queryFn:  () => fetchJSON<ThesesListResp>(`/api/theses?${qs}`),
     staleTime: 30_000,
     enabled:  ticker !== null,   // don't fetch the all-theses list unless explicitly asked
+  })
+}
+
+// ── Priority list (2026-05-16) ─────────────────────────────────
+// "What should I look at first today?" — single ranked top-N merged
+// across confluence / thesis-review / outside-ring / near-earnings /
+// stale-core streams. Held tickers get 2× boost.
+
+export interface PriorityListReason {
+  stream: string  // 'confluence' | 'thesis_review' | 'outside' | 'earnings' | 'held_earnings' | 'stale_core' | 'closed_lot'
+  text:   string  // human-readable explanation
+  score:  number  // this stream's contribution to total — for transparency
+}
+
+export interface PriorityListItem {
+  ticker:    string
+  score:     number
+  streams:   string[]                // unique sorted set (for tally badges)
+  reasons:   PriorityListReason[]    // paired {stream,text} preserving insert order
+  held:      boolean
+  is_core:   boolean
+  held_cost: number | null
+}
+
+export interface PriorityListResp {
+  items:               PriorityListItem[]
+  n_total_candidates:  number
+  computed_at:         string
+  weights:             Record<string, number>
+}
+
+// ── Smart-money cross-cut per ticker (2026-05-16) ──────────────
+// Reuse useRecentSignals with scanner filter to surface smart-money
+// events specifically for one ticker. Avoids adding a new endpoint —
+// the data is already exposed via /api/regime/signals/recent.
+
+export function useTickerSignalsByScanner(
+  ticker: string | null,
+  scanner: '13f' | 'insider_form4' | 'stock_act' | 'house_clerk_pdf',
+  limit: number = 12,
+) {
+  return useQuery<{ n: number; events: SignalEvent[] }>({
+    queryKey: ['ticker-signals', ticker, scanner, limit],
+    queryFn:  () => fetchJSON(
+      `/api/regime/signals/recent?ticker=${encodeURIComponent(ticker ?? '')}&scanner=${scanner}&limit=${limit}`),
+    enabled:  !!ticker,
+    staleTime: 60_000,
+  })
+}
+
+
+// ── User decisions (2026-05-16) ────────────────────────────────
+// Record + replay investment decisions with basis for audit.
+
+export type DecisionKind = 'hold' | 'trim' | 'add' | 'sell' | 'watch_only' | 'pass'
+
+export interface UserDecision {
+  decision_id:     string
+  kind:            DecisionKind
+  basis_event_ids: string[]
+  basis_fact_ids:  number[]
+  note:            string
+  decided_at:      string
+}
+
+export function useDecisions(ticker: string | null) {
+  return useQuery<{ ticker: string; items: UserDecision[]; n: number }>({
+    queryKey: ['decisions', ticker],
+    queryFn:  () => fetchJSON(`/api/stock/${encodeURIComponent(ticker ?? '')}/decisions`),
+    enabled:  !!ticker,
+    staleTime: 30_000,
+  })
+}
+
+export interface DecisionOutcome {
+  decision_id: string
+  ticker:      string
+  decided_at:  string
+  decision_kind: string
+  decision_note: string
+  outcome: {
+    price_move: {
+      start_date: string; start_close: number;
+      end_date: string; end_close: number;
+      pct: number; days: number;
+    } | null
+    thesis_changes: Array<{ thesis_id: string; change: string; ts: string }>
+    subsequent: Array<{
+      scanner: string; type: string; severity: string;
+      title: string; source_url: string | null; ts: string;
+    }>
+    closes: Array<{ close_date: string; realized_pnl: number }>
+  }
+}
+
+export function useDecisionOutcome(ticker: string | null, decisionId: string | null) {
+  return useQuery<DecisionOutcome>({
+    queryKey: ['decision-outcome', ticker, decisionId],
+    queryFn:  () => fetchJSON(
+      `/api/stock/${encodeURIComponent(ticker ?? '')}/decisions/${encodeURIComponent(decisionId ?? '')}/outcome`),
+    enabled:  !!ticker && !!decisionId,
+    staleTime: 60_000,
+  })
+}
+
+
+export function useRecordDecision() {
+  const qc = useQueryClient()
+  return useMutation<
+    { ok: boolean; decision_id: string; decided_at: string },
+    Error,
+    { ticker: string; kind: DecisionKind; basis_event_ids?: string[]; basis_fact_ids?: number[]; note?: string }
+  >({
+    mutationFn: ({ ticker, ...body }) => fetchJSON(
+      `/api/stock/${encodeURIComponent(ticker)}/decisions`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      },
+    ),
+    onSuccess: (_data, vars) => {
+      qc.invalidateQueries({ queryKey: ['decisions', vars.ticker] })
+    },
+  })
+}
+
+
+// ── Delta-since-review (2026-05-16) ────────────────────────────
+// "What changed since I last looked at this ticker" — pulls signals,
+// thesis state, price move, new facts, closed lots since the anchor
+// timestamp (last_reviewed_at or 14d fallback). Powers the banner at
+// the top of StockResearchDrawer.
+
+export interface DeltaSinceReview {
+  ticker:         string
+  anchor_at:      string
+  anchor_source:  string   // 'last_reviewed_at' | 'fallback_*'
+  days_since:     number
+  signals: Array<{
+    scanner:  string
+    type:     string
+    severity: string
+    title:    string
+    ts:       string
+  }>
+  scanner_tally:  Record<string, number>
+  thesis_changes: Array<{
+    thesis_id: string
+    status:    string
+    change:    'created' | 'invalidated' | 'flagged_review'
+    ts:        string
+  }>
+  price_delta: {
+    start_date:  string
+    start_close: number
+    end_date:    string
+    end_close:   number
+    pct:         number
+  } | null
+  new_facts_by_type: Record<string, number>
+  closed_lots: Array<{
+    close_date:     string
+    realized_pnl:   number
+    close_quantity: number
+  }>
+  total_changes: number
+}
+
+export function useDeltaSinceReview(ticker: string | null) {
+  return useQuery<DeltaSinceReview>({
+    queryKey: ['delta-since-review', ticker],
+    queryFn:  () => fetchJSON<DeltaSinceReview>(
+      `/api/stock/${encodeURIComponent(ticker ?? '')}/delta_since_review`),
+    enabled:  !!ticker,
+    staleTime: 30_000,
+  })
+}
+
+export function usePriorityList(limit: number = 5) {
+  return useQuery<PriorityListResp>({
+    queryKey: ['priority-list', limit],
+    queryFn:  () => fetchJSON<PriorityListResp>(
+      `/api/dashboard/priority_list?limit=${limit}`),
+    staleTime: 60_000,
+    refetchInterval: 60_000,  // recompute every minute — composite of 5 sources
   })
 }
 
@@ -3690,6 +3930,9 @@ export function useDeleteLot() {
       qc.invalidateQueries({ queryKey: ['positions-lots'] })
       qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
       qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.ticker] })
+      // Onion node carries position weight (held_qty / held_cost). Close
+      // or delete must update the size+overlay immediately.
+      qc.invalidateQueries({ queryKey: ['portfolio-view'] })
     },
   })
 }
@@ -3714,6 +3957,9 @@ export function useCloseLot() {
       qc.invalidateQueries({ queryKey: ['positions-lots'] })
       qc.invalidateQueries({ queryKey: ['portfolio-summary'] })
       qc.invalidateQueries({ queryKey: ['position-by-ticker', vars.ticker] })
+      // Onion node carries position weight (held_qty / held_cost). Close
+      // or delete must update the size+overlay immediately.
+      qc.invalidateQueries({ queryKey: ['portfolio-view'] })
     },
   })
 }
