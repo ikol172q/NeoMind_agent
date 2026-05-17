@@ -23,8 +23,9 @@ JOB_NAME = "signal_hourly"
 DEFAULT_CRON = "5 * * * *"      # 5 minutes past every hour
 DESCRIPTION = (
     "Hourly: run watchlist (price/RSI/MA/volume) + news (yfinance "
-    "headlines) scanners across the watchlist + auto-expanded supply "
-    "chain.  Promotes ≥2-source confluences to signal_confluences "
+    "headlines) + congressional + policy + insider Form 4 (openinsider) "
+    "+ House Clerk PTR PDF scanners across the watchlist + auto-expanded "
+    "supply chain.  Promotes ≥2-source confluences to signal_confluences "
     "for the Today's Signals inbox."
 )
 
@@ -111,23 +112,66 @@ async def run() -> Dict[str, Any]:
             logger.exception("policy scanner failed")
             policy_result = {"error": str(exc)}
 
+        # Insider Form 4 (openinsider) — fastest signal in the Smart Money
+        # stack (SEC 2-day disclosure window). Cheap HTTP, no API key.
+        # Previously had no cron home — stale unless user clicked the UI
+        # button.
+        try:
+            from agent.finance.regime.scanners.insider_form4_scanner import (
+                run_insider_form4_scan,
+            )
+            insider_result = audited_call(
+                agent_id="scanner:insider_form4",
+                endpoint="scanner:insider_form4",
+                fn=run_insider_form4_scan,
+                extra_request={"job": JOB_NAME},
+                summarize_result=lambda r: f"insider form4 scan: {r.get('n_emitted', 0)} events",
+            )
+        except Exception as exc:
+            logger.exception("insider_form4 scanner failed")
+            insider_result = {"error": str(exc)}
+
+        # House Clerk PTR PDFs — covers Pelosi + other follow-anchored
+        # reps that Quiver Quant's free tier omits. Fast (~200ms when
+        # no new PDFs), idempotent. Same staleness issue as insider —
+        # no cron home before this.
+        try:
+            from agent.finance.regime.scanners.house_clerk_pdf_scanner import (
+                run_house_clerk_pdf_scan,
+            )
+            house_clerk_result = audited_call(
+                agent_id="scanner:house_clerk_pdf",
+                endpoint="scanner:house_clerk_pdf",
+                fn=run_house_clerk_pdf_scan,
+                extra_request={"job": JOB_NAME},
+                summarize_result=lambda r: f"house clerk PDF scan: {r.get('n_emitted', 0)} events",
+            )
+        except Exception as exc:
+            logger.exception("house_clerk_pdf scanner failed")
+            house_clerk_result = {"error": str(exc)}
+
         confluences = detect_confluences()
 
         summary.update({
-            "status":            "completed",
-            "watchlist_scan":    wl_result,
-            "news_scan":         news_result,
+            "status":             "completed",
+            "watchlist_scan":     wl_result,
+            "news_scan":          news_result,
             "congressional_scan": cong_result,
-            "policy_scan":       policy_result,
-            "new_confluences":   len(confluences),
-            "n_user_tickers":    len(wl),
+            "policy_scan":        policy_result,
+            "insider_form4_scan": insider_result,
+            "house_clerk_pdf_scan": house_clerk_result,
+            "new_confluences":    len(confluences),
+            "n_user_tickers":     len(wl),
         })
         logger.info(
-            "[signal_hourly] watchlist=%s news=%s stock_act=%s policy=%s confluences=%d",
+            "[signal_hourly] watchlist=%s news=%s stock_act=%s policy=%s "
+            "insider=%s house_clerk=%s confluences=%d",
             wl_result.get("n_emitted") if isinstance(wl_result, dict) else "err",
             news_result.get("n_emitted") if isinstance(news_result, dict) else "err",
             cong_result.get("n_emitted") if isinstance(cong_result, dict) else "err",
             policy_result.get("n_emitted") if isinstance(policy_result, dict) else "err",
+            insider_result.get("n_emitted") if isinstance(insider_result, dict) else "err",
+            house_clerk_result.get("n_emitted") if isinstance(house_clerk_result, dict) else "err",
             len(confluences),
         )
     except Exception as exc:

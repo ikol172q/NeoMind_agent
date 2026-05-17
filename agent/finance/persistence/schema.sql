@@ -707,6 +707,31 @@ CREATE INDEX IF NOT EXISTS idx_saf_ticker_type
 CREATE INDEX IF NOT EXISTS idx_saf_extracted
     ON stock_anchored_facts(extracted_at DESC);
 
+-- ─── User decisions (2026-05-16) ─────────────────────────────────────
+--
+-- Audit log of investment decisions the user makes on a ticker. Each
+-- row records a decision (hold / trim / add / sell / watch_only)
+-- with the basis (signal_event_ids / fact_ids the user pointed at)
+-- + a free-text note. Closes the review loop:
+--   "Why did I hold AAPL on 2026-05-10?" → query this table.
+--
+-- Distinct from watchlist_audit (which records tier promote/demote
+-- mechanics) and tax_lots (which records actual money flows) — this
+-- captures the user's INTENT at decision time.
+CREATE TABLE IF NOT EXISTS user_decisions (
+    decision_id      TEXT PRIMARY KEY,             -- uuid4
+    ticker           TEXT NOT NULL,
+    decision_kind    TEXT NOT NULL,                -- 'hold' / 'trim' / 'add' / 'sell' / 'watch_only' / 'pass'
+    basis_event_ids  TEXT,                         -- JSON array of signal_event_id strings
+    basis_fact_ids   TEXT,                         -- JSON array of stock_anchored_facts.id ints
+    note             TEXT,                         -- free-text rationale
+    decided_at       TEXT NOT NULL                 -- ISO timestamp
+);
+CREATE INDEX IF NOT EXISTS idx_ud_ticker
+    ON user_decisions(ticker, decided_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ud_decided
+    ON user_decisions(decided_at DESC);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

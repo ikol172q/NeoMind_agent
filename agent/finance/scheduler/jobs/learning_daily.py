@@ -10,6 +10,7 @@ scheduler API or by editing scheduler_jobs row.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -43,7 +44,12 @@ async def run() -> Dict[str, Any]:
         # Reasonable defaults: visit ~30 candidates, accept up to 8.
         # Cost ceiling per run: ~$0.01-0.05 depending on how many
         # candidates pass the gate.
-        result = fetch_fresh_cases(max_candidates=30, max_accept=8)
+        # NOTE: fetch_fresh_cases internally calls asyncio.run() (legacy
+        # sync entry point), which conflicts with the scheduler's own
+        # running event loop. Run it in a thread to isolate.
+        result = await asyncio.to_thread(
+            fetch_fresh_cases, max_candidates=30, max_accept=8,
+        )
         summary.update({
             "status":         "completed",
             "fetcher_result": result,

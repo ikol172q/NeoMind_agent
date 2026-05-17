@@ -71,6 +71,11 @@ DEFAULT_JOBS = [
     # Theme-level signal (no ticker), severity always 'high' since
     # macro releases move whole sectors. Runs 06:45 daily.
     "agent.finance.scheduler.jobs.macro_calendar",
+    # 2026-05-16: weekly auto-refresh of 10-K-anchored facts. Without
+    # this, stock_anchored_facts rots from the day a ticker files its
+    # next 10-K until a manual re-extract click. ~$1.50 per run for
+    # ~50-ticker watchlist; Sunday 04:00 UTC.
+    "agent.finance.scheduler.jobs.anchored_quarterly",
 ]
 
 
@@ -125,11 +130,21 @@ class JobRegistry:
             )
 
 
+_cached_registry: Optional["JobRegistry"] = None
+
+
 def build_default_registry() -> JobRegistry:
-    reg = JobRegistry()
-    for path in DEFAULT_JOBS:
-        reg.register_module(path)
-    return reg
+    # 2026-05-16: cache process-wide. Without this, every API call to
+    # /api/scheduler/* re-imports all 12 job modules and emits a
+    # "registered job" log line each — 12 lines × every request. Burned
+    # the dashboard log to 42MB and wasted CPU on hot paths.
+    global _cached_registry
+    if _cached_registry is None:
+        reg = JobRegistry()
+        for path in DEFAULT_JOBS:
+            reg.register_module(path)
+        _cached_registry = reg
+    return _cached_registry
 
 
 async def _invoke(runner: Callable[..., Awaitable[Any]], **kwargs: Any) -> Any:

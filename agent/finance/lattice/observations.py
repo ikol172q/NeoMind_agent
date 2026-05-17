@@ -694,7 +694,7 @@ def gen_fin_compliance_signals(proj: Dict[str, Any]) -> List[Observation]:
                 FROM wash_sale_events w
                 JOIN tax_lots s  ON s.lot_id  = w.sell_lot_id
                 JOIN tax_lots r2 ON r2.lot_id = w.replacement_lot_id
-                WHERE w.detected_at > datetime('now', '-90 days')
+                WHERE datetime(w.detected_at) > datetime('now', '-90 days')
                 ORDER BY w.detected_at DESC LIMIT 20
             """):
                 sym = r["symbol"]

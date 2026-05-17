@@ -184,11 +184,11 @@ def _outside_ring(limit: int = 20) -> List[Dict[str, Any]]:
                 "SELECT e.ticker, "
                 "       COUNT(*)                                          AS n_events, "
                 "       COUNT(DISTINCT e.scanner_name)                    AS n_sources, "
-                "       MAX(e.event_at)                                   AS latest_at, "
+                "       MAX(e.detected_at)                                   AS latest_at, "
                 "       SUM(CASE WHEN e.severity='high' THEN 1 ELSE 0 END) AS n_high "
                 "FROM signal_events e "
                 "WHERE e.ticker IS NOT NULL "
-                "  AND e.event_at >= ? "
+                "  AND e.detected_at >= ? "
                 "  AND e.severity IN ('high','med') "
                 "  AND e.ticker NOT IN (SELECT ticker FROM user_watchlist) "
                 "GROUP BY e.ticker "
@@ -255,8 +255,13 @@ def build_watchlist_tiers_router() -> APIRouter:
             # rather than 400, since the UI may pass a stale parent on
             # promote-to-core.
             parent = None
-        if body.tier in ("adjacent", "watching") and parent is None:
-            raise HTTPException(400, f"tier={body.tier} requires parent_ticker")
+        # Only `adjacent` has spoke semantics ("derived from a core's
+        # 10-K"). `watching` is alert-only — requiring a parent here
+        # over-constrains the data model and blocks legitimate flows
+        # like the outside-ring discovery promote (no parent context
+        # available there).
+        if body.tier == "adjacent" and parent is None:
+            raise HTTPException(400, "tier=adjacent requires parent_ticker (semantic spoke)")
         # Soft cap per tier — protects against runaway growth.
         ensure_schema()
         with connect() as conn:
@@ -312,9 +317,29 @@ def build_watchlist_tiers_router() -> APIRouter:
                  body.trigger_ref_id, now, body.note),
             )
 
+        # 2026-05-16 (Need #7 discipline): compute velocity warning —
+        # how many promotes to core have happened in the last 7 days?
+        # >5 = velocity warning surfaced to frontend; not blocking.
+        velocity_warning = None
+        if body.tier == "core":
+            with connect() as conn:
+                count = conn.execute(
+                    "SELECT COUNT(*) AS n FROM watchlist_audit "
+                    "WHERE action = 'promote' "
+                    "  AND to_tier = 'core' "
+                    "  AND datetime(ts) >= datetime('now', '-7 days')"
+                ).fetchone()["n"]
+            if count > 5:
+                velocity_warning = (
+                    f"⚠ velocity: {count} promotes to core in last 7d — "
+                    f"slow down? Discipline cap is 'few high-conviction', "
+                    f"not 'add what's loud this week'."
+                )
+
         return {
             "ok": True, "ticker": t, "tier": body.tier,
             "parent_ticker": parent, "from_tier": from_tier, "action": action,
+            "velocity_warning": velocity_warning,
         }
 
     @router.post("/touch/{ticker}")
@@ -345,6 +370,24 @@ def build_watchlist_tiers_router() -> APIRouter:
             row = cur.fetchone()
             from_tier = row["tier"] if row else None
 
+            # Cascade: any adjacent/watching with parent_ticker = this t
+            # is now an orphan. Null out the parent so the spoke edge
+            # disappears cleanly — keeps the adjacent in the watchlist
+            # (user research isn't lost) but flags it as parent-less.
+            # User can re-parent later via the drawer's expand flow,
+            # or drop the adjacent if it no longer makes sense.
+            orphan_rows = conn.execute(
+                "SELECT ticker FROM user_watchlist WHERE parent_ticker = ?",
+                (t,),
+            ).fetchall()
+            n_orphans = len(orphan_rows)
+            if n_orphans:
+                conn.execute(
+                    "UPDATE user_watchlist SET parent_ticker = NULL "
+                    "WHERE parent_ticker = ?",
+                    (t,),
+                )
+
             cur = conn.execute("DELETE FROM user_watchlist WHERE ticker = ?", (t,))
             n = cur.rowcount
             if n > 0:
@@ -353,12 +396,13 @@ def build_watchlist_tiers_router() -> APIRouter:
                     "INSERT INTO watchlist_audit "
                     "(audit_id, ticker, action, from_tier, to_tier, "
                     " trigger_kind, ts, note) "
-                    "VALUES (?, ?, 'drop', ?, NULL, 'manual', ?, NULL)",
-                    (str(_uuid.uuid4()), t, from_tier, _now()),
+                    "VALUES (?, ?, 'drop', ?, NULL, 'manual', ?, ?)",
+                    (str(_uuid.uuid4()), t, from_tier, _now(),
+                     f"orphaned {n_orphans} adjacent(s)" if n_orphans else None),
                 )
         if n == 0:
             raise HTTPException(404, f"{t} not in watchlist")
-        return {"ok": True, "ticker": t}
+        return {"ok": True, "ticker": t, "orphaned_adjacents": n_orphans}
 
     @router.get("/suggestions/{ticker}")
     def suggestions(ticker: str) -> Dict[str, Any]:

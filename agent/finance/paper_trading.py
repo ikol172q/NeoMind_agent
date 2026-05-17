@@ -562,7 +562,7 @@ class PaperTradingEngine:
 
             # Restore positions
             for pos_data in state.get('positions', []):
-                self.account.positions[pos_data['symbol']] = Position(
+                pos = Position(
                     symbol=pos_data['symbol'],
                     quantity=pos_data['quantity'],
                     entry_price=pos_data['entry_price'],
@@ -570,6 +570,12 @@ class PaperTradingEngine:
                     side=OrderSide(pos_data['side']),
                     opened_at=datetime.fromisoformat(pos_data['opened_at']),
                 )
+                # 2026-05-16: derive unrealized_pnl from price diff.
+                # save() doesn't persist unrealized_pnl, so without this
+                # the Paper tab shows $0.00 PnL on every restore until
+                # the next external update_price() call.
+                pos.update_price(pos_data['current_price'])
+                self.account.positions[pos_data['symbol']] = pos
 
             # Restore trades
             for t_data in state.get('trades', []):

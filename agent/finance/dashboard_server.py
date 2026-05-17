@@ -1289,6 +1289,31 @@ def create_app(
     """
     app = FastAPI(title="neomind-fin-dashboard", version=version)
 
+    # 2026-05-16: orphan analysis_runs sweep. Any 'running' row whose
+    # started_at is > 2h old is presumed dead (process died mid-run,
+    # never wrote completion). Marking them cancelled keeps the
+    # last_run_status field on scheduler_jobs honest — without this,
+    # the UI's scanner_health badge persistently shows phantom-failed
+    # jobs that aren't actually broken.
+    try:
+        from agent.finance.persistence import connect as _sweep_connect
+        with _sweep_connect() as _sweep_conn:
+            _sweep_cur = _sweep_conn.execute(
+                "UPDATE analysis_runs SET "
+                "  status = 'cancelled', "
+                "  completed_at = datetime('now'), "
+                "  error_message = 'startup orphan sweep — process died mid-run' "
+                "WHERE status = 'running' "
+                "  AND datetime(started_at) < datetime('now', '-2 hours')"
+            )
+            if _sweep_cur.rowcount > 0:
+                logger.info(
+                    "startup: swept %d orphan 'running' analysis_runs rows",
+                    _sweep_cur.rowcount,
+                )
+    except Exception as _exc:
+        logger.warning("startup orphan sweep failed: %s", _exc)
+
     # ── Phase 1 (2026-04-25): mount fin SQLite + scheduler + integrity ──
     # /api/db/...         → read-only views of the new SQLite store
     # /api/scheduler/...  → list jobs + force-rerun
@@ -1995,6 +2020,35 @@ def create_app(
         app.include_router(build_portfolio_view_router())
     except Exception as exc:  # pragma: no cover
         logger.warning("portfolio_view router unavailable: %s", exc)
+
+    # 2026-05-16: today's priority list — merged top-N across 5
+    # decision-relevant streams (confluences, thesis review, outside
+    # ring, near earnings, stale core). Answers "what should I look
+    # at first?" in one ranked widget.
+    try:
+        from agent.finance.priority_list import build_priority_list_router
+        app.include_router(build_priority_list_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("priority_list router unavailable: %s", exc)
+
+    # 2026-05-16: drawer delta-since-review — "what changed since you
+    # last looked at this ticker". Compresses signals + thesis state +
+    # price move + closed lots into one banner so the user doesn't
+    # re-scan the whole drawer.
+    try:
+        from agent.finance.delta_since_review import build_delta_since_review_router
+        app.include_router(build_delta_since_review_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("delta_since_review router unavailable: %s", exc)
+
+    # 2026-05-16: user_decisions — record + replay investment decisions
+    # with basis (signal_event_ids / fact_ids) for "why did I hold
+    # AAPL on 5/10" audit. Closes the review-wizard loop.
+    try:
+        from agent.finance.decisions import build_decisions_router
+        app.include_router(build_decisions_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("decisions router unavailable: %s", exc)
 
     try:
         from agent.finance.sectors import build_sectors_router

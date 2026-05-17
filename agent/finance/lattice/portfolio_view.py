@@ -42,8 +42,16 @@ def build_portfolio_view_router() -> APIRouter:
     @router.get("/portfolio_view")
     def portfolio_view(
         as_of: Optional[str] = Query(None, description="ISO date YYYY-MM-DD; filters derived data to <= as_of"),
+        include_external_edges: bool = Query(
+            False,
+            description=(
+                "Include 10-K relation edges (competitor/customer/supplier) "
+                "whose target is OUTSIDE the user's watchlist. Off by default "
+                "to avoid cluttering the main onion; toggle on for discovery."
+            ),
+        ),
     ) -> Dict[str, Any]:
-        return _build_graph(as_of=as_of)
+        return _build_graph(as_of=as_of, include_external_edges=include_external_edges)
 
     @router.get("/chain/{ticker}")
     def chain_for_ticker(ticker: str, hop: int = 2) -> Dict[str, Any]:
@@ -149,8 +157,12 @@ def build_portfolio_view_router() -> APIRouter:
     @router.get("/disagreements/{ticker}")
     def disagreements_for_ticker(ticker: str) -> Dict[str, Any]:
         """Per-ticker unresolved signal disagreements for the chain panel.
-        Sources_json is parsed and exposed so the panel can show which
-        scanners disagreed."""
+        Sources_json is parsed AND each source is enriched with the
+        actual signal_event that triggered it (matched by ticker +
+        scanner_name + signal_type within ±24h of detected_at).
+        Honors the "有根有据" principle: every scanner claim in the
+        disagreement is one click away from its source URL.
+        """
         ensure_schema()
         with connect() as conn:
             rows = conn.execute(
@@ -160,19 +172,73 @@ def build_portfolio_view_router() -> APIRouter:
                 "ORDER BY detected_at DESC",
                 (ticker.upper(),),
             ).fetchall()
-        items: List[Dict[str, Any]] = []
-        for r in rows:
-            try:
-                sources = json.loads(r["sources_json"] or "[]")
-            except json.JSONDecodeError:
-                sources = []
-            items.append({
-                "disagreement_id": r["disagreement_id"],
-                "headline":        r["headline"],
-                "sources":         sources,
-                "detected_at":     r["detected_at"],
-            })
+            items: List[Dict[str, Any]] = []
+            for r in rows:
+                try:
+                    sources = json.loads(r["sources_json"] or "[]")
+                except json.JSONDecodeError:
+                    sources = []
+                detected_at = r["detected_at"]
+                # Enrich each source: match the underlying signal_event
+                # by (ticker, scanner, signal_type) closest to detected_at.
+                # ±24h window because confluence detector usually groups
+                # within a day.
+                try:
+                    dt = datetime.fromisoformat(detected_at.replace("Z", "+00:00"))
+                    if dt.tzinfo is None:
+                        dt = dt.replace(tzinfo=timezone.utc)
+                    win_lo = (dt - timedelta(hours=24)).isoformat()
+                    win_hi = (dt + timedelta(hours=24)).isoformat()
+                except Exception:
+                    win_lo = None
+                    win_hi = None
+                enriched_sources = []
+                for s in sources:
+                    scanner = (s or {}).get("scanner")
+                    signal_type = (s or {}).get("signal_type")
+                    enrich = {**(s if isinstance(s, dict) else {}),
+                              "event_id": None, "source_url": None,
+                              "title": None, "severity": None, "ts": None}
+                    if scanner and signal_type and win_lo and win_hi:
+                        ev = conn.execute(
+                            "SELECT event_id, source_url, title, severity, detected_at "
+                            "FROM signal_events "
+                            "WHERE ticker = ? AND scanner_name = ? "
+                            "  AND signal_type = ? "
+                            "  AND detected_at BETWEEN ? AND ? "
+                            "ORDER BY detected_at DESC LIMIT 1",
+                            (ticker.upper(), scanner, signal_type, win_lo, win_hi),
+                        ).fetchone()
+                        if ev:
+                            enrich["event_id"]   = ev["event_id"]
+                            enrich["source_url"] = ev["source_url"]
+                            enrich["title"]      = ev["title"]
+                            enrich["severity"]   = ev["severity"]
+                            enrich["ts"]         = ev["detected_at"]
+                    enriched_sources.append(enrich)
+                items.append({
+                    "disagreement_id": r["disagreement_id"],
+                    "headline":        r["headline"],
+                    "sources":         enriched_sources,
+                    "detected_at":     detected_at,
+                })
         return {"ticker": ticker.upper(), "items": items, "n": len(items)}
+
+    @router.post("/disagreements/{disagreement_id}/resolve")
+    def resolve_disagreement(disagreement_id: str, note: str = "") -> Dict[str, Any]:
+        """Mark a disagreement resolved with optional note."""
+        ensure_schema()
+        with connect() as conn:
+            cur = conn.execute(
+                "UPDATE signal_disagreements "
+                "SET resolved_at = ?, resolution_note = ? "
+                "WHERE disagreement_id = ? AND resolved_at IS NULL",
+                (datetime.now(timezone.utc).isoformat(), note or None, disagreement_id),
+            )
+            if cur.rowcount == 0:
+                from fastapi import HTTPException
+                raise HTTPException(404, f"disagreement {disagreement_id} not found or already resolved")
+        return {"ok": True, "disagreement_id": disagreement_id}
 
     return router
 
@@ -192,7 +258,7 @@ def _parse_as_of(as_of: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _build_graph(as_of: Optional[str] = None) -> Dict[str, Any]:
+def _build_graph(as_of: Optional[str] = None, include_external_edges: bool = False) -> Dict[str, Any]:
     """Compose nodes + edges from watchlist + facts + signals + positions.
 
     `as_of` (ISO date or datetime) filters derived per-node data to what
@@ -295,7 +361,19 @@ def _build_graph(as_of: Optional[str] = None) -> Dict[str, Any]:
             f"         WHERE t.ticker = w.ticker "
             f"           AND t.status IN ('active','requires_review') "
             f"           {thesis_active_filter}) AS n_active_theses, "
-            f"       (SELECT MIN(t.status) FROM investment_theses t "
+            # thesis_status: priority-aware. requires_review wins over
+            # active when both exist on the same ticker — otherwise the
+            # MIN() alphabetical sort would silently hide the
+            # review-needed warning ('active' < 'requires_review'
+            # lexicographically). We collapse the two into a CASE so the
+            # rollup preserves the priority order.
+            f"       (SELECT CASE "
+            f"                 WHEN MAX(CASE WHEN t.status='requires_review' THEN 1 ELSE 0 END) = 1 "
+            f"                   THEN 'requires_review' "
+            f"                 WHEN MAX(CASE WHEN t.status='active' THEN 1 ELSE 0 END) = 1 "
+            f"                   THEN 'active' "
+            f"                 ELSE NULL END "
+            f"        FROM investment_theses t "
             f"         WHERE t.ticker = w.ticker "
             f"           AND t.status IN ('active','requires_review') "
             f"           {thesis_active_filter}) AS thesis_status, "
@@ -345,14 +423,102 @@ def _build_graph(as_of: Optional[str] = None) -> Dict[str, Any]:
                 "is_conflicted":    (r["n_unresolved_disagreements"] or 0) > 0,
                 "importance":       r["importance"] or 1,
             })
-            # Spoke edge: Adjacent/Watching → parent (always shown)
-            if r["parent_ticker"] and r["parent_ticker"] != ticker:
+            # Spoke edge: Adjacent/Watching → parent (always shown).
+            # Skip emitting the edge when the parent has been dropped
+            # from user_watchlist — otherwise ForceGraph2D rejects the
+            # link with `Error: node not found: <parent>` because no
+            # node was emitted for the orphaned parent. The adjacent
+            # row keeps its parent_ticker reference in the DB (so the
+            # link can be restored if the parent is re-promoted), but
+            # the graph payload only emits resolvable edges.
+            parent = r["parent_ticker"]
+            if parent and parent != ticker:
+                # We can't check watchlist_tickers yet because we're
+                # mid-iteration over the same query. Defer this edge
+                # until after the loop completes and we know which
+                # tickers actually made it into nodes.
                 edges.append({
-                    "source": ticker,
-                    "target": r["parent_ticker"],
-                    "kind":   "spoke",
-                    "label":  f"adjacent of {r['parent_ticker']}",
+                    "source":   ticker,
+                    "target":   parent,
+                    "kind":     "spoke",
+                    "label":    f"adjacent of {parent}",
+                    "_pending": True,  # filtered below
                 })
+
+        # Next-earnings overlay: per ticker, the smallest days_until from
+        # any recent earnings_upcoming signal_event. Lets the frontend draw
+        # a glow ring on nodes whose ticker reports within 5d — high-
+        # priority catalyst the user must visually catch when scanning.
+        try:
+            earnings_rows = conn.execute(
+                "SELECT ticker, "
+                "       MIN(CAST(json_extract(body_json,'$.days_until') AS INTEGER)) AS days "
+                "FROM signal_events "
+                "WHERE signal_type = 'earnings_upcoming' "
+                "  AND datetime(detected_at) >= datetime('now', '-14 days') "
+                "  AND ticker IS NOT NULL "
+                "GROUP BY ticker"
+            ).fetchall()
+            earnings_by_ticker = {
+                r["ticker"]: r["days"] for r in earnings_rows
+                if r["days"] is not None and r["days"] >= 0
+            }
+            for n in nodes:
+                d = earnings_by_ticker.get(n["id"])
+                if d is not None:
+                    n["next_earnings_days"] = d
+        except Exception as exc:
+            logger.debug("earnings overlay failed: %s", exc)
+
+        # Held-but-unwatched: positions in tax_lots whose ticker is NOT in
+        # any watchlist tier. Without this, the user has real $ on a
+        # ticker that has zero research surface (no facts, no thesis,
+        # no signal pulse). Surface it as its own ring so the gap is
+        # impossible to miss — the user can either promote it to a tier
+        # or close the lot.
+        try:
+            if cutoff_iso:
+                held_unwatched_rows = conn.execute(
+                    "SELECT DISTINCT symbol, SUM(open_quantity) AS qty, "
+                    "       SUM(open_price * open_quantity + open_fees) AS cost "
+                    "FROM tax_lots "
+                    "WHERE open_date <= ? "
+                    "  AND (close_date IS NULL OR close_date > ?) "
+                    "  AND symbol NOT IN (SELECT ticker FROM user_watchlist) "
+                    "GROUP BY symbol",
+                    (cutoff_iso, cutoff_iso),
+                ).fetchall()
+            else:
+                held_unwatched_rows = conn.execute(
+                    "SELECT DISTINCT symbol, SUM(open_quantity) AS qty, "
+                    "       SUM(open_price * open_quantity + open_fees) AS cost "
+                    "FROM tax_lots "
+                    "WHERE close_date IS NULL "
+                    "  AND symbol NOT IN (SELECT ticker FROM user_watchlist) "
+                    "GROUP BY symbol"
+                ).fetchall()
+            for r in held_unwatched_rows:
+                tk = r["symbol"]
+                if not tk:
+                    continue
+                nodes.append({
+                    "id":               tk,
+                    "tier":             "held_unwatched",
+                    "parent":           None,
+                    "n_facts":          0,
+                    "stale_days":       None,
+                    "is_stale":         False,
+                    "fresh_signal_24h": False,
+                    "n_active_theses":  0,
+                    "thesis_status":    None,
+                    "n_unresolved_disagreements": 0,
+                    "is_conflicted":    False,
+                    "importance":       1,
+                    "held_qty":         r["qty"],
+                    "held_cost":        r["cost"],
+                })
+        except Exception as exc:
+            logger.debug("held-unwatched scan failed: %s", exc)
 
         # Position weight overlay — for any watchlist ticker that user owns.
         # When time-traveling, include lots opened on/before as_of and not
@@ -469,11 +635,35 @@ def _build_graph(as_of: Optional[str] = None) -> Dict[str, Any]:
             related = (payload.get("ticker") or "").strip().upper()
             related_name = payload.get("name", "")
             if not related:
+                # Name-only entity (no ticker resolved). Skip even with
+                # include_external_edges because the chain endpoint
+                # handles name-only discovery via BFS.
                 continue
-            # Only edges to OTHER watchlist tickers (otherwise endpoints
-            # don't render — would clutter)
             if related not in watchlist_tickers:
-                continue
+                if not include_external_edges:
+                    continue
+                # Emit a node for the external target so ForceGraph2D
+                # has somewhere to anchor the edge. Tier='external'
+                # places it in the outer ring.
+                # Avoid duplicate nodes when multiple edges point to the
+                # same external ticker.
+                already_node = any(n["id"] == related for n in nodes)
+                if not already_node:
+                    nodes.append({
+                        "id":               related,
+                        "tier":             "external",
+                        "parent":           None,
+                        "n_facts":          0,
+                        "stale_days":       None,
+                        "is_stale":         False,
+                        "fresh_signal_24h": False,
+                        "n_active_theses":  0,
+                        "thesis_status":    None,
+                        "n_unresolved_disagreements": 0,
+                        "is_conflicted":    False,
+                        "importance":       1,
+                        "external_label":   related_name,
+                    })
             edges.append({
                 "source": owner,
                 "target": related,
@@ -481,13 +671,28 @@ def _build_graph(as_of: Optional[str] = None) -> Dict[str, Any]:
                 "label":  f"{owner} → {related} ({r['fact_type']}: {related_name})",
             })
 
+    # Resolve pending spoke edges: only keep those where the parent is
+    # actually in our nodes set (i.e. still in user_watchlist). Drop
+    # the marker key from the emitted payload.
+    node_ids = {n["id"] for n in nodes}
+    resolved_edges: List[Dict[str, Any]] = []
+    n_orphan_spokes = 0
+    for e in edges:
+        if e.get("_pending") and e["target"] not in node_ids:
+            n_orphan_spokes += 1
+            continue
+        if "_pending" in e:
+            del e["_pending"]
+        resolved_edges.append(e)
+
     return {
         "nodes":        nodes,
-        "edges":        edges,
+        "edges":        resolved_edges,
         "n_nodes":      len(nodes),
-        "n_edges":      len(edges),
-        "n_spoke":      sum(1 for e in edges if e["kind"] == "spoke"),
-        "n_relations":  sum(1 for e in edges if e["kind"] != "spoke"),
+        "n_edges":      len(resolved_edges),
+        "n_spoke":      sum(1 for e in resolved_edges if e["kind"] == "spoke"),
+        "n_relations":  sum(1 for e in resolved_edges if e["kind"] != "spoke"),
+        "n_orphan_spokes": n_orphan_spokes,
         "fetched_at":   now.isoformat(),
         "as_of":        cutoff_dt.isoformat() if cutoff_dt else None,
         "is_historical": is_historical,
