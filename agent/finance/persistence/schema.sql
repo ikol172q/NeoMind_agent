@@ -756,6 +756,32 @@ CREATE INDEX IF NOT EXISTS idx_ach_chat
 CREATE INDEX IF NOT EXISTS idx_ach_day
     ON agent_chat_history(date(created_at), chat_id);
 
+-- ─── Strategy signal snapshots (2026-05-17) ────────────────────────
+-- Daily snapshot of compile_strategy_signal output for every
+-- watchlist ticker. After 3-6 months this table has the historical
+-- score sequence needed for proper backtesting (the live
+-- signal_events tail only goes back ~17 days at v1 launch).
+-- Cron: 22:00 UTC daily (after US market close + after all scanners
+-- have had their daily tick).
+CREATE TABLE IF NOT EXISTS signal_snapshots (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticker          TEXT NOT NULL,
+    snapshot_date   TEXT NOT NULL,           -- YYYY-MM-DD
+    combined        REAL,                    -- combined score [-1, 1]
+    fundamental     REAL,
+    smart_money     REAL,
+    technical       REAL,
+    news_sentiment  REAL,
+    anchor_relevance REAL,
+    earnings_days   INTEGER,
+    data_complete   INTEGER NOT NULL,        -- 0/1
+    detail_json     TEXT,
+    created_at      TEXT NOT NULL,
+    UNIQUE (ticker, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_snap_ticker_date
+    ON signal_snapshots(ticker, snapshot_date);
+
 -- ─── Plaid items (2026-05-16) ───────────────────────────────────────
 -- One row per linked brokerage. access_token is sensitive — store
 -- encrypted at rest (Fernet, key in ~/.neomind/fin/secrets/plaid.key

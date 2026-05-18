@@ -2009,6 +2009,17 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("plaid router unavailable: %s", exc)
 
+    # 2026-05-17: Strategy signals compiler — bridge from NeoMind slow
+    # loop (you + Claude + scanners) into deterministic execution
+    # frameworks (QuantConnect / Lumibot / Nautilus). Compiles thesis +
+    # smart money + technical + news + anchor relevance into a single
+    # combined score with rule-style trade gates.
+    try:
+        from agent.finance.strategy_signals import build_strategy_signals_router
+        app.include_router(build_strategy_signals_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("strategy_signals router unavailable: %s", exc)
+
     # Phase 4 (2026-05-10): user preferences (max_position_pct,
     # max_sector_pct, benchmark_ticker, review windows). Per plan
     # §5 Pillar 5 — these are thresholds the chain panel surfaces

@@ -81,6 +81,11 @@ DEFAULT_JOBS = [
     # otherwise pulls positions from each connected brokerage and
     # reconciles into tax_lots under account_id='plaid:<item_id>'.
     "agent.finance.scheduler.jobs.holdings_sync_daily",
+    # 2026-05-17: daily snapshot of compile_strategy_signal output for
+    # every watchlist ticker. After 3-6 months of daily ticks the
+    # signal_snapshots table holds the historical (date, combined_score)
+    # sequence needed for proper edge-validation backtests in vectorbt.
+    "agent.finance.scheduler.jobs.signal_snapshot_daily",
 ]
 
 
