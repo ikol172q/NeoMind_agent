@@ -45,7 +45,9 @@ logger = logging.getLogger(__name__)
 # ── whale registry ────────────────────────────────────────────────
 
 
-# 2026-05-19: each whale annotated with:
+# 2026-05-19: each whale annotated with rich metadata for the
+# "investment philosophy library" the user is building:
+#
 #   horizon       — typical holding period of their 13F positions
 #                   'long'  : multi-year (Buffett/Klarman/Marks)
 #                   'medium': months to ~year (most macro/event funds)
@@ -56,62 +58,369 @@ logger = logging.getLogger(__name__)
 #                   smart_money_score. Concentrated long-term whales
 #                   get 1.5×; market-making quant funds get 0.3× because
 #                   90%+ of their 15k+ holdings is statistical noise.
-#   derivative_exposure_note — known exposure outside 13F-HR (swaps,
-#                   options, shorts). If non-None, frontends should
-#                   show a "13F may understate" caveat on this whale.
+#   bias          — directional/thematic lean: 'tech_bull' | 'tech_bear' |
+#                   'value' | 'macro' | 'activist' | 'systematic' |
+#                   'thematic_ai' | 'thematic_infra' | 'sovereign_diversified'
+#                   Used for: "show me whales who hedge my tech-heavy
+#                   portfolio" filtering.
+#   philosophy    — 2-4 sentences capturing their "why". This is THE
+#                   field for building user's own thesis library.
+#   famous_for    — short string of notable trades/wins/quotes
+#   letters_url   — primary source for ongoing reading (annual letters,
+#                   memos, podcast appearances). Set to None if private.
+#   derivative_exposure_note — known exposure outside 13F (swaps,
+#                   options, shorts). Frontends show "13F may
+#                   understate" caveat when set.
 WHALES = [
+    # ─── 🐢 LONG-TERM VALUE ─────────────────────────────────────────
     {"cik": "0001067983", "short": "Buffett (Berkshire)",      "key": "buffett",
-     "horizon": "long",   "style": "value",            "signal_weight": 1.5},
-    {"cik": "0001061165", "short": "Klarman (Baupost)",        "key": "klarman",
-     "horizon": "long",   "style": "value",            "signal_weight": 1.5},
+     "horizon": "long",   "style": "value",            "signal_weight": 1.5,
+     "bias": "value",
+     "philosophy":
+         "Margin-of-safety value investing. Buy wonderful businesses at "
+         "fair prices, hold indefinitely. Concentrated (~90 names, top 10 "
+         "= ~80% AUM). Famous quote: 'Our favorite holding period is "
+         "forever.' Avoids tech he doesn't understand — but bought AAPL "
+         "in 2016 and made it largest position.",
+     "famous_for": "AAPL ~$120B, Coca-Cola 1988, GEICO 1996, BNSF 2009",
+     "letters_url": "https://www.berkshirehathaway.com/letters/letters.html"},
+    # 2026-05-19 FIX: prior CIK 0001061165 was actually Lone Pine Capital
+    # (verified via SEC EDGAR full-text search). Real Baupost CIK is
+    # 0001061768 (BAUPOST GROUP LLC/MA). Re-attributing historical
+    # "klarman" events to lone_pine via post-fix backfill.
+    {"cik": "0001061768", "short": "Klarman (Baupost)",        "key": "klarman",
+     "horizon": "long",   "style": "value",            "signal_weight": 1.5,
+     "bias": "value",
+     "philosophy":
+         "Deep value + distressed + happy to hold cash (sometimes 30%+). "
+         "Reads thousands of pages of obscure filings; rare appearances. "
+         "Wrote 'Margin of Safety' (1991, OOP, $2k+ used). Famously bearish "
+         "on growth-stock bubbles but disciplined enough to wait years.",
+     "famous_for": "1990s S&L crisis, 2008-09 distressed credit, Tribune Co",
+     "letters_url": None},
     {"cik": "0000949509", "short": "Marks (Oaktree)",          "key": "marks",
-     "horizon": "long",   "style": "value_distressed", "signal_weight": 1.5},
+     "horizon": "long",   "style": "value_distressed", "signal_weight": 1.5,
+     "bias": "value",
+     "philosophy":
+         "Cycle-aware contrarian. 'You can't predict, you can prepare.' "
+         "Distressed credit specialist but his memos cover all asset "
+         "classes. Always asks: where are we in the cycle, and does my "
+         "positioning reflect that?",
+     "famous_for": "2008 distressed credit, every memo since 1990",
+     "letters_url": "https://www.oaktreecapital.com/insights/howard-marks-memos"},
+    {"cik": "0001352662", "short": "Grantham (GMO)",           "key": "grantham",
+     "horizon": "long",   "style": "bubble_aware_value", "signal_weight": 1.0,
+     "bias": "tech_bear",
+     "philosophy":
+         "Mean reversion is gravity for markets. Calls bubbles loudly "
+         "(2000 dotcom, 2007 housing, 2022 'super bubble'). 2024-2025: "
+         "vocal AI-bubble caller. Positions GMO portfolios defensively "
+         "with high-quality value + emerging markets when US growth gets "
+         "expensive.",
+     "famous_for": "Calling 2000/2008/2021 bubbles; quarterly letters",
+     "letters_url": "https://www.gmo.com/americas/research-library/"},
+    {"cik": "0001179475", "short": "Hussman (Strategic Advisors)", "key": "hussman",
+     "horizon": "long",   "style": "valuation_disciplined", "signal_weight": 0.8,
+     "bias": "tech_bear",
+     "philosophy":
+         "Valuation-based market-cycle bear. Maintains 'most reliable "
+         "stock market indicators we follow' showing equity valuations "
+         "at the most extreme in history (2025). Has been bearish since "
+         "2009, missed the bull market — but framework is rigorous and "
+         "useful as a CONTRARIAN check on your AI bull thesis.",
+     "famous_for": "Margin-adjusted CAPE, weekly market commentary",
+     "letters_url": "https://www.hussmanfunds.com/comment/"},
+
+    # ─── 🦅 MEDIUM-TERM CONCENTRATED ────────────────────────────────
     {"cik": "0001336528", "short": "Ackman (Pershing Square)", "key": "ackman",
-     "horizon": "medium", "style": "activist",         "signal_weight": 1.3},
+     "horizon": "medium", "style": "activist",         "signal_weight": 1.3,
+     "bias": "activist",
+     "philosophy":
+         "Extreme concentration (8-12 positions). Activist where it "
+         "moves the needle (Canadian Pacific, Lowe's), passive elsewhere. "
+         "Strong thesis discipline — will publicly defend or admit loss "
+         "(Valeant, JCP). Q1 2026: NEW MSFT position.",
+     "famous_for": "Canadian Pacific, Chipotle activist, COVID hedges",
+     "letters_url": "https://pershingsquareholdings.com/company-reports/"},
+    {"cik": "0001351069", "short": "ValueAct (Morfit)",        "key": "valueact",
+     "horizon": "long",   "style": "constructivist",   "signal_weight": 1.3,
+     "bias": "activist",
+     "philosophy":
+         "Constructive activist — works WITH management vs hostile. Long "
+         "hold (3-5 yr typical), concentrated (~15 names). Famously took "
+         "Microsoft board seat 2013-2014, helped pivot to cloud — one of "
+         "the great activist wins. Recent: 7-Eleven owner Seven & i, Spotify.",
+     "famous_for": "Microsoft 2013-2014 cloud pivot, 21st Century Fox sale",
+     "letters_url": None},
     {"cik": "0001536411", "short": "Druckenmiller (Duquesne)", "key": "druckenmiller",
-     "horizon": "medium", "style": "macro",            "signal_weight": 1.2},
+     "horizon": "medium", "style": "macro",            "signal_weight": 1.2,
+     "bias": "macro",
+     "philosophy":
+         "'Never invest in the present. The picture has to be 18 months "
+         "out.' Concentrated, willing to be wrong, willing to flip 180°. "
+         "Famous 1992 GBP short with Soros, 1999 tech long $1B in 6 months. "
+         "Currently: AI/semis bull (ARM, AVGO, MU, TSM new positions).",
+     "famous_for": "1992 GBP short, 1999 tech long, 2020 gold/bitcoin",
+     "letters_url": None},
     {"cik": "0001656456", "short": "Tepper (Appaloosa)",       "key": "tepper",
-     "horizon": "medium", "style": "macro_em",         "signal_weight": 1.2},
+     "horizon": "medium", "style": "macro_em",         "signal_weight": 1.2,
+     "bias": "macro",
+     "philosophy":
+         "Distressed debt founder, now multi-asset. 'When the Fed is on "
+         "your side, you don't fight it.' Willing to make CONCENTRATED "
+         "macro bets (banks 2009, China tech 2022). Recently: trimming "
+         "US AI, building China tech.",
+     "famous_for": "2009 bank stocks ($7B profit), 'don't fight the Fed'",
+     "letters_url": None},
     {"cik": "0001040273", "short": "Loeb (Third Point)",       "key": "loeb",
-     "horizon": "medium", "style": "event_driven",     "signal_weight": 1.0},
-    # 2026-05-02: multi-strategy / quant / all-weather macro funds.
+     "horizon": "medium", "style": "event_driven",     "signal_weight": 1.0,
+     "bias": "event_driven",
+     "philosophy":
+         "Event-driven activist. Public 'poison pen' letters to CEOs. "
+         "Plays earnings surprises, spinoffs, M&A arb. Got into Sony, "
+         "Nestle, Disney, Bath & Body Works via activist letters. Less "
+         "tech-thematic than concentrated quality picks.",
+     "famous_for": "Sony 2013, Yahoo 2011, Nestle 2017 activist letters",
+     "letters_url": "https://www.thirdpointlimited.com/investor-letters"},
+    {"cik": "0001079114", "short": "Einhorn (Greenlight)",     "key": "einhorn",
+     "horizon": "medium", "style": "long_short_value", "signal_weight": 1.1,
+     "bias": "value",
+     "philosophy":
+         "Long/short value. Famous for shorting Allied Capital 2002 and "
+         "Lehman 2008 (right both times). Public, articulate, contrarian "
+         "—often vocal critic of growth-stock excess. Recently: bullish "
+         "on Brighthouse Financial, traditional value, skeptical of "
+         "high-multiple tech.",
+     "famous_for": "Shorting Lehman 2008, Sohn conference picks",
+     "letters_url": "https://www.greenlightcapital.com/letter-archive"},
+    {"cik": "0001029160", "short": "Soros (Soros Fund Mgmt)",   "key": "soros",
+     "horizon": "medium", "style": "reflexivity_macro", "signal_weight": 1.0,
+     "bias": "macro",
+     "philosophy":
+         "Reflexivity — market participants' beliefs shape prices, which "
+         "shape participants' beliefs. Famously broke Bank of England "
+         "1992 (£1B profit in a day). Now run by family office (Soros "
+         "himself retired 2011); positions still reflect macro+geopolitical "
+         "view.",
+     "famous_for": "GBP short 1992, Asia 1997, gold 2020",
+     "letters_url": None},
     {"cik": "0001350694", "short": "Dalio (Bridgewater)",      "key": "dalio",
      "horizon": "medium", "style": "all_weather_macro", "signal_weight": 1.0,
+     "bias": "macro",
+     "philosophy":
+         "All-weather risk parity. 'Don't predict, diversify across "
+         "regimes' — owning assets that thrive in each of 4 economic "
+         "regimes (growth↑/inflation↑/...). 993 US equity holdings is the "
+         "tip of the iceberg; macro overlays via FX/futures/swaps.",
+     "famous_for": "1971 dollar crisis, 'Principles' book, Pure Alpha",
+     "letters_url": "https://www.principles.com/",
      "derivative_exposure_note":
          "Bridgewater famously uses swaps, FX forwards, and futures for "
          "macro overlays. 13F shows only US listed equity; estimate true "
          "exposure ~40-60% visible."},
+
+    # ─── 🦅 CONCENTRATED TECH / AGI BULLS ───────────────────────────
+    {"cik": "0001135730", "short": "Coatue (Laffont)",         "key": "coatue",
+     "horizon": "medium", "style": "tech_growth",      "signal_weight": 1.1,
+     "bias": "tech_bull",
+     "philosophy":
+         "Tiger Cub. Tech-only public + venture crossover (~$80B AUM "
+         "across funds). 'TMT specialist with global reach'. Often pairs "
+         "long US tech with short Chinese tech (or vice versa). Public "
+         "fund holdings ~70 names; concentration top 10 ~50%.",
+     "famous_for": "Laffont Tiger Cub lineage, early SaaS bets",
+     "letters_url": None},
+    {"cik": "0001747057", "short": "D1 Capital (Sundheim)",     "key": "d1",
+     "horizon": "medium", "style": "tech_growth_concentrated", "signal_weight": 1.3,
+     "bias": "tech_bull",
+     "philosophy":
+         "Daniel Sundheim spun out of Viking (Andreas Halvorsen mentee). "
+         "~25 concentrated positions, willing to hold private + public. "
+         "Heavy tech tilt. Notable for size of single-position bets "
+         "(~5-8% of fund each).",
+     "famous_for": "Early Snowflake / Datadog / Adyen bets, Q1 2026 tech",
+     "letters_url": None},
+    {"cik": "0001541617", "short": "Altimeter (Gerstner)",     "key": "altimeter",
+     "horizon": "medium", "style": "tech_growth_concentrated", "signal_weight": 1.3,
+     "bias": "tech_bull",
+     "philosophy":
+         "Brad Gerstner — VOCAL AI bull. Public TikTok / podcast / X "
+         "presence ('Invest like the best'). Concentrated ~20 names. "
+         "Mid/late-stage growth tech. Q4 2024 was loudest 'AI revolution "
+         "is real' bull on twitter. Worth following his public takes.",
+     "famous_for": "Snowflake IPO, Confluent, Airbnb, Meta turnaround",
+     "letters_url": None},
+    {"cik": "0001061165", "short": "Lone Pine (Mandel/Craver)", "key": "lone_pine",
+     "horizon": "medium", "style": "quality_growth",   "signal_weight": 1.2,
+     "bias": "tech_bull",
+     "philosophy":
+         "Steve Mandel founded (Tiger Cub), David Craver runs since 2019. "
+         "'Quality growth' — companies with durable competitive advantage, "
+         "buy at reasonable prices. ~30 concentrated positions. Less "
+         "thematic than Coatue/Altimeter; more bottom-up.",
+     "famous_for": "Mandel's track record at Tiger before founding LP",
+     "letters_url": None},
+    {"cik": "0001387322", "short": "Whale Rock (Sacerdote)",   "key": "whale_rock",
+     "horizon": "medium", "style": "tech_concentrated", "signal_weight": 1.2,
+     "bias": "tech_bull",
+     "philosophy":
+         "Alex Sacerdote spun out of Fidelity. ~30 names, tech-only. "
+         "Known for high conviction in single themes — e.g. semis, "
+         "cloud platforms. Quieter than Coatue/Tiger but consistently "
+         "concentrated.",
+     "famous_for": "Early NVDA size, Meta turnaround",
+     "letters_url": None},
+    {"cik": "0001777813", "short": "Atreides (Baker)",         "key": "atreides",
+     "horizon": "medium", "style": "concentrated_tech_research", "signal_weight": 1.3,
+     "bias": "tech_bull",
+     "philosophy":
+         "Gavin Baker (ex-Fidelity OTC). Concentrated ~15-25 names. "
+         "Heavy research depth per name; public podcast appearances. "
+         "Famous for being early on NVDA cycle. Q1 2026: AI compute + "
+         "infra heavy.",
+     "famous_for": "NVDA 2020-2024 ~10x, semi cycle calls",
+     "letters_url": None},
+    {"cik": "0001167483", "short": "Tiger Global (Coleman)",   "key": "tiger_global",
+     "horizon": "medium", "style": "tech_global",      "signal_weight": 0.9,
+     "bias": "tech_bull",
+     "philosophy":
+         "Chase Coleman (Tiger Cub). Global tech bull, ~140 names, "
+         "venture + public crossover. Took heavy losses 2022 on private "
+         "marks. Public 13F portfolio still tech-heavy but more "
+         "diversified than Coatue/D1/Altimeter.",
+     "famous_for": "Early ByteDance/Stripe/Coupang, 2022 drawdown",
+     "letters_url": None},
+    {"cik": "0001103804", "short": "Viking (Halvorsen)",       "key": "viking",
+     "horizon": "medium", "style": "long_short_quality", "signal_weight": 1.1,
+     "bias": "tech_bull",
+     "philosophy":
+         "Andreas Halvorsen (Tiger Cub). Long/short hedge fund, ~80 "
+         "long positions visible in 13F. Quality-tilted, less thematic. "
+         "Methodical research process; consistent compounder for 20+ years.",
+     "famous_for": "Multi-decade quality compound, mentored D1's Sundheim",
+     "letters_url": None},
+    {"cik": "0001569049", "short": "Light Street (Kacher)",     "key": "light_street",
+     "horizon": "medium", "style": "tmt_concentrated", "signal_weight": 1.2,
+     "bias": "tech_bull",
+     "philosophy":
+         "Glen Kacher (Coatue alum). TMT-only, concentrated ~25 names. "
+         "Long/short. Notable for being early on India tech IPOs + "
+         "Latin American digital plays. Q1 2026: heavy on US AI semis.",
+     "famous_for": "Early Mercado Libre, India tech IPO entries",
+     "letters_url": None},
+
+    # ─── 🦅 AI POWER/INFRA ADJACENCY ────────────────────────────────
+    {"cik": "0001517857", "short": "Soroban (Mandelblatt)",     "key": "soroban",
+     "horizon": "medium", "style": "infra_utilities", "signal_weight": 1.3,
+     "bias": "thematic_infra",
+     "philosophy":
+         "Eric Mandelblatt (TPG-Axon alum). Long/short, specializing in "
+         "INFRASTRUCTURE + UTILITIES + ENERGY. ~25 concentrated names. "
+         "This is the closest US-listed-equity fund to the 'AI power "
+         "demand' thesis Aschenbrenner talks about — Soroban actually "
+         "OWNS the power utilities directly (CEG/VST/TLN etc).",
+     "famous_for": "CEG ride (Constellation Energy 2022-2024 +500%)",
+     "letters_url": None},
+    {"cik": "0001052192", "short": "Cascade (Gates)",          "key": "cascade",
+     "horizon": "long",   "style": "family_office_value", "signal_weight": 1.1,
+     "bias": "thematic_infra",
+     "philosophy":
+         "Bill Gates' personal investment vehicle (Michael Larson runs). "
+         "Anchor: MSFT + BRK-B (Buffett friend). Diversifies into "
+         "infrastructure / agriculture / clean energy / nuclear "
+         "(TerraPower). Slow churn — every move = high-conviction.",
+     "famous_for": "MSFT anchor 50+ years, Republic Services, BNSF stake",
+     "letters_url": None},
+
+    # ─── 🐢 SOVEREIGN / TRANSPARENT INSTITUTIONAL ───────────────────
+    {"cik": "0001374170", "short": "Norges Bank (Norway SWF)", "key": "norges",
+     "horizon": "long",   "style": "sovereign_diversified", "signal_weight": 0.7,
+     "bias": "sovereign_diversified",
+     "philosophy":
+         "Norwegian Sovereign Wealth Fund — $1.7T+ AUM, the largest in "
+         "the world. Holds ~9000 stocks across 70 countries. Anti-tobacco/"
+         "coal/weapons ESG screens. Filings transparent (publishes EVERY "
+         "vote on every shareholder resolution). Not a 'whale' in the "
+         "active-bet sense — but the most TRANSPARENT institutional "
+         "investor on Earth; track what they're buying/selling to see "
+         "where 'serious money at scale' positions.",
+     "famous_for": "Largest single shareholder of ~1% of global equities",
+     "letters_url": "https://www.nbim.no/en/publications/reports/"},
+
+    # ─── 🤖 QUANT / MULTI-STRAT (low signal weight) ─────────────────
     {"cik": "0001423053", "short": "Griffin (Citadel)",        "key": "griffin",
      "horizon": "quant",  "style": "multi_strat_market_maker", "signal_weight": 0.3,
+     "bias": "systematic",
+     "philosophy":
+         "Multi-strategy hedge fund + the world's biggest market maker "
+         "(Citadel Securities). Holdings ≠ conviction — they make markets "
+         "in thousands of names. Filter strongly: only changes >20% by "
+         "share count are meaningful directional signals.",
+     "famous_for": "Multi-strat decades, 2022 +38% in market crash",
+     "letters_url": None,
      "derivative_exposure_note":
          "Citadel makes markets across thousands of names — 90%+ of 13F "
          "holdings reflect liquidity provision, NOT directional conviction. "
          "Filter strongly; only changes >20% by share count are meaningful."},
     {"cik": "0001009268", "short": "D.E. Shaw",                "key": "deshaw",
      "horizon": "quant",  "style": "multi_strat_quant", "signal_weight": 0.3,
+     "bias": "systematic",
+     "philosophy":
+         "Algorithmic multi-strat. Most positions are factor / pairs "
+         "trade legs, not single-name conviction. Treat as low signal "
+         "individually but the AGGREGATE flow can hint at quant factor "
+         "exposure.",
+     "famous_for": "30+ yr quant pioneer, mentor of Jeff Bezos",
+     "letters_url": None,
      "derivative_exposure_note":
          "Quant multi-strat — most holdings are factor / pairs trade legs, "
          "not single-name conviction. Treat as low signal."},
-    # Cathie Wood / ARK Investment Management — innovation / disruptive
-    # tech long bets. ARK publishes daily holdings on ark-funds.com but
-    # that domain is Cloudflare-walled (HTTP 403) so we use their 13F
-    # quarterly filing here. A future ark_daily_scanner can layer on
-    # intra-quarter changes if we find a stable scrape path.
+    {"cik": "0001037389", "short": "Renaissance Technologies", "key": "rentech",
+     "horizon": "quant",  "style": "pure_quant",      "signal_weight": 0.3,
+     "bias": "systematic",
+     "philosophy":
+         "Jim Simons' legendary quant fund. Medallion Fund (employees "
+         "only) ~66% gross returns over decades — closed to outside money. "
+         "13F is for the public-facing 'Institutional' funds (RIEF / "
+         "RIDA), much lower returns. Holdings are model-driven, individual "
+         "names are not conviction bets.",
+     "famous_for": "Medallion Fund highest-returning fund in history",
+     "letters_url": None,
+     "derivative_exposure_note":
+         "Medallion Fund (the famous one) does NOT report 13F. What we "
+         "see is the public RIEF/RIDA fund — different strategy, lower "
+         "alpha. Useful for 'quant factor flow' but not 'Simons' picks'."},
+
+    # ─── 🦊 SHORT-TERM / HIGH-TURNOVER THEMATIC ─────────────────────
     {"cik": "0001697748", "short": "Cathie Wood (ARK)",        "key": "cathie",
      "horizon": "short",  "style": "thematic_growth",  "signal_weight": 0.7,
+     "bias": "tech_bull",
+     "philosophy":
+         "Disruptive innovation thesis: AI, robotics, genomics, fintech, "
+         "blockchain, autonomous mobility (5 platforms). Concentrated "
+         "high-conviction in 'futurist' picks (TSLA, COIN, ROKU). High "
+         "drawdown tolerance — endured -75% ARKK in 2022 without "
+         "philosophy change.",
+     "famous_for": "TSLA $4000 call (2020), Bitcoin price targets",
+     "letters_url": "https://www.ark-funds.com/whitepapers",
      "derivative_exposure_note":
          "ARK ETFs publish holdings daily (publicly) — the 13F we ingest "
          "here is 45-day-delayed quarterly. For real-time ARK moves see "
          "ark-funds.com (Cloudflare blocks programmatic access)."},
-    # 2026-05-19: Leopold Aschenbrenner / Situational Awareness LP.
-    # Thematic AGI / AI-infra long fund founded mid-2024 (Collisons +
-    # Daniel Gross + Nat Friedman as backers, ~$1.5B+ AUM by 2025-Q3).
-    # 6 quarters of 13F-HR filed since 2025-02. Concentration: NVDA + TSM +
-    # power/grid infra (CEG/VST/TLN) + select semis. Holdings count
-    # typically 15-30 names, similar density to Pershing Square — every
-    # change is a high-conviction signal.
+
+    # ─── 🦅 THEMATIC AGI (the new generation) ───────────────────────
     {"cik": "0002045724", "short": "Aschenbrenner (Situational Awareness)", "key": "leopold",
      "horizon": "medium", "style": "thematic_agi",     "signal_weight": 1.3,
+     "bias": "thematic_ai",
+     "philosophy":
+         "Founded 2024 by ex-OpenAI Superalignment researcher. Thesis: "
+         "AGI by 2027-2030 → trillion-dollar compute cluster buildout → "
+         "AI semis + AI power infrastructure both massively rerated. "
+         "Concentrated ~42 names in latest 13F. Public manifesto = "
+         "'Situational Awareness' essay (June 2024). Backed by Collisons + "
+         "Daniel Gross + Nat Friedman.",
+     "famous_for": "Sit. Awareness manifesto, $1.5B+ AUM in 18 months",
+     "letters_url": "https://situational-awareness.ai/",
      "derivative_exposure_note":
          "Aschenbrenner has publicly outlined a thesis around AI-driven "
          "power demand (CEG/VST/TLN/BWXT). The 13F shows ONLY direct US "
@@ -128,19 +437,40 @@ WHALES_BY_KEY: Dict[str, Dict[str, Any]] = {w["key"]: w for w in WHALES}
 
 
 def whale_meta(key: str) -> Dict[str, Any]:
-    """Return horizon/style/signal_weight metadata for a whale_key,
-    or sensible defaults if unknown."""
+    """Return rich metadata for a whale_key (or defaults if unknown)."""
     w = WHALES_BY_KEY.get(key)
     if not w:
         return {"horizon": "unknown", "style": "unknown",
-                "signal_weight": 1.0, "short": key}
+                "signal_weight": 1.0, "short": key,
+                "bias": "unknown", "philosophy": None,
+                "famous_for": None, "letters_url": None}
     return {
         "horizon":        w.get("horizon", "unknown"),
         "style":          w.get("style", "unknown"),
         "signal_weight":  w.get("signal_weight", 1.0),
         "short":          w.get("short", key),
+        "bias":           w.get("bias", "unknown"),
+        "philosophy":     w.get("philosophy"),
+        "famous_for":     w.get("famous_for"),
+        "letters_url":    w.get("letters_url"),
         "derivative_exposure_note": w.get("derivative_exposure_note"),
     }
+
+
+# Bias → emoji for quick visual scanning in legends / agent replies
+BIAS_EMOJI = {
+    "value":                  "💎",
+    "macro":                  "🌍",
+    "activist":               "✊",
+    "event_driven":           "🎯",
+    "tech_bull":              "🚀",
+    "tech_bear":              "🐻",
+    "thematic_ai":            "🧠",
+    "thematic_infra":         "⚡",
+    "systematic":             "🤖",
+    "sovereign_diversified":  "🏛️",
+    "unknown":                "·",
+}
 
 
 # ── horizon → emoji (for UI / Telegram bot) ──────────────────────

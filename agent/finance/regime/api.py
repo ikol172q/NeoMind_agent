@@ -345,25 +345,52 @@ def post_whale_backfill(key: str, n_quarters: int = Query(5, ge=1, le=20)) -> Di
 
 
 @router.get("/whales")
-def list_whales() -> Dict[str, Any]:
-    """List all tracked whales with horizon / style / signal_weight
-    metadata. Used by frontends + dashboard agent to label moves."""
-    from agent.finance.regime.scanners.whale_scanner import WHALES, HORIZON_EMOJI
+def list_whales(
+    bias:    Optional[str] = Query(None, description="filter by bias"),
+    horizon: Optional[str] = Query(None, description="filter by horizon"),
+) -> Dict[str, Any]:
+    """List all tracked whales with full investment-philosophy metadata.
+
+    Optional filters let the UI build a "whales by theme" browser —
+    e.g. ?bias=tech_bear shows hedging perspectives.
+    """
+    from agent.finance.regime.scanners.whale_scanner import (
+        WHALES, HORIZON_EMOJI, BIAS_EMOJI,
+    )
+    out = []
+    for w in WHALES:
+        if bias and w.get("bias") != bias:
+            continue
+        if horizon and w.get("horizon") != horizon:
+            continue
+        out.append({
+            "key":             w["key"],
+            "name":            w["short"],
+            "cik":             w["cik"],
+            "horizon":         w.get("horizon", "unknown"),
+            "horizon_emoji":   HORIZON_EMOJI.get(w.get("horizon", "unknown"), "·"),
+            "style":           w.get("style", "unknown"),
+            "signal_weight":   w.get("signal_weight", 1.0),
+            "bias":            w.get("bias", "unknown"),
+            "bias_emoji":      BIAS_EMOJI.get(w.get("bias", "unknown"), "·"),
+            "philosophy":      w.get("philosophy"),
+            "famous_for":      w.get("famous_for"),
+            "letters_url":     w.get("letters_url"),
+            "derivative_note": w.get("derivative_exposure_note"),
+        })
+    # Provide aggregate view so the UI can build a quick browser
+    bias_counts: Dict[str, int] = {}
+    horizon_counts: Dict[str, int] = {}
+    for w in WHALES:
+        b = w.get("bias", "unknown"); h = w.get("horizon", "unknown")
+        bias_counts[b] = bias_counts.get(b, 0) + 1
+        horizon_counts[h] = horizon_counts.get(h, 0) + 1
     return {
-        "whales": [
-            {
-                "key":             w["key"],
-                "name":            w["short"],
-                "cik":             w["cik"],
-                "horizon":         w.get("horizon", "unknown"),
-                "horizon_emoji":   HORIZON_EMOJI.get(w.get("horizon", "unknown"), "·"),
-                "style":           w.get("style", "unknown"),
-                "signal_weight":   w.get("signal_weight", 1.0),
-                "derivative_note": w.get("derivative_exposure_note"),
-            }
-            for w in WHALES
-        ],
-        "n": len(WHALES),
+        "whales":          out,
+        "n":               len(out),
+        "n_total":         len(WHALES),
+        "bias_counts":     bias_counts,
+        "horizon_counts":  horizon_counts,
     }
 
 
