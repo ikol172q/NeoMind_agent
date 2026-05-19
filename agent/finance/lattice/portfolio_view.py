@@ -685,6 +685,60 @@ def _build_graph(as_of: Optional[str] = None, include_external_edges: bool = Fal
             del e["_pending"]
         resolved_edges.append(e)
 
+    # 2026-05-19: compute render_tier per node — visual layering the
+    # frontend onion uses. Decoupled from user-facing tier (core /
+    # adjacent / watching / outside) so the user's watchlist
+    # classification stays intact while the picture re-orders by what
+    # actually matters TODAY:
+    #
+    #   held          : you have real money in (innermost yellow)
+    #   buy_candidate : NOT held, but combined_signal > 0.40 from the
+    #                   most recent signal_snapshots row (next ring,
+    #                   orange) — "strongly recommended to add/init"
+    #   watchlist     : in any user tier, not held, not buy_candidate
+    #                   (green ring — your existing universe)
+    #   outside       : not in watchlist but signals concentrate
+    #   external      : only appears via 10-K relations (faint)
+    snapshot_map: Dict[str, Dict[str, Any]] = {}
+    try:
+        with connect() as conn_snap:
+            rows_snap = conn_snap.execute(
+                "SELECT ticker, combined, data_complete "
+                "FROM signal_snapshots "
+                "WHERE snapshot_date = ("
+                "  SELECT MAX(snapshot_date) FROM signal_snapshots"
+                ")"
+            ).fetchall()
+            for rs in rows_snap:
+                snapshot_map[rs["ticker"]] = {
+                    "combined":      rs["combined"],
+                    "data_complete": bool(rs["data_complete"]),
+                }
+    except Exception as exc:
+        logger.debug("snapshot lookup failed: %s", exc)
+
+    for n in nodes:
+        held_qty = n.get("held_qty") or 0
+        is_held = bool(held_qty and held_qty > 0)
+        snap = snapshot_map.get(n["id"]) or {}
+        combined = snap.get("combined")
+        if is_held:
+            n["render_tier"] = "held"
+        elif (combined is not None and combined >= 0.30
+              and n["tier"] in ("core", "adjacent", "watching")):
+            # 2026-05-19: threshold 0.30 — captures the upper third of
+            # currently-snapshotted scores. Tighten to 0.40 once
+            # signal_hourly is consistently fresh (data_complete=1).
+            n["render_tier"] = "buy_candidate"
+            n["buy_candidate_score"] = combined
+            n["buy_candidate_data_complete"] = snap.get("data_complete", False)
+        elif n["tier"] in ("core", "adjacent", "watching", "held_unwatched"):
+            n["render_tier"] = "watchlist"
+        elif n["tier"] == "outside":
+            n["render_tier"] = "outside"
+        else:
+            n["render_tier"] = "external"
+
     return {
         "nodes":        nodes,
         "edges":        resolved_edges,
@@ -696,4 +750,9 @@ def _build_graph(as_of: Optional[str] = None, include_external_edges: bool = Fal
         "fetched_at":   now.isoformat(),
         "as_of":        cutoff_dt.isoformat() if cutoff_dt else None,
         "is_historical": is_historical,
+        # By-render-tier counts for the legend.
+        "render_tier_counts": {
+            t: sum(1 for n in nodes if n.get("render_tier") == t)
+            for t in ("held", "buy_candidate", "watchlist", "outside", "external")
+        },
     }

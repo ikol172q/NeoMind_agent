@@ -3301,6 +3301,12 @@ export interface PortfolioGraphNode {
   // 'external' = 10-K relation target NOT in user watchlist; only emitted
   // when include_external_edges=true on the backend.
   tier:             'core' | 'adjacent' | 'watching' | 'outside' | 'held_unwatched' | 'external'
+  // 2026-05-19: server-computed visual layer. Decoupled from `tier`
+  // (user-facing watchlist categorization) so the picture can re-order
+  // by "what actually matters TODAY" without disturbing the user's
+  // watchlist classification.
+  render_tier?:     'held' | 'buy_candidate' | 'watchlist' | 'outside' | 'external'
+  buy_candidate_score?: number
   parent?:          string | null
   // Position overlay — non-null only for tickers user actually owns.
   held_qty?:        number | null

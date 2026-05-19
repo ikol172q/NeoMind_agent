@@ -120,39 +120,54 @@ const THEME_SEVERITY_COLOR: Record<LatticeTheme['severity'], string> = {
   info:  'text-[var(--color-dim)] border-[var(--color-border)] hover:border-[var(--color-text)]',
 }
 
+// 2026-05-19: 4 visual layers, indexed by render_tier (server-computed):
+//   held          — innermost yellow (your real money)
+//   buy_candidate — orange ring (strongly recommended add/init, signal > 0.40)
+//   watchlist     — green ring (existing universe, not buy_candidate)
+//   outside       — purple ring (anti-anchoring discovery)
+//   external      — faintest, edge of graph (only via 10-K)
+// Backward-compat: also accept old tier names (core/adjacent/...) so
+// any pre-migration cached graph still renders sensibly.
 const TIER_RADIUS: Record<string, number> = {
+  // new render_tier values
+  held:          90,
+  buy_candidate: 180,
+  watchlist:     280,
+  outside:       340,
+  external:      410,
+  // legacy fallbacks (old `tier` field, in case render_tier missing)
   core:     90,
-  adjacent: 200,
+  adjacent: 280,
   watching: 280,
-  outside:  340,
-  // Held-but-unwatched: pinned between watching and outside so the
-  // gap between "you own this" and "you've researched this" is
-  // visually obvious.
   held_unwatched: 310,
-  // External: pin outside the outside ring. Same radius used by chain
-  // multi-hop placeholders below, kept here so the main `include_external_edges`
-  // path also has a target radius.
-  external: 410,
 }
 
 // Base radius per tier — floor when nothing else applies.
 const TIER_NODE_BASE_RADIUS: Record<string, number> = {
+  held:          10,
+  buy_candidate: 8,
+  watchlist:     5,
+  outside:       5,
+  external:      3,
+  // legacy
   core:     8,
   adjacent: 5,
   watching: 4,
-  outside:  5,
-  external: 3,    // discovery placeholder (hop-2+ non-watchlist)
   held_unwatched: 7,
 }
 // Research-depth secondary bump per tier (multiplied by sqrt(n_facts)).
 // Kept smaller than the exposure bump so research depth never
 // out-shouts actual $ at stake.
 const TIER_NODE_FACT_BUMP: Record<string, number> = {
+  held:          1.5,
+  buy_candidate: 1.5,
+  watchlist:     0.8,
+  outside:       0,
+  external:      0,
+  // legacy
   core:     1.5,
   adjacent: 1.0,
   watching: 0.5,
-  outside:  0,
-  external: 0,
   held_unwatched: 0,
 }
 
@@ -168,26 +183,33 @@ const TIER_NODE_FACT_BUMP: Record<string, number> = {
 //     (held_cost in dollars; sqrt softens so $1K → 3.2px and $40K → 20px)
 //   facts_px = sqrt(n_facts) × tier_bump (research-depth nudge)
 //   total = base[tier] + exposure_px + facts_px
+// 2026-05-19: prefer server-computed render_tier; fall back to tier.
+function effTier(n: PortfolioGraphNode): string {
+  return (n as { render_tier?: string }).render_tier || n.tier
+}
+
 function nodeRadius(n: PortfolioGraphNode): number {
-  const base = TIER_NODE_BASE_RADIUS[n.tier] ?? 6
-  const factsBump = TIER_NODE_FACT_BUMP[n.tier] ?? 0
+  const t = effTier(n)
+  const base = TIER_NODE_BASE_RADIUS[t] ?? 6
+  const factsBump = TIER_NODE_FACT_BUMP[t] ?? 0
   const factsPx = factsBump * Math.sqrt(Math.max(0, n.n_facts))
   const cost = Math.max(0, n.held_cost ?? 0)
-  // sqrt softens: $100 → 1px, $10K → 10px, $40K → 20px (capped)
   const exposurePx = Math.min(20, Math.sqrt(cost / 100))
   return base + exposurePx + factsPx
 }
 
 const TIER_COLOR: Record<string, string> = {
-  core:     '#fbbf24',  // amber-400
-  adjacent: '#10b981',  // emerald-500
-  watching: '#71717a',  // zinc-500
-  outside:  '#a78bfa',  // violet-400 — anti-anchoring candidates
-  external: '#52525b',  // zinc-600 — discovery placeholder
-  // Red = "you own this but have done no research" — a real warning,
-  // not a research candidate. Distinct from outside (violet, anti-
-  // anchoring) which is research SUGGESTION.
-  held_unwatched: '#f87171',  // red-400
+  // new render_tier values
+  held:          '#fbbf24',  // amber-400 — your real money
+  buy_candidate: '#fb923c',  // orange-400 — strongly recommended add/init
+  watchlist:     '#10b981',  // emerald-500 — your universe
+  outside:       '#a78bfa',  // violet-400 — anti-anchoring candidates
+  external:      '#52525b',  // zinc-600 — discovery placeholder
+  // legacy (fallback when render_tier missing)
+  core:     '#fbbf24',
+  adjacent: '#10b981',
+  watching: '#71717a',
+  held_unwatched: '#f87171',  // red-400 — "you own but haven't researched"
 }
 
 const EDGE_COLOR: Record<string, string> = {
@@ -295,52 +317,42 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
   // so each spoke reads as a coherent group.
   const graphData = useMemo(() => {
     if (!q.data) return { nodes: [], links: [] }
+    // 2026-05-19: bucket by render_tier (server-computed). Falls back
+    // to legacy tier so pre-migration cached data still renders.
     const byTier: Record<string, PortfolioGraphNode[]> = {
-      core: [], adjacent: [], watching: [], outside: [], held_unwatched: [], external: [],
+      held: [], buy_candidate: [], watchlist: [], outside: [], external: [],
     }
     for (const n of q.data.nodes) {
-      const t = n.tier in byTier ? n.tier : 'watching'
-      byTier[t].push(n)
+      const t = effTier(n)
+      const bucket = t in byTier ? t : 'watchlist'
+      byTier[bucket].push(n)
     }
-    const coreAngle: Record<string, number> = {}
-    byTier.core.forEach((n, i) => {
-      coreAngle[n.id] = (2 * Math.PI * i) / Math.max(byTier.core.length, 1)
-    })
+    // Angle layout: held inside, distribute remaining around
     const placed: PortfolioGraphNode[] = []
     const pin = (n: PortfolioGraphNode, r: number, theta: number) => {
       const x = r * Math.cos(theta)
       const y = r * Math.sin(theta)
       placed.push({ ...n, x, y, fx: x, fy: y } as PortfolioGraphNode)
     }
-    byTier.core.forEach((n) => pin(n, TIER_RADIUS.core, coreAngle[n.id]))
-    const adjSiblings: Record<string, PortfolioGraphNode[]> = {}
-    for (const n of byTier.adjacent) {
-      const p = n.parent ?? '__orphan__'
-      ;(adjSiblings[p] ??= []).push(n)
-    }
-    for (const [parent, siblings] of Object.entries(adjSiblings)) {
-      const parentAngle = coreAngle[parent] ?? 0
-      const spread = Math.PI / 6
-      siblings.forEach((n, i) => {
-        const t = siblings.length === 1
-          ? parentAngle
-          : parentAngle - spread + (2 * spread * i) / (siblings.length - 1)
-        pin(n, TIER_RADIUS.adjacent, t)
-      })
-    }
-    byTier.watching.forEach((n, i) => {
-      const t = (2 * Math.PI * i) / Math.max(byTier.watching.length, 1)
-      pin(n, TIER_RADIUS.watching, t)
+    // Held — innermost, evenly spaced
+    byTier.held.forEach((n, i) => {
+      const theta = (2 * Math.PI * i) / Math.max(byTier.held.length, 1)
+      pin(n, TIER_RADIUS.held, theta)
+    })
+    // Buy candidate — next ring
+    byTier.buy_candidate.forEach((n, i) => {
+      const theta = (2 * Math.PI * i) / Math.max(byTier.buy_candidate.length, 1)
+      pin(n, TIER_RADIUS.buy_candidate, theta)
+    })
+    // Watchlist — third ring (consolidates former core/adjacent/watching not held)
+    byTier.watchlist.forEach((n, i) => {
+      const theta = (2 * Math.PI * i) / Math.max(byTier.watchlist.length, 1)
+      pin(n, TIER_RADIUS.watchlist, theta)
     })
     // Outside ring — evenly spaced; no parent relationship, no spoke edge.
     byTier.outside.forEach((n, i) => {
-      const t = (2 * Math.PI * i) / Math.max(byTier.outside.length, 1)
-      pin(n, TIER_RADIUS.outside, t)
-    })
-    // Held-unwatched ring — pin between watching and outside, red color.
-    byTier.held_unwatched.forEach((n, i) => {
-      const t = (2 * Math.PI * i) / Math.max(byTier.held_unwatched.length, 1)
-      pin(n, TIER_RADIUS.held_unwatched, t)
+      const theta = (2 * Math.PI * i) / Math.max(byTier.outside.length, 1)
+      pin(n, TIER_RADIUS.outside, theta)
     })
     // External ring — only populated when include_external_edges=true.
     // Evenly distributed outside the outside ring; no spoke parent
@@ -365,7 +377,9 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
       const originAngle = origin
         ? Math.atan2(origin.y ?? 0, origin.x ?? 0)
         : 0
-      const externals = chainQ.data.nodes.filter(n => n.tier === 'external')
+      const externals = chainQ.data.nodes.filter(
+        n => (n as { render_tier?: string; tier?: string }).render_tier === 'external'
+          || (n as { tier?: string }).tier === 'external')
       const extRadius = TIER_RADIUS.outside + 70
       externals.forEach((n, i) => {
         if (placedIds.has(n.id)) return
@@ -630,14 +644,25 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
 
       {/* Bottom legend */}
       <div className="absolute bottom-2 left-2 z-10 text-[9px] text-[var(--color-dim)] space-y-0.5 bg-[var(--color-bg)]/80 px-2 py-1 rounded">
-        <div className="flex items-center gap-1"><span style={{color: TIER_COLOR.core}}>●</span> Core ({q.data.nodes.filter(n => n.tier === 'core').length})</div>
-        <div className="flex items-center gap-1"><span style={{color: TIER_COLOR.adjacent}}>●</span> Adjacent ({q.data.nodes.filter(n => n.tier === 'adjacent').length})</div>
-        {q.data.nodes.filter(n => n.tier === 'watching').length > 0 && (
-          <div className="flex items-center gap-1"><span style={{color: TIER_COLOR.watching}}>●</span> Watching ({q.data.nodes.filter(n => n.tier === 'watching').length})</div>
+        {/* 2026-05-19: legend by render_tier (visual layer) */}
+        <div className="flex items-center gap-1" title="你持有 — 真钱在里面">
+          <span style={{color: TIER_COLOR.held}}>●</span> Held
+          ({q.data.nodes.filter(n => effTier(n) === 'held').length})
+        </div>
+        {q.data.nodes.filter(n => effTier(n) === 'buy_candidate').length > 0 && (
+          <div className="flex items-center gap-1" title="未持有但综合信号 > 0.40 — 强烈推荐增持/初仓">
+            <span style={{color: TIER_COLOR.buy_candidate}}>●</span> 推荐增持
+            ({q.data.nodes.filter(n => effTier(n) === 'buy_candidate').length})
+          </div>
         )}
-        {q.data.nodes.filter(n => n.tier === 'outside').length > 0 && (
-          <div className="flex items-center gap-1" title="High-confluence signal NOT in any tier — anti-anchoring">
-            <span style={{color: TIER_COLOR.outside}}>●</span> Outside ({q.data.nodes.filter(n => n.tier === 'outside').length})
+        <div className="flex items-center gap-1" title="你的 watchlist 但暂无强增持信号">
+          <span style={{color: TIER_COLOR.watchlist}}>●</span> Watchlist
+          ({q.data.nodes.filter(n => effTier(n) === 'watchlist').length})
+        </div>
+        {q.data.nodes.filter(n => effTier(n) === 'outside').length > 0 && (
+          <div className="flex items-center gap-1" title="不在 watchlist 但近期信号密集 — anti-anchoring 发现">
+            <span style={{color: TIER_COLOR.outside}}>●</span> Outside
+            ({q.data.nodes.filter(n => effTier(n) === 'outside').length})
           </div>
         )}
         {q.data.nodes.some(n => n.is_conflicted) && (
@@ -695,7 +720,7 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           // outermost populated ring and points inward toward the
           // referenced ticker node. Color encodes confidence.
           if (callArrows.length > 0) {
-            const outerR = (graphData.nodes as PortfolioGraphNode[]).some(n => n.tier === 'outside')
+            const outerR = (graphData.nodes as PortfolioGraphNode[]).some(n => effTier(n) === 'outside')
               ? TIER_RADIUS.outside + 30
               : TIER_RADIUS.adjacent + 30
             const nodeByTicker = new Map<string, PortfolioGraphNode & {x?:number; y?:number}>()
@@ -825,7 +850,7 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           if (n.fresh_signal_24h && !dim) {
             ctx.beginPath()
             ctx.arc(n.x ?? 0, n.y ?? 0, r + 4, 0, 2 * Math.PI)
-            ctx.fillStyle = TIER_COLOR[n.tier] + '33'    // alpha 20%
+            ctx.fillStyle = (TIER_COLOR[effTier(n)] || TIER_COLOR.watchlist) + '33'    // alpha 20%
             ctx.fill()
           }
           // Earnings catalyst glow — ticker reports within 5d. Drawn
@@ -846,7 +871,7 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
           // Main circle
           ctx.beginPath()
           ctx.arc(n.x ?? 0, n.y ?? 0, r, 0, 2 * Math.PI)
-          ctx.fillStyle = TIER_COLOR[n.tier]
+          ctx.fillStyle = TIER_COLOR[effTier(n)] || TIER_COLOR.watchlist
           ctx.fill()
           // Border priority: selected (white) > conflicted (red) > stale (amber).
           // Conflict ring signals unresolved signal_disagreements per
