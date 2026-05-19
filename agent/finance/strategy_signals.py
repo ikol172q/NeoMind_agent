@@ -91,7 +91,16 @@ def _fundamental_score(conn, ticker: str) -> Tuple[float, Dict[str, Any]]:
 
 
 def _smart_money_score(conn, ticker: str) -> Tuple[float, Dict[str, Any]]:
-    """13F + congress + insider Form 4 in last 90 days."""
+    """13F + congress + insider Form 4 in last 90 days.
+
+    13F events are weighted by **whale.signal_weight** (per WHALES_BY_KEY):
+    - Buffett / Klarman / Marks (1.5×) — concentrated long-term conviction
+    - Ackman / Aschenbrenner (1.3×) — concentrated activist / thematic
+    - Druckenmiller / Tepper (1.2×) — high-conviction macro
+    - Loeb / Dalio (1.0×) — diversified / all-weather
+    - Cathie Wood (0.7×) — high-turnover thematic
+    - Griffin / D.E. Shaw (0.3×) — multi-strat market-making, mostly noise
+    """
     rows = conn.execute(
         "SELECT scanner_name, signal_type, body_json, severity, detected_at "
         "FROM signal_events "
@@ -101,7 +110,13 @@ def _smart_money_score(conn, ticker: str) -> Tuple[float, Dict[str, Any]]:
         (ticker,),
     ).fetchall()
 
+    try:
+        from agent.finance.regime.scanners.whale_scanner import WHALES_BY_KEY
+    except ImportError:
+        WHALES_BY_KEY = {}
+
     buckets: Dict[str, List[float]] = {"13f": [], "congress": [], "insider": []}
+    whale_contributions: List[Dict[str, Any]] = []
     for r in rows:
         sc = r["scanner_name"]
         st = (r["signal_type"] or "").lower()
@@ -114,7 +129,25 @@ def _smart_money_score(conn, ticker: str) -> Tuple[float, Dict[str, Any]]:
         sev_weight = {"high": 1.0, "med": 0.6, "low": 0.3}.get(r["severity"], 0.5)
         signal = direction * sev_weight
         if sc == "13f":
-            buckets["13f"].append(signal)
+            # Per-whale weighting
+            whale_weight = 1.0
+            whale_key = None
+            try:
+                body = json.loads(r["body_json"] or "{}")
+                whale_key = body.get("whale_key")
+                if whale_key:
+                    w = WHALES_BY_KEY.get(whale_key, {})
+                    whale_weight = float(w.get("signal_weight", 1.0))
+            except (json.JSONDecodeError, TypeError):
+                pass
+            buckets["13f"].append(signal * whale_weight)
+            whale_contributions.append({
+                "whale_key":    whale_key,
+                "direction":    "buy" if direction > 0 else "sell",
+                "severity":     r["severity"],
+                "weight":       whale_weight,
+                "contribution": round(signal * whale_weight, 3),
+            })
         elif sc in ("house_clerk_pdf", "congressional"):
             buckets["congress"].append(signal)
         elif sc == "insider_form4":
@@ -136,11 +169,12 @@ def _smart_money_score(conn, ticker: str) -> Tuple[float, Dict[str, Any]]:
         return 0.0, {"n_events_90d": 0, "buckets": counts}
     score = _clip(sum(parts) / sum(weights))
     return score, {
-        "n_events_90d": sum(counts.values()),
-        "buckets": counts,
-        "13f_avg":      _avg(buckets["13f"]),
-        "congress_avg": _avg(buckets["congress"]),
-        "insider_avg":  _avg(buckets["insider"]),
+        "n_events_90d":         sum(counts.values()),
+        "buckets":              counts,
+        "13f_avg":              _avg(buckets["13f"]),
+        "congress_avg":         _avg(buckets["congress"]),
+        "insider_avg":          _avg(buckets["insider"]),
+        "whale_contributions":  whale_contributions[:10],
     }
 
 

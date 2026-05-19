@@ -81,11 +81,47 @@ async def get_chain(ticker: str, hop: int = 2) -> Dict[str, Any]:
 
 
 async def get_smart_money(ticker: str) -> Dict[str, Any]:
-    """Exposure across 4 buckets: 13F whales, Congress, ARK, insider Form 4."""
+    """Exposure across 4 buckets: 13F whales, Congress, ARK, insider Form 4.
+
+    Each 13F event is enriched with the whale's horizon / style /
+    signal_weight (per WHALES_BY_KEY) so the agent can reason about
+    e.g. 'Buffett 🐢 long-term clip vs Citadel 🤖 quant noise'.
+    """
     t = (ticker or "").strip().upper()
     if not t:
         return {"error": "ticker required"}
-    return await _get(f"/api/stock/{t}/exposure")
+    raw = await _get(f"/api/stock/{t}/exposure")
+    if "error" in raw:
+        return raw
+    # Enrich 13F events with whale metadata (lookup at read time —
+    # works retroactively for old events emitted before metadata was
+    # embedded in body_json).
+    try:
+        from agent.finance.regime.scanners.whale_scanner import (
+            WHALES_BY_KEY, HORIZON_EMOJI,
+        )
+    except ImportError:
+        return raw
+    import json as _json
+    for ev in raw.get("events", []):
+        if ev.get("scanner_name") != "13f":
+            continue
+        body = ev.get("body") or {}
+        if isinstance(body, str):
+            try: body = _json.loads(body)
+            except _json.JSONDecodeError: body = {}
+        key = body.get("whale_key")
+        if not key:
+            continue
+        w = WHALES_BY_KEY.get(key, {})
+        ev["whale_meta"] = {
+            "horizon":        w.get("horizon", "unknown"),
+            "horizon_emoji":  HORIZON_EMOJI.get(w.get("horizon", "unknown"), "·"),
+            "style":          w.get("style", "unknown"),
+            "signal_weight":  w.get("signal_weight", 1.0),
+            "derivative_note": w.get("derivative_exposure_note"),
+        }
+    return raw
 
 
 async def get_thesis(ticker: str) -> Dict[str, Any]:

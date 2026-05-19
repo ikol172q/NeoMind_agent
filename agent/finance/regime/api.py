@@ -324,9 +324,47 @@ def post_scan_news() -> Dict[str, Any]:
 
 @router.post("/scan/whale")
 def post_scan_whale() -> Dict[str, Any]:
-    """Run the 13F whale scanner.  ~30 seconds (7 whales × 2 filings × SEC EDGAR HTTP)."""
+    """Run the 13F whale scanner.  ~30 seconds (12 whales × 2 filings × SEC EDGAR HTTP)."""
     from agent.finance.regime.scanners.whale_scanner import run_whale_scan
     return _audited_scan("13f", run_whale_scan)
+
+
+@router.post("/scan/whale/backfill/{key}")
+def post_whale_backfill(key: str, n_quarters: int = Query(5, ge=1, le=20)) -> Dict[str, Any]:
+    """Backfill N quarters of 13F history for a single whale.
+
+    Use when you just added a whale to WHALES (e.g. Aschenbrenner) and
+    want the prior quarters' moves in the DB, not just the most recent
+    diff. Idempotent — already-emitted events are skipped.
+    """
+    from agent.finance.regime.scanners.whale_scanner import backfill_whale_history
+    return _audited_scan(
+        f"13f_backfill_{key}",
+        lambda: backfill_whale_history(key, n_quarters=n_quarters),
+    )
+
+
+@router.get("/whales")
+def list_whales() -> Dict[str, Any]:
+    """List all tracked whales with horizon / style / signal_weight
+    metadata. Used by frontends + dashboard agent to label moves."""
+    from agent.finance.regime.scanners.whale_scanner import WHALES, HORIZON_EMOJI
+    return {
+        "whales": [
+            {
+                "key":             w["key"],
+                "name":            w["short"],
+                "cik":             w["cik"],
+                "horizon":         w.get("horizon", "unknown"),
+                "horizon_emoji":   HORIZON_EMOJI.get(w.get("horizon", "unknown"), "·"),
+                "style":           w.get("style", "unknown"),
+                "signal_weight":   w.get("signal_weight", 1.0),
+                "derivative_note": w.get("derivative_exposure_note"),
+            }
+            for w in WHALES
+        ],
+        "n": len(WHALES),
+    }
 
 
 @router.post("/scan/congressional")

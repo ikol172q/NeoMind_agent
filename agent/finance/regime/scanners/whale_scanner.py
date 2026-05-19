@@ -45,38 +45,121 @@ logger = logging.getLogger(__name__)
 # ── whale registry ────────────────────────────────────────────────
 
 
+# 2026-05-19: each whale annotated with:
+#   horizon       — typical holding period of their 13F positions
+#                   'long'  : multi-year (Buffett/Klarman/Marks)
+#                   'medium': months to ~year (most macro/event funds)
+#                   'short' : weeks to months (Cathie Wood high churn)
+#                   'quant' : ms-days, mostly market-making (Griffin/Shaw)
+#   style         — investing philosophy bucket
+#   signal_weight — how much weight their 13F moves carry in our
+#                   smart_money_score. Concentrated long-term whales
+#                   get 1.5×; market-making quant funds get 0.3× because
+#                   90%+ of their 15k+ holdings is statistical noise.
+#   derivative_exposure_note — known exposure outside 13F-HR (swaps,
+#                   options, shorts). If non-None, frontends should
+#                   show a "13F may understate" caveat on this whale.
 WHALES = [
-    {"cik": "0001067983", "short": "Buffett (Berkshire)",      "key": "buffett"},
-    {"cik": "0001536411", "short": "Druckenmiller (Duquesne)", "key": "druckenmiller"},
-    {"cik": "0001656456", "short": "Tepper (Appaloosa)",       "key": "tepper"},
-    {"cik": "0001336528", "short": "Ackman (Pershing Square)", "key": "ackman"},
-    {"cik": "0001061165", "short": "Klarman (Baupost)",        "key": "klarman"},
-    {"cik": "0001040273", "short": "Loeb (Third Point)",       "key": "loeb"},
-    {"cik": "0000949509", "short": "Marks (Oaktree)",          "key": "marks"},
-    # Added 2026-05-02 per user request — multi-strategy / quant /
-    # all-weather macro funds. CIKs verified against SEC EDGAR
-    # company search, all file 13F-HR quarterly.
-    # 2025 returns: Bridgewater Pure Alpha +34%, Citadel +10.2%,
-    # D.E. Shaw Composite +18.5% / Oculus +28.2%.
-    {"cik": "0001350694", "short": "Dalio (Bridgewater)",      "key": "dalio"},
-    {"cik": "0001423053", "short": "Griffin (Citadel)",        "key": "griffin"},
-    {"cik": "0001009268", "short": "D.E. Shaw",                "key": "deshaw"},
+    {"cik": "0001067983", "short": "Buffett (Berkshire)",      "key": "buffett",
+     "horizon": "long",   "style": "value",            "signal_weight": 1.5},
+    {"cik": "0001061165", "short": "Klarman (Baupost)",        "key": "klarman",
+     "horizon": "long",   "style": "value",            "signal_weight": 1.5},
+    {"cik": "0000949509", "short": "Marks (Oaktree)",          "key": "marks",
+     "horizon": "long",   "style": "value_distressed", "signal_weight": 1.5},
+    {"cik": "0001336528", "short": "Ackman (Pershing Square)", "key": "ackman",
+     "horizon": "medium", "style": "activist",         "signal_weight": 1.3},
+    {"cik": "0001536411", "short": "Druckenmiller (Duquesne)", "key": "druckenmiller",
+     "horizon": "medium", "style": "macro",            "signal_weight": 1.2},
+    {"cik": "0001656456", "short": "Tepper (Appaloosa)",       "key": "tepper",
+     "horizon": "medium", "style": "macro_em",         "signal_weight": 1.2},
+    {"cik": "0001040273", "short": "Loeb (Third Point)",       "key": "loeb",
+     "horizon": "medium", "style": "event_driven",     "signal_weight": 1.0},
+    # 2026-05-02: multi-strategy / quant / all-weather macro funds.
+    {"cik": "0001350694", "short": "Dalio (Bridgewater)",      "key": "dalio",
+     "horizon": "medium", "style": "all_weather_macro", "signal_weight": 1.0,
+     "derivative_exposure_note":
+         "Bridgewater famously uses swaps, FX forwards, and futures for "
+         "macro overlays. 13F shows only US listed equity; estimate true "
+         "exposure ~40-60% visible."},
+    {"cik": "0001423053", "short": "Griffin (Citadel)",        "key": "griffin",
+     "horizon": "quant",  "style": "multi_strat_market_maker", "signal_weight": 0.3,
+     "derivative_exposure_note":
+         "Citadel makes markets across thousands of names — 90%+ of 13F "
+         "holdings reflect liquidity provision, NOT directional conviction. "
+         "Filter strongly; only changes >20% by share count are meaningful."},
+    {"cik": "0001009268", "short": "D.E. Shaw",                "key": "deshaw",
+     "horizon": "quant",  "style": "multi_strat_quant", "signal_weight": 0.3,
+     "derivative_exposure_note":
+         "Quant multi-strat — most holdings are factor / pairs trade legs, "
+         "not single-name conviction. Treat as low signal."},
     # Cathie Wood / ARK Investment Management — innovation / disruptive
     # tech long bets. ARK publishes daily holdings on ark-funds.com but
     # that domain is Cloudflare-walled (HTTP 403) so we use their 13F
     # quarterly filing here. A future ark_daily_scanner can layer on
     # intra-quarter changes if we find a stable scrape path.
-    {"cik": "0001697748", "short": "Cathie Wood (ARK)",        "key": "cathie"},
+    {"cik": "0001697748", "short": "Cathie Wood (ARK)",        "key": "cathie",
+     "horizon": "short",  "style": "thematic_growth",  "signal_weight": 0.7,
+     "derivative_exposure_note":
+         "ARK ETFs publish holdings daily (publicly) — the 13F we ingest "
+         "here is 45-day-delayed quarterly. For real-time ARK moves see "
+         "ark-funds.com (Cloudflare blocks programmatic access)."},
     # 2026-05-19: Leopold Aschenbrenner / Situational Awareness LP.
     # Thematic AGI / AI-infra long fund founded mid-2024 (Collisons +
     # Daniel Gross + Nat Friedman as backers, ~$1.5B+ AUM by 2025-Q3).
-    # 6 quarters of 13F-HR filed since 2025-02 (CIK verified via SEC
-    # EDGAR company search). Concentration: NVDA + TSM + power/grid
-    # infra (CEG/VST/TLN) + select semis. Holdings count typically
-    # 15-30 names, similar density to Pershing Square — every change
-    # is a high-conviction signal.
-    {"cik": "0002045724", "short": "Aschenbrenner (Situational Awareness)", "key": "leopold"},
+    # 6 quarters of 13F-HR filed since 2025-02. Concentration: NVDA + TSM +
+    # power/grid infra (CEG/VST/TLN) + select semis. Holdings count
+    # typically 15-30 names, similar density to Pershing Square — every
+    # change is a high-conviction signal.
+    {"cik": "0002045724", "short": "Aschenbrenner (Situational Awareness)", "key": "leopold",
+     "horizon": "medium", "style": "thematic_agi",     "signal_weight": 1.3,
+     "derivative_exposure_note":
+         "Aschenbrenner has publicly outlined a thesis around AI-driven "
+         "power demand (CEG/VST/TLN/BWXT). The 13F shows ONLY direct US "
+         "listed equity — most of his power/grid exposure is likely held "
+         "via total-return swaps which 13F does not report. Treat the "
+         "visible portfolio (semis-heavy) as ~50% of true thesis exposure."},
 ]
+
+
+# ── runtime lookup helper ────────────────────────────────────────
+
+
+WHALES_BY_KEY: Dict[str, Dict[str, Any]] = {w["key"]: w for w in WHALES}
+
+
+def whale_meta(key: str) -> Dict[str, Any]:
+    """Return horizon/style/signal_weight metadata for a whale_key,
+    or sensible defaults if unknown."""
+    w = WHALES_BY_KEY.get(key)
+    if not w:
+        return {"horizon": "unknown", "style": "unknown",
+                "signal_weight": 1.0, "short": key}
+    return {
+        "horizon":        w.get("horizon", "unknown"),
+        "style":          w.get("style", "unknown"),
+        "signal_weight":  w.get("signal_weight", 1.0),
+        "short":          w.get("short", key),
+        "derivative_exposure_note": w.get("derivative_exposure_note"),
+    }
+
+
+# ── horizon → emoji (for UI / Telegram bot) ──────────────────────
+
+
+HORIZON_EMOJI = {
+    "long":    "🐢",   # multi-year hold
+    "medium":  "🦅",   # months-year, conviction-driven
+    "short":   "🦊",   # high-turnover thematic
+    "quant":   "🤖",   # algorithmic / market-making
+    "unknown": "·",
+}
+
+
+def horizon_label(key: str) -> str:
+    """e.g. '🐢 long' — used in UI snippets."""
+    m = whale_meta(key)
+    h = m["horizon"]
+    return f"{HORIZON_EMOJI.get(h, '·')} {h}"
 
 
 # ── name → ticker mapping ────────────────────────────────────────
@@ -120,6 +203,9 @@ NAME_TO_TICKER: List[tuple[str, str]] = [
     ("TRADE DESK",                    "TTD"),
     ("ROKU INC",                      "ROKU"),
     ("ROBLOX CORP",                   "RBLX"),
+    # 2026-05-19: Cerebras Systems — AI chip startup, IPO'd
+    # late 2025. Aschenbrenner / SAR among early concentrated owners.
+    ("CEREBRAS SYSTEMS",              "CBRS"),
 ]
 
 
@@ -273,12 +359,17 @@ def diff_holdings(
         c_shares = c.get("shares") or 0
         p = prev_by_name.get(name)
         if p is None:
+            # 2026-05-19: store as old_shares=0 / new_shares=X so
+            # consumers can rely on uniform field names across all
+            # change types (was previously just 'shares' for new,
+            # breaking queries that joined on old/new).
             changes.append({
-                "type":    "new",
-                "ticker":  ticker,
-                "name":    c.get("nameOfIssuer"),
-                "shares":  c_shares,
-                "value_usd_k": c.get("value"),
+                "type":         "new",
+                "ticker":       ticker,
+                "name":         c.get("nameOfIssuer"),
+                "old_shares":   0,
+                "new_shares":   c_shares,
+                "value_usd_k":  c.get("value"),
             })
         else:
             p_shares = p.get("shares") or 0
@@ -313,10 +404,11 @@ def diff_holdings(
         if not ticker:
             continue
         changes.append({
-            "type":   "exit",
-            "ticker": ticker,
-            "name":   p.get("nameOfIssuer"),
-            "shares": p.get("shares"),
+            "type":       "exit",
+            "ticker":     ticker,
+            "name":       p.get("nameOfIssuer"),
+            "old_shares": p.get("shares") or 0,
+            "new_shares": 0,
         })
 
     return changes
@@ -342,9 +434,64 @@ def _already_emitted_change(
         return cur.fetchone() is not None
 
 
-def scan_whale(cik: str, short_name: str, key: str) -> Dict[str, Any]:
+def _emit_one_change(
+    *, cik: str, short_name: str, key: str,
+    ch: Dict[str, Any], curr_filing_date: str, prev_filing_date: str,
+) -> bool:
+    """Emit one diff entry as a signal_event. Returns True if emitted,
+    False if skipped (idempotency)."""
     from agent.finance.regime.signals import emit_event
 
+    if _already_emitted_change(key, ch["ticker"], ch["type"], curr_filing_date):
+        return False
+
+    sev = "high" if ch["type"] in ("new", "exit") else "med"
+
+    action_zh = {
+        "new":      "新建仓",
+        "exit":     "清仓",
+        "increase": f"加仓 {ch.get('delta_pct', 0) * 100:+.0f}%",
+        "decrease": f"减仓 {ch.get('delta_pct', 0) * 100:+.0f}%",
+    }[ch["type"]]
+
+    # 2026-05-19: enrich title with horizon emoji so UI/Telegram bot
+    # show "🐢 Buffett ..." vs "🤖 Citadel ..." at a glance.
+    meta = whale_meta(key)
+    emoji = HORIZON_EMOJI.get(meta["horizon"], "·")
+    title = f"{emoji} {short_name} {action_zh} {ch['ticker']}"
+
+    body = {
+        "whale":                  short_name,
+        "whale_key":              key,
+        "change_type":            ch["type"],
+        "filing_date":            curr_filing_date,
+        "previous_filing_date":   prev_filing_date,
+        # whale metadata embedded so downstream consumers can route /
+        # weight without joining back to WHALES_BY_KEY
+        "whale_horizon":          meta["horizon"],
+        "whale_style":            meta["style"],
+        "whale_signal_weight":    meta["signal_weight"],
+        "derivative_exposure_note": meta.get("derivative_exposure_note"),
+        **ch,
+    }
+
+    emit_event(
+        "13f",
+        signal_type=f"13f_{ch['type']}",
+        severity=sev,
+        ticker=ch["ticker"],
+        title=title,
+        body=body,
+        source_url=(
+            f"https://www.sec.gov/cgi-bin/browse-edgar"
+            f"?action=getcompany&CIK={cik}&type=13F-HR"
+        ),
+        source_timestamp=curr_filing_date,
+    )
+    return True
+
+
+def scan_whale(cik: str, short_name: str, key: str) -> Dict[str, Any]:
     try:
         filings = _fetch_recent_filings(cik)
     except Exception as exc:
@@ -368,44 +515,12 @@ def scan_whale(cik: str, short_name: str, key: str) -> Dict[str, Any]:
     changes = diff_holdings(prev_h, curr_h)
     n_emitted = 0
     for ch in changes:
-        if _already_emitted_change(key, ch["ticker"], ch["type"],
-                                   latest["filing_date"]):
-            continue
-
-        if ch["type"] in ("new", "exit"):
-            sev = "high"
-        else:
-            sev = "med"
-
-        action_zh = {
-            "new":      "新建仓",
-            "exit":     "清仓",
-            "increase": f"加仓 {ch.get('delta_pct', 0)*100:+.0f}%",
-            "decrease": f"减仓 {ch.get('delta_pct', 0)*100:+.0f}%",
-        }[ch["type"]]
-        title = f"{short_name} {action_zh} {ch['ticker']}"
-
-        emit_event(
-            "13f",
-            signal_type=f"13f_{ch['type']}",
-            severity=sev,
-            ticker=ch["ticker"],
-            title=title,
-            body={
-                "whale":          short_name,
-                "whale_key":      key,
-                "change_type":    ch["type"],
-                "filing_date":    latest["filing_date"],
-                "previous_filing_date": previous["filing_date"],
-                **ch,
-            },
-            source_url=(
-                f"https://www.sec.gov/cgi-bin/browse-edgar"
-                f"?action=getcompany&CIK={cik}&type=13F-HR"
-            ),
-            source_timestamp=latest["filing_date"],
-        )
-        n_emitted += 1
+        if _emit_one_change(
+            cik=cik, short_name=short_name, key=key, ch=ch,
+            curr_filing_date=latest["filing_date"],
+            prev_filing_date=previous["filing_date"],
+        ):
+            n_emitted += 1
 
     return {
         "whale":           short_name,
@@ -414,6 +529,92 @@ def scan_whale(cik: str, short_name: str, key: str) -> Dict[str, Any]:
         "n_holdings":      len(curr_h),
         "n_changes":       len(changes),
         "n_emitted":       n_emitted,
+    }
+
+
+def backfill_whale_history(key: str, n_quarters: int = 5) -> Dict[str, Any]:
+    """Walk back N quarters of 13F filings for a whale; emit signal_events
+    for each adjacent (older, newer) diff.
+
+    Idempotent — re-running won't duplicate events (relies on the
+    (key, ticker, type, filing_date) check in _already_emitted_change).
+
+    Use when you just added a whale to WHALES and want their historical
+    moves in the DB, or after you re-extend the NAME_TO_TICKER table.
+
+    Returns per-pair summary.
+    """
+    w = WHALES_BY_KEY.get(key)
+    if not w:
+        return {"error": f"unknown whale key: {key!r}",
+                "known_keys": list(WHALES_BY_KEY.keys())}
+    cik = w["cik"]
+    short_name = w["short"]
+
+    try:
+        filings = _fetch_recent_filings(cik, limit=n_quarters + 1)
+    except Exception as exc:
+        return {"whale": short_name, "error": f"fetch_filings: {exc}"}
+
+    if len(filings) < 2:
+        return {"whale": short_name, "skip": "need_≥2_filings",
+                "n_filings": len(filings)}
+
+    # Cache holdings per filing to avoid re-fetching when one filing
+    # appears as both 'curr' and 'prev' in adjacent pairs.
+    holdings_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+    def _hold(filing: Dict[str, Any]) -> List[Dict[str, Any]]:
+        acc = filing["accession"]
+        if acc not in holdings_cache:
+            try:
+                holdings_cache[acc] = _fetch_holdings(cik, acc)
+            except Exception:
+                holdings_cache[acc] = []
+            time.sleep(0.3)  # respect SEC 10 req/s
+        return holdings_cache[acc]
+
+    per_pair = []
+    n_emitted_total = 0
+
+    # filings[0] is most recent; pair (i, i+1) = (newer, older)
+    for i in range(min(n_quarters, len(filings) - 1)):
+        newer = filings[i]
+        older = filings[i + 1]
+        curr_h = _hold(newer)
+        prev_h = _hold(older)
+        if not curr_h or not prev_h:
+            per_pair.append({
+                "newer_date": newer["filing_date"],
+                "older_date": older["filing_date"],
+                "skip": "empty_holdings",
+            })
+            continue
+
+        changes = diff_holdings(prev_h, curr_h)
+        n_pair_emit = 0
+        for ch in changes:
+            if _emit_one_change(
+                cik=cik, short_name=short_name, key=key, ch=ch,
+                curr_filing_date=newer["filing_date"],
+                prev_filing_date=older["filing_date"],
+            ):
+                n_pair_emit += 1
+        per_pair.append({
+            "newer_date":   newer["filing_date"],
+            "older_date":   older["filing_date"],
+            "n_holdings":   len(curr_h),
+            "n_changes":    len(changes),
+            "n_emitted":    n_pair_emit,
+        })
+        n_emitted_total += n_pair_emit
+
+    return {
+        "whale":      short_name,
+        "key":        key,
+        "n_quarters_processed": len(per_pair),
+        "n_emitted_total":      n_emitted_total,
+        "per_pair":   per_pair,
     }
 
 
