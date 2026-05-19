@@ -63,7 +63,16 @@ def _persist_facts(*, ticker: str, fact_type: str,
     of the latest 10-K. Stale entries from a year-old filing should
     not linger alongside the current ones. Versioning across filings
     is a separate concern (use stock_profile_versions if needed).
+
+    2026-05-19 SAFETY: when verified_items is empty (extractor produced
+    nothing), DO NOT delete prior facts. Reason: a transient parsing
+    failure (HTML structure changed, LLM blip, section slicer bug)
+    should not destroy good data from earlier successful runs. The
+    sparse-better-than-fabricated rule still holds — empty output just
+    means "no update this run", not "this ticker has no competitors."
     """
+    if not verified_items:
+        return 0
     ensure_schema()
     now = datetime.now(timezone.utc).isoformat()
     with connect() as conn:
@@ -161,7 +170,27 @@ def get_anchored_facts(ticker: str) -> dict[str, Any]:
 # the pipeline (audit → fetch-section → extract → validate → persist)
 # is identical across types.
 def _extract_competitors_from(s) -> tuple[list[dict], Any]:
-    return extract_competitors(s.item1_competition, s.item1a_risks)
+    # 2026-05-19: fall back to full Item 1 when the Competition
+    # subsection slicer fails. SEC HTML formats subsection headers
+    # inconsistently — e.g. GOOGL / MU / AMZN / WMT don't have a
+    # standalone "Competition" line that _slice_subsection can match —
+    # but the full Item 1 still contains competitor names the LLM can
+    # extract. Truncate to keep prompt cost bounded.
+    competition = s.item1_competition
+    if not competition or len(competition) < 500:
+        if s.item1_full and len(s.item1_full) >= 500:
+            competition = s.item1_full[:40_000]   # cap for prompt budget
+    return extract_competitors(competition, s.item1a_risks)
+
+
+def _extract_suppliers_from_with_fallback(s) -> tuple[list[dict], Any]:
+    """Same idea as competitors — fall back to item1_full when the
+    suppliers subsection can't be located by its many alias names."""
+    suppliers = s.item1_suppliers
+    if not suppliers or len(suppliers) < 500:
+        if s.item1_full and len(s.item1_full) >= 500:
+            suppliers = s.item1_full[:40_000]
+    return extract_suppliers(suppliers)
 
 
 def _extract_risks_from(s) -> tuple[list[dict], Any]:
@@ -177,7 +206,7 @@ def _extract_customers_from(s) -> tuple[list[dict], Any]:
 
 
 def _extract_suppliers_from(s) -> tuple[list[dict], Any]:
-    return extract_suppliers(s.item1_suppliers)
+    return _extract_suppliers_from_with_fallback(s)
 
 
 def _extract_segments_from(s) -> tuple[list[dict], Any]:

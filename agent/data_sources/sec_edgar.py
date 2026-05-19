@@ -177,9 +177,37 @@ def filing_url(cik: int, accession: str, primary_doc: str) -> str:
 # ─── HTML → text + section slicing ──────────────────────────────
 
 def _html_to_text(html: str) -> str:
-    """Strip HTML to readable text. Preserves paragraph structure."""
+    """Strip HTML to readable text. Preserves paragraph structure.
+
+    2026-05-19 fixes for SEC EDGAR oddities that broke section
+    detection on MSFT/NVDA/TSLA/etc:
+
+    - SEC filings often wrap words in inline tags for styling
+      (``<b>RIS</b><b>K FACTORS</b>``), which after get_text(separator="\n")
+      becomes ``RIS\nK FACTORS``. Mid-word newlines like this broke the
+      `\\brisk\\s*factors\\b` regex used to anchor section bounds —
+      the parser only saw the TOC entry (``Item 1A.\\nRisk Factors``)
+      and used it as the body start, silently truncating Item 1 before
+      the Competition subsection.
+    - Non-breaking spaces (``\\xa0``) similarly fragment regex matches
+      that expect plain spaces.
+
+    Normalization order matters: NBSP → space first, then re-glue
+    mid-word newlines (single newline between two short letter runs is
+    almost always a styling artifact), then collapse whitespace.
+    """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text(separator="\n")
+    # NBSP and other whitespace unicode → regular space
+    text = text.replace("\xa0", " ").replace(" ", " ").replace("​", "")
+    # Re-glue mid-word breaks: a letter run, newline(s), another letter
+    # run where the join would be a plausible word continuation.
+    # We use a heuristic: if both sides are letters, no spaces, and the
+    # next chunk continues lowercase or is short uppercase (≤5 chars),
+    # treat as a single word that was split for styling.
+    def _glue(m: re.Match) -> str:
+        return m.group(1) + m.group(2)
+    text = re.sub(r"([A-Za-z]{1,5})\n+([A-Za-z]{1,5})\b", _glue, text)
     # Normalize whitespace — collapse 3+ newlines to 2, multi-space to single
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
@@ -211,8 +239,13 @@ def slice_10k_sections(html: str, source_url: str,
     # always present, distinctly named, and bounds Item 1 above and
     # Item 1B/2/3 below). For each candidate header position, the
     # "real body" is the one with the largest gap to the next anchor.
+    # 2026-05-19: trailing \b on risk_factors / etc dropped — SEC HTML
+    # often has no whitespace between section header and following body
+    # text after BeautifulSoup's separator='\n' + our mid-word join
+    # (e.g. "RISK FACTORSOur operations" — no space, no boundary). The
+    # leading \bitem\s*1a\b still constrains false positives.
     item1a_starts = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*1a\b\.?\s*\n*\s*risk\s*factors\b", text)]
+        r"(?i)\bitem\s*1a\b\.?\s*\n*\s*risk\s*factors", text)]
     next_section_starts = [m.start() for m in re.finditer(
         r"(?i)\bitem\s*(1b|2|3)\b\.?\s*\n*\s*"
         r"(unresolved\s*staff\s*comments|properties|legal\s*proceedings)",
@@ -297,6 +330,22 @@ _ITEM1_NEXT_SUBSECTION_PATTERN = (
     r"manufacturing|supply\s*chain|backlog|product\s*development|"
     r"cybersecurity|insurance)\b"
 )
+# 2026-05-19: STRICT version — keyword must be alone on its line
+# (followed only by whitespace / punctuation, then end-of-line).
+# Used as cutoff bound inside `_slice_subsection` so a bulleted
+# competitor description ("• suppliers and licensors...") doesn't
+# falsely terminate the Competition subsection.
+_ITEM1_NEXT_SUBSECTION_PATTERN_STRICT = (
+    r"(?im)^\s*(government\s*regulation|regulatory(?:\s*matters)?|"
+    r"intellectual\s*property|human\s*capital|employees|"
+    r"available\s*information|environmental|seasonality|"
+    r"sustainability|properties|sales\s*and\s*marketing|"
+    r"research\s*and\s*development|corporate\s*information|"
+    r"competition|customers?|suppliers?|sources\s*and\s*availability"
+    r"(?:\s*of\s*materials?)?|"
+    r"manufacturing|supply\s*chain|backlog|product\s*development|"
+    r"cybersecurity|insurance|patents\s*and\s*proprietary)\s*[.:]?\s*$"
+)
 
 
 def _slice_subsection(parent_text: Optional[str],
@@ -304,23 +353,43 @@ def _slice_subsection(parent_text: Optional[str],
     """Inside a parent section text, find a subsection by its STANDALONE
     header and return its content up to the next subsection header.
 
-    Strict standalone-only match (not inline) to avoid catching the
-    word "customers" inside body prose like "we serve our customers
-    by…". If a 10-K doesn't structure a section with a header,
-    returning None is the right honest answer — the extractor will
-    receive None and emit []. Sparse > fabricated.
+    2026-05-19 fix: previously the next-subsection terminator pattern
+    `_ITEM1_NEXT_SUBSECTION_PATTERN` used `^\\s*({keyword})\\b` —
+    matched ANY line starting with `suppliers and licensors...` mid-
+    section. NVDA's Competition subsection legitimately starts a
+    bulleted competitor list with `• suppliers and licensors of
+    hardware...such as AMD, Intel, ...`, and the matcher cut the
+    section AT that bullet, dropping every named competitor below.
 
-    Returns None if no header found. Capped at ~12K chars to keep
-    extractor prompts bounded.
+    Real subsection headers are STANDALONE — keyword + optional
+    punctuation + end-of-line, nothing else. Tighten the terminator
+    regex to require this: keyword followed by `[\\s.:]*$` (i.e., the
+    rest of the line is whitespace / punctuation only).
+
+    Returns None if no opening header found. Sparse > fabricated.
     """
     if not parent_text:
         return None
     standalone = re.compile(rf"(?im)^\s*{header_pattern}\s*$")
     cm = standalone.search(parent_text)
     if cm is None:
-        return None
+        # 2026-05-19: CamelCase fallback — some filers (AAPL etc) emit
+        # `<font>Competition</font><font>The markets...</font>` which
+        # BeautifulSoup flattens to "CompetitionThe markets" with no
+        # separator. Recognize this by matching the keyword as a prefix
+        # immediately followed by an uppercase letter (start of body).
+        camel = re.compile(rf"(?im)^\s*({header_pattern})(?=[A-Z])")
+        cm = camel.search(parent_text)
+        if cm is None:
+            return None
     after = parent_text[cm.start():]
-    next_sub = re.search(_ITEM1_NEXT_SUBSECTION_PATTERN, after[100:])
+    # Tighter: keyword must be alone on its line for it to count as
+    # the NEXT subsection header (cutting bound).
+    strict_next = re.compile(_ITEM1_NEXT_SUBSECTION_PATTERN_STRICT)
+    next_sub = strict_next.search(after[100:])
+    # Cap aggressively raised: NVDA-class filings have ~3-5K chars of
+    # competitor description (bulleted list with company names). 12K
+    # was already enough, keep it.
     cutoff = (next_sub.start() + 100) if next_sub else min(12_000, len(after))
     return after[:cutoff].strip()
 
