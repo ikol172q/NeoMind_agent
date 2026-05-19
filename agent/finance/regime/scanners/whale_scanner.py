@@ -67,6 +67,15 @@ WHALES = [
     # quarterly filing here. A future ark_daily_scanner can layer on
     # intra-quarter changes if we find a stable scrape path.
     {"cik": "0001697748", "short": "Cathie Wood (ARK)",        "key": "cathie"},
+    # 2026-05-19: Leopold Aschenbrenner / Situational Awareness LP.
+    # Thematic AGI / AI-infra long fund founded mid-2024 (Collisons +
+    # Daniel Gross + Nat Friedman as backers, ~$1.5B+ AUM by 2025-Q3).
+    # 6 quarters of 13F-HR filed since 2025-02 (CIK verified via SEC
+    # EDGAR company search). Concentration: NVDA + TSM + power/grid
+    # infra (CEG/VST/TLN) + select semis. Holdings count typically
+    # 15-30 names, similar density to Pershing Square — every change
+    # is a high-conviction signal.
+    {"cik": "0002045724", "short": "Aschenbrenner (Situational Awareness)", "key": "leopold"},
 ]
 
 
