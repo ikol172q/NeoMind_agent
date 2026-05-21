@@ -53,6 +53,7 @@ import { TodaysSignalsWidget } from '@/components/widgets/TodaysSignalsWidget'
 import { PriorityListWidget } from '@/components/widgets/PriorityListWidget'
 import { NewsFlowWidget } from '@/components/widgets/NewsFlowWidget'
 import { CatalystCalendarWidget } from '@/components/widgets/CatalystCalendarWidget'
+import { InvestmentPhilosophyWidget } from '@/components/widgets/InvestmentPhilosophyWidget'
 import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
 import { ChatPanel } from '@/components/chat/ChatPanel'
@@ -336,6 +337,16 @@ export function StrategiesTab({
             )
           }
         />
+      </div>
+
+      {/* 2026-05-19: investment philosophy at the very top — the
+          "Ulysses contract" the user binds themselves to. Industry-
+          standard IPS structure adapted for concentrated AI investor
+          with hedge needs. Living document — every save bumps version.
+          Read in 5 min when emotion runs hot, edit incrementally as
+          thinking evolves. */}
+      <div className="max-w-[1100px] mx-auto">
+        <InvestmentPhilosophyWidget />
       </div>
 
       {/* 2026-05-16 (Need #4): catalyst calendar — 30d earnings + macro

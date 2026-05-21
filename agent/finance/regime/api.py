@@ -394,6 +394,293 @@ def list_whales(
     }
 
 
+@router.get("/whales/{key}/research")
+def get_whale_research(key: str) -> Dict[str, Any]:
+    """Latest research summary for a whale (Tavily + LLM synthesis,
+    URL-validated). Returns 404-style empty dict if never generated."""
+    from agent.finance.regime.whale_research import get_active_summary
+    s = get_active_summary(key)
+    if not s:
+        return {
+            "whale_key":    key,
+            "exists":       False,
+            "summary":      None,
+            "generated_at": None,
+        }
+    s["exists"] = True
+    return s
+
+
+@router.post("/whales/{key}/research/regenerate")
+async def regenerate_whale_research(key: str) -> Dict[str, Any]:
+    """Trigger a fresh research generation for one whale (Tavily search +
+    LLM + URL validation). Synchronous — typically 30-90 seconds. Stores
+    the new version with is_active=1 and marks previous as is_active=0."""
+    from agent.finance.regime.whale_research import generate_summary
+    try:
+        summary = await generate_summary(key)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc))
+    except Exception as exc:
+        logger.exception("whale research regen failed for %s", key)
+        raise HTTPException(500, f"regeneration failed: {exc}")
+    return {
+        "whale_key":   key,
+        "regenerated": True,
+        "summary":     summary,
+    }
+
+
+@router.get("/whales/{key}/research/history")
+def get_whale_research_history(
+    key: str, limit: int = Query(10, ge=1, le=50),
+) -> Dict[str, Any]:
+    """List past versions of research summaries (most recent first).
+    Lets the user diff the agent's read of a whale over time."""
+    from agent.finance.regime.whale_research import list_history
+    rows = list_history(key, limit=limit)
+    return {"whale_key": key, "n": len(rows), "history": rows}
+
+
+@router.get("/whales_by_whale")
+def get_signals_by_whale(
+    scanner: str = Query("13f", description="signal scanner_name to filter (default 13f)"),
+    limit_per_whale: int = Query(10, ge=1, le=200,
+                                  description="Top N most-recent events per whale"),
+) -> Dict[str, Any]:
+    """Per-whale top-N events, all 30 whales represented if they have any history.
+
+    Solves the 'firehose ORDER BY detected_at LIMIT N' problem where 2-3
+    whales with heavy filings monopolize the slots and others vanish.
+    Uses SQLite window functions (ROW_NUMBER PARTITION BY whale_key) so
+    the query is a single round-trip regardless of whale count.
+
+    Frontend uses this for the 13F tab's "by whale" view; the timeline
+    view still uses the firehose endpoint.
+    """
+    from agent.finance.persistence import connect
+    from agent.finance.regime.scanners.whale_scanner import WHALES_BY_KEY
+
+    sql = """
+        WITH ranked AS (
+            SELECT
+                event_id, scanner_name, signal_type, severity, ticker,
+                title, body_json, source_timestamp, source_url, detected_at,
+                json_extract(body_json, '$.whale_key') AS whale_key,
+                ROW_NUMBER() OVER (
+                    PARTITION BY json_extract(body_json, '$.whale_key')
+                    ORDER BY source_timestamp DESC, detected_at DESC
+                ) AS rn
+            FROM signal_events
+            WHERE scanner_name = ?
+        )
+        SELECT * FROM ranked WHERE rn <= ?
+        ORDER BY whale_key, source_timestamp DESC
+    """
+    by_whale: Dict[str, List[Dict[str, Any]]] = {}
+    with connect() as conn:
+        rows = conn.execute(sql, (scanner, int(limit_per_whale))).fetchall()
+    for r in rows:
+        d = dict(r)
+        wk = d.get("whale_key") or "unknown"
+        if d.get("body_json"):
+            try:
+                d["body"] = json.loads(d["body_json"])
+            except Exception:
+                d["body"] = None
+            d.pop("body_json", None)
+        d.pop("rn", None)
+        by_whale.setdefault(wk, []).append(d)
+
+    # Build whale groups, enrich with current metadata. Include all known
+    # whales even if they have 0 events so the UI can render placeholder rows.
+    groups: List[Dict[str, Any]] = []
+    seen: set = set()
+    for key, events in by_whale.items():
+        if key == "unknown":
+            continue
+        w = WHALES_BY_KEY.get(key)
+        if not w:
+            continue
+        seen.add(key)
+        groups.append({
+            "whale_key":     key,
+            "whale":         w["short"],
+            "horizon":       w.get("horizon", "unknown"),
+            "bias":          w.get("bias", "unknown"),
+            "style":         w.get("style", "unknown"),
+            "signal_weight": w.get("signal_weight", 1.0),
+            "n_events":      len(events),
+            "events":        events,
+        })
+    # Add zero-event placeholders for whales with no history yet
+    for key, w in WHALES_BY_KEY.items():
+        if key in seen:
+            continue
+        groups.append({
+            "whale_key":     key,
+            "whale":         w["short"],
+            "horizon":       w.get("horizon", "unknown"),
+            "bias":          w.get("bias", "unknown"),
+            "style":         w.get("style", "unknown"),
+            "signal_weight": w.get("signal_weight", 1.0),
+            "n_events":      0,
+            "events":        [],
+        })
+    # Sort: events-having whales by latest event desc; empty by name asc.
+    has_events = [g for g in groups if g["events"]]
+    no_events  = [g for g in groups if not g["events"]]
+    has_events.sort(
+        key=lambda g: g["events"][0].get("source_timestamp", "") or "",
+        reverse=True,
+    )
+    no_events.sort(key=lambda g: g["whale"].lower())
+
+    return {
+        "scanner":          scanner,
+        "limit_per_whale":  limit_per_whale,
+        "n_whales_with_events": len(has_events),
+        "n_whales_total":   len(WHALES_BY_KEY),
+        "whales":           has_events + no_events,
+    }
+
+
+@router.get("/whales/{key}")
+def get_whale_detail(key: str) -> Dict[str, Any]:
+    """Detailed whale profile for the drawer: curated bilingual content +
+    live recent 13F moves from signal_events. News fetched separately
+    via /whales/{key}/news (async + slower).
+
+    Powers the WhaleProfileDrawer that opens when user clicks any whale
+    name in the dashboard. Designed so the drawer renders instantly
+    with curated + 13F, then a second fetch fills the news section.
+    """
+    from agent.finance.regime.scanners.whale_scanner import (
+        WHALES_BY_KEY, whale_meta, HORIZON_EMOJI, BIAS_EMOJI,
+    )
+    from agent.finance.regime.whale_profiles import get_profile
+    from agent.finance.persistence import connect
+
+    w = WHALES_BY_KEY.get(key)
+    if not w:
+        raise HTTPException(404, f"unknown whale: {key}")
+
+    profile = get_profile(key)
+
+    # Recent 13F moves for this whale (last 24 months max)
+    recent_moves: List[Dict[str, Any]] = []
+    try:
+        with connect() as conn:
+            rows = conn.execute(
+                "SELECT event_id, signal_type, severity, ticker, title, "
+                "       body_json, source_timestamp, source_url "
+                "  FROM signal_events "
+                " WHERE scanner_name = '13f' "
+                "   AND body_json LIKE ? "
+                " ORDER BY source_timestamp DESC LIMIT 30",
+                (f'%"whale_key": "{key}"%',),
+            ).fetchall()
+        for r in rows:
+            try:
+                body = json.loads(r["body_json"]) if r["body_json"] else {}
+            except Exception:
+                body = {}
+            recent_moves.append({
+                "event_id":         r["event_id"],
+                "signal_type":      r["signal_type"],
+                "ticker":           r["ticker"],
+                "title":            r["title"],
+                "severity":         r["severity"],
+                "filing_date":      r["source_timestamp"],
+                "change_type":      body.get("change_type"),
+                "delta_pct":        body.get("delta_pct"),
+                "current_shares":   body.get("current_shares"),
+                "previous_shares":  body.get("previous_shares"),
+                "source_url":       r["source_url"],
+            })
+    except Exception as exc:
+        logger.warning("recent_moves lookup failed for %s: %s", key, exc)
+
+    return {
+        "key":            w["key"],
+        "name":           w["short"],
+        "cik":            w["cik"],
+        "horizon":        w.get("horizon", "unknown"),
+        "horizon_emoji":  HORIZON_EMOJI.get(w.get("horizon", "unknown"), "·"),
+        "style":          w.get("style", "unknown"),
+        "signal_weight":  w.get("signal_weight", 1.0),
+        "bias":           w.get("bias", "unknown"),
+        "bias_emoji":     BIAS_EMOJI.get(w.get("bias", "unknown"), "·"),
+        "philosophy":     w.get("philosophy"),
+        "famous_for":     w.get("famous_for"),
+        "letters_url":    w.get("letters_url"),
+        "derivative_note": w.get("derivative_exposure_note"),
+        "profile":        profile,           # bilingual curated content or None
+        "recent_moves":   recent_moves,
+        "n_recent_moves": len(recent_moves),
+    }
+
+
+@router.get("/whales/{key}/news")
+async def get_whale_news(
+    key: str,
+    limit: int = Query(5, ge=1, le=10),
+) -> Dict[str, Any]:
+    """Latest news for a whale via Tavily-primary search engine.
+
+    Async endpoint — typically 1-3 seconds. Drawer fires this AFTER the
+    main /whales/{key} call so the curated profile + 13F render instantly
+    and the news section shows a spinner while this runs.
+
+    Gracefully degrades if Tavily / engine unavailable — returns empty
+    items + a search-link fallback the user can click.
+    """
+    from agent.finance.regime.scanners.whale_scanner import WHALES_BY_KEY
+
+    w = WHALES_BY_KEY.get(key)
+    if not w:
+        raise HTTPException(404, f"unknown whale: {key}")
+
+    # The "short" field is already "PM (Fund)" pattern e.g. "Buffett (Berkshire)",
+    # which gives Tavily enough to disambiguate from coincidental name matches.
+    query = w["short"]
+
+    items: List[Dict[str, Any]] = []
+    sources_used: List[str] = []
+    error: Optional[str] = None
+    try:
+        from agent.search.engine import UniversalSearchEngine
+        engine = UniversalSearchEngine()
+        result = await engine.search_advanced(
+            query=query,
+            max_results=limit,
+            extract_content=False,
+            expand_queries=False,
+        )
+        items = [{
+            "title":     it.title,
+            "url":       it.url,
+            "source":    it.source,
+            "snippet":   (it.snippet or "")[:300],
+            "published": it.published.isoformat() if it.published else None,
+        } for it in (result.items or [])[:limit]]
+        sources_used = list(result.sources_used or [])
+    except Exception as exc:
+        logger.warning("whale news search failed for %s: %s", key, exc)
+        error = str(exc)
+
+    fallback_url = f"https://news.google.com/search?q={query.replace(' ', '+')}"
+    return {
+        "key":           key,
+        "query":         query,
+        "items":         items,
+        "sources_used":  sources_used,
+        "total":         len(items),
+        "error":         error,
+        "fallback_url":  fallback_url,
+    }
+
+
 @router.post("/scan/congressional")
 def post_scan_congressional(
     lookback_days: int = Query(30, ge=1, le=365),

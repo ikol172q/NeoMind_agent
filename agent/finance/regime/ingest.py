@@ -40,9 +40,8 @@ def _import_yfinance() -> Any:
         import yfinance as yf  # type: ignore
     except ImportError as e:
         raise ImportError(
-            "yfinance not installed.  In the host venv: "
-            "`/Users/localuser/Desktop/Investment/cowork/"
-            "neomind-fin-platform/.venv-host/bin/pip install yfinance`"
+            "yfinance not installed. Install it into your host venv: "
+            "`<venv>/bin/pip install yfinance`"
         ) from e
     return yf
 

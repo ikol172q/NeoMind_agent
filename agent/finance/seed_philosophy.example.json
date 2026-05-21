@@ -1,0 +1,16 @@
+{
+  "_comment": "Copy this to ~/.neomind/fin/seed_philosophy.json and fill in your PERSONAL Investment Policy Statement. That path is gitignored — your real holdings / position sizes / drawdown tolerance never enter git. Alternatively, just edit via the IPS editor UI (writes to the DB, also gitignored).",
+  "version": "v1.0",
+  "north_star": "用一句话: 为什么投资 + 目标 CAGR + 能承受的最大 drawdown",
+  "identity": "一段话: 你是什么类型的投资者, 持有期偏好, 决策风格, edge 来源",
+  "beliefs_json": "[{\"claim\": \"可证伪的核心信念\", \"why\": \"为什么相信\", \"falsified_if\": \"什么证据会推翻它\"}]",
+  "circle_competence": "会做什么 / 不会做什么",
+  "time_horizon": "默认持有期 + core vs 试探仓的不同规则",
+  "sizing_rules_json": "{\"max_single_position_pct\": 0.30, \"max_sector_pct\": 0.65, \"cash_floor_pct\": 0.05, \"max_new_position_pct\": 0.05, \"notes\": \"你的仓位上限规则\"}",
+  "entry_rules": "建仓前必须满足的条件清单",
+  "exit_rules": "stop-loss / thesis-break / profit-taking 规则",
+  "hedge_plan": "主线 thesis 失败的对冲方案",
+  "disagreement_protocol": "跟 smart money 反向时的处理流程",
+  "review_cadence": "monthly",
+  "change_note": "v1.0 — my personal IPS"
+}

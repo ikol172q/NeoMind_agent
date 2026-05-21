@@ -1,6 +1,6 @@
 # Lattice + Portfolio Onion Integration — Design Doc v2
 
-Status: v2 drafted 2026-05-10 by Claude Sonnet 4.6 + localuser
+Status: v2 drafted 2026-05-10 by Claude Sonnet 4.6 + repo owner
 Last revisit: TBD (see §10 triggers)
 
 ## Changelog
@@ -683,7 +683,7 @@ without slowing agility.
 
 ## §13. What I almost got wrong (lessons preserved)
 
-For 6-months-from-now Claude / localuser who looks back at this plan and asks "why
+For 6-months-from-now Claude / the repo owner who looks back at this plan and asks "why
 this way?":
 
 1. **v1 proposed Design B as a single-pillar viz solution.** User correctly pointed out

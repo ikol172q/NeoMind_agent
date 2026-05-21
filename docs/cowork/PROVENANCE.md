@@ -1,8 +1,8 @@
 # cowork provenance
 
 This is the **NeoMind_agent** repo cloned into the user's `Investment/`
-workspace, isolated from the live editing happening in
-`/Users/localuser/Desktop/NeoMind_agent`.
+workspace, isolated from the live editing happening in the primary
+working copy.
 
 - branch: `feature/fin-data-platform` (from main @ b26bc6d)
 - remotes:

@@ -19,8 +19,8 @@ URL provenance — anti-hallucination rule (see
   - Every douban/amazon/jd/dangdang specific subject ID URL in this
     file MUST be verified live via WebFetch before commit. The
     earlier 2026-05-03 audit caught 5 fabricated douban IDs that
-    pointed to unrelated books — see
-    `~/.claude/projects/-Users-localuser/memory/feedback_url_fabrication_in_seeds.md`.
+    pointed to unrelated books (see the url-fabrication anti-pattern
+    note in the project's anti-hallucination memory).
   - When in doubt, prefer search-query URL forms (e.g.
     `search.douban.com/book/subject_search?search_text=...`) over
     deep-link IDs. Search URLs degrade gracefully; bad IDs lie.

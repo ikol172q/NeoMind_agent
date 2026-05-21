@@ -2009,6 +2009,15 @@ def create_app(
     except Exception as exc:  # pragma: no cover
         logger.warning("plaid router unavailable: %s", exc)
 
+    # 2026-05-19: personal investment philosophy (Ulysses contract / IPS).
+    # Displayed at top of Strategies tab; agent references it when
+    # discussing decisions to keep user accountable to their own thesis.
+    try:
+        from agent.finance.investment_philosophy import build_philosophy_router
+        app.include_router(build_philosophy_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("philosophy router unavailable: %s", exc)
+
     # 2026-05-17: Strategy signals compiler — bridge from NeoMind slow
     # loop (you + Claude + scanners) into deterministic execution
     # frameworks (QuantConnect / Lumibot / Nautilus). Compiles thesis +
@@ -2190,6 +2199,36 @@ def create_app(
         engine.reset(initial_capital=initial_capital)
         _persist(engine)
         return {"project_id": project_id, "reset": True}
+
+    # ── Admin: self-restart ────────────────────────────────────────
+    #
+    # POST /api/admin/restart — replaces the current process via
+    # os.execv. The HTTP 200 returns BEFORE the exec so the client
+    # gets confirmation; a background thread fires the exec ~600ms
+    # later so the response has time to flush.
+    #
+    # No supervisor (launchd/systemd) needed — execv preserves the
+    # PID and reboots the Python module in place.
+    @app.post("/api/admin/restart")
+    def admin_restart() -> Dict[str, Any]:
+        import os
+        import sys
+        import threading
+
+        def _do_exec() -> None:
+            # Re-launch using the same interpreter + same module + same argv
+            # so the new process inherits host/port flags.
+            os.execv(sys.executable, [sys.executable, "-m",
+                                       "agent.finance.dashboard_server",
+                                       *sys.argv[1:]])
+
+        # 600ms delay lets the JSON response flush to the client.
+        threading.Timer(0.6, _do_exec).start()
+        return {
+            "restarting": True,
+            "pid":        os.getpid(),
+            "hint":       "客户端轮询 /api/health 等待恢复 (~3-5s)",
+        }
 
     return app
 

@@ -1935,6 +1935,122 @@ export function useTodaySignals(limit: number = 3) {
   })
 }
 
+// 2026-05-19: per-whale top-N (solves the firehose problem where 2-3
+// busy whales monopolize the latest-N slots and others vanish).
+// Backend uses SQLite window function so it's a single round-trip.
+export interface WhaleGroupedSignals {
+  whale_key:     string
+  whale:         string
+  horizon:       string
+  bias:          string
+  style:         string
+  signal_weight: number
+  n_events:      number
+  events:        SignalEvent[]
+}
+export function useSignalsByWhale(opts: {
+  scanner?: string
+  limit_per_whale?: number
+} = {}) {
+  const { scanner = '13f', limit_per_whale = 10 } = opts
+  return useQuery({
+    queryKey: ['signals_by_whale', scanner, limit_per_whale],
+    queryFn: () => {
+      const params = new URLSearchParams()
+      params.set('scanner', scanner)
+      params.set('limit_per_whale', String(limit_per_whale))
+      return fetchJSON<{
+        scanner: string
+        limit_per_whale: number
+        n_whales_with_events: number
+        n_whales_total: number
+        whales: WhaleGroupedSignals[]
+      }>(`/api/regime/whales_by_whale?${params}`)
+    },
+    staleTime: 30_000,
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+// 2026-05-19: per-whale research summary (Tavily + LLM synthesis +
+// URL-validated). One row per generation, latest = is_active.
+export interface WhaleResearchValidatedLink {
+  url:          string
+  http_status?: number | null
+  ok:           boolean
+  validated_at: string
+  error?:       string
+}
+export interface WhaleResearchNewsItem {
+  title:     string
+  url:       string
+  published: string
+  source:    string
+  summary:   string
+  relevance: string
+}
+export interface WhaleResearchSummary {
+  investment_logic:        string
+  aum_market_position:     string
+  recent_moves_synthesis:  string
+  recent_news:             WhaleResearchNewsItem[]
+  controversies_risks:     string
+  key_things_to_know:      string[]
+  all_links_validated:     WhaleResearchValidatedLink[]
+  _meta?: Record<string, unknown>
+}
+export interface WhaleResearchRow {
+  id:               number
+  whale_key:        string
+  generated_at:     string
+  model_used:       string
+  n_search_results: number
+  n_urls_validated: number
+  error_message?:   string
+  is_active?:       number
+  exists:           boolean
+  summary?:         WhaleResearchSummary | null
+}
+export function useWhaleResearch(whaleKey: string | null) {
+  return useQuery({
+    queryKey: ['whale-research', whaleKey],
+    queryFn: () => fetchJSON<WhaleResearchRow>(
+      `/api/regime/whales/${whaleKey}/research`),
+    enabled: !!whaleKey,
+    staleTime: 60_000 * 10,
+  })
+}
+export function useRegenWhaleResearch() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (whaleKey: string) =>
+      fetchJSON<WhaleResearchRow>(
+        `/api/regime/whales/${whaleKey}/research/regenerate`,
+        { method: 'POST' }),
+    onSuccess: (_data, whaleKey) => {
+      qc.invalidateQueries({ queryKey: ['whale-research', whaleKey] })
+      qc.invalidateQueries({ queryKey: ['whale-research-history', whaleKey] })
+    },
+  })
+}
+export function useWhaleResearchHistory(whaleKey: string | null) {
+  return useQuery({
+    queryKey: ['whale-research-history', whaleKey],
+    queryFn: () => fetchJSON<{
+      whale_key: string; n: number;
+      history: Array<{
+        id: number; generated_at: string; model_used: string;
+        n_search_results: number; n_urls_validated: number;
+        is_active: number; error_message?: string;
+      }>
+    }>(`/api/regime/whales/${whaleKey}/research/history?limit=10`),
+    enabled: !!whaleKey,
+    staleTime: 60_000 * 30,
+  })
+}
+
+
 export function useRecentSignals(opts: {
   limit?:   number
   ticker?:  string

@@ -179,3 +179,11 @@ FIX_LOG.md
 
 # C1 — episode capture jsonl (manual reflect input, not source-of-truth)
 _evolution/
+
+# Personal investment PII — never commit (2026-05-20)
+# Real IPS seed lives at ~/.neomind/fin/seed_philosophy.json (home, outside repo).
+# This guards against a copy accidentally landing in the repo tree.
+# The .example.json template (no PII) IS tracked.
+seed_philosophy.json
+**/seed_philosophy.json
+!seed_philosophy.example.json

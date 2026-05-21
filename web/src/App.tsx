@@ -16,9 +16,11 @@ import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { ScannerHealthBadge } from '@/components/widgets/ScannerHealthBadge'
-import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X } from 'lucide-react'
+import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
+import { WhaleResearchProvider } from '@/components/research/WhaleResearchContext'
+import { WhaleProfileDrawer } from '@/components/research/WhaleProfileDrawer'
 
 // 'legacy' is intentionally NOT in main nav. Reachable via Settings →
 // "Open legacy dashboard" or by appending ?legacy=1 to the URL.
@@ -62,6 +64,32 @@ export default function App() {
   // Mobile nav drawer — hamburger toggles. Auto-closes when user
   // picks a tab (so the underlying content shows immediately).
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  // 2026-05-19: self-restart admin button — POSTs /api/admin/restart
+  // then polls /api/health until the new process comes up, then reloads.
+  const [restarting, setRestarting] = useState(false)
+  async function restartServer() {
+    if (restarting) return
+    if (!confirm('重启 dashboard server? (~3-5 秒, 然后页面会自动 reload)')) return
+    setRestarting(true)
+    try {
+      await fetch('/api/admin/restart', { method: 'POST' })
+    } catch { /* expected — connection dies as server execs */ }
+    // Poll /api/health every 500ms; once it comes back, hard reload
+    const startedAt = Date.now()
+    const poll = async () => {
+      try {
+        const r = await fetch('/api/health', { cache: 'no-store' })
+        if (r.ok) { location.reload(); return }
+      } catch { /* still down */ }
+      if (Date.now() - startedAt > 30_000) {
+        alert('重启超时 — server 没回应. 手动检查 /tmp/dashboard.log')
+        setRestarting(false)
+        return
+      }
+      setTimeout(poll, 500)
+    }
+    setTimeout(poll, 1500)  // give it 1.5s before first check
+  }
   const [digestFocus, setDigestFocus] = useState<DigestFocus | null>(null)
   // Phase 5 V4: focused strategy id when arriving from a call's
   // strategy_match chip. Carries a nonce so clicking the same chip
@@ -151,8 +179,10 @@ export default function App() {
 
   return (
     <StockResearchProvider projectId={projectId}>
+    <WhaleResearchProvider>
     <div className="h-full flex flex-col">
       <StockResearchDrawer />
+      <WhaleProfileDrawer />
       {/* Top nav.
           Layout strategy:
             - <md (mobile): hamburger button + brand only. Tabs and
@@ -224,6 +254,18 @@ export default function App() {
           <span className={health.data ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
             ● {health.data ? `healthy · ${health.data.version}` : 'unreachable'}
           </span>
+          <button
+            onClick={restartServer}
+            disabled={restarting}
+            className={'flex items-center gap-1 text-[10px] border border-[var(--color-border)] rounded px-2 py-1 transition ' +
+              (restarting
+                ? 'text-[var(--color-amber)] cursor-wait'
+                : 'text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]')}
+            title="重启 dashboard server (~3-5 秒, 然后页面自动 reload)"
+          >
+            <RotateCw size={10} className={restarting ? 'animate-spin' : ''} />
+            <span>{restarting ? '重启中...' : '重启'}</span>
+          </button>
         </div>
       </header>
 
@@ -376,6 +418,7 @@ export default function App() {
         )}
       </main>
     </div>
+    </WhaleResearchProvider>
     </StockResearchProvider>
   )
 }

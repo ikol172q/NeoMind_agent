@@ -13,8 +13,9 @@
  * of confluences.
  */
 import { useState } from 'react'
-import { useRecentSignals, type SignalEvent } from '@/lib/api'
+import { useRecentSignals, useSignalsByWhale, type SignalEvent } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
+import { useWhaleResearch } from '@/components/research/WhaleResearchContext'
 
 
 function relTime(iso: string): string {
@@ -170,7 +171,7 @@ export function SmartMoneyWidget() {
   // Per-scanner pagination — default 100, click "load 100 more" to
   // bump. Single state per scanner so each tab's pagination is
   // independent and survives tab switches.
-  const [limit13f, setLimit13f] = useState(100)
+  const limit13f = 100  // legacy firehose query kept for n_stale calc in non-whale tabs; not user-adjustable anymore
   const [limitStockAct, setLimitStockAct] = useState(100)
   const [limitHouseClerk, setLimitHouseClerk] = useState(100)
   const [limitInsider, setLimitInsider] = useState(100)
@@ -187,6 +188,26 @@ export function SmartMoneyWidget() {
   const qInsider = useRecentSignals({ scanner: 'insider_form4', limit: limitInsider })
   const [expanded, setExpanded] = useState(false)
   const [expandedCongress, setExpandedCongress] = useState(false)
+  // 2026-05-19: 13F tab view mode + per-whale expand state.
+  // - 'by_whale' (default): each whale collapsed showing action chips;
+  //   click to expand the per-event detail rows. Lets user scan all
+  //   30 whales at once.
+  // - 'by_time': flat firehose across all whales sorted by source_timestamp
+  //   desc — for "what's the latest news from any smart-money source".
+  type WhaleView = 'by_whale' | 'by_time'
+  const [whaleView, setWhaleView] = useState<WhaleView>('by_whale')
+  const [openWhales, setOpenWhales] = useState<Set<string>>(new Set())
+  const toggleWhale = (key: string) => setOpenWhales(prev => {
+    const next = new Set(prev)
+    if (next.has(key)) next.delete(key); else next.add(key)
+    return next
+  })
+  // 2026-05-19: per-whale event count selector — solves the "load more
+  // only loads one whale" bug. Backend returns top-N per whale via
+  // SQLite window function, so every whale is represented even when
+  // a few have hundreds of filings.
+  const [perWhaleLimit, setPerWhaleLimit] = useState<5 | 10 | 20 | 50>(5)
+  const qByWhale = useSignalsByWhale({ scanner: '13f', limit_per_whale: perWhaleLimit })
   // Tabs replace the old stacked sections so the widget doesn't grow
   // taller as we add data sources. Default = whales (Buffett etc) since
   // that's the section users came here for originally.
@@ -301,19 +322,18 @@ export function SmartMoneyWidget() {
   const events_fresh = showStale.whales
     ? events
     : events.filter((e) => isFresh(e) || whaleBypassAge(e))
-  const groups_fresh = showStale.whales ? groups : groups.map((g) => ({
-    ...g,
-    events: g.events.filter((e) => isFresh(e) || whaleBypassAge(e)),
-  })).filter((g) => g.events.length > 0)
   const congressEvents_fresh = showStale.congress
     ? congressEvents
     : congressEvents.filter((e) => isFresh(e) || congressBypassAge(e))
-  const arkGroups_fresh = showStale.ark ? arkGroups : arkGroups.map((g) => ({
-    ...g,
-    // ARK tab IS the Cathie Wood anchor — bypass age unconditionally,
-    // user explicitly opened her tab.
-    events: g.events,
-  })).filter((g) => g.events.length > 0)
+  // ARK tab = Cathie Wood subset. Source from the per-whale endpoint
+  // (qByWhale) so we get her full ~25-50 quarter moves; the legacy
+  // firehose query was capped at 200 events sorted by detected_at and
+  // would miss Cathie entirely when Norges+Rentech monopolized the slots.
+  // ARK is an anchor (whaleBypassAge('cathie') === true) so no age filter.
+  const arkGroupsFromByWhale: { whale: string; events: SignalEvent[] }[] =
+    ((qByWhale.data?.whales ?? []).filter(g => g.whale_key === 'cathie'))
+      .map(g => ({ whale: g.whale, events: g.events }))
+  const arkGroups_fresh = arkGroupsFromByWhale.filter(g => g.events.length > 0)
   const arkEvents_fresh = arkGroups_fresh.flatMap((g) => g.events)
   const insiderEvents_fresh = showStale.insider ? insiderEvents : insiderEvents.filter(isFresh)
 
@@ -324,8 +344,15 @@ export function SmartMoneyWidget() {
     insider:  insiderEvents.length - insiderEvents_fresh.length,
   }
 
+  // 13F tab count comes from the new per-whale endpoint (qByWhale)
+  // — events_fresh from the legacy firehose query is biased by 2-3
+  // busy whales monopolizing the slots and badly under-counts the
+  // actual recent activity across all 30 whales.
+  const whales13fCount = ((qByWhale.data?.whales ?? []) as Array<{ events: SignalEvent[]; whale_key: string }>)
+    .reduce((s, g) => s + g.events.filter(e => showStale.whales || isFresh(e) || g.whale_key === 'cathie').length, 0)
+
   const tabs: Array<{ k: Tab; label: string; count: number; subtitle: string }> = [
-    { k: 'whales',   label: '🐋 13F 机构',     count: events_fresh.length,
+    { k: 'whales',   label: '🐋 13F 机构',     count: whales13fCount,
       subtitle: `SEC 45 天延迟 · 仅多头 · 11 funds · 仅显示 ${MAX_AGE_DAYS.whales}d 内` },
     { k: 'congress', label: '🏛 国会议员',     count: congressEvents_fresh.length,
       subtitle: `45 天披露窗口 · 金额是区间 · 仅显示 ${MAX_AGE_DAYS.congress}d 内` },
@@ -399,8 +426,12 @@ export function SmartMoneyWidget() {
         </div>
       )}
 
-      {/* === Show-stale toggle for current tab === */}
-      {n_stale[tab] > 0 && (
+      {/* === Show-stale toggle for current tab ===
+         Hidden for `whales` and `ark` tabs because those now use the
+         per-whale endpoint (qByWhale) and have their own accurate stale
+         counter rendered inside the tab body. Showing both was confusing
+         and the numbers were inconsistent (legacy firehose vs new query). */}
+      {n_stale[tab] > 0 && tab !== 'whales' && tab !== 'ark' && (
         <div className="mb-2 text-[9px] text-[var(--color-dim)] flex items-center gap-2">
           <span>🕐 {n_stale[tab]} 条事件超过 {MAX_AGE_DAYS[tab]} 天 (已隐藏)</span>
           <button
@@ -413,41 +444,162 @@ export function SmartMoneyWidget() {
       )}
 
       {/* === Tab content: 13F whales === */}
-      {tab === 'whales' && (
-        <>
-          {q13f.isLoading && (
-            <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
-          )}
-          {!q13f.isLoading && groups_fresh.length === 0 && (
-            <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
-              No recent 13F filings in the last {MAX_AGE_DAYS.whales} days.
-              Whale scanner runs daily; events appear within 1-2 days of SEC
-              publication.
-            </div>
-          )}
-          {!q13f.isLoading && groups_fresh.length > 0 && (
-            <div className="space-y-2">
-              {groups_fresh.slice(0, expanded ? groups_fresh.length : 3).map((g) => (
-                <WhaleGroup key={g.whale} group={g} />
-              ))}
-              {groups_fresh.length > 3 && (
+      {tab === 'whales' && (() => {
+        // Build the per-whale groups from the new endpoint. Falls back to
+        // the legacy `groups_fresh` shape so WhaleGroup component works
+        // unchanged. The new endpoint guarantees every whale that has
+        // any history shows up — no more "load more" hunting.
+        const byWhaleData = qByWhale.data
+        const byWhaleGroups: { whale: string; events: SignalEvent[]; whaleKey: string; nTotalEvents: number }[] =
+          (byWhaleData?.whales ?? []).map(g => ({
+            whale: g.whale,
+            events: g.events,
+            whaleKey: g.whale_key,
+            nTotalEvents: g.n_events,
+          }))
+        // Apply freshness filter only if the user hasn't toggled "show stale".
+        // ALWAYS drop 0-event whales (the backend returns placeholders for
+        // whales that exist in the WHALES registry but have no history yet —
+        // useful for the count badge but useless to render as empty cards).
+        const byWhaleGroupsFresh = (showStale.whales
+          ? byWhaleGroups
+          : byWhaleGroups.map(g => ({
+              ...g,
+              events: g.events.filter(e => isFresh(e) || g.whaleKey === 'cathie'),
+            }))
+        ).filter(g => g.events.length > 0)
+        const totalEventsByWhale = byWhaleGroups.reduce((s, g) => s + g.events.length, 0)
+        const totalEventsByWhaleFresh = byWhaleGroupsFresh.reduce((s, g) => s + g.events.length, 0)
+        const nStaleByWhale = totalEventsByWhale - totalEventsByWhaleFresh
+        // 0-event whales — separate so the user can still open their drawer
+        // (some are curated, e.g. Cascade/Gates). Rendered as a subtle
+        // "无最近活动" footer link list, name-only, click → drawer.
+        const noEventWhales = byWhaleGroups.filter(g => g.events.length === 0)
+
+        return (
+          <>
+            {qByWhale.isLoading && (
+              <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
+            )}
+
+            {/* Stale toggle specific to by-whale view — always available if any stale exist */}
+            {!qByWhale.isLoading && nStaleByWhale > 0 && (
+              <div className="mb-2 text-[9px] text-[var(--color-dim)] flex items-center gap-2">
+                <span>🕐 {nStaleByWhale} 条事件 &gt; {MAX_AGE_DAYS.whales} 天</span>
                 <button
-                  onClick={() => setExpanded((v) => !v)}
-                  className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+                  onClick={() => setShowStale(s => ({ ...s, whales: !s.whales }))}
+                  className="text-[9px] underline hover:text-[var(--color-text)]"
                 >
-                  {expanded ? `▴ collapse` : `▾ show ${groups_fresh.length - 3} more whales`}
+                  {showStale.whales ? '隐藏 stale' : `显示 ${nStaleByWhale} 条 stale`}
                 </button>
-              )}
-            </div>
-          )}
-          <LoadMoreButton
-            currentLimit={limit13f}
-            currentCount={events.length}
-            onLoadMore={() => setLimit13f((l) => l + 100)}
-            label="13F"
-          />
-        </>
-      )}
+              </div>
+            )}
+
+            {!qByWhale.isLoading && byWhaleGroupsFresh.length === 0 && (
+              <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
+                没有 fresh 13F 数据 (过去 {MAX_AGE_DAYS.whales} 天内). 上面"显示 stale"看历史数据.
+              </div>
+            )}
+
+            {!qByWhale.isLoading && byWhaleData && (
+              <>
+                {/* View mode + per-whale limit controls */}
+                <div className="flex items-center gap-2 mb-2 text-[9.5px] flex-wrap">
+                  <span className="text-[var(--color-dim)]">视图:</span>
+                  <button
+                    onClick={() => setWhaleView('by_whale')}
+                    className={'px-1.5 py-0.5 rounded border font-mono ' +
+                      (whaleView === 'by_whale'
+                        ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-accent)]/10'
+                        : 'border-[var(--color-border)]/60 text-[var(--color-dim)] hover:border-[var(--color-accent)]/60')}
+                    title="每个机构一个卡片, 默认收起. 点击展开看具体动作"
+                  >
+                    📚 按机构 ({byWhaleGroupsFresh.length}/{byWhaleData.n_whales_total})
+                  </button>
+                  <button
+                    onClick={() => setWhaleView('by_time')}
+                    className={'px-1.5 py-0.5 rounded border font-mono ' +
+                      (whaleView === 'by_time'
+                        ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-accent)]/10'
+                        : 'border-[var(--color-border)]/60 text-[var(--color-dim)] hover:border-[var(--color-accent)]/60')}
+                    title="跨机构最新动作时间线, 不分组"
+                  >
+                    ⏱ 最新时间线 ({totalEventsByWhaleFresh})
+                  </button>
+
+                  <span className="text-[var(--color-dim)] ml-2">每 whale:</span>
+                  {([5, 10, 20, 50] as const).map(n => (
+                    <button
+                      key={n}
+                      onClick={() => setPerWhaleLimit(n)}
+                      className={'px-1.5 py-0.5 rounded border font-mono ' +
+                        (perWhaleLimit === n
+                          ? 'border-[var(--color-accent)] text-[var(--color-text)] bg-[var(--color-accent)]/10'
+                          : 'border-[var(--color-border)]/60 text-[var(--color-dim)] hover:border-[var(--color-accent)]/60')}
+                      title={`每个机构最多显示 ${n} 条最近事件`}
+                    >
+                      {n}
+                    </button>
+                  ))}
+
+                  {whaleView === 'by_whale' && (
+                    <>
+                      <button
+                        onClick={() => setOpenWhales(new Set(byWhaleGroupsFresh.map(g => g.whale)))}
+                        className="ml-auto text-[9px] text-[var(--color-dim)] hover:text-[var(--color-text)] underline"
+                      >
+                        全部展开
+                      </button>
+                      <button
+                        onClick={() => setOpenWhales(new Set())}
+                        className="text-[9px] text-[var(--color-dim)] hover:text-[var(--color-text)] underline"
+                      >
+                        全部收起
+                      </button>
+                    </>
+                  )}
+                </div>
+
+                {whaleView === 'by_whale' && (
+                  <div className="space-y-1.5">
+                    {byWhaleGroupsFresh.map((g) => (
+                      <WhaleGroup
+                        key={g.whale}
+                        group={{ whale: g.whale, events: g.events }}
+                        isOpen={openWhales.has(g.whale)}
+                        onToggle={() => toggleWhale(g.whale)}
+                      />
+                    ))}
+                    {noEventWhales.length > 0 && (
+                      <NoEventWhalesFooter whales={noEventWhales} />
+                    )}
+                  </div>
+                )}
+
+                {whaleView === 'by_time' && (
+                  <WhaleTimeline
+                    events={byWhaleGroupsFresh.flatMap(g => g.events)
+                      .sort((a, b) => {
+                        const ta = new Date(a.source_timestamp || a.detected_at || 0).getTime()
+                        const tb = new Date(b.source_timestamp || b.detected_at || 0).getTime()
+                        return tb - ta
+                      })
+                      .slice(0, expanded ? totalEventsByWhaleFresh : 40)}
+                  />
+                )}
+                {whaleView === 'by_time' && totalEventsByWhaleFresh > 40 && (
+                  <button
+                    onClick={() => setExpanded((v) => !v)}
+                    className="text-[9.5px] text-[var(--color-dim)] hover:text-[var(--color-text)] mt-1"
+                  >
+                    {expanded ? '▴ 仅显示前 40 条' : `▾ 显示全部 ${totalEventsByWhaleFresh} 条`}
+                  </button>
+                )}
+              </>
+            )}
+          </>
+        )
+      })()}
 
       {/* === Tab content: Congress === */}
       {tab === 'congress' && (
@@ -535,29 +687,31 @@ export function SmartMoneyWidget() {
             cadence with 45-day delay. Future: add a daily scanner if we
             find a stable scrape path.
           </div>
-          {q13f.isLoading && (
+          {qByWhale.isLoading && (
             <div className="text-[10px] text-[var(--color-dim)]">loading…</div>
           )}
-          {!q13f.isLoading && arkGroups_fresh.length === 0 && (
+          {!qByWhale.isLoading && arkGroups_fresh.length === 0 && (
             <div className="text-[10px] italic text-[var(--color-dim)] py-2 leading-[1.5]">
               No ARK 13F holdings in the last {MAX_AGE_DAYS.ark} days.
               Trigger "↻ 拉取全部数据源" in the Today's Signals widget
               above (or 顶栏 scanners 徽章 → 13F 行 ↻) to fetch SEC filings.
             </div>
           )}
-          {!q13f.isLoading && arkGroups_fresh.length > 0 && (
+          {!qByWhale.isLoading && arkGroups_fresh.length > 0 && (
             <div className="space-y-2">
               {arkGroups_fresh.map((g) => (
-                <WhaleGroup key={g.whale} group={g} />
+                <WhaleGroup
+                  key={g.whale}
+                  group={g}
+                  isOpen={openWhales.has(g.whale)}
+                  onToggle={() => toggleWhale(g.whale)}
+                />
               ))}
             </div>
           )}
-          <LoadMoreButton
-            currentLimit={limit13f}
-            currentCount={events.length}
-            onLoadMore={() => setLimit13f((l) => l + 100)}
-            label="13F"
-          />
+          {/* LoadMoreButton removed — ARK now uses the per-whale endpoint
+              which loads top-N per whale based on the per-whale limit
+              selector, not a global firehose pagination. */}
         </>
       )}
 
@@ -762,7 +916,13 @@ function CongressRow({ event }: { event: SignalEvent }) {
 }
 
 
-function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] } }) {
+function WhaleGroup({
+  group, isOpen, onToggle,
+}: {
+  group: { whale: string; events: SignalEvent[] }
+  isOpen: boolean
+  onToggle: () => void
+}) {
   const latest = group.events[0]
   const whaleKey = String(
     (latest?.body as Record<string, unknown> | undefined)?.whale_key ?? '',
@@ -772,40 +932,184 @@ function WhaleGroup({ group }: { group: { whale: string; events: SignalEvent[] }
   )
   const cn = WHALE_CN[whaleKey]
   const styleKey = WHALE_STYLE[whaleKey]
+  const { openWhale } = useWhaleResearch()
+
+  // Tally moves by action_type so the collapsed header shows e.g. "新建 1 · 加仓 4 · 减仓 8 · 清仓 2"
+  const tally = { new: 0, increase: 0, decrease: 0, exit: 0 }
+  for (const e of group.events) {
+    const ct = String((e.body as Record<string, unknown> | undefined)?.change_type ?? '')
+    if (ct in tally) (tally as Record<string, number>)[ct]++
+  }
+
   return (
-    <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30 p-2">
-      <div className="flex items-center gap-2 mb-1.5 text-[10px]">
+    <div className="rounded border border-[var(--color-border)]/60 bg-[var(--color-panel)]/30">
+      {/* Header — always visible, click anywhere to toggle */}
+      <button
+        onClick={onToggle}
+        className="w-full flex items-center gap-2 px-2 py-1.5 text-[10px] hover:bg-[var(--color-border)]/10 text-left"
+      >
+        <span className="text-[10px] text-[var(--color-dim)] w-3 flex-shrink-0">
+          {isOpen ? '▾' : '▸'}
+        </span>
         <span
-          className="font-semibold text-[var(--color-text)]"
-          title={cn?.intro ?? ''}
+          onClick={(ev) => {
+            if (whaleKey) {
+              ev.stopPropagation()
+              openWhale(whaleKey)
+            }
+          }}
+          role="link"
+          tabIndex={0}
+          className="font-semibold text-[var(--color-text)] hover:text-[var(--color-accent,#7ed9d9)] hover:underline cursor-pointer"
+          title={whaleKey ? `Open ${group.whale} encyclopedia · ${cn?.intro ?? ''}` : (cn?.intro ?? '')}
         >
           {group.whale}
-          {cn && (
-            <span className="ml-1.5 text-[9.5px] text-[var(--color-dim)] font-normal">
-              · {cn.cn}
-            </span>
-          )}
         </span>
-        <StyleTag k={styleKey} />
-        <span className="text-[8.5px] text-[var(--color-dim)] font-mono">
-          {group.events.length} moves
-        </span>
-        {filingDate && (
-          <span className="ml-auto text-[8.5px] text-[var(--color-dim)] font-mono">
-            13F filed {filingDate}
+        {cn && (
+          <span className="text-[9.5px] text-[var(--color-dim)] font-normal">
+            · {cn.cn}
           </span>
         )}
-      </div>
-      {cn && (
-        <div className="text-[9px] italic text-[var(--color-dim)] mb-1.5 leading-[1.4]">
-          {cn.intro}
+        <StyleTag k={styleKey} />
+        {/* Action chips — color-coded so user sees activity profile at a glance */}
+        <div className="flex items-center gap-1 flex-wrap">
+          {tally.new > 0 && (
+            <span className="text-[8.5px] px-1 rounded border border-[var(--color-green,#7ed98c)]/40 text-[var(--color-green,#7ed98c)] font-mono">
+              新建 {tally.new}
+            </span>
+          )}
+          {tally.increase > 0 && (
+            <span className="text-[8.5px] px-1 rounded border border-[var(--color-green,#7ed98c)]/40 text-[var(--color-green,#7ed98c)] font-mono">
+              加仓 {tally.increase}
+            </span>
+          )}
+          {tally.decrease > 0 && (
+            <span className="text-[8.5px] px-1 rounded border border-[var(--color-amber,#e5a200)]/40 text-[var(--color-amber,#e5a200)] font-mono">
+              减仓 {tally.decrease}
+            </span>
+          )}
+          {tally.exit > 0 && (
+            <span className="text-[8.5px] px-1 rounded border border-[var(--color-red,#e07070)]/40 text-[var(--color-red,#e07070)] font-mono">
+              清仓 {tally.exit}
+            </span>
+          )}
+        </div>
+        {filingDate && (
+          <span className="ml-auto text-[8.5px] text-[var(--color-dim)] font-mono">
+            {filingDate}
+          </span>
+        )}
+      </button>
+      {/* Body — only when expanded */}
+      {isOpen && (
+        <div className="px-2 pb-2 pt-1 border-t border-[var(--color-border)]/30">
+          {cn && (
+            <div className="text-[9px] italic text-[var(--color-dim)] mb-1.5 leading-[1.4]">
+              {cn.intro}
+            </div>
+          )}
+          <div className="space-y-0.5">
+            {group.events.map((e) => (
+              <EventRow key={e.event_id} event={e} />
+            ))}
+          </div>
         </div>
       )}
-      <div className="space-y-0.5">
-        {group.events.map((e) => (
-          <EventRow key={e.event_id} event={e} />
-        ))}
-      </div>
+    </div>
+  )
+}
+
+
+// Flat firehose: cross-whale chronological list. Each row tags which
+// whale made the move so the user can spot patterns (e.g. multiple
+// whales all buying NVDA in same week).
+function WhaleTimeline({ events }: { events: SignalEvent[] }) {
+  const { openWhale } = useWhaleResearch()
+  // Sort by source_timestamp desc (most recent filing first) with
+  // detected_at as fallback.
+  const sorted = [...events].sort((a, b) => {
+    const ta = new Date(a.source_timestamp || a.detected_at || 0).getTime()
+    const tb = new Date(b.source_timestamp || b.detected_at || 0).getTime()
+    return tb - ta
+  })
+  return (
+    <div className="space-y-0.5">
+      {sorted.map((e) => {
+        const b = (e.body ?? {}) as Record<string, unknown>
+        const whaleKey = String(b.whale_key ?? '')
+        const whaleName = String(b.whale ?? 'Unknown')
+        const filingDate = String(b.filing_date ?? e.source_timestamp ?? '').slice(0, 10)
+        const badge = changeBadge(e.signal_type)
+        const valueK = b.value_usd_k
+        const name = b.name as string | undefined
+        const badgeClass =
+          badge.color === 'green' ? 'text-[var(--color-green,#7ed98c)] border-[var(--color-green,#7ed98c)]/40' :
+          badge.color === 'red'   ? 'text-[var(--color-red,#e07070)] border-[var(--color-red,#e07070)]/40' :
+                                    'text-[var(--color-amber,#e5a200)] border-[var(--color-amber,#e5a200)]/40'
+        return (
+          <div key={e.event_id} className="flex items-center gap-2 text-[10px] py-0.5">
+            <span className="text-[8.5px] text-[var(--color-dim)] font-mono w-16 flex-shrink-0 truncate">
+              {filingDate}
+            </span>
+            <button
+              onClick={() => whaleKey && openWhale(whaleKey)}
+              disabled={!whaleKey}
+              className="text-[9.5px] text-[var(--color-text)] hover:text-[var(--color-accent,#7ed9d9)] hover:underline disabled:no-underline disabled:cursor-default font-semibold w-32 flex-shrink-0 truncate text-left"
+              title={whaleKey ? `Open ${whaleName} encyclopedia` : ''}
+            >
+              {whaleName}
+            </button>
+            <span className={`px-1 rounded border text-[8.5px] font-mono flex-shrink-0 ${badgeClass}`}>
+              {badge.label}
+            </span>
+            <TickerLink
+              ticker={e.ticker}
+              className="font-medium text-[var(--color-text)] font-mono w-14 flex-shrink-0"
+            />
+            {name && (
+              <span className="text-[9px] text-[var(--color-dim)] truncate flex-1">{name}</span>
+            )}
+            <span className="text-[9.5px] text-[var(--color-dim)] font-mono flex-shrink-0">
+              {formatValueUSD(valueK)}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+
+// Subtle footer listing whales with no recent 13F events. Some of these
+// (Cascade/Marks/ValueAct etc) have curated bilingual profiles and the
+// user might still want to open their drawer for learning. Without this
+// they'd be completely inaccessible from the UI.
+function NoEventWhalesFooter({
+  whales,
+}: { whales: { whale: string; whaleKey: string }[] }) {
+  const { openWhale } = useWhaleResearch()
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-2 pt-2 border-t border-[var(--color-border)]/30 text-[9px] text-[var(--color-dim)]">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="hover:text-[var(--color-text)]"
+      >
+        {open ? '▴ 隐藏' : '▾ 展开'} {whales.length} 个无最近 13F 活动的 whale (可点开看 curated profile)
+      </button>
+      {open && (
+        <div className="mt-1.5 flex flex-wrap gap-x-3 gap-y-1">
+          {whales.map(w => (
+            <button
+              key={w.whaleKey}
+              onClick={() => openWhale(w.whaleKey)}
+              className="text-[10px] text-[var(--color-text)]/70 hover:text-[var(--color-accent,#7ed9d9)] hover:underline"
+            >
+              {w.whale}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

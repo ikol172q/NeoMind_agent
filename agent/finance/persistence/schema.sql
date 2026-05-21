@@ -782,6 +782,40 @@ CREATE TABLE IF NOT EXISTS signal_snapshots (
 CREATE INDEX IF NOT EXISTS idx_snap_ticker_date
     ON signal_snapshots(ticker, snapshot_date);
 
+-- ─── Investment philosophy (2026-05-19) ─────────────────────────────
+-- Your "Ulysses contract" / living investment policy statement.
+-- Industry standard (CFA Institute, IPS spec): a written document
+-- you bind yourself to so emotion in market panic / euphoria can't
+-- override calm-state thinking. Versioned — every edit creates a
+-- history row so you can SEE how your thesis evolved.
+--
+-- Schema rationale:
+--   Singleton-ish table (typically one ACTIVE row per user; old
+--   versions kept for reflection). `is_active=1` flag picks current.
+--   Each field optional so you can incrementally fill in over time.
+CREATE TABLE IF NOT EXISTS investment_philosophy (
+    id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+    version             TEXT NOT NULL,             -- 'v1.0', 'v1.1', etc
+    is_active           INTEGER NOT NULL DEFAULT 1,
+    north_star          TEXT,                      -- 1 sentence core goal
+    identity            TEXT,                      -- 1 paragraph: who am I as investor
+    beliefs_json        TEXT,                      -- array of {claim, why, falsified_if}
+    circle_competence   TEXT,                      -- what I'll trade / won't
+    time_horizon        TEXT,                      -- default + per-category
+    sizing_rules_json   TEXT,                      -- {max_single_pct, max_sector_pct, cash_floor_pct}
+    entry_rules         TEXT,                      -- markdown — when do I buy?
+    exit_rules          TEXT,                      -- markdown — when do I sell?
+    hedge_plan          TEXT,                      -- markdown — what if main thesis fails?
+    disagreement_protocol TEXT,                    -- markdown — how I handle being wrong
+    review_cadence      TEXT,                      -- 'monthly' | 'quarterly' | 'annual'
+    last_reviewed_at    TEXT,                      -- ISO date of last review
+    change_note         TEXT,                      -- why I changed since last version
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_phil_active
+    ON investment_philosophy(is_active, updated_at DESC);
+
 -- ─── Plaid items (2026-05-16) ───────────────────────────────────────
 -- One row per linked brokerage. access_token is sensitive — store
 -- encrypted at rest (Fernet, key in ~/.neomind/fin/secrets/plaid.key
@@ -797,6 +831,39 @@ CREATE TABLE IF NOT EXISTS plaid_items (
     consecutive_failures INTEGER DEFAULT 0,
     created_at           TEXT NOT NULL
 );
+
+-- ─── Whale research summaries (2026-05-19) ──────────────────────────
+-- Generated on-demand via Tavily search + LLM synthesis for each Smart
+-- Money entity. Stores ALL historical versions so the user can compare
+-- how the agent's read of a whale evolves over time. is_active=1 marks
+-- the latest version that the UI surfaces by default.
+--
+-- summary_json schema (validated server-side before insert):
+--   { investment_logic, aum_market_position, recent_moves_synthesis,
+--     recent_news: [{title, url, published, source, summary, relevance}],
+--     controversies_risks, key_things_to_know,
+--     all_links_validated: [{url, label, validated_at, http_status, ok}] }
+--
+-- Anti-hallucination guarantees (enforced in whale_research.py):
+--   - Every URL in the JSON has been HEAD-validated (http_status < 400)
+--   - URLs that fail validation are dropped from main fields but kept
+--     in all_links_validated with ok=false for transparency
+--   - LLM prompt forbids inventing URLs (only uses Tavily search results)
+CREATE TABLE IF NOT EXISTS whale_research_summaries (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    whale_key       TEXT    NOT NULL,
+    generated_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    summary_json    TEXT    NOT NULL,
+    model_used      TEXT,
+    n_search_results INTEGER,
+    n_urls_validated INTEGER,
+    is_active       INTEGER DEFAULT 1,
+    error_message   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_whale_research_lookup
+    ON whale_research_summaries(whale_key, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_whale_research_active
+    ON whale_research_summaries(whale_key, is_active);
 
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
