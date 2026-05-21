@@ -38,7 +38,7 @@ transcript on 2026-05-10 if needed.
 
 > "我要的是直接+全面+及时+准确的信息处理"
 
-> "onion 模型更多的是我现在的关注点+我的持仓+我未来打算的持仓+我已经做的+我之后可能做的+我的投资架构；
+> "onion 模型更多的是 [关注点 + 持仓 + 计划中的持仓 + 已做的 + 可能做的 + 投资架构]；
 >  而 chain 模型是信息蒸馏+因果关系+为什么+怎么来的+根据已有信息我能得到什么"
 
 > "信息质量远远大于决策。我并不想要复杂全面的决策手段来帮我避坑，因为我的体量并没有成长到这个份上...
@@ -643,7 +643,7 @@ problem, not a "build more" problem.
 
 **Why Design B (me-centric onion + chain on demand) over A (lattice-as-radial) or C (separate views with shared selection)**:
 
-- **Design A** rejected: ignores user_watchlist entirely. User explicitly wants "我现在的关注点 + 持仓 + 投资架构" — none of which are in the strategy lattice.
+- **Design A** rejected: ignores user_watchlist entirely. The onion view must reflect [关注点 + 持仓 + 投资架构] — none of which are in the strategy lattice.
 - **Design C** rejected: user said "零零散散的不好集中看" — two separate views IS the problem, not the solution. Even with shared selection, requires switching mental models.
 - **Design B** chosen because:
   1. Single workspace satisfies "集中" requirement
