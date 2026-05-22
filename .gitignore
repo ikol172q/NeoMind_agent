@@ -187,3 +187,9 @@ _evolution/
 seed_philosophy.json
 **/seed_philosophy.json
 !seed_philosophy.example.json
+
+# Leak-hook local PII patterns — real patterns live at ~/.neomind/fin/pii_patterns.txt
+# (home dir, outside repo). Guard against a copy landing in the repo tree.
+pii_patterns.txt
+**/pii_patterns.txt
+!pii_patterns.example.txt

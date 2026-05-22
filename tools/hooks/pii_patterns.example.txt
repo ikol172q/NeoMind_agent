@@ -1,0 +1,20 @@
+# NeoMind leak-hook — user-specific PII patterns (EXAMPLE / template)
+#
+# Copy this to ~/.neomind/fin/pii_patterns.txt and fill in YOUR real
+# personal identifiers. That path is outside any repo, so your real PII
+# never gets committed. The leak hook (tools/hooks/leak_scan_hook.py)
+# loads it to block any commit/push that would leak this data.
+#
+# One regex per line (case-insensitive matching). # = comment.
+# NOTE: keep this template free of real phrases — use <angle-bracket>
+# placeholders only, so the hook doesn't flag the template itself.
+
+# --- Identity (replace with yours) ---
+# <your-macos-username>
+# <your-hostname>
+# <your-email-prefix>@<provider>
+
+# --- Financial profile (phrases that would reveal real holdings/situation) ---
+# <ticker> <current-weight-phrase>
+# <runway/liquidity phrase>
+# <your-job-title> <identifier>

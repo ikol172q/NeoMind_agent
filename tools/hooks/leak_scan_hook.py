@@ -32,16 +32,44 @@ import subprocess
 import sys
 
 
-# Sensitive author identifiers — reported by user 2026-04-24. Updated when
-# new identifiers come up. These are checked against `git log --pretty='%ae|%ce'`
-# of commits about to be pushed.
-LEAKY_AUTHOR_PATTERNS = [
-    r"localuser@gmail\.com",
-    r"localuser202021@gmail\.com",
-    r"localuser@",                  # mac username + hostname
-    r"localhost-mac",              # hostname literal
-    r"@localhost-mac",             # full author@host form
+# User-specific PII (real emails, username, financial profile keywords) is
+# LOADED FROM A GITIGNORED LOCAL FILE — never hardcoded here, because this
+# hook is committed to a public repo. Putting the real patterns in source
+# would itself be the leak (2026-05-22: scrubbed prior hardcoded patterns
+# + the repo's full history via git-filter-repo, then moved detection to
+# this local-file model so the hook keeps working without re-publishing PII).
+#
+# Local file: ~/.neomind/fin/pii_patterns.txt  (one regex per line, # = comment)
+# Set it up from tools/hooks/pii_patterns.example.txt.
+_LOCAL_PII_PATH = os.path.expanduser("~/.neomind/fin/pii_patterns.txt")
+
+# Generic baseline (safe to commit — no real PII). Catches the *shape* of
+# a local-username@hostname git author, which is almost never intended on
+# a public repo regardless of the specific name.
+_BASELINE_AUTHOR_PATTERNS = [
+    r"@[a-z0-9-]+deMac",            # macOS default hostname form <user>deMac
+    r"@[a-z0-9-]+\.local\b",        # *.local mDNS hostnames in author emails
 ]
+
+
+def _load_local_pii_patterns() -> list[str]:
+    """Load user-specific PII regex patterns from the gitignored local file.
+    Returns [] if the file is absent (hook still runs baseline + gitleaks)."""
+    pats: list[str] = []
+    if os.path.exists(_LOCAL_PII_PATH):
+        try:
+            with open(_LOCAL_PII_PATH, "r", encoding="utf-8") as f:
+                for line in f:
+                    s = line.strip()
+                    if s and not s.startswith("#"):
+                        pats.append(s)
+        except Exception:
+            pass
+    return pats
+
+
+# Author/committer metadata patterns = generic baseline + local real patterns.
+LEAKY_AUTHOR_PATTERNS = _BASELINE_AUTHOR_PATTERNS + _load_local_pii_patterns()
 
 # .gitleaks.toml config in the repo root if present, else use defaults
 GITLEAKS_CONFIG = os.path.join(
@@ -225,6 +253,49 @@ def scan_push_authors(cmd: str) -> tuple[bool, str]:
     return True, ""
 
 
+def scan_staged_for_pii() -> tuple[bool, str]:
+    """Scan the staged diff (added lines) against the user's local PII
+    patterns. Catches personal data in FILE CONTENT — complements the
+    author-metadata + gitleaks scans. No-op if the local file is absent."""
+    pats = _load_local_pii_patterns()
+    if not pats:
+        return True, ""
+    rc, out, _ = run(["git", "diff", "--cached"])
+    if rc != 0 or not out:
+        return True, ""
+    hits = []
+    for line in out.splitlines():
+        if not line.startswith("+") or line.startswith("+++"):
+            continue
+        for pat in pats:
+            try:
+                if re.search(pat, line, re.IGNORECASE):
+                    hits.append(f"  /{pat}/ → {line[1:121]}")
+                    break
+            except re.error:
+                continue
+    if hits:
+        return False, "Personal data in staged content:\n" + "\n".join(hits[:25])
+    return True, ""
+
+
+def scan_tree_for_pii() -> tuple[bool, str]:
+    """Scan the current HEAD tree for the user's local PII patterns (push
+    safety). Uses `git grep` per pattern. No-op if the local file is absent."""
+    pats = _load_local_pii_patterns()
+    if not pats:
+        return True, ""
+    hits = []
+    for pat in pats:
+        rc, out, _ = run(["git", "grep", "-liE", pat, "HEAD"])
+        if rc == 0 and out.strip():
+            files = ", ".join(out.strip().splitlines()[:3])
+            hits.append(f"  /{pat}/ in: {files}")
+    if hits:
+        return False, "Personal data in repo tree (HEAD):\n" + "\n".join(hits[:25])
+    return True, ""
+
+
 def emit_block(reason: str, details: str = "", cmd: str = "") -> int:
     msg = (
         f"\n🔒 BLOCKED: pre-{reason} leak scan failed\n"
@@ -301,7 +372,19 @@ def main() -> int:
         if not clean:
             return emit_block("push", finding, cmd)
 
-    # 2. Author metadata check on pushes (this is what the 2026-04-24 incident missed).
+    # 2. User-specific PII scan from the gitignored local pattern file.
+    #    This is the defense for personal data (real emails / username /
+    #    financial profile) that generic gitleaks rules don't know about.
+    if is_commit:
+        clean, finding = scan_staged_for_pii()
+        if not clean:
+            return emit_block("commit", finding, cmd)
+    else:  # is_push
+        clean, finding = scan_tree_for_pii()
+        if not clean:
+            return emit_block("push", finding, cmd)
+
+    # 3. Author metadata check on pushes (this is what the 2026-04-24 incident missed).
     if is_push:
         clean, finding = scan_push_authors(cmd)
         if not clean:
