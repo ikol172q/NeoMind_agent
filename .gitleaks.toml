@@ -17,6 +17,7 @@ paths = [
     '''plans/.*\.md''',          # Plan docs may discuss API patterns
     '''tests/.*\.py''',          # Tests may use mock tokens
     '''CHANGELOG\.md''',
+    '''agent/skills/examples/.*''',  # Skill example docs — illustrative curl/API, not real secrets
 ]
 regexTarget = "line"
 regexes = [
@@ -25,6 +26,7 @@ regexes = [
     '''123456:ABC-DEF''',        # Known example bot token
     '''AKIA[A-Z]{16}.*example''',
     '''sk-[a-z]+_example''',
+    '''api\.example\.com''',     # Reserved example domain — never a real endpoint
 ]
 
 # Custom rules specific to NeoMind
@@ -63,28 +65,14 @@ id = "private-key-content"
 description = "Private Key Content"
 regex = '''-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----'''
 
-# ── User-specific PII (added 2026-05-02) ────────────────────────────
-# These catch personal data that gitleaks default rules miss. Triggered
-# by 2026-05-02 audit — leak_scan_hook + gitleaks default rules don't
-# catch absolute home paths or machine hostnames in committed content,
-# only in author metadata. Without these, code comments / docs that
-# accidentally include the user's home path or machine hostname would
-# slip through. Patterns themselves live below as rule literals.
-
-[[rules]]
-id = "user-personal-absolute-path"
-description = "User personal home directory absolute path"
-regex = '''/Users/localuser'''
-keywords = ["localuser", "Users"]
-
-[[rules]]
-id = "user-personal-hostname"
-description = "User machine hostname"
-regex = '''localhost-mac'''
-keywords = ["localuser"]
-
-[[rules]]
-id = "user-personal-email-explicit"
-description = "Known user personal email addresses"
-regex = '''(localuser202021|localuser)@gmail\.com'''
-keywords = ["localuser", "ikol"]
+# ── User-specific PII detection moved out of this committed file ─────
+# (2026-05-22) Previously this file hardcoded the user's real home path /
+# hostname / emails as gitleaks rules. But this config is committed to a
+# public repo — so the rules themselves were publishing the very PII they
+# guarded. The whole repo history was scrubbed (git-filter-repo) and the
+# real PII patterns now live in a GITIGNORED local file:
+#     ~/.neomind/fin/pii_patterns.txt
+# loaded by tools/hooks/leak_scan_hook.py (see pii_patterns.example.txt).
+# That hook scans staged content + HEAD tree + author metadata against the
+# real patterns at commit/push time — without any PII in the source tree.
+# gitleaks (this config) still handles generic secrets (keys/tokens/certs).
