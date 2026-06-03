@@ -113,11 +113,23 @@ def _run_validator(reply: str, tool_results: Optional[List[Dict[str, Any]]],
         passed = bool(getattr(vr, "passed", True))
         blocked = bool(getattr(vr, "blocked", False))
         warnings = list(getattr(vr, "warnings", []) or [])
+        # Capture the structured fields too — a failed turn often sets these
+        # WITHOUT appending a warning string (e.g. an unverified price), so
+        # without them passed=False is opaque and the miner can't act on it.
+        unverified = list(getattr(vr, "unverified_prices", []) or [])
+        unsourced = list(getattr(vr, "unsourced_data", []) or [])
+        approx = list(getattr(vr, "approximate_calcs", []) or [])
+        flags = [k for k in ("missing_time_horizons", "missing_confidence",
+                             "missing_disclaimer") if getattr(vr, k, False)]
         return {
             "passed": passed,
             "blocked": blocked,
             "n_warnings": len(warnings),
             "warnings": warnings[:8],
+            "unverified_prices": unverified[:8],
+            "unsourced_data": unsourced[:8],
+            "approximate_calcs": approx[:8],
+            "missing_flags": flags,
             "action": getattr(vr, "action", "") or "",
             "reason": getattr(vr, "reason", "") or "",
             "score": round(_validator_score(passed, blocked, len(warnings)), 3),
@@ -125,8 +137,10 @@ def _run_validator(reply: str, tool_results: Optional[List[Dict[str, Any]]],
     except Exception:  # never break the reply path
         logger.debug("fin_reward: validator failed", exc_info=True)
         return {"passed": True, "blocked": False, "n_warnings": 0,
-                "warnings": [], "action": "", "reason": "",
-                "score": 0.0, "error": "validator_failed"}
+                "warnings": [], "unverified_prices": [], "unsourced_data": [],
+                "approximate_calcs": [], "missing_flags": [],
+                "action": "", "reason": "", "score": 0.0,
+                "error": "validator_failed"}
 
 
 def _run_scorecard(decisions: List[Dict[str, Any]]) -> Dict[str, Any]:

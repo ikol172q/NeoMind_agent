@@ -96,6 +96,57 @@ def test_apply_with_approval_edits_and_backs_up():
         assert E.apply_proposal(pid, approved=True)["ok"] is False
 
 
+def _gate_setup(d):
+    """Common setup for gate tests: temp paths + a pending 4c proposal."""
+    _patch_paths(d)
+    sysmd = Path(d) / "system.md"
+    sysmd.write_text("原始 system prompt\n", encoding="utf-8")
+    E.SYSTEM_MD = sysmd  # set before propose() so proposal.target points here
+    diag = {"patterns": [{"rule": "4c", "count": 1, "episodes": 1, "intents": [], "examples": []}]}
+    props = E.propose(diag)
+    E.save_proposals(props)
+    return sysmd, props[0]["id"]
+
+
+def _run_gate_with_rewards(pid, before_after):
+    """Run gated_apply with fin_rollout.run_rollouts mocked to return the given
+    (before, after) mean rewards in sequence."""
+    import asyncio
+    from agent.finance import fin_rollout
+    seq = iter([{"rollouts": [{"reward_score": before_after[0]}]},
+                {"rollouts": [{"reward_score": before_after[1]}]}])
+
+    async def fake_run(seeds):
+        return next(seq)
+
+    orig_run, orig_seeds = fin_rollout.run_rollouts, fin_rollout.build_seeds
+    fin_rollout.run_rollouts = fake_run
+    fin_rollout.build_seeds = lambda *a, **k: []
+    try:
+        return asyncio.run(E.gated_apply([pid], runs_per_intent=1))
+    finally:
+        fin_rollout.run_rollouts, fin_rollout.build_seeds = orig_run, orig_seeds
+
+
+def test_gate_keeps_on_improvement():
+    with tempfile.TemporaryDirectory() as d:
+        sysmd, pid = _gate_setup(d)
+        r = _run_gate_with_rewards(pid, (0.2, 0.8))
+        assert r["kept"] is True and r["reverted"] is False and r["delta"] == 0.6
+        assert "免责声明" in sysmd.read_text(encoding="utf-8")   # change kept
+
+
+def test_gate_reverts_on_regression():
+    with tempfile.TemporaryDirectory() as d:
+        sysmd, pid = _gate_setup(d)
+        r = _run_gate_with_rewards(pid, (0.8, 0.2))
+        assert r["kept"] is False and r["reverted"] is True and r["delta"] == -0.6
+        assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"  # restored
+        # proposal marked reverted
+        p = E.list_proposals()[0]
+        assert p["status"] == "reverted"
+
+
 def _patch_paths(d):
     E.PROPOSALS_ROOT = Path(d) / "proposals"
     E.SYSTEM_MD = Path(d) / "system.md"

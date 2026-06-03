@@ -245,6 +245,75 @@ def apply_proposal(proposal_id: str, *, approved: bool = False) -> Dict[str, Any
     return {"ok": True, "backup": str(backup), "appended_chars": len(block)}
 
 
+def _mark_status(proposal_id: str, status: str) -> None:
+    path = PROPOSALS_ROOT / f"{proposal_id}.json"
+    if path.exists():
+        p = json.loads(path.read_text(encoding="utf-8"))
+        p["status"] = status
+        p["status_ts"] = _now_iso()
+        path.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _mean_reward(rollouts_result: Dict[str, Any]) -> Optional[float]:
+    scores = [r.get("reward_score") for r in rollouts_result.get("rollouts", [])
+              if isinstance(r.get("reward_score"), (int, float))]
+    return round(sum(scores) / len(scores), 3) if scores else None
+
+
+async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
+                      runs_per_intent: int = 2, min_delta: float = -0.1,
+                      run_id: str = "gate") -> Dict[str, Any]:
+    """Phase 2c — reward-delta gate around apply.
+
+    baseline rollout → apply proposal(s) → verification rollout → KEEP iff
+    mean reward didn't clearly regress (>= before + min_delta), else
+    auto-revert to the pre-apply system.md. Uses the loop's own reward as the
+    canary. (drift_detector PSI / a golden corpus are deferred — they need
+    sample volume a single-user setup doesn't have yet.)
+
+    Returns the measurement: before / after / delta / kept / reverted.
+    """
+    from agent.finance import fin_rollout
+    proposal_ids = list(proposal_ids)
+    intents = list(intents)
+
+    if not SYSTEM_MD.exists():
+        return {"ok": False, "error": f"system.md missing: {SYSTEM_MD}"}
+    snapshot = SYSTEM_MD.read_text(encoding="utf-8")  # one snapshot → clean multi-revert
+
+    base = await fin_rollout.run_rollouts(
+        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-base", intents=intents))
+    before = _mean_reward(base)
+
+    applied = []
+    for pid in proposal_ids:
+        res = apply_proposal(pid, approved=True)
+        if not res.get("ok"):
+            SYSTEM_MD.write_text(snapshot, encoding="utf-8")  # abort → restore
+            return {"ok": False, "error": f"apply failed for {pid}: {res.get('error')}",
+                    "before": before, "applied": applied}
+        applied.append(pid)
+
+    ver = await fin_rollout.run_rollouts(
+        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-verify", intents=intents))
+    after = _mean_reward(ver)
+
+    delta = None if (before is None or after is None) else round(after - before, 3)
+    kept = delta is not None and delta >= min_delta
+
+    if not kept:
+        SYSTEM_MD.write_text(snapshot, encoding="utf-8")
+        for pid in applied:
+            _mark_status(pid, "reverted")
+        return {"ok": True, "kept": False, "reverted": True, "before": before,
+                "after": after, "delta": delta, "min_delta": min_delta, "proposals": applied}
+
+    for pid in applied:
+        _mark_status(pid, "applied_verified")
+    return {"ok": True, "kept": True, "reverted": False, "before": before,
+            "after": after, "delta": delta, "proposals": applied}
+
+
 def run(*, reward_max: float = 0.5, days: int = 14) -> Dict[str, Any]:
     """Mine → propose → persist. Does NOT apply. Returns diagnosis + proposals."""
     diag = mine(reward_max=reward_max, days=days)

@@ -59,15 +59,20 @@ SEED_TEMPLATES: Dict[str, List[str]] = {
 }
 
 
-def build_seeds(n_per_intent: int = 2, run_id: str = "r0") -> List[Dict[str, str]]:
+def build_seeds(n_per_intent: int = 2, run_id: str = "r0",
+                intents: Optional[List[str]] = None) -> List[Dict[str, str]]:
     """Build a deterministic batch of rollout seeds.
 
     Returns a list of ``{"intent", "query", "chat_id"}``. Tickers rotate by
     index so a batch spans several names. chat_ids are unique per seed so each
-    rollout starts from empty history (no cross-contamination).
+    rollout starts from empty history (no cross-contamination). ``intents``
+    optionally restricts which buckets to generate (e.g. only the
+    recommendation intents a proposal actually affects).
     """
     seeds: List[Dict[str, str]] = []
     for intent, templates in SEED_TEMPLATES.items():
+        if intents is not None and intent not in intents:
+            continue
         for i in range(n_per_intent):
             tpl = templates[i % len(templates)]
             t = TICKERS[(i) % len(TICKERS)]
