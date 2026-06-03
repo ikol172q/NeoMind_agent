@@ -59,7 +59,11 @@ class ValidationResult:
 
 # Patterns for financial prices/amounts
 PRICE_PATTERNS = [
-    re.compile(r'\$[\d,]+\.?\d*'),              # $195.42
+    # $195.42 — but NOT $40T / $150B / $100k / $5% (magnitude/scale suffixes
+    # are TAM / spend / market-cap / disclosure ranges, not stock prices).
+    # The negative lookahead drops a match if it's immediately followed by a
+    # scale letter or %. "$195.42 close" still matches (space, not a suffix).
+    re.compile(r'\$[\d,]+\.?\d*(?![\d,.]*[KkMmBbTt%])'),
     re.compile(r'¥[\d,]+\.?\d*'),               # ¥1,234.56
     re.compile(r'HK\$[\d,]+\.?\d*'),            # HK$85.20
     re.compile(r'€[\d,]+\.?\d*'),               # €123.45
@@ -80,6 +84,9 @@ SOURCE_PATTERNS = [
     re.compile(r'\((?:Finnhub|CoinGecko|yfinance|AKShare|Binance|Reuters|Bloomberg)', re.IGNORECASE),
     re.compile(r'(?:数据来源|来源)[：:]\s*\w+', re.IGNORECASE),
     re.compile(r'\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*(?:UTC|CST|EST|PST)', re.IGNORECASE),
+    # NeoMind agents cite evidence inline with [ev:<id>] / [fact:<id>]
+    # (see dashboard_agent/system.md). Recognize that as a valid source.
+    re.compile(r'\[(?:ev|fact):[^\]]+\]', re.IGNORECASE),
 ]
 
 # Patterns to exclude from price validation (these are not market data)
