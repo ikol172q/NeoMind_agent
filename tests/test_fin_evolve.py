@@ -66,6 +66,21 @@ def test_propose_kinds():
     assert props["9z"]["kind"] == "review"
 
 
+def test_insert_block_before_closing_anchor():
+    original = "## 角色\nrule A\n\n---\n\n现在开始。用户问的下一条消息会跟在 user role 里。\n"
+    out = E._insert_block(original, ["", "## NEW", "<!-- m -->", "- new rule", ""])
+    # NEW section must land BEFORE the '---'/begin group, not after "现在开始"
+    assert out.index("## NEW") < out.index("---")
+    assert out.index("## NEW") < out.index("现在开始")
+    assert "rule A" in out and "现在开始" in out
+
+
+def test_insert_block_fallback_append_when_no_anchor():
+    original = "just a prompt body, no begin line\n"
+    out = E._insert_block(original, ["", "## NEW", "- x", ""])
+    assert out.rstrip().endswith("- x")  # appended at end
+
+
 def test_apply_refuses_without_approval(tmp=None):
     with tempfile.TemporaryDirectory() as d:
         _patch_paths(d)

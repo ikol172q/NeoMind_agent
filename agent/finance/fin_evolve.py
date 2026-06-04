@@ -78,6 +78,27 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# A prompt's closing "now begin" instruction. Rules appended AFTER it carry
+# little authority (the model is already told to start), which measurably hurt
+# compliance — so we insert evolution blocks into the body, just ABOVE it.
+_CLOSING_ANCHOR_RE = re.compile(r"现在开始|现在,?\s*开始|now begin", re.IGNORECASE)
+
+
+def _insert_block(original: str, block_lines: List[str]) -> str:
+    """Insert ``block_lines`` into the prompt body, before the closing
+    instruction (and any '---'/blank separator above it). Falls back to append
+    when no closing anchor is found.
+    """
+    lines = original.split("\n")
+    anchor = next((i for i, ln in enumerate(lines) if _CLOSING_ANCHOR_RE.search(ln)), None)
+    if anchor is None:
+        return original.rstrip("\n") + "\n" + "\n".join(block_lines) + "\n"
+    j = anchor
+    while j - 1 >= 0 and lines[j - 1].strip() in ("", "---"):
+        j -= 1
+    return "\n".join(lines[:j] + block_lines + lines[j:])
+
+
 def _iter_episodes(days: int = 14, limit: int = 2000):
     from agent.evolution.episode_capture import iter_recent_episodes
     yield from iter_recent_episodes(limit=limit, days_back=days)
@@ -235,14 +256,16 @@ def apply_proposal(proposal_id: str, *, approved: bool = False) -> Dict[str, Any
     backup = target.with_suffix(target.suffix + f".bak.{ts}")
     backup.write_text(original, encoding="utf-8")
 
-    block = f"\n\n{p['section']}\n{marker}\n{p['proposed_change']}\n"
-    target.write_text(original + block, encoding="utf-8")
+    block_lines = ["", p["section"], marker, p["proposed_change"], ""]
+    new_text = _insert_block(original, block_lines)
+    target.write_text(new_text, encoding="utf-8")
 
     p["status"] = "applied"
     p["applied_ts"] = _now_iso()
     p["backup"] = str(backup)
     path.write_text(json.dumps(p, ensure_ascii=False, indent=2), encoding="utf-8")
-    return {"ok": True, "backup": str(backup), "appended_chars": len(block)}
+    return {"ok": True, "backup": str(backup),
+            "inserted_chars": len(new_text) - len(original)}
 
 
 def _mark_status(proposal_id: str, status: str) -> None:
