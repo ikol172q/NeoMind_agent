@@ -110,9 +110,14 @@ def _episodes_by_chat_id(chat_ids: set, days_back: int = 2) -> Dict[str, Dict[st
     return out
 
 
-async def run_rollouts(seeds: List[Dict[str, str]]) -> Dict[str, Any]:
+async def run_rollouts(seeds: List[Dict[str, str]],
+                       temperature: Optional[float] = None) -> Dict[str, Any]:
     """Run each seed through the live agent, then join back the reward-labeled
     episodes. Resilient: one failing rollout doesn't abort the batch.
+
+    ``temperature`` is forwarded to the agent — pass 0.0 for *evaluation*
+    rollouts (deterministic, low-variance) vs the default 0.3 for data
+    generation.
 
     Returns ``{"rollouts": [...per seed...], "summary": {...}}``.
     """
@@ -123,7 +128,7 @@ async def run_rollouts(seeds: List[Dict[str, str]]) -> Dict[str, Any]:
         row: Dict[str, Any] = {"intent": s["intent"], "query": s["query"],
                                "chat_id": s["chat_id"], "ok": False}
         try:
-            reply = await answer(s["chat_id"], s["query"])
+            reply = await answer(s["chat_id"], s["query"], temperature=temperature)
             row["ok"] = True
             row["reply_chars"] = len(reply.text or "")
             row["n_proposals"] = len(reply.proposals)

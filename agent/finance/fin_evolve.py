@@ -304,8 +304,14 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
         return {"ok": False, "error": f"system.md missing: {SYSTEM_MD}"}
     snapshot = SYSTEM_MD.read_text(encoding="utf-8")  # one snapshot → clean multi-revert
 
+    # Evaluation rollouts run at temperature=0 (deterministic) so the SAME
+    # query is reproducible — the only thing that changes between base and
+    # verify is the prompt edit. We then compare PER-QUERY (paired) deltas,
+    # which cancels query-to-query variance. Both are needed because the raw
+    # reward is bimodal and noisy at small n (see troubleshooting 2026-06-03).
     base = await fin_rollout.run_rollouts(
-        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-base", intents=intents))
+        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-base", intents=intents),
+        temperature=0.0)
     before = _mean_reward(base)
 
     applied = []
@@ -318,23 +324,44 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
         applied.append(pid)
 
     ver = await fin_rollout.run_rollouts(
-        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-verify", intents=intents))
+        fin_rollout.build_seeds(runs_per_intent, run_id=f"{run_id}-verify", intents=intents),
+        temperature=0.0)
     after = _mean_reward(ver)
 
-    delta = None if (before is None or after is None) else round(after - before, 3)
+    paired_delta, pairs = _paired_delta(base, ver)
+    # Decide on the PAIRED delta (variance-reduced); fall back to mean diff.
+    delta = paired_delta if paired_delta is not None else (
+        None if (before is None or after is None) else round(after - before, 3))
     kept = delta is not None and delta >= min_delta
 
+    common = {"before": before, "after": after, "delta": delta,
+              "paired_delta": paired_delta, "n_paired": len(pairs),
+              "pairs": pairs, "min_delta": min_delta, "proposals": applied}
     if not kept:
         SYSTEM_MD.write_text(snapshot, encoding="utf-8")
         for pid in applied:
             _mark_status(pid, "reverted")
-        return {"ok": True, "kept": False, "reverted": True, "before": before,
-                "after": after, "delta": delta, "min_delta": min_delta, "proposals": applied}
+        return {"ok": True, "kept": False, "reverted": True, **common}
 
     for pid in applied:
         _mark_status(pid, "applied_verified")
-    return {"ok": True, "kept": True, "reverted": False, "before": before,
-            "after": after, "delta": delta, "proposals": applied}
+    return {"ok": True, "kept": True, "reverted": False, **common}
+
+
+def _paired_delta(base: Dict[str, Any], ver: Dict[str, Any]):
+    """Match base vs verify rollouts by query and return (mean_delta, pairs).
+
+    Pairing cancels query-to-query variance: only the prompt edit differs
+    between the two runs of the same (temperature=0) query.
+    """
+    bmap = {r["query"]: r.get("reward_score") for r in base.get("rollouts", [])}
+    pairs = []
+    for r in ver.get("rollouts", []):
+        q, a, b = r["query"], r.get("reward_score"), bmap.get(r["query"])
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+            pairs.append({"query": q, "before": b, "after": a, "delta": round(a - b, 3)})
+    mean_delta = round(sum(p["delta"] for p in pairs) / len(pairs), 3) if pairs else None
+    return mean_delta, pairs
 
 
 def run(*, reward_max: float = 0.5, days: int = 14) -> Dict[str, Any]:

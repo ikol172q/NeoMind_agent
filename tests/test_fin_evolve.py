@@ -128,10 +128,11 @@ def _run_gate_with_rewards(pid, before_after):
     (before, after) mean rewards in sequence."""
     import asyncio
     from agent.finance import fin_rollout
-    seq = iter([{"rollouts": [{"reward_score": before_after[0]}]},
-                {"rollouts": [{"reward_score": before_after[1]}]}])
+    # include matching "query" so the paired-delta path is exercised
+    seq = iter([{"rollouts": [{"query": "q1", "reward_score": before_after[0]}]},
+                {"rollouts": [{"query": "q1", "reward_score": before_after[1]}]}])
 
-    async def fake_run(seeds):
+    async def fake_run(seeds, temperature=None):
         return next(seq)
 
     orig_run, orig_seeds = fin_rollout.run_rollouts, fin_rollout.build_seeds

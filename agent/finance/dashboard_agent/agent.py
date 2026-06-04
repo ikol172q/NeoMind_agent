@@ -249,7 +249,8 @@ async def _llm_call(messages: List[Dict[str, Any]],
                     model: str,
                     *,
                     reasoning_effort: Optional[str] = None,
-                    max_tokens: int = 2000) -> Dict[str, Any]:
+                    max_tokens: int = 2000,
+                    temperature: float = 0.3) -> Dict[str, Any]:
     base = (os.getenv("LLM_ROUTER_BASE_URL") or "http://127.0.0.1:8000/v1").rstrip("/")
     key = (os.getenv("LLM_ROUTER_API_KEY")
            or os.getenv("DEEPSEEK_API_KEY")
@@ -258,7 +259,7 @@ async def _llm_call(messages: List[Dict[str, Any]],
         "model":       model,
         "messages":    messages,
         "tools":       TOOL_SCHEMAS,
-        "temperature": 0.3,
+        "temperature": temperature,
         "max_tokens":  max_tokens,
     }
     # DeepSeek V4 thinking budget. Valid: low/medium/high/max/xhigh (the
@@ -484,7 +485,8 @@ def _finalize_turn(
 
 
 async def answer(chat_id: str, user_msg: str,
-                 model: Optional[str] = None) -> AgentReply:
+                 model: Optional[str] = None,
+                 temperature: Optional[float] = None) -> AgentReply:
     """Receive a message, run the tool-calling loop, return final reply.
 
     Persists user message, every tool call/result, and final assistant
@@ -537,7 +539,8 @@ async def answer(chat_id: str, user_msg: str,
         try:
             resp = await _llm_call(messages, model,
                                    reasoning_effort=reasoning_effort,
-                                   max_tokens=route_max_tokens)
+                                   max_tokens=route_max_tokens,
+                                   temperature=0.3 if temperature is None else temperature)
         except httpx.HTTPError as exc:
             err = f"⚠️ LLM 调用失败 ({type(exc).__name__})。dashboard 还在，请稍后重试。"
             _persist_turn(chat_id, turn_idx, {"role": "assistant", "content": err}, model=model)
