@@ -211,7 +211,13 @@ def compute_reward(
 
     reply = reply or ""
     empty_reply = not reply.strip()
-    error_reply = finish_reason in ("llm_error", "max_turns")
+    # Split infra failures from agent-attributable ones. An LLM/router error
+    # (llm_error) says NOTHING about harness quality, so it must NOT become a
+    # negative the miner clusters against — exclude it from the signal entirely
+    # (score=None → every numeric consumer skips it). A non-converging loop
+    # (max_turns) or an empty reply IS agent-attributable → hard negative.
+    infra_error = finish_reason == "llm_error"
+    agent_error = finish_reason == "max_turns"
 
     validator = _run_validator(reply, tool_results, strict)
 
@@ -223,17 +229,17 @@ def compute_reward(
                      "agreement": None, "items": []}
 
     # ── combine ──
-    score = validator["score"]
+    score: Optional[float] = validator["score"]
     if scorecard.get("computed") and scorecard.get("agreement") is not None:
         score = 0.7 * validator["score"] + 0.3 * float(scorecard["agreement"])
-    # Structural overrides dominate: an empty or degenerate turn is a clear
-    # negative regardless of what the validator said.
-    if empty_reply or error_reply:
-        score = min(score, -1.0)
+    if infra_error:
+        score = None                       # no signal — excluded everywhere
+    elif empty_reply or agent_error:
+        score = min(score, -1.0)           # agent-attributable hard negative
 
     return {
         "schema": SCHEMA,
-        "score": round(float(score), 3),
+        "score": (round(float(score), 3) if isinstance(score, (int, float)) else None),
         "validator": validator,
         "scorecard": scorecard,
         # Delayed-reward hook: the decisions the agent proposed this turn.
@@ -247,7 +253,9 @@ def compute_reward(
         ],
         "structural": {
             "empty_reply": empty_reply,
-            "error_reply": bool(error_reply),
+            "error_reply": bool(infra_error or agent_error),   # back-compat
+            "infra_error": infra_error,
+            "agent_error": agent_error,
             "finish_reason": finish_reason,
             "n_decisions": len(decisions),
             "n_tool_results": len(tool_results or []),

@@ -645,7 +645,7 @@ async def answer(chat_id: str, user_msg: str,
         query=user_msg, tool_results=tool_results_for_reward,
         episode_tool_calls=episode_tool_calls, model=model,
         usage=last_usage, finish_reason="max_turns",
-        iterations=iterations, t0=t0)
+        iterations=iterations, t0=t0, route=route)
 
 
 def answer_sync(chat_id: str, user_msg: str,

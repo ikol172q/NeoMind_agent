@@ -54,6 +54,20 @@ def test_mine_ranks_rule3_top(monkeypatch=None):
     assert rules["4c"]["episodes"] == 2 and rules["4a"]["episodes"] == 1
 
 
+def test_mine_skips_infra_error_episodes():
+    """Episodes with score=None (infra/llm_error — no harness signal) must be
+    excluded from the mined corpus."""
+    eps = [_ep("decision", 0.2, ["缺免责声明 (Rule 4c)"]),
+           _ep("decision", None, [])]      # infra error → score None → skip
+    orig = E._iter_episodes
+    E._iter_episodes = lambda **k: iter(eps)
+    try:
+        diag = E.mine(reward_max=0.5, days=99)
+    finally:
+        E._iter_episodes = orig
+    assert diag["corpus"]["scored_episodes"] == 1   # the None-score one excluded
+
+
 def test_propose_kinds():
     diag = {"patterns": [
         {"rule": "4c", "count": 2, "episodes": 2, "intents": ["decision"], "examples": ["x"]},

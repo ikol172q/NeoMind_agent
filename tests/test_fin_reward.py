@@ -91,6 +91,18 @@ def test_compute_reward_max_turns_is_negative():
     r = fr.compute_reward(query="x", reply="(stuck)", finish_reason="max_turns")
     assert r["score"] <= -1.0
     assert r["structural"]["error_reply"] is True
+    assert r["structural"]["agent_error"] is True      # max_turns = agent-attributable
+    assert r["structural"]["infra_error"] is False
+
+
+def test_compute_reward_infra_error_excluded_from_signal():
+    # An LLM/router failure carries no harness-quality signal: score must be
+    # None (so every numeric consumer skips it) and flagged infra_error.
+    r = fr.compute_reward(query="x", reply="⚠️ LLM 调用失败", finish_reason="llm_error")
+    assert r["score"] is None
+    assert r["structural"]["infra_error"] is True
+    assert r["structural"]["agent_error"] is False
+    assert r["structural"]["error_reply"] is True      # back-compat flag still set
 
 
 def test_compute_reward_empty_reply_is_negative():
