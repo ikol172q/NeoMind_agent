@@ -44,6 +44,9 @@ PROPOSALS_ROOT = EPISODES_ROOT.parent / "proposals"
 # system.md for the dashboard (Telegram) agent — the main evolvable surface.
 SYSTEM_MD = Path(__file__).parent / "dashboard_agent" / "system.md"
 
+# Longitudinal drift DB (Phase 3.3) — local + self-contained under _evolution/.
+_DRIFT_DB = EPISODES_ROOT.parent / "drift" / "fin_gate.db"
+
 # Known validator rules → how to act. Templated edits for the unambiguous
 # ones; "investigate" for patterns that may be validator-side, not agent-side.
 _RULE_PLAYBOOK: Dict[str, Dict[str, Any]] = {
@@ -295,6 +298,58 @@ def _mean_reward(rollouts_result: Dict[str, Any]) -> Optional[float]:
     return round(sum(scores) / len(scores), 3) if scores else None
 
 
+def _hard_fail(row: Dict[str, Any]) -> bool:
+    """A rollout that hard-failed: errored (ok False), empty reply, or hit the
+    structural reward floor (blocked/empty turn → score <= -1.0)."""
+    if row.get("ok") is False:
+        return True
+    rc = row.get("reply_chars")
+    if isinstance(rc, int) and rc == 0:
+        return True
+    s = row.get("reward_score")
+    if isinstance(s, (int, float)) and s <= -1.0:
+        return True
+    return False
+
+
+def _safety_regression(base: Dict[str, Any], ver: Dict[str, Any]) -> List[str]:
+    """Queries that pass a hard invariant at baseline but FAIL it after the
+    edit. Non-empty → the edit broke a case and must NOT be promoted regardless
+    of mean reward. Deterministic; works at any sample size (the golden gate)."""
+    bmap = {r.get("query"): r for r in base.get("rollouts", [])}
+    broken: List[str] = []
+    for r in ver.get("rollouts", []):
+        b = bmap.get(r.get("query"))
+        if b is not None and (not _hard_fail(b)) and _hard_fail(r):
+            broken.append(r.get("query"))
+    return broken
+
+
+def _drift_check(ver: Dict[str, Any]) -> Dict[str, Any]:
+    """Best-effort longitudinal drift monitor — wires the dormant
+    ``drift_detector`` into the fin promote path. Records this run's verify
+    rewards so PSI accrues across gate runs, and returns a PSI reading once
+    enough history exists. At low volume it returns no veto (the interface is
+    live and self-activates once the Phase 3.4 scheduler supplies daily
+    samples). NEVER raises — a missing module/DB just means no drift signal."""
+    try:
+        from agent.evolution.drift_detector import DriftDetector, PSI_MODERATE
+        det = DriftDetector(db_path=_DRIFT_DB)
+        scores = [r.get("reward_score") for r in ver.get("rollouts", [])
+                  if isinstance(r.get("reward_score"), (int, float))]
+        for s in scores:
+            det.record("fin_gate_reward", float(s), mode="fin")
+        det.compute_baseline("fin_gate_reward")   # no-op until enough samples
+        psi = det.calculate_psi("fin_gate_reward")
+        if psi is None:
+            return {"psi": None, "blocked": False, "samples": len(scores)}
+        return {"psi": round(psi, 4), "blocked": bool(psi > PSI_MODERATE),
+                "threshold": PSI_MODERATE, "samples": len(scores)}
+    except Exception:
+        logger.debug("fin_evolve._drift_check skipped", exc_info=True)
+        return {}
+
+
 async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
                       runs_per_intent: int = 3, min_improve: float = 0.05,
                       min_pairs: int = 3, min_win_rate: float = 0.6,
@@ -312,10 +367,13 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
     Evaluation rollouts run at temperature=0 and are compared PER-QUERY
     (paired) to cancel query-to-query variance. The old lax ``min_delta=-0.1``
     (which admitted zero/negative deltas) is gone — a change must *earn* its
-    keep. (drift_detector PSI / golden corpus still deferred — Phase 3.3.)
+    keep. Two safety gates DOMINATE the delta (Phase 3.3): a deterministic
+    invariant-regression (golden) check that blocks any edit which newly breaks
+    a query, and a longitudinal drift_detector PSI monitor that accrues across
+    runs and vetoes once enough history exists.
 
     Returns the measurement: before / after / delta / win_rate / n_paired /
-    status / kept / reverted.
+    new_failures / drift / status / kept / reverted.
     """
     from agent.finance import fin_rollout
     proposal_ids = list(proposal_ids)
@@ -358,9 +416,22 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
                if isinstance(p.get("delta"), (int, float)) and p["delta"] > 0)
     win_rate = round(wins / n_pairs, 3) if n_pairs else None
 
+    # Phase 3.3 safety gates — these DOMINATE the reward delta:
+    #  (a) deterministic golden/invariant regression: did the edit newly break a
+    #      query the baseline passed? n-robust — catches "improved the mean but
+    #      broke a case" misevolution.
+    #  (b) longitudinal drift (drift_detector PSI): best-effort, vetoes only
+    #      once enough history has accrued (no veto at low volume).
+    new_failures = _safety_regression(base, ver)
+    drift = _drift_check(ver)
+
     # Gate decision (Phase 3.2 — power, not a lax -0.1 threshold). Asymmetry is
     # gone: a zero/negative delta no longer "passes".
-    if delta is None or n_pairs < min_pairs:
+    if new_failures:
+        status = "safety_blocked"        # edit broke a case — never promote
+    elif drift.get("blocked"):
+        status = "drift_blocked"         # behavior drifted past PSI threshold
+    elif delta is None or n_pairs < min_pairs:
         status = "inconclusive"          # not enough evidence to trust a delta
     elif delta >= min_improve and win_rate is not None and win_rate >= min_win_rate:
         status = "kept"
@@ -371,6 +442,7 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
     common = {"before": before, "after": after, "delta": delta,
               "paired_delta": paired_delta, "n_paired": n_pairs,
               "win_rate": win_rate, "pairs": pairs, "status": status,
+              "new_failures": new_failures, "drift": drift,
               "min_improve": min_improve, "min_pairs": min_pairs,
               "min_win_rate": min_win_rate, "proposals": applied}
     if not kept:

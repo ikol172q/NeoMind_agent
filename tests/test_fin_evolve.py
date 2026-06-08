@@ -123,15 +123,15 @@ def _gate_setup(d):
     return sysmd, props[0]["id"]
 
 
-def _run_gate_with_rewards(pid, before_after, n_pairs=3):
-    """Run gated_apply with fin_rollout.run_rollouts mocked to return n_pairs
-    paired queries at the given (before, after) reward in sequence."""
+def _run_gate(pid, base_rollouts, ver_rollouts):
+    """Run gated_apply with run_rollouts mocked to return the given base/verify
+    rollout rows. Isolates the drift DB to a temp path so the longitudinal
+    monitor never writes real state during tests."""
     import asyncio
+    import tempfile as _tf
     from agent.finance import fin_rollout
-    before, after = before_after
-    base = {"rollouts": [{"query": f"q{i}", "reward_score": before} for i in range(n_pairs)]}
-    ver = {"rollouts": [{"query": f"q{i}", "reward_score": after} for i in range(n_pairs)]}
-    seq = iter([base, ver])
+    E._DRIFT_DB = Path(_tf.mkdtemp()) / "drift.db"
+    seq = iter([{"rollouts": base_rollouts}, {"rollouts": ver_rollouts}])
 
     async def fake_run(seeds, temperature=None):
         return next(seq)
@@ -143,6 +143,17 @@ def _run_gate_with_rewards(pid, before_after, n_pairs=3):
         return asyncio.run(E.gated_apply([pid], runs_per_intent=1))
     finally:
         fin_rollout.run_rollouts, fin_rollout.build_seeds = orig_run, orig_seeds
+
+
+def _uniform(reward, n, ok=True):
+    return [{"query": f"q{i}", "reward_score": reward, "ok": ok, "reply_chars": 100}
+            for i in range(n)]
+
+
+def _run_gate_with_rewards(pid, before_after, n_pairs=3):
+    """Uniform base/verify rollouts at the given (before, after) reward."""
+    before, after = before_after
+    return _run_gate(pid, _uniform(before, n_pairs), _uniform(after, n_pairs))
 
 
 def test_gate_keeps_on_improvement():
@@ -185,6 +196,20 @@ def test_gate_reverts_on_subthreshold_noise():
         r = _run_gate_with_rewards(pid, (0.50, 0.52), n_pairs=3)  # +0.02 < 0.05
         assert r["kept"] is False and r["status"] == "reverted"
         assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"
+
+
+def test_gate_safety_blocks_newly_broken_query():
+    """Phase 3.3: an edit that improves mean reward on most queries but BREAKS a
+    case (newly ok=False) must NOT promote — safety dominates reward."""
+    with tempfile.TemporaryDirectory() as d:
+        sysmd, pid = _gate_setup(d)
+        base = _uniform(0.5, 4)                       # q0..q3 all fine
+        ver = _uniform(0.9, 3)                        # q0..q2 improved
+        ver.append({"query": "q3", "ok": False})     # q3 newly broken
+        r = _run_gate(pid, base, ver)
+        assert r["status"] == "safety_blocked" and r["kept"] is False
+        assert r["new_failures"] == ["q3"]
+        assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"  # reverted
 
 
 def _patch_paths(d):
