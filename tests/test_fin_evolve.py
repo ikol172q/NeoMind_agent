@@ -123,14 +123,15 @@ def _gate_setup(d):
     return sysmd, props[0]["id"]
 
 
-def _run_gate_with_rewards(pid, before_after):
-    """Run gated_apply with fin_rollout.run_rollouts mocked to return the given
-    (before, after) mean rewards in sequence."""
+def _run_gate_with_rewards(pid, before_after, n_pairs=3):
+    """Run gated_apply with fin_rollout.run_rollouts mocked to return n_pairs
+    paired queries at the given (before, after) reward in sequence."""
     import asyncio
     from agent.finance import fin_rollout
-    # include matching "query" so the paired-delta path is exercised
-    seq = iter([{"rollouts": [{"query": "q1", "reward_score": before_after[0]}]},
-                {"rollouts": [{"query": "q1", "reward_score": before_after[1]}]}])
+    before, after = before_after
+    base = {"rollouts": [{"query": f"q{i}", "reward_score": before} for i in range(n_pairs)]}
+    ver = {"rollouts": [{"query": f"q{i}", "reward_score": after} for i in range(n_pairs)]}
+    seq = iter([base, ver])
 
     async def fake_run(seeds, temperature=None):
         return next(seq)
@@ -147,20 +148,43 @@ def _run_gate_with_rewards(pid, before_after):
 def test_gate_keeps_on_improvement():
     with tempfile.TemporaryDirectory() as d:
         sysmd, pid = _gate_setup(d)
-        r = _run_gate_with_rewards(pid, (0.2, 0.8))
+        r = _run_gate_with_rewards(pid, (0.2, 0.8))   # 3 pairs, each +0.6
         assert r["kept"] is True and r["reverted"] is False and r["delta"] == 0.6
+        assert r["status"] == "kept" and r["win_rate"] == 1.0 and r["n_paired"] == 3
         assert "免责声明" in sysmd.read_text(encoding="utf-8")   # change kept
 
 
 def test_gate_reverts_on_regression():
     with tempfile.TemporaryDirectory() as d:
         sysmd, pid = _gate_setup(d)
-        r = _run_gate_with_rewards(pid, (0.8, 0.2))
+        r = _run_gate_with_rewards(pid, (0.8, 0.2))   # 3 pairs, each -0.6
         assert r["kept"] is False and r["reverted"] is True and r["delta"] == -0.6
+        assert r["status"] == "reverted" and r["win_rate"] == 0.0
         assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"  # restored
         # proposal marked reverted
         p = E.list_proposals()[0]
         assert p["status"] == "reverted"
+
+
+def test_gate_inconclusive_on_insufficient_n():
+    """A big improvement with only n=1 paired sample must NOT promote — the n=2
+    noise trap. The edit is rolled back and marked inconclusive."""
+    with tempfile.TemporaryDirectory() as d:
+        sysmd, pid = _gate_setup(d)
+        r = _run_gate_with_rewards(pid, (0.2, 0.9), n_pairs=1)
+        assert r["kept"] is False and r["status"] == "inconclusive"
+        assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"  # rolled back
+        assert E.list_proposals()[0]["status"] == "inconclusive"
+
+
+def test_gate_reverts_on_subthreshold_noise():
+    """A positive but tiny mean delta (below min_improve) no longer 'passes' —
+    the old min_delta=-0.1 gate would have kept it."""
+    with tempfile.TemporaryDirectory() as d:
+        sysmd, pid = _gate_setup(d)
+        r = _run_gate_with_rewards(pid, (0.50, 0.52), n_pairs=3)  # +0.02 < 0.05
+        assert r["kept"] is False and r["status"] == "reverted"
+        assert sysmd.read_text(encoding="utf-8") == "原始 system prompt\n"
 
 
 def _patch_paths(d):

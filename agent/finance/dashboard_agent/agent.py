@@ -38,6 +38,14 @@ try:
 except Exception:  # noqa: BLE001
     _record_episode = None
 
+# Outcome ledger (Phase 3.1) closes the reward loop: log proposed directional
+# decisions so fin_outcome.backfill() can later attach the realized forward
+# return as a sparse reward. Best-effort, ZERO network on the reply path.
+try:
+    from agent.finance import fin_outcome as _fin_outcome
+except Exception:  # noqa: BLE001
+    _fin_outcome = None
+
 logger = logging.getLogger(__name__)
 
 _SYSTEM_MD = Path(__file__).parent / "system.md"
@@ -456,6 +464,13 @@ def _finalize_turn(
         )
     except Exception:  # noqa: BLE001
         logger.debug("compute_reward failed", exc_info=True)
+
+    if _fin_outcome is not None and decisions:
+        try:
+            _fin_outcome.record_decisions(
+                decisions=decisions, req_id=req_id, chat_id=chat_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("fin_outcome.record_decisions failed", exc_info=True)
 
     if _record_episode is not None:
         try:

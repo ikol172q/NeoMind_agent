@@ -110,16 +110,27 @@ def mine(*, reward_max: float = 0.5, days: int = 14) -> Dict[str, Any]:
     Returns a diagnosis: per-rule {count, episodes, intents, examples} ranked
     by how many distinct episodes the rule drags, plus corpus stats.
     """
+    # Score episodes with the OUTCOME-AWARE scorer: a decision that passed the
+    # validator (compliant) but lost money now scores low and surfaces here —
+    # the whole point of Phase 3.1. Episodes without a matured outcome score
+    # exactly as before (just the dense validator base).
+    from agent.finance import fin_reward, fin_outcome
+    realized_index = fin_outcome.load_realized_index()
+
     n_total = 0
     n_low = 0
     n_synthetic = 0
+    n_outcome = 0
     rule_stats: Dict[str, Dict[str, Any]] = {}
     for ep in _iter_episodes(days=days):
         sig = ep.get("signals") or {}
         rw = sig.get("reward") or {}
-        score = rw.get("score")
-        if not isinstance(score, (int, float)):
-            continue
+        if not isinstance(rw.get("score"), (int, float)):
+            continue  # episode never got a reward — skip (unchanged gate)
+        scored = fin_reward.score_episode(ep, realized_index=realized_index)
+        score = scored["score"]
+        if scored.get("matured"):
+            n_outcome += 1
         n_total += 1
         if str(ep.get("session_id", "")).startswith("rollout-"):
             n_synthetic += 1
@@ -155,7 +166,8 @@ def mine(*, reward_max: float = 0.5, days: int = 14) -> Dict[str, Any]:
         "generated_ts": _now_iso(),
         "params": {"reward_max": reward_max, "days": days},
         "corpus": {"scored_episodes": n_total, "low_reward_episodes": n_low,
-                   "synthetic_episodes": n_synthetic},
+                   "synthetic_episodes": n_synthetic,
+                   "outcome_scored_episodes": n_outcome},
         "patterns": patterns,
     }
 
@@ -284,17 +296,26 @@ def _mean_reward(rollouts_result: Dict[str, Any]) -> Optional[float]:
 
 
 async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
-                      runs_per_intent: int = 2, min_delta: float = -0.1,
+                      runs_per_intent: int = 3, min_improve: float = 0.05,
+                      min_pairs: int = 3, min_win_rate: float = 0.6,
                       run_id: str = "gate") -> Dict[str, Any]:
-    """Phase 2c — reward-delta gate around apply.
+    """Phase 2c/3.2 — statistically-gated reward-delta apply.
 
-    baseline rollout → apply proposal(s) → verification rollout → KEEP iff
-    mean reward didn't clearly regress (>= before + min_delta), else
-    auto-revert to the pre-apply system.md. Uses the loop's own reward as the
-    canary. (drift_detector PSI / a golden corpus are deferred — they need
-    sample volume a single-user setup doesn't have yet.)
+    baseline rollout → apply proposal(s) → verification rollout → decide:
+      - ``inconclusive`` : fewer than ``min_pairs`` paired queries — not enough
+        evidence to trust ANY delta (the n=2 noise trap from 2026-06-03). The
+        edit is rolled back; nothing is promoted on insufficient power.
+      - ``kept``         : mean paired improvement >= ``min_improve`` AND a
+        majority (``min_win_rate``) of paired queries individually improved.
+      - ``reverted``     : regression or sub-threshold noise.
 
-    Returns the measurement: before / after / delta / kept / reverted.
+    Evaluation rollouts run at temperature=0 and are compared PER-QUERY
+    (paired) to cancel query-to-query variance. The old lax ``min_delta=-0.1``
+    (which admitted zero/negative deltas) is gone — a change must *earn* its
+    keep. (drift_detector PSI / golden corpus still deferred — Phase 3.3.)
+
+    Returns the measurement: before / after / delta / win_rate / n_paired /
+    status / kept / reverted.
     """
     from agent.finance import fin_rollout
     proposal_ids = list(proposal_ids)
@@ -332,15 +353,30 @@ async def gated_apply(proposal_ids, *, intents=("decision", "synthesis"),
     # Decide on the PAIRED delta (variance-reduced); fall back to mean diff.
     delta = paired_delta if paired_delta is not None else (
         None if (before is None or after is None) else round(after - before, 3))
-    kept = delta is not None and delta >= min_delta
+    n_pairs = len(pairs)
+    wins = sum(1 for p in pairs
+               if isinstance(p.get("delta"), (int, float)) and p["delta"] > 0)
+    win_rate = round(wins / n_pairs, 3) if n_pairs else None
+
+    # Gate decision (Phase 3.2 — power, not a lax -0.1 threshold). Asymmetry is
+    # gone: a zero/negative delta no longer "passes".
+    if delta is None or n_pairs < min_pairs:
+        status = "inconclusive"          # not enough evidence to trust a delta
+    elif delta >= min_improve and win_rate is not None and win_rate >= min_win_rate:
+        status = "kept"
+    else:
+        status = "reverted"              # regression or sub-threshold noise
+    kept = status == "kept"
 
     common = {"before": before, "after": after, "delta": delta,
-              "paired_delta": paired_delta, "n_paired": len(pairs),
-              "pairs": pairs, "min_delta": min_delta, "proposals": applied}
+              "paired_delta": paired_delta, "n_paired": n_pairs,
+              "win_rate": win_rate, "pairs": pairs, "status": status,
+              "min_improve": min_improve, "min_pairs": min_pairs,
+              "min_win_rate": min_win_rate, "proposals": applied}
     if not kept:
         SYSTEM_MD.write_text(snapshot, encoding="utf-8")
         for pid in applied:
-            _mark_status(pid, "reverted")
+            _mark_status(pid, status)    # "reverted" or "inconclusive"
         return {"ok": True, "kept": False, "reverted": True, **common}
 
     for pid in applied:

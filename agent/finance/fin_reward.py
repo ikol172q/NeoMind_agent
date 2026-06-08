@@ -253,3 +253,56 @@ def compute_reward(
             "n_tool_results": len(tool_results or []),
         },
     }
+
+
+# How much a *matured* forward-return outcome (fin_outcome.backfill) shifts an
+# episode's offline score relative to the dense validator score. Kept below 0.5
+# on purpose: a single short-horizon return is noisy, so the dense compliance
+# signal still anchors the score until many outcomes accumulate.
+_OUTCOME_WEIGHT = 0.4
+
+
+def score_episode(episode: Dict[str, Any], *,
+                  realized_index: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
+    """Unified OFFLINE score for a recorded episode — for mining / dashboards.
+
+    Blends the dense reward already stored at turn time (validator, plus
+    scorecard if it was enabled) with the sparse *realized* outcome (forward
+    return) once ``fin_outcome.backfill`` has matured it.
+
+    Pure function: NO network, NO validator re-run. It reads the stored
+    ``signals.reward`` and a precomputed ``realized_index`` (req_id → reward
+    from ``fin_outcome.load_realized_index``). When no outcome is available yet
+    the score is just the dense base — identical to the legacy behaviour, so
+    callers can switch over without changing results for un-matured episodes.
+
+    Returns ``{score, base, realized, matured}``.
+    """
+    try:
+        sig = episode.get("signals") or {}
+        rw = sig.get("reward") or {}
+        base = rw.get("score")
+        if not isinstance(base, (int, float)):
+            base = (rw.get("validator") or {}).get("score")
+        if not isinstance(base, (int, float)):
+            base = 0.0
+        base = float(base)
+
+        realized: Optional[float] = None
+        if realized_index:
+            rid = episode.get("req_id")
+            if rid is not None:
+                cand = realized_index.get(rid)
+                if isinstance(cand, (int, float)):
+                    realized = float(cand)
+
+        if realized is not None:
+            score = round((1.0 - _OUTCOME_WEIGHT) * base + _OUTCOME_WEIGHT * realized, 3)
+            return {"score": score, "base": round(base, 3),
+                    "realized": round(realized, 3), "matured": True}
+        return {"score": round(base, 3), "base": round(base, 3),
+                "realized": None, "matured": False}
+    except Exception:  # never raise from offline scoring
+        logger.debug("fin_reward.score_episode failed", exc_info=True)
+        return {"score": 0.0, "base": 0.0, "realized": None, "matured": False,
+                "error": "score_episode_failed"}
