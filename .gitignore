@@ -193,3 +193,12 @@ seed_philosophy.json
 pii_patterns.txt
 **/pii_patterns.txt
 !pii_patterns.example.txt
+
+# Personal / local-only docs & plans — keep private notes here so the PII guard
+# never has to fight them. Anything matching these is never tracked. (2026-06-14)
+local-only/
+**/local-only/
+*.private.md
+*.local.md
+*.personal.md
+neomind-local-plans/

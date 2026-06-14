@@ -6,27 +6,26 @@ set -e
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-HOOK_SRC="tools/hooks/pre-commit"
-HOOK_DEST=".git/hooks/pre-commit"
+install_hook() {
+    local src="tools/hooks/$1" dest=".git/hooks/$1"
+    if [ ! -f "$src" ]; then
+        echo "❌ source hook not found at $src"; exit 1
+    fi
+    # Backup any existing real (non-symlink) hook
+    if [ -f "$dest" ] && [ ! -L "$dest" ]; then
+        local backup="$dest.bak.$(date +%s)"
+        echo "ℹ existing $1 found, backing up to $backup"
+        mv "$dest" "$backup"
+    fi
+    # Symlink so future updates to the source auto-apply
+    ln -sf "../../$src" "$dest"
+    chmod +x "$src" "$dest"
+    echo "✅ Installed $1 hook: $dest → $src"
+}
 
-if [ ! -f "$HOOK_SRC" ]; then
-    echo "❌ source hook not found at $HOOK_SRC"
-    exit 1
-fi
-
-# Backup any existing hook
-if [ -f "$HOOK_DEST" ] && [ ! -L "$HOOK_DEST" ]; then
-    BACKUP="$HOOK_DEST.bak.$(date +%s)"
-    echo "ℹ existing hook found, backing up to $BACKUP"
-    mv "$HOOK_DEST" "$BACKUP"
-fi
-
-# Create symlink so future updates to tools/hooks/pre-commit auto-apply
-ln -sf "../../$HOOK_SRC" "$HOOK_DEST"
-chmod +x "$HOOK_SRC"
-chmod +x "$HOOK_DEST"
-
-echo "✅ Installed pre-commit hook: $HOOK_DEST → $HOOK_SRC"
+install_hook pre-commit
+install_hook pre-push
+chmod +x tools/hooks/scan_staged_pii.py 2>/dev/null || true
 echo ""
 echo "The hook will run cross-mode boot smoke (~90s) when staged changes"
 echo "touch shared code paths (code_commands / nl_interpreter / core /"

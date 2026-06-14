@@ -11,13 +11,21 @@
 
 set -e
 
-if [ -n "$NEOMIND_SKIP_SMOKE" ]; then
-    echo "[neomind-pre-commit] SKIP (NEOMIND_SKIP_SMOKE=1)"
-    exit 0
-fi
-
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
+
+# --- Personal-data / PII guard — ALWAYS runs (NEOMIND_SKIP_SMOKE does NOT skip
+# it; it only skips the slow smoke test). Blocks commits that would leak the
+# owner's real holdings / identity / financial info. Bypass (sure?):
+# NEOMIND_ALLOW_PERSONAL=1 git commit ...
+if [ -f "$REPO_ROOT/tools/hooks/scan_staged_pii.py" ]; then
+    python3 "$REPO_ROOT/tools/hooks/scan_staged_pii.py" staged || exit 1
+fi
+
+if [ -n "$NEOMIND_SKIP_SMOKE" ]; then
+    echo "[neomind-pre-commit] SKIP smoke (NEOMIND_SKIP_SMOKE=1)"
+    exit 0
+fi
 
 # Shared code paths — change here if mode-cutting modules move
 SHARED_REGEX='^(agent/services/code_commands\.py|agent/services/nl_interpreter\.py|agent/core\.py|agent/agentic/agentic_loop\.py|agent/integration/telegram_bot\.py|agent/coding/tools\.py|agent/config/.*\.yaml|agent/config\.yaml)$'
