@@ -81,6 +81,24 @@ def build_context_block(
         if p:
             parts.append(format_project_block(p))
 
+        # Cognition Map summary — make chat aware of the user's personal
+        # world-model so it can reference / search / extend it (req10 read side).
+        try:
+            from agent.finance.cognition_map import CognitionMap, TRUSTED_PROVENANCE_STATES
+            rows = CognitionMap(project_id).list_nodes()
+            if rows:
+                trusted = sum(1 for r in rows if r["prov_state"] in TRUSTED_PROVENANCE_STATES)
+                titles = ", ".join(r["title"] for r in rows[:15])
+                parts.append(
+                    "### COGNITION MAP (用户的个人世界模型) ###\n"
+                    f"{len(rows)} 个节点 (已验证/锚定 {trusted}, 🔴候选 {len(rows) - trusted})。"
+                    f" 近期: {titles}.\n"
+                    "可调 cognition_query_map(query) 搜索、cognition_save_node(title,...) "
+                    "存新结论(落 🔴 未验证候选)。"
+                )
+        except Exception as exc:
+            logger.debug("cognition map context failed: %s", exc)
+
     parts.append(
         "### END DASHBOARD STATE ###\n"
         "Use the data above to ground your answer. If the user asks "

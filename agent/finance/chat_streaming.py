@@ -244,10 +244,50 @@ _FIN_TOOLS: list[dict] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "cognition_save_node",
+            "description": (
+                "Save a conclusion / insight into the user's personal "
+                "Cognition Map as a candidate node. Use when the user says "
+                "things like 存进认知图谱 / 记下来 / save this to my map. The "
+                "node lands UNVERIFIED (a 🔴 candidate) — do NOT claim it is "
+                "verified; tell the user it's saved as a candidate to review."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "Short node title (the claim/concept itself)"},
+                    "type": {"type": "string", "description": "concept|entity|event|claim|source (default concept)"},
+                    "body": {"type": "string", "description": "Optional supporting detail / context"},
+                },
+                "required": ["title"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cognition_query_map",
+            "description": (
+                "Search the user's personal Cognition Map by keyword; returns "
+                "matching node titles + provenance state. Use to check what the "
+                "user already has in their map before answering or saving."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "Keyword to match against node titles"},
+                },
+                "required": ["query"],
+            },
+        },
+    },
 ]
 
 
-async def _execute_tool(name: str, args: dict) -> dict:
+async def _execute_tool(name: str, args: dict, project_id: str = "") -> dict:
     """Dispatch a tool call. Returns the raw dict the underlying
     finance_tools function returns; chat_streaming serializes it as
     the `tool` role message content. All tools fail-soft: an exception
@@ -269,6 +309,23 @@ async def _execute_tool(name: str, args: dict) -> dict:
             # so the tool always returned "search engine not available".
             from agent.tools.finance_tools import finance_news_search
             return await finance_news_search(_get_search_engine(), **args)
+        if name == "cognition_save_node":
+            title = (args.get("title") or "").strip()
+            if not title:
+                return {"ok": False, "error": "title required"}
+            from agent.finance.cognition_map import CognitionMap
+            cm = CognitionMap(project_id)
+            node = cm.save({"title": title, "type": args.get("type", "concept"),
+                            "body": args.get("body", ""), "origin": "chat"})
+            return {"ok": True, "id": node["id"], "state": node["provenance"]["state"],
+                    "note": "saved as UNVERIFIED candidate (🔴) — user must review/ground it"}
+        if name == "cognition_query_map":
+            from agent.finance.cognition_map import CognitionMap
+            cm = CognitionMap(project_id)
+            q = (args.get("query") or "").strip().lower()
+            hits = [{"id": n["id"], "title": n["title"], "type": n["type"], "state": n["prov_state"]}
+                    for n in cm.list_nodes() if not q or q in n["title"].lower()][:20]
+            return {"ok": True, "matches": hits, "n": len(hits)}
         return {"ok": False, "error": f"unknown tool: {name}"}
     except Exception as exc:
         logger.exception("tool %s execution failed", name)
@@ -435,6 +492,10 @@ def build_chat_stream_router() -> APIRouter:
             "  - finance_get_crypto(symbol)\n"
             "  - finance_market_overview()\n"
             "  - finance_news_search(query, max_results=5)\n"
+            "  - cognition_save_node(title, type, body) — 存结论进认知图谱(落 🔴 未验证候选)\n"
+            "  - cognition_query_map(query) — 查用户认知图谱里已有什么\n"
+            "When saving to the map, tell the user it lands as an UNVERIFIED "
+            "candidate they must review/ground — never imply it's verified.\n"
             "The full JSON schemas are in the `tools` field of this "
             "LLM call. Use them instead of saying \"I don't have tool "
             "access\". For data not covered by these tools (live "
@@ -790,7 +851,7 @@ def build_chat_stream_router() -> APIRouter:
                                 }, ensure_ascii=False),
                             }
                             t_tool = time.monotonic()
-                            tool_result = await _execute_tool(name, args)
+                            tool_result = await _execute_tool(name, args, pid)
                             tool_dur_ms = int((time.monotonic() - t_tool) * 1000)
                             iter_messages.append({
                                 "role": "tool",

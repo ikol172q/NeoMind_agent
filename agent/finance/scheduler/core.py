@@ -27,6 +27,9 @@ logger = logging.getLogger(__name__)
 
 # Modules to auto-register at startup. Add new jobs here.
 DEFAULT_JOBS = [
+    # Serenity (@aleabitoreddit) 一手语料库每日增量抓取 (2026-06-02).
+    # Best-effort: Apify 抓取失败/额度用尽则跳过,不影响其他 job。
+    "agent.finance.scheduler.jobs.serenity_sync",
     "agent.finance.scheduler.jobs.daily_market_pull",
     "agent.finance.scheduler.jobs.compliance_check",
     # Phase B3-real (2026-04-26): pull Miniflux entries → RawStore.
@@ -86,6 +89,19 @@ DEFAULT_JOBS = [
     # signal_snapshots table holds the historical (date, combined_score)
     # sequence needed for proper edge-validation backtests in vectorbt.
     "agent.finance.scheduler.jobs.signal_snapshot_daily",
+    # 2026-05-22: short-term trading desk daily auto-scan. Scans armed
+    # setups (status paper/live) for entry triggers on the latest bar and
+    # auto-places risk-sized paper orders — UNLESS the global halt is on.
+    # Runs the kill-switch check first. Weekday evening (after US close).
+    "agent.finance.scheduler.jobs.trading_scan",
+    # IBKR durable archive (2026-05-23): every 5 min in market hours, snapshot
+    # paper account/positions/orders/fills into ibkr_log so backtrace never
+    # loses a fill. Graceful no-op (records snapshot_error) if Gateway is down.
+    "agent.finance.scheduler.jobs.ibkr_snapshot",
+    # IBKR Flex backstop (2026-05-23): daily after-close pull of the official
+    # statement → ibkr_log (deduped by tradeID). Lossless catch-all for fills
+    # the live snapshot missed. No-op until the user configures token+query.
+    "agent.finance.scheduler.jobs.ibkr_flex_sync",
 ]
 
 

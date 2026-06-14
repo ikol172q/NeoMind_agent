@@ -865,6 +865,171 @@ CREATE INDEX IF NOT EXISTS idx_whale_research_lookup
 CREATE INDEX IF NOT EXISTS idx_whale_research_active
     ON whale_research_summaries(whale_key, is_active);
 
+-- ─── Short-term Trading Policy (TPS) (2026-05-22) ───────────────────
+-- The user's SHORT-TERM trading playbook — deliberately SEPARATE from the
+-- long-term investment_philosophy (IPS). Short-term trading must never use
+-- the long-term smart-money signals (13F etc. are quarterly-lagged). This
+-- is the ring-fenced rule set: red lines, risk caps, kill-switch. Versioned
+-- like the IPS so rule evolution is auditable. Any personal $ figures live
+-- in the gitignored seed (~/.neomind/fin/seed_trading_policy.json), never here.
+CREATE TABLE IF NOT EXISTS trading_policy (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    version          TEXT NOT NULL,
+    is_active        INTEGER DEFAULT 1,
+    north_star       TEXT,
+    identity         TEXT,
+    red_lines_json   TEXT,        -- array of hard rules (strings)
+    risk_rules_json  TEXT,        -- {budget_pct, risk_per_trade_pct, no_leverage, ...}
+    entry_protocol   TEXT,
+    exit_protocol    TEXT,
+    kill_switch      TEXT,
+    execution_rules  TEXT,
+    validation_rules TEXT,
+    tax_note         TEXT,
+    review_cadence   TEXT,
+    last_reviewed_at TEXT,
+    change_note      TEXT,
+    created_at       TEXT,
+    updated_at       TEXT
+);
+
+-- ─── Trading Setups (versioned per setup_id) (2026-05-22) ───────────
+-- The core of the natural-language → quantified-formula distillation loop.
+-- Each setup carries: the raw NL description the user wrote, a structured
+-- quant_spec (entry conditions over technical indicators + exit stop/target/
+-- time + sizing) the LLM distilled from it, and the latest backtest stats.
+-- Versioned per setup_id (is_active=1 = current) so you can audit how a
+-- setup's math evolved as you refine the language describing it.
+CREATE TABLE IF NOT EXISTS trading_setups (
+    row_id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    setup_id            TEXT NOT NULL,
+    version             INTEGER DEFAULT 1,
+    is_active           INTEGER DEFAULT 1,
+    name                TEXT,
+    status              TEXT DEFAULT 'idea' CHECK (status IN ('idea','paper','live','retired')),
+    nl_description      TEXT,
+    quant_spec_json     TEXT,
+    backtest_stats_json TEXT,
+    change_note         TEXT,
+    created_at          TEXT,
+    updated_at          TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trading_setups_active
+    ON trading_setups(setup_id, is_active);
+
+-- ─── Trading strategy combos (2026-05-22) ──────────────────────────
+-- A combo = a named set of member strategies (setups) + the symbols it's
+-- assigned to. Backtested with SHARED capital (portfolio backtest) so a
+-- combination of uncorrelated strategies shows real diversification vs any
+-- single strategy. Different stocks can run different combos (#3).
+CREATE TABLE IF NOT EXISTS trading_combos (
+    combo_id     TEXT PRIMARY KEY,
+    name         TEXT,
+    members_json TEXT,        -- [{setup_id, weight}]
+    symbols_json TEXT,        -- ["AAPL","NVDA",...] assigned universe
+    status       TEXT DEFAULT 'idea' CHECK (status IN ('idea','paper','live','retired')),
+    stats_json   TEXT,        -- last combined backtest stats
+    created_at   TEXT,
+    updated_at   TEXT
+);
+
+-- ─── Trade journal (2026-05-23) ────────────────────────────────────
+-- The discipline layer: every trade gets thesis / catalyst / emotion /
+-- followed-plan / exit-reason / lesson — so the slow swing feedback loop
+-- becomes a measurable edge (research: compresses an 18-month mistake into
+-- 6 weeks). Auto-created on auto-entry; annotated by the user; weekly review
+-- aggregates win-rate / followed-plan% / by-catalyst / holding-period.
+CREATE TABLE IF NOT EXISTS trade_journal (
+    journal_id    TEXT PRIMARY KEY,
+    symbol        TEXT,
+    setup_name    TEXT,
+    status        TEXT DEFAULT 'open' CHECK (status IN ('open','closed')),
+    thesis        TEXT,
+    catalyst      TEXT,           -- technical | earnings | sector | macro | other
+    emotion       TEXT,
+    followed_plan INTEGER,        -- 1/0/NULL
+    entry_date    TEXT,
+    entry_px      REAL,
+    stop_px       REAL,
+    target_px     REAL,
+    exit_date     TEXT,
+    exit_px       REAL,
+    exit_reason   TEXT,           -- target | stop | time | discretionary
+    return_pct    REAL,
+    r_multiple    REAL,
+    lesson        TEXT,
+    created_at    TEXT,
+    updated_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_trade_journal_time ON trade_journal(entry_date DESC);
+
+-- ─── IBKR durable archive (2026-05-23) ─────────────────────────────
+-- Append-only local log of everything we touch on IBKR (orders we send +
+-- periodic account/position/order/fill snapshots) so the data is queryable
+-- FOREVER regardless of whether the Gateway is running. IBKR's own API only
+-- reliably returns current state + today's fills; this table is our archive.
+CREATE TABLE IF NOT EXISTS ibkr_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts          TEXT NOT NULL,            -- when WE recorded it (ISO8601 UTC)
+    kind        TEXT NOT NULL,            -- order | account | position | open_order | fill
+    ext_id      TEXT UNIQUE,              -- IBKR execId for fills (dedupe); NULL otherwise
+    account     TEXT,
+    symbol      TEXT,
+    action      TEXT,                     -- BUY | SELL
+    qty         REAL,
+    order_type  TEXT,                     -- MKT | LMT | STP
+    price       REAL,                     -- fill price / limit / stop
+    status      TEXT,
+    source      TEXT,                     -- mirror | test | snapshot | manual
+    detail      TEXT                      -- JSON blob: full payload for forensics
+);
+CREATE INDEX IF NOT EXISTS idx_ibkr_log_ts ON ibkr_log(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_ibkr_log_symbol ON ibkr_log(symbol);
+CREATE INDEX IF NOT EXISTS idx_ibkr_log_kind ON ibkr_log(kind);
+
+-- ─── Trading desk runtime state (2026-05-22) ───────────────────────
+-- Single-row (id=1) global state for the short-term trading automation.
+-- The ONLY manual controls are emergency brakes: global_halt freezes all
+-- automated order placement; the kill-switch auto-flips it on a policy
+-- breach and the user must manually resume.
+CREATE TABLE IF NOT EXISTS trading_state (
+    id           INTEGER PRIMARY KEY CHECK (id = 1),
+    global_halt  INTEGER DEFAULT 0,
+    halt_reason  TEXT,
+    halted_by    TEXT,                -- 'user' | 'kill_switch'
+    auto_trade   INTEGER DEFAULT 1,   -- master arm for auto paper entries
+    ibkr_route   INTEGER DEFAULT 0,   -- legacy mirror flag (kept for back-compat)
+    venue        TEXT DEFAULT 'sim',  -- execution venue + truth: 'sim' | 'ibkr'
+    allow_live   INTEGER DEFAULT 0,   -- real-money switch (0=paper-only DU-guard)
+    trading_budget_usd REAL DEFAULT 0,-- ring-fenced budget USD (0=use budget_pct)
+    ibkr_hwm     REAL DEFAULT 0,      -- NetLiq high-water mark for ibkr kill-switch
+    updated_at   TEXT
+);
+
+-- ─── Serenity (@aleabitoreddit) 一手研究语料库 ─────────────────────────
+-- X / Substack / (Reddit) 原始帖子归档,供从头复习其 Chokepoint / CPO 投资思路。
+-- 杜绝二手:raw_json 全量保留原始 payload;分析是单独一层(见 research_corpus.py)。
+CREATE TABLE IF NOT EXISTS research_corpus (
+    post_id       TEXT PRIMARY KEY,          -- 平台前缀: x:<id> | substack:<slug> | shot:...
+    platform      TEXT NOT NULL,             -- x | substack | reddit
+    author        TEXT DEFAULT 'aleabitoreddit',
+    kind          TEXT,                      -- tweet | reply | article | reddit_post
+    created_at    TEXT,                      -- ISO8601
+    url           TEXT,
+    title         TEXT,
+    text          TEXT,                      -- 原话全文
+    is_reply      INTEGER DEFAULT 0,
+    tickers       TEXT,                      -- JSON: 抽取的 $TICKER 列表
+    media_paths   TEXT,                      -- JSON: 本地媒体文件名
+    metrics       TEXT,                      -- JSON: like/reply/retweet/quote/view
+    raw_json      TEXT NOT NULL,             -- 完整原始 payload(一手)
+    source_method TEXT DEFAULT 'apify',      -- apify | substack_rss | screenshot | manual
+    ingested_at   TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_rc_platform ON research_corpus(platform);
+CREATE INDEX IF NOT EXISTS idx_rc_created  ON research_corpus(created_at);
+CREATE INDEX IF NOT EXISTS idx_rc_kind     ON research_corpus(kind);
+
 -- ─── Initial schema_version row ───────────────────────────────────────
 -- Inserted by db.py on first ensure_schema() call, not here, so the
 -- "applied_at" timestamp is honest.

@@ -394,6 +394,19 @@ def list_whales(
     }
 
 
+@router.get("/scorecard/{ticker}")
+def get_decision_scorecard(ticker: str) -> Dict[str, Any]:
+    """Decision scorecard for a ticker — synthesizes all signals into a
+    suggested lean (add/hold/trim/sell/watch/pass) + degree + transparent
+    per-lens breakdown. Rule-based, deterministic. Signal summary, NOT advice."""
+    from agent.finance.decision_scorecard import build_scorecard
+    try:
+        return build_scorecard(ticker)
+    except Exception as exc:
+        logger.exception("scorecard failed for %s", ticker)
+        raise HTTPException(500, f"scorecard failed: {exc}")
+
+
 @router.get("/whales/{key}/research")
 def get_whale_research(key: str) -> Dict[str, Any]:
     """Latest research summary for a whale (Tavily + LLM synthesis,
@@ -708,6 +721,18 @@ def post_scan_insider_form4() -> Dict[str, Any]:
     return _audited_scan("insider_form4", run_insider_form4_scan)
 
 
+@router.post("/scan/13d")
+def post_scan_13d() -> Dict[str, Any]:
+    """Run the SC 13D activist scanner — EDGAR full-text search for
+    Schedule 13D / 13D-A filed against watchlist+held tickers (someone
+    taking an active >5% stake with intent to influence). Feeds the
+    decision scorecard's positioning lens."""
+    from agent.finance.regime.scanners.activist_13d_scanner import (
+        run_activist_13d_scan,
+    )
+    return _audited_scan("13d", run_activist_13d_scan)
+
+
 @router.post("/scan/house_clerk_pdf")
 def post_scan_house_clerk_pdf() -> Dict[str, Any]:
     """Run the House Clerk PTR PDF scanner — covers Pelosi + Khanna
@@ -767,6 +792,14 @@ def post_scan_all(
             except Exception as exc:
                 logger.exception("13f scan failed")
                 out["scanners"]["whale_scan"] = {"error": str(exc)}
+            # 13D activist scan piggybacks on the 13F opt-in (both hit SEC
+            # EDGAR, both slow-moving).
+            try:
+                from agent.finance.regime.scanners.activist_13d_scanner import run_activist_13d_scan
+                out["scanners"]["scan_13d"] = run_activist_13d_scan()
+            except Exception as exc:
+                logger.exception("13d scan failed")
+                out["scanners"]["scan_13d"] = {"error": str(exc)}
 
         # Congressional + policy scanners are fast HTTP fetches; safe to
         # include in every /scan/all call.

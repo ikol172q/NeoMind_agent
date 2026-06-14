@@ -773,17 +773,21 @@ function ChatRail({
     if (stored !== null) return stored !== '0'
     return !window.matchMedia('(max-width: 767px)').matches
   })
-  // Open default: true on desktop, false on mobile (don't ambush
-  // mobile users with a full-screen overlay on first visit).
+  // Open default: desktop persists the user's choice (default open).
+  // Mobile ALWAYS starts closed — the persisted desktop "open" must not
+  // leak to a phone and ambush it with a full-screen overlay on load.
   const [open, setOpen] = useState<boolean>(() => {
+    if (window.matchMedia('(max-width: 767px)').matches) return false
     const stored = localStorage.getItem(KEY_OPEN)
     if (stored !== null) return stored !== '0'
-    return !window.matchMedia('(max-width: 767px)').matches
+    return true
   })
 
   useEffect(() => { localStorage.setItem(KEY_W,  String(width)) }, [width])
   useEffect(() => { localStorage.setItem(KEY_SS, showSessions ? '1' : '0') }, [showSessions])
-  useEffect(() => { localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open])
+  // Only desktop persists the open preference — mobile opens/closes must not
+  // overwrite the shared key (else closing on a phone would also collapse it on desktop).
+  useEffect(() => { if (!isMobile) localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open, isMobile])
 
   // Drag-to-resize via global mousemove/mouseup so cursor doesn't
   // snap back if it leaves the handle while dragging.

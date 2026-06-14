@@ -3,7 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <!-- Mobile shows the SAME desktop layout + nav/operation (user requirement),
+         just optimized for reading: render at a fixed 880px (not 1280) so it's
+         ~45% scale on a phone instead of ~30% — meaningfully larger/readable.
+         The header uses flex-wrap so its status widgets reflow to a 2nd line at
+         this width instead of overflowing. 800 is just above the md breakpoint
+         (768) — the smallest width that still triggers the desktop layout, so the
+         phone scale (~49%) is as large/readable as possible. Desktop ignores this. -->
+    <meta name="viewport" content="width=800" />
     <title>NeoMind · Fin</title>
   </head>
   <body>

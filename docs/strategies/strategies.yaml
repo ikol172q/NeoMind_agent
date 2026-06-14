@@ -33,7 +33,7 @@ strategies:
   - dividend_schedule
   provenance:
     state: unverified
-    source: Layer 0 auditor 2026-05-17T04:00:08.406044Z (corpus=2 blobs)
+    source: Layer 0 auditor 2026-06-14T04:00:11.041989Z (corpus=2 blobs)
   quantitative_profile:
     payoff_class: dca
     greeks_template:
@@ -83,7 +83,7 @@ strategies:
   - expense_ratio
   provenance:
     state: unverified
-    source: Layer 0 auditor 2026-05-17T04:00:15.014594Z (corpus=2 blobs)
+    source: Layer 0 auditor 2026-06-14T04:00:18.014400Z (corpus=2 blobs)
   quantitative_profile:
     payoff_class: buy_and_hold
     greeks_template:
@@ -134,7 +134,7 @@ strategies:
   - expense_ratio
   provenance:
     state: unverified
-    source: Layer 0 auditor 2026-05-17T04:00:22.807027Z (corpus=2 blobs)
+    source: Layer 0 auditor 2026-06-14T04:00:26.408447Z (corpus=2 blobs)
   quantitative_profile:
     payoff_class: target_date_fund
     greeks_template:
@@ -184,7 +184,7 @@ strategies:
   - allocation_state
   provenance:
     state: unverified
-    source: Layer 0 auditor 2026-05-17T04:00:29.088461Z (corpus=2 blobs)
+    source: Layer 0 auditor 2026-06-14T04:00:33.370400Z (corpus=2 blobs)
   quantitative_profile:
     payoff_class: lazy_portfolio_three_fund
     greeks_template:
@@ -233,7 +233,7 @@ strategies:
   - allocation_state
   provenance:
     state: unverified
-    source: Layer 0 auditor 2026-05-17T04:00:36.742231Z (corpus=3 blobs)
+    source: Layer 0 auditor 2026-06-14T04:00:43.393641Z (corpus=3 blobs)
   quantitative_profile:
     payoff_class: permanent_portfolio
     greeks_template:

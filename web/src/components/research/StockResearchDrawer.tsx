@@ -41,6 +41,8 @@ import {
   useDecisions, useRecordDecision, useDecisionOutcome, type DecisionKind,
   // 2026-05-16: smart-money cross-cut per ticker
   useTickerSignalsByScanner,
+  // 2026-05-22: decision scorecard
+  useScorecard, type DecisionScorecard,
   type StockExposureEvent, type AnchoredFacts, type NextEarnings,
   type StockProfile, type WatchlistTier,
   type InvestmentThesis, type EnrichedLot,
@@ -386,6 +388,11 @@ export function StockResearchDrawer() {
             state + price move + closed lots into one row so the user
             doesn't re-scan the whole drawer every visit. */}
         <DeltaSinceReviewBanner ticker={ticker} />
+
+        {/* 2026-05-22: Decision Scorecard — synthesizes every signal into
+            a clear "should I buy/add/hold/trim/sell/watch + degree" read.
+            First thing the user sees: 看懂 → 行动. Signal summary, not advice. */}
+        <DecisionScorecardPanel ticker={ticker} />
 
         {/* 2026-05-16: DecisionAuditPanel — record + replay decisions
             with explicit basis. Closes the audit loop: "why did I
@@ -1989,6 +1996,158 @@ function DecisionHistoryRow({
 }
 
 
+// ── DecisionScorecardPanel ───────────────────────────────────
+// Synthesizes all signals into one clear lean: buy/add/hold/trim/sell/
+// watch/pass + degree. The "看懂 → 行动" anchor. Signal summary, not advice.
+const LEAN_STYLE: Record<string, { label: string; cls: string }> = {
+  add:        { label: '可加仓 / 建仓', cls: 'text-emerald-300 border-emerald-500/50 bg-emerald-500/10' },
+  hold:       { label: '持有',          cls: 'text-sky-300 border-sky-500/50 bg-sky-500/10' },
+  watch_only: { label: '观望',          cls: 'text-amber-300 border-amber-500/50 bg-amber-500/10' },
+  trim:       { label: '减仓',          cls: 'text-orange-300 border-orange-500/50 bg-orange-500/10' },
+  sell:       { label: '卖出',          cls: 'text-red-300 border-red-500/50 bg-red-500/10' },
+  pass:       { label: '回避',          cls: 'text-zinc-400 border-zinc-500/40 bg-zinc-500/10' },
+}
+
+function ScoreDot({ score }: { score: number }) {
+  const c = score >= 2 ? 'bg-emerald-400' : score === 1 ? 'bg-emerald-300/70'
+          : score === 0 ? 'bg-zinc-500' : score === -1 ? 'bg-orange-400' : 'bg-red-400'
+  return <span className={`inline-block w-2 h-2 rounded-full ${c} flex-shrink-0`} />
+}
+
+function DecisionScorecardPanel({ ticker }: { ticker: string }) {
+  const q = useScorecard(ticker)
+  const [helpKey, setHelpKey] = useState<string | null>(null)
+  if (q.isLoading) {
+    return <div className="px-4 py-2 text-[10px] text-[var(--color-dim)]">决策记分卡 loading…</div>
+  }
+  if (q.error || !q.data) return null
+  const sc: DecisionScorecard = q.data
+  const lean = LEAN_STYLE[sc.suggested_lean] ?? LEAN_STYLE.watch_only
+  const lenses: Array<{ key: string; icon: string; name: string; lens: DecisionScorecard['lenses'][keyof DecisionScorecard['lenses']] }> = [
+    { key: 'quality',     icon: '🏆', name: '质量门槛', lens: sc.lenses.quality },
+    { key: 'positioning', icon: '🐋', name: '聪明钱持仓', lens: sc.lenses.positioning },
+    { key: 'valuation',   icon: '💰', name: '估值', lens: sc.lenses.valuation },
+    { key: 'fit',         icon: '🎯', name: '契合你 IPS', lens: sc.lenses.fit },
+  ]
+  return (
+    <div className="px-4 py-3 border-b border-[var(--color-border)] bg-[var(--color-bg)]">
+      {/* Headline lean */}
+      <div className="flex items-center gap-2 mb-2 flex-wrap">
+        <span className="text-[11px] font-semibold text-[var(--color-text)]">🧭 决策记分卡</span>
+        <button
+          onClick={() => setHelpKey(helpKey === 'overall' ? null : 'overall')}
+          className="w-3.5 h-3.5 rounded-full border border-[var(--color-border)] text-[9px] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)] flex items-center justify-center"
+          title="怎么用"
+        >?</button>
+        <span className={`ml-1 px-2 py-0.5 rounded border text-[11px] font-semibold ${lean.cls}`}>
+          {lean.label}
+        </span>
+        <span className="text-[10px] text-[var(--color-dim)]">{sc.degree}</span>
+        <span className="ml-auto text-[8.5px] font-mono text-[var(--color-dim)]">score {sc.raw_score}</span>
+      </div>
+      {helpKey === 'overall' && (
+        <div className="text-[9.5px] text-[var(--color-dim)] mb-2 leading-[1.5] bg-[var(--color-panel)]/50 rounded p-2">
+          {sc.help.overall}
+        </div>
+      )}
+      {/* 4 lenses */}
+      <div className="space-y-1">
+        {lenses.map(({ key, icon, name, lens }) => {
+          const sources = lens.sources ?? []
+          const detail = lens.detail ?? []
+          const metrics = lens.metrics ?? []
+          const nValid = sources.filter(s => s.validated).length
+          return (
+            <div key={key}>
+              <div className="flex items-start gap-2 text-[10.5px]">
+                <ScoreDot score={lens.score} />
+                <span className="text-[var(--color-text)]/90 w-[72px] flex-shrink-0">{icon} {name}</span>
+                <button
+                  onClick={() => setHelpKey(helpKey === `help:${key}` ? null : `help:${key}`)}
+                  className="w-3 h-3 rounded-full border border-[var(--color-border)] text-[8px] text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center justify-center flex-shrink-0 mt-0.5"
+                  title="怎么用"
+                >?</button>
+                <span className="text-[var(--color-dim)] flex-1 leading-[1.45]">{lens.read}</span>
+                {(sources.length > 0 || detail.length > 0 || metrics.length > 0) && (
+                  <button
+                    onClick={() => setHelpKey(helpKey === `src:${key}` ? null : `src:${key}`)}
+                    className="text-[8.5px] text-[var(--color-accent,#7ed9d9)] hover:underline flex-shrink-0 mt-0.5 whitespace-nowrap"
+                    title="来源 + 明细 (溯源)"
+                  >
+                    🔗{nValid > 0 ? `${nValid}✓` : '源'}
+                  </button>
+                )}
+              </div>
+              {helpKey === `help:${key}` && (
+                <div className="text-[9px] text-[var(--color-dim)] ml-[88px] mt-0.5 mb-1 leading-[1.5] bg-[var(--color-panel)]/50 rounded p-1.5">
+                  {sc.help[key]}
+                </div>
+              )}
+              {helpKey === `src:${key}` && (
+                <div className="ml-[88px] mt-0.5 mb-1 bg-[var(--color-panel)]/50 rounded p-1.5 space-y-1">
+                  {/* fundamentals metric breakdown (quality) */}
+                  {metrics.length > 0 && (
+                    <div className="flex flex-wrap gap-x-2.5 gap-y-0.5">
+                      {metrics.map((m, i) => (
+                        <span key={i} className="text-[9px] flex items-center gap-1">
+                          <span className={
+                            m.verdict === 'good' ? 'text-emerald-300'
+                              : m.verdict === 'bad' ? 'text-orange-300'
+                              : 'text-[var(--color-dim)]'
+                          }>{m.verdict === 'good' ? '✓' : m.verdict === 'bad' ? '✗' : '•'}</span>
+                          <span className="text-[var(--color-text)]/80">{m.k}</span>
+                          <span className="font-mono text-[var(--color-dim)]">{m.v}</span>
+                        </span>
+                      ))}
+                    </div>
+                  )}
+                  {/* per-whale drill-down (positioning) */}
+                  {detail.length > 0 && (
+                    <div className="space-y-0.5">
+                      {detail.map((d, i) => (
+                        <div key={i} className="flex items-center gap-1.5 text-[9px]">
+                          <span className={
+                            d.action === 'new' || d.action === 'increase'
+                              ? 'text-emerald-300' : 'text-orange-300'
+                          }>{d.action === 'new' ? '🆕' : d.action === 'increase' ? '➕' : d.action === 'exit' ? '✖' : '➖'}</span>
+                          <span className="text-[var(--color-text)]/80 w-32 truncate">{d.whale}</span>
+                          <span className="font-mono text-[var(--color-dim)]">{d.date}</span>
+                          {d.url && (
+                            <a href={d.url} target="_blank" rel="noopener noreferrer"
+                               className="text-[var(--color-accent,#7ed9d9)] hover:underline ml-auto">SEC↗</a>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {/* validated source links */}
+                  {sources.map((s, i) => (
+                    <div key={i} className="flex items-center gap-1.5 text-[9px]">
+                      <span title={s.validated ? '已验证 (HEAD 200)' : '验证失败/未验证'}>
+                        {s.validated ? '✓' : '⚠'}
+                      </span>
+                      {s.url ? (
+                        <a href={s.url} target="_blank" rel="noopener noreferrer"
+                           className="text-[var(--color-accent,#7ed9d9)] hover:underline truncate">{s.label}</a>
+                      ) : (
+                        <span className="text-[var(--color-dim)] truncate">{s.label}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )
+        })}
+      </div>
+      <div className="text-[8.5px] italic text-[var(--color-dim)] mt-2 pt-1.5 border-t border-[var(--color-border)]/30">
+        ⚠️ {sc.disclaimer}
+      </div>
+    </div>
+  )
+}
+
+
 // ── SmartMoneyCrossCutPanel ──────────────────────────────────
 // Per-ticker view of smart-money actions in last 90d, co-located in
 // the drawer so user doesn't have to leave to Smart Money tab.
@@ -2337,7 +2496,7 @@ function PositionPanel({ ticker }: { ticker: string }) {
     <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)] text-[10.5px]">
       <div className="flex items-center gap-2 mb-1.5 flex-wrap">
         <Briefcase size={11} className="text-[var(--color-accent)]" />
-        <span className="font-semibold text-[var(--color-text)]">我的持仓</span>
+        <span className="font-semibold text-[var(--color-text)]">持仓</span>
         <span className="text-[var(--color-dim)] italic">
           {d.summary.n_lots} lot{d.summary.n_lots > 1 ? 's' : ''} · 总{d.summary.total_quantity.toFixed(0)}sh
         </span>
