@@ -1838,15 +1838,41 @@ class ToolRegistry:
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — self-editing is disabled. Exit plan mode first.")
         try:
-            from agent.evolution.self_edit import SelfEditor
-            editor = SelfEditor()
-            success, message = editor.propose_edit(file_path, reason, new_content)
-            if success:
-                return ToolResult(True, output=message)
-            else:
-                return ToolResult(False, error=message)
+            from agent.evolution.transaction import EvolutionTransaction
+            # Route the self-edit through the transaction so it gets the full
+            # checkpoint + rollback safety (instead of SelfEditor's weak path):
+            #   git-tag checkpoint → apply → validate (import-smoke + regression
+            #   + REAL telegram dry-run boot) → commit the intent for
+            #   post_restart_verify. ANY failure auto-rolls-back to the
+            #   checkpoint via __exit__ (git reset --hard <tag>). No auto-restart:
+            #   the change is committed but loaded only on the next (confirmed)
+            #   restart, where post_restart_verify auto-rolls-back if it fails
+            #   to boot and refuses to serve broken code.
+            with EvolutionTransaction(reason=reason) as txn:
+                ok, msg = txn.apply(file_path, new_content)
+                if not ok:
+                    raise RuntimeError(f"apply failed: {msg}")
+                ok, msg = txn.smoke_test()  # import + regression + telegram dry-run
+                if not ok:
+                    raise RuntimeError(f"validation failed: {msg}")
+                ok, msg = txn.commit()
+                if not ok:
+                    raise RuntimeError(f"commit failed: {msg}")
+                tag = txn.tag
+            return ToolResult(True, output=(
+                f"✅ Self-edit VALIDATED (syntax + AST + regression + telegram "
+                f"dry-run boot) and checkpointed at rollback tag `{tag}`.\n"
+                f"Committed but NOT yet loaded — restart to load. If the new code "
+                f"fails to boot, post-restart verify auto-rolls-back to `{tag}` "
+                f"and refuses to serve broken code."
+            ))
         except Exception as e:
-            return ToolResult(False, error=f"SelfEditor error: {e}")
+            # On any failure the transaction's __exit__ already git-reset to the
+            # checkpoint tag — the working tree is back to the known-good state.
+            return ToolResult(
+                False,
+                error=f"Self-edit REJECTED and auto-rolled-back to checkpoint: {e}",
+            )
 
     def _exec_ls(self, path: Optional[str] = None) -> ToolResult:
         """Execute directory listing with metadata."""
