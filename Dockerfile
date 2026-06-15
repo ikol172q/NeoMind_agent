@@ -31,6 +31,7 @@ RUN pip install --no-cache-dir \
     trafilatura duckduckgo-search lxml \
     html2text readability-lxml chardet tiktoken \
     python-telegram-bot \
+    pytest pytest-asyncio \
     playwright \
     # Universal Search Engine deps
     flashrank \
