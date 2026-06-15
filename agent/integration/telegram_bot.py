@@ -5131,10 +5131,37 @@ class NeoMindTelegramBot:
         history = self._store.get_recent_history(chat_id, limit=20)
         messages = [{"role": "system", "content": self._get_system_prompt(chat_id)}] + history
 
+        # Native tool-calling (opt-in via NEOMIND_NATIVE_TOOLS + model capability).
+        # Default OFF, and ANY error here → the regex/text path below, byte-identical.
+        _native_on = False
+        _native_tools_arr = None
+        try:
+            from agent.llm.model_capabilities import get_capabilities as _get_caps
+            from agent.llm import native_tools as _nt
+            if os.getenv("NEOMIND_NATIVE_TOOLS") and _get_caps(provider["model"]).native_tools:
+                _native_tools_arr = _nt.build_openai_tools(
+                    agentic.registry.get_all_tools(mode="coding")
+                )
+                _native_on = bool(_native_tools_arr)
+        except Exception as _e:  # noqa: BLE001
+            logger.debug(f"[native-tools] disabled, using regex path: {_e}")
+            _native_on = False
+
         # LLM caller: fully async, uses aiohttp streaming to collect tokens
         async def llm_caller(msgs):
             full_text = ""
+            _acc_tcs: dict = {}
             timeout = aiohttp.ClientTimeout(total=90)
+            _payload = {
+                "model": provider["model"],
+                "messages": msgs,
+                "max_tokens": 4096,
+                "temperature": _safe_temperature(provider["model"]),
+                "stream": True,
+            }
+            if _native_on:
+                _payload["tools"] = _native_tools_arr
+                _payload["tool_choice"] = "auto"
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
                     provider["base_url"],
@@ -5142,13 +5169,7 @@ class NeoMindTelegramBot:
                         "Authorization": f"Bearer {provider['api_key']}",
                         "Content-Type": "application/json",
                     },
-                    json={
-                        "model": provider["model"],
-                        "messages": msgs,
-                        "max_tokens": 4096,
-                        "temperature": _safe_temperature(provider["model"]),
-                        "stream": True,
-                    },
+                    json=_payload,
                 ) as resp:
                     if resp.status != 200:
                         body = await resp.text()
@@ -5167,11 +5188,31 @@ class NeoMindTelegramBot:
                             ct = delta.get("content", "")
                             if ct:
                                 full_text += ct
+                            if _native_on:
+                                _nt.accumulate_tool_call_deltas(
+                                    _acc_tcs, delta.get("tool_calls")
+                                )
                         except (json.JSONDecodeError, IndexError, KeyError):
                             continue
 
+            # Native: re-serialize structured tool_calls into a guaranteed-
+            # well-formed <tool_call> block the existing parser always parses.
+            if _native_on:
+                _synth = _nt.synthesize_from_accumulated(_acc_tcs)
+                if _synth:
+                    full_text += _synth
+
             if not full_text.strip():
                 # Fallback to non-streaming if stream returned empty
+                _payload2 = {
+                    "model": provider["model"],
+                    "messages": msgs,
+                    "max_tokens": 4096,
+                    "temperature": _safe_temperature(provider["model"]),
+                }
+                if _native_on:
+                    _payload2["tools"] = _native_tools_arr
+                    _payload2["tool_choice"] = "auto"
                 async with aiohttp.ClientSession(timeout=timeout) as session:
                     async with session.post(
                         provider["base_url"],
@@ -5179,16 +5220,18 @@ class NeoMindTelegramBot:
                             "Authorization": f"Bearer {provider['api_key']}",
                             "Content-Type": "application/json",
                         },
-                        json={
-                            "model": provider["model"],
-                            "messages": msgs,
-                            "max_tokens": 4096,
-                            "temperature": _safe_temperature(provider["model"]),
-                        },
+                        json=_payload2,
                     ) as resp2:
                         if resp2.status == 200:
                             data = await resp2.json()
-                            full_text = data["choices"][0]["message"]["content"]
+                            _m = data["choices"][0]["message"]
+                            full_text = _m.get("content") or ""
+                            if _native_on and _m.get("tool_calls"):
+                                _tc0 = _m["tool_calls"][0]
+                                full_text += _nt.synthesize_tool_call_text(
+                                    _tc0["function"]["name"],
+                                    _tc0["function"].get("arguments", ""),
+                                )
 
             return full_text
 

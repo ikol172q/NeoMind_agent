@@ -15,9 +15,32 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.coding.tool_parser import ToolCallParser  # noqa: E402
 from agent.llm.native_tools import (  # noqa: E402
     accumulate_tool_call_deltas,
+    build_openai_tools,
     synthesize_from_accumulated,
     synthesize_tool_call_text,
+    to_openai_schema,
 )
+
+
+class _PT:  # ParamType stub (duck-typed .value)
+    def __init__(self, value):
+        self.value = value
+
+
+class _Param:
+    def __init__(self, name, ptype, desc, required=True, enum=None):
+        self.name = name
+        self.param_type = _PT(ptype)
+        self.description = desc
+        self.required = required
+        self.enum = enum
+
+
+class _Tool:
+    def __init__(self, name, desc, params):
+        self.name = name
+        self.description = desc
+        self.parameters = params
 
 PARSER = ToolCallParser()
 
@@ -96,6 +119,37 @@ def test_invalid_json_args_falls_back_not_crash():
 def test_empty_accumulated_is_empty():
     assert synthesize_from_accumulated({}) == ""
     assert synthesize_from_accumulated({0: {"id": "", "name": "", "args": ""}}) == ""
+
+
+def test_to_openai_schema_types_and_required():
+    t = _Tool("Read", "Read a file", [
+        _Param("file_path", "string", "path", required=True),
+        _Param("limit", "integer", "max lines", required=False),
+    ])
+    s = to_openai_schema(t)
+    assert s["type"] == "function"
+    assert s["function"]["name"] == "Read"
+    props = s["function"]["parameters"]["properties"]
+    assert props["file_path"]["type"] == "string"
+    assert props["limit"]["type"] == "integer"
+    assert s["function"]["parameters"]["required"] == ["file_path"]
+
+
+def test_to_openai_schema_float_maps_to_number_and_enum():
+    t = _Tool("X", "d", [
+        _Param("ratio", "float", "r"),
+        _Param("mode", "string", "m", enum=["a", "b"]),
+    ])
+    props = to_openai_schema(t)["function"]["parameters"]["properties"]
+    assert props["ratio"]["type"] == "number"   # JSON-schema number, not "float"
+    assert props["mode"]["enum"] == ["a", "b"]
+
+
+def test_build_openai_tools_list():
+    tools = build_openai_tools([_Tool("A", "d", []), _Tool("B", "d", [])])
+    assert len(tools) == 2
+    assert tools[0]["function"]["name"] == "A"
+    assert tools[1]["function"]["name"] == "B"
 
 
 if __name__ == "__main__":

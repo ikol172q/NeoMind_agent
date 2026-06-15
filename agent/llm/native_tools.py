@@ -63,6 +63,52 @@ def accumulate_tool_call_deltas(accumulated: dict, tool_call_deltas: list | None
             slot["args"] += fn["arguments"]
 
 
+# JSON-Schema type per NeoMind ParamType.value (float → JSON "number").
+_JSONSCHEMA_TYPE = {
+    "string": "string", "integer": "integer",
+    "boolean": "boolean", "float": "number",
+}
+
+
+def to_openai_schema(tool_def: Any) -> dict:
+    """Convert a NeoMind ToolDefinition (duck-typed) → OpenAI function schema.
+
+    Reads only attributes (name/description/parameters; each param's
+    name/param_type.value/description/required/enum) so this stays decoupled
+    from agent.coding.tool_schema and unit-testable with plain stubs.
+    """
+    props: dict = {}
+    required: list = []
+    for p in getattr(tool_def, "parameters", []) or []:
+        pt = getattr(getattr(p, "param_type", None), "value", "string")
+        prop = {
+            "type": _JSONSCHEMA_TYPE.get(pt, "string"),
+            "description": getattr(p, "description", "") or "",
+        }
+        if getattr(p, "enum", None):
+            prop["enum"] = list(p.enum)
+        props[p.name] = prop
+        if getattr(p, "required", False):
+            required.append(p.name)
+    return {
+        "type": "function",
+        "function": {
+            "name": tool_def.name,
+            "description": getattr(tool_def, "description", "") or "",
+            "parameters": {
+                "type": "object",
+                "properties": props,
+                "required": required,
+            },
+        },
+    }
+
+
+def build_openai_tools(tool_defs: Any) -> list:
+    """Build the OpenAI `tools` array from an iterable of ToolDefinitions."""
+    return [to_openai_schema(t) for t in (tool_defs or [])]
+
+
 def synthesize_from_accumulated(accumulated: dict) -> str:
     """Build the ``<tool_call>`` text from accumulated streaming deltas.
 
