@@ -53,6 +53,21 @@ def test_validate_still_flags_genuinely_unsourced_price():
     assert "$195.42" in res.unverified_prices or "$195.42" in res.unsourced_data
 
 
+def test_chinese_fee_and_min_in_excluded_context():
+    # Hardened PRICE_EXCLUDE_PATTERNS (2026-06-15): 中文 fee WITHOUT a connector
+    # and 中文 min/max are non-market-data → in excluded context → not flagged.
+    assert V._is_in_excluded_context("每笔手续费 $5", "$5") is True
+    assert V._is_in_excluded_context("佣金 $1.00", "$1.00") is True
+    assert V._is_in_excluded_context("最低 $1 起投", "$1") is True
+    assert V._is_in_excluded_context("至少 $25,000", "$25,000") is True
+
+
+def test_fee_word_does_not_excuse_a_real_price_on_same_line():
+    # Anchoring guard: a fee word earlier in the line must NOT put an unsourced
+    # REAL price later in the line into excluded context ($ must follow the fee word).
+    assert V._is_in_excluded_context("手续费高，股价收在 $195.42", "$195.42") is False
+
+
 if __name__ == "__main__":
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     passed = 0

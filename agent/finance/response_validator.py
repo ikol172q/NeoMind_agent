@@ -91,8 +91,14 @@ SOURCE_PATTERNS = [
 
 # Patterns to exclude from price validation (these are not market data)
 PRICE_EXCLUDE_PATTERNS = [
-    re.compile(r'(?:fee|cost|commission|手续费|佣金)\s*(?:is|of|为|：)\s*[\$¥]', re.IGNORECASE),
-    re.compile(r'(?:minimum|maximum|min|max)\s*[\$¥]', re.IGNORECASE),
+    # fee / cost / commission — connector is OPTIONAL so 中文 "手续费 $5"
+    # (no 是/为/：) is excluded too. Anchored: $ must immediately follow the
+    # fee term, so a real price later in the line ("手续费高，股价 $195") is
+    # NOT excluded.
+    re.compile(r'(?:fee|cost|commission|手续费|佣金|费用)\s*(?:is|of|为|：|:)?\s*[\$¥]', re.IGNORECASE),
+    # account min / max — English + 中文 (最低/最高/最少/至少/起投). Same
+    # anchoring: only the amount right after the limit word is excluded.
+    re.compile(r'(?:minimum|maximum|min|max|最低|最高|最少|最多|至少|起投)\s*[\$¥]', re.IGNORECASE),
     # Example/hypothetical prices in explanations
     re.compile(r'(?:example|e\.g\.|for instance|假设|例如|比如)', re.IGNORECASE),
 ]
