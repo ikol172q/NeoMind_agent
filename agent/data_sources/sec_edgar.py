@@ -304,8 +304,13 @@ def slice_10k_sections(html: str, source_url: str,
     item7_text = None
     item7_starts = _body_anchors(text, [m.start() for m in re.finditer(
         r"(?i)item\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)])
+    # No leading \b (body "Item 8. Financial Statements" can render glued to
+    # a page-header). NOT _body_anchors-filtered: a short Item 7A legitimately
+    # sits within ~300 chars of Item 8, and filtering it would push the MD&A
+    # end deep into the financial statements. min(ends>start) below already
+    # picks the earliest correct bound; pre-start TOC ends are just ignored.
     item7_ends = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*(7a|8)\b\.?\s*\n*\s*"
+        r"(?i)item\s*(7a|8)\b\.?\s*\n*\s*"
         r"(quantitative|financial\s*statements)", text)]
     if item7_starts and item7_ends:
         # "biggest gap" picker, same as item1a

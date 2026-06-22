@@ -179,7 +179,7 @@ def _extract_competitors_from(s) -> tuple[list[dict], Any]:
     competition = s.item1_competition
     if not competition or len(competition) < 500:
         if s.item1_full and len(s.item1_full) >= 500:
-            competition = s.item1_full[:40_000]   # cap for prompt budget
+            competition = s.item1_full[:60_000]   # cap for prompt budget (raised 2026-06-21: AMD competition/supplier prose sits ~41-46K into Item 1)
     return extract_competitors(competition, s.item1a_risks)
 
 
@@ -189,7 +189,7 @@ def _extract_suppliers_from_with_fallback(s) -> tuple[list[dict], Any]:
     suppliers = s.item1_suppliers
     if not suppliers or len(suppliers) < 500:
         if s.item1_full and len(s.item1_full) >= 500:
-            suppliers = s.item1_full[:40_000]
+            suppliers = s.item1_full[:60_000]   # raised 2026-06-21: AMD foundry suppliers (TSMC/GF/Samsung) sit ~45K into Item 1
     return extract_suppliers(suppliers)
 
 
