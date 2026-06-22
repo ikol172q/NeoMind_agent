@@ -59,6 +59,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // Cognition Map — personal world-model knowledge graph (md+git vault +
   // provenance-coloured force graph). See agent/finance/cognition_map.py.
   { id: 'cognition',  label: 'Cognition',  icon: Network },
+  { id: 'watchlist',  label: 'Watchlist',  icon: Network },
   { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
@@ -78,6 +79,9 @@ const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
   ] },
   { group: '知识', icon: Network, items: [
     { id: 'cognition',  label: 'Cognition · 认知图',  icon: Network },
+    // 2026-06-22: re-surfaced the onion ring (持仓 + 10-K 上下游/竞品关系网).
+    // Route already existed (tab==='watchlist'); it had no nav entry.
+    { id: 'watchlist',  label: 'Watchlist · 关系网',  icon: Network },
     { id: 'learning',   label: 'Learning · 案例库',   icon: GraduationCap },
   ] },
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
