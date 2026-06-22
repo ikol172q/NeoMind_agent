@@ -197,6 +197,14 @@ def _html_to_text(html: str) -> str:
     almost always a styling artifact), then collapse whitespace.
     """
     soup = BeautifulSoup(html, "html.parser")
+    # 2026-06-21: inline-XBRL filings (Workiva etc.) carry an
+    # ix:header / ix:resources block (~60K chars of CIK / period /
+    # dimension-member soup) at the document top. get_text() would dump
+    # that ahead of the real narrative, pushing Item 1 past the slicer's
+    # window and starving every downstream extractor. Drop the
+    # non-rendered iXBRL metadata before flattening to text.
+    for _meta in soup.find_all(["ix:header", "ix:hidden", "ix:resources"]):
+        _meta.decompose()
     text = soup.get_text(separator="\n")
     # NBSP and other whitespace unicode → regular space
     text = text.replace("\xa0", " ").replace(" ", " ").replace("​", "")
@@ -212,6 +220,18 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text
+
+
+def _body_anchors(text: str, starts: list[int]) -> list[int]:
+    """Drop table-of-contents anchors from a list of section-header match
+    positions. A real (body) section header is followed by prose; a TOC
+    row is followed by another "Item N" within a few hundred chars. If
+    filtering would remove every candidate, return the originals unchanged
+    (sparse > wrong).
+    """
+    body = [s for s in starts
+            if not re.search(r"(?i)\bitem\s*\d", text[s + 15: s + 300])]
+    return body or starts
 
 
 def slice_10k_sections(html: str, source_url: str,
@@ -244,8 +264,13 @@ def slice_10k_sections(html: str, source_url: str,
     # text after BeautifulSoup's separator='\n' + our mid-word join
     # (e.g. "RISK FACTORSOur operations" — no space, no boundary). The
     # leading \bitem\s*1a\b still constrains false positives.
-    item1a_starts = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*1a\b\.?\s*\n*\s*risk\s*factors", text)]
+    # No leading \b: running page-headers ("Table of Contents") can glue to
+    # the section header after BeautifulSoup flattening — AMD/META render the
+    # body as "...ContentsITEM 1A. RISK FACTORS", which \bitem would miss
+    # (matching only the TOC entry). The required "risk factors" suffix keeps
+    # false positives out.
+    item1a_starts = _body_anchors(text, [m.start() for m in re.finditer(
+        r"(?i)item\s*1a\b\.?\s*\n*\s*risk\s*factors", text)])
     next_section_starts = [m.start() for m in re.finditer(
         r"(?i)\bitem\s*(1b|2|3)\b\.?\s*\n*\s*"
         r"(unresolved\s*staff\s*comments|properties|legal\s*proceedings)",
@@ -277,8 +302,8 @@ def slice_10k_sections(html: str, source_url: str,
     # by Item 6 (now reserved, often missing) or Item 5, and bounded
     # below by Item 7A or Item 8.
     item7_text = None
-    item7_starts = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)]
+    item7_starts = _body_anchors(text, [m.start() for m in re.finditer(
+        r"(?i)item\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)])
     item7_ends = [m.start() for m in re.finditer(
         r"(?i)\bitem\s*(7a|8)\b\.?\s*\n*\s*"
         r"(quantitative|financial\s*statements)", text)]
