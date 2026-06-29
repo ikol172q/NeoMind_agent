@@ -16,6 +16,7 @@ import {
   useTodaySignals, dismissSignal, triggerAllScans,
   type SignalConfluence,
 } from '@/lib/api'
+import { todayLocal } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 
 
@@ -124,7 +125,7 @@ export function TodaysSignalsWidget() {
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
         <span className="font-semibold text-[var(--color-text)]">
-          📬 Today's Signals — only when something matters
+          📬 信号 · {todayLocal()} — only when something matters
         </span>
         {signals.length > 0 && (
           <span className="font-mono">{signals.length} active</span>

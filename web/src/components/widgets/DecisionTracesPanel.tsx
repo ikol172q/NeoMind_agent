@@ -11,6 +11,7 @@
  */
 import { useState } from 'react'
 import { useDecisionTraces, type DecisionTrace } from '@/lib/api'
+import { fmtTs } from '@/lib/utils'
 
 
 export interface DecisionTracesPanelProps {
@@ -118,7 +119,7 @@ export function DecisionTracesPanel({ defaultDate }: DecisionTracesPanelProps) {
                       <td className="text-right">{t.alternative_weight.toFixed(3)}</td>
                       <td className="pl-2 text-[var(--color-dim)]">{t.formula}</td>
                       <td className="pl-2 text-[var(--color-dim)] text-[8.5px]">
-                        {t.computed_at?.slice(0, 19).replace('T', ' ')}
+                        {fmtTs(t.computed_at)}
                       </td>
                       <td className="pr-1.5 text-[var(--color-dim)]">{isExp ? '▾' : '▸'}</td>
                     </tr>

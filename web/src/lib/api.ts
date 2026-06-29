@@ -3174,6 +3174,149 @@ export function useTickerNews(ticker: string | null, limit = 20) {
   })
 }
 
+// Official company-newsroom PRs (primary source, RSS, independent of
+// Miniflux). supported=false for tickers without a mapped feed.
+export interface OfficialNewsItem {
+  title: string
+  url: string
+  published_at: string
+  snippet: string
+}
+export interface OfficialNewsResp {
+  ticker: string
+  supported: boolean
+  feed_url: string | null
+  count?: number
+  items: OfficialNewsItem[]
+  fetched_at?: string | null
+  age_seconds?: number | null
+  source?: 'live' | 'store'
+  stale?: boolean
+}
+export function useOfficialNews(ticker: string | null, limit = 8) {
+  return useQuery<OfficialNewsResp>({
+    queryKey: ['official-news', ticker, limit],
+    queryFn: () => fetchJSON<OfficialNewsResp>(
+      `/api/news/official/${encodeURIComponent(ticker!)}?limit=${limit}`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+// Force a live re-fetch (the "立刻刷新" button), then refresh the query.
+export function useRefreshOfficialNews() {
+  const qc = useQueryClient()
+  return useMutation<OfficialNewsResp, Error, string>({
+    mutationFn: (ticker) => fetchJSON<OfficialNewsResp>(
+      `/api/news/official/${encodeURIComponent(ticker)}?refresh=1`),
+    onSuccess: (_data, ticker) =>
+      qc.invalidateQueries({ queryKey: ['official-news', ticker] }),
+  })
+}
+
+// Universal ownership / who's-holding (yfinance). pct_locked = supply
+// overhang (low float = a big locked block, e.g. SoftBank/ARM). Each top
+// holder carries pct_change = their recent buy/sell direction.
+export interface TopHolder {
+  holder: string
+  pct_held: number | null
+  shares: number | null
+  value: number | null
+  pct_change: number | null
+  date_reported: string
+}
+export interface HoldersResp {
+  ticker: string
+  supported: boolean
+  pct_institutions?: number | null
+  pct_insiders?: number | null
+  institutions_count?: number | null
+  shares_outstanding?: number | null
+  float_shares?: number | null
+  pct_float?: number | null
+  pct_locked?: number | null
+  top_holders: TopHolder[]
+  source?: string
+  fetched_at?: string
+}
+export function useHolders(ticker: string | null) {
+  return useQuery<HoldersResp>({
+    queryKey: ['holders', ticker],
+    queryFn: () => fetchJSON<HoldersResp>(`/api/stock/${encodeURIComponent(ticker!)}/holders`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
+// Tier-1 quality / valuation fundamentals (yfinance) — closes the
+// diagnostic chain (PEG, margins, growth, FCF, ROE, net debt, …).
+export interface Fundamentals {
+  ticker: string
+  supported: boolean
+  peg: number | null
+  gross_margin: number | null
+  profit_margin: number | null
+  operating_margin: number | null
+  revenue_growth: number | null
+  earnings_growth: number | null
+  fcf: number | null
+  operating_cf: number | null
+  roe: number | null
+  roa: number | null
+  total_debt: number | null
+  total_cash: number | null
+  net_debt: number | null
+  price_to_sales: number | null
+  price_to_book: number | null
+  debt_to_equity: number | null
+  beta: number | null
+  dividend_yield: number | null
+  ev_ebitda: number | null
+  capex: number | null
+  dep_amort: number | null
+  revenue: number | null
+  capex_intensity: number | null
+  analyst_rating: number | null
+  analyst_rating_key: string | null
+  analyst_count: number | null
+  target_mean: number | null
+  target_high: number | null
+  target_low: number | null
+  source?: string
+  fetched_at?: string
+}
+export function useFundamentals(ticker: string | null) {
+  return useQuery<Fundamentals>({
+    queryKey: ['fundamentals', ticker],
+    queryFn: () => fetchJSON<Fundamentals>(`/api/stock/${encodeURIComponent(ticker!)}/fundamentals`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
+// Verified metric snapshot as-of a past date (or latest). The `dates`
+// list shows how much history has accrued (daily metric_snapshot_pull).
+export interface MetricsAsofResp {
+  ticker: string
+  available: boolean
+  snapshot_date?: string
+  fetched_at?: string
+  metrics?: { quote?: any; fundamentals?: any; holders?: any }
+  dates: string[]
+}
+export function useMetricsAsof(ticker: string | null, date?: string | null) {
+  return useQuery<MetricsAsofResp>({
+    queryKey: ['metrics-asof', ticker, date ?? 'latest'],
+    queryFn: () => fetchJSON<MetricsAsofResp>(
+      `/api/stock/${encodeURIComponent(ticker!)}/metrics/asof${date ? `?date=${date}` : ''}`),
+    enabled: !!ticker,
+    staleTime: 10 * 60_000,
+    retry: false,
+  })
+}
+
 // ── Learning library (Phase L) ──────────────────────────────────
 export interface LearningCase {
   slug: string
@@ -3455,10 +3598,12 @@ export interface InvestmentThesis {
   invalidated_reason?:     string | null
   last_health_check_at?:   string | null
   sections: {
-    bull_case:     string
-    bear_case:     string
+    consensus:     string
+    inference:     string
     exit_triggers: string
     horizon:       string
+    bull_case:     string
+    bear_case:     string
   }
   missing_sections: string[]   // ['Bear case', ...] if not all required present
   // Phase 4: only present on single-thesis GET (not list)
@@ -3672,6 +3817,124 @@ export function usePortfolioView(asOf?: string | null, includeExternalEdges?: bo
     // fresh_signal_24h pulse refreshes in roughly the same window
     // scanner events land in the DB.
     refetchInterval: asOf ? false : 30_000,
+  })
+}
+
+// ── Portfolio cross-structure ("chokepoint") — shared edges across holdings ──
+export interface CrossEdge {
+  // value-chain edges carry full provenance (source-reliable + dated)
+  kind?: 'direct' | 'reverse'   // reverse = derived from counterparty's filing
+  weight?: number | null        // concentration % (customer) when disclosed
+  via?: string                  // which company's 10-K this edge came from
+  fact_id?: number
+  quote?: string                // verbatim quote from that filing
+  filing_date?: string | null   // freshness
+  source_url?: string
+  stale?: boolean | null
+  // owner (13F) edges
+  dir?: string | null           // 加仓 / 减仓 / 清仓 …
+}
+export interface SharedEntity {
+  entity: string; entity_ticker: string | null; is_held: boolean
+  whale_key?: string | null; source_url?: string | null
+  n: number; holdings: string[]; edges: Record<string, CrossEdge>
+}
+export interface CrossFreshness {
+  value_chain_oldest_filing: string | null
+  value_chain_newest_filing: string | null
+  n_edges: number; n_reverse: number; n_stale_edges: number
+  owner_source: string
+}
+export interface CrossStructure {
+  held: string[]; n_held: number
+  shared: { supplier: SharedEntity[]; customer: SharedEntity[]; competitor: SharedEntity[]; owner: SharedEntity[] }
+  internal: { from: string; rel: string; to: string; kind?: string; via?: string }[]
+  coverage: Record<string, Record<string, number>>
+  freshness: CrossFreshness
+}
+export function useCrossStructure() {
+  return useQuery<CrossStructure>({
+    queryKey: ['portfolio-crossstructure'],
+    queryFn:  () => fetchJSON<CrossStructure>('/api/portfolio/crossstructure'),
+    staleTime: 120_000,
+  })
+}
+
+// ── NeoMind fin agent — grounded 3-sentence synthesis (优势/劣势/综合) ──
+export interface AgentSynthesis {
+  ticker: string
+  advantage: string | null; disadvantage: string | null; synthesis: string | null
+  sources: { source: string; asof: string; url?: string }[]
+  generated_at: string | null; status: string
+}
+export function useAgentSynthesis(ticker: string | null) {
+  return useQuery<AgentSynthesis>({
+    queryKey: ['agent-synth', ticker],
+    queryFn:  () => fetchJSON<AgentSynthesis>(`/api/stock/${encodeURIComponent(ticker!)}/agent_synthesis`),
+    enabled:  !!ticker,
+    staleTime: 10 * 60_000,
+  })
+}
+export function useRefreshAgentSynthesis() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ticker: string) => fetchJSON<AgentSynthesis>(`/api/stock/${encodeURIComponent(ticker)}/agent_synthesis?refresh=true`),
+    onSuccess: (_d, ticker) => qc.invalidateQueries({ queryKey: ['agent-synth', ticker] }),
+  })
+}
+
+// ── Goal 2: evidence-driven review trigger (证据驱动复盘触发) ──
+export interface ThesisReviewItem {
+  ref: string; classification: '印证' | '动摇' | '破' | '无关'; touches: string; why: string
+}
+export interface ThesisReview {
+  ticker: string; thesis_id?: string | null; verdict: string | null
+  items: ThesisReviewItem[]; anchor_at: string | null; computed_at: string; status: string
+}
+export function useThesisReview(ticker: string | null) {
+  return useQuery<ThesisReview>({
+    queryKey: ['thesis-review', ticker],
+    queryFn:  () => fetchJSON<ThesisReview>(`/api/stock/${encodeURIComponent(ticker!)}/thesis_review`),
+    enabled:  !!ticker,
+    staleTime: 10 * 60_000,
+  })
+}
+export function useRefreshThesisReview() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ticker: string) => fetchJSON<ThesisReview>(`/api/stock/${encodeURIComponent(ticker)}/thesis_review?refresh=true`),
+    onSuccess: (_d, ticker) => qc.invalidateQueries({ queryKey: ['thesis-review', ticker] }),
+  })
+}
+
+// ── Slice 1: validated quote + 今日异动 (price-move observation) ──
+export interface PriceMove {
+  ticker: string; price: number; day_change_pct: number
+  move_since_review: number | null; ref_date: string | null; ref_stale: boolean
+  confidence: string; sources: string[]
+}
+export interface PriceMoves {
+  moves: PriceMove[]; threshold_pct: number; n_held: number
+  note: string; eod_data_stale: boolean; eod_asof: string | null; asof: string
+}
+export function usePriceMoves(thresholdPct = 5) {
+  return useQuery<PriceMoves>({
+    queryKey: ['price-moves', thresholdPct],
+    queryFn:  () => fetchJSON<PriceMoves>(`/api/portfolio/price_moves?threshold_pct=${thresholdPct}`),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,   // refresh every 5 min (timeliness)
+  })
+}
+
+// ── Recent SEC material filings (8-K/6-K) — the freshness layer ──
+export interface RecentFiling { form: string; date: string; event: string; items: string; url: string }
+export interface RecentFilings { ticker: string; filings: RecentFiling[]; fetched_at: string; source: string }
+export function useRecentFilings(ticker: string | null) {
+  return useQuery<RecentFilings>({
+    queryKey: ['recent-filings', ticker],
+    queryFn:  () => fetchJSON<RecentFilings>(`/api/stock/${encodeURIComponent(ticker!)}/recent_filings`),
+    enabled:  !!ticker,
+    staleTime: 30 * 60_000,
   })
 }
 

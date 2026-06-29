@@ -436,7 +436,7 @@ function Header({
           </>
         ) : (
           <>
-            Today's lattice · L1 (observations) → L2 (themes) → L3 (calls)
+            {new Date().toLocaleDateString('sv-SE')} lattice · L1 (observations) → L2 (themes) → L3 (calls)
             {fetchedAt && (
               <span className="ml-2 text-[var(--color-dim)]/80">
                 updated {new Date(fetchedAt).toLocaleTimeString()}

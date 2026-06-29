@@ -1347,6 +1347,16 @@ def create_app(
         app.include_router(build_stock_research_router())
         app.include_router(build_architecture_router())
         app.include_router(build_anchored_research_router())
+        from agent.finance.portfolio_crossstructure import build_crossstructure_router
+        app.include_router(build_crossstructure_router())
+        from agent.finance.fin_agent_synth import build_fin_agent_router
+        app.include_router(build_fin_agent_router())
+        from agent.finance.recent_filings import build_recent_filings_router
+        app.include_router(build_recent_filings_router())
+        from agent.finance.thesis_materiality import build_thesis_materiality_router
+        app.include_router(build_thesis_materiality_router())
+        from agent.finance.price_watch import build_price_watch_router
+        app.include_router(build_price_watch_router())
         app.include_router(build_market_overlay_router())
         app.include_router(build_learning_router())
         app.include_router(build_cognition_map_router())

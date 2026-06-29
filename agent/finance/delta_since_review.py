@@ -141,9 +141,9 @@ def _compute_delta(ticker: str) -> Dict[str, Any]:
         try:
             anchor_date = anchor.date().isoformat()
             rows = conn.execute(
-                "SELECT date, close FROM market_data_daily "
-                "WHERE ticker = ? AND date >= ? "
-                "ORDER BY date ASC",
+                "SELECT trade_date, close FROM market_data_daily "
+                "WHERE symbol = ? AND trade_date >= ? "
+                "ORDER BY trade_date ASC",
                 (ticker, anchor_date),
             ).fetchall()
             if rows and len(rows) >= 2:
@@ -152,9 +152,9 @@ def _compute_delta(ticker: str) -> Dict[str, Any]:
                 if start > 0:
                     pct = (end - start) / start * 100
                     price_delta = {
-                        "start_date":  rows[0]["date"],
+                        "start_date":  rows[0]["trade_date"],
                         "start_close": start,
-                        "end_date":    rows[-1]["date"],
+                        "end_date":    rows[-1]["trade_date"],
                         "end_close":   end,
                         "pct":         round(pct, 2),
                     }

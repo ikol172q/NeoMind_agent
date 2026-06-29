@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 
 from agent.data_sources.market import get_live_quote
-from agent.data_sources.sec_edgar import get_10k_sections
+from agent.data_sources.sec_edgar import get_10k_sections, get_foreign_sections
 from agent.finance import agent_audit
 from agent.finance.extractors.business_summary import extract_business_summary
 from agent.finance.extractors.competitors import extract_competitors
@@ -202,7 +202,22 @@ def _extract_business_summary_from(s) -> tuple[list[dict], Any]:
 
 
 def _extract_customers_from(s) -> tuple[list[dict], Any]:
-    return extract_customers(s.item1_customers)
+    # Named customers + their concentration % live in TWO places: customer
+    # names in Item 1, but the concentration figures ("Customer A 14%") are
+    # usually in Item 7 (MD&A) / notes — NOT Item 1. So:
+    #  1) Item 1 (with full-Item-1 fallback like competitors/suppliers, since
+    #     most 10-Ks lack a clean "Customers" header → AAPL/AMD/NVDA got 0),
+    #  2) PLUS Item 7 MD&A, where the concentration disclosure sits.
+    # Verbatim gate still drops anything not literally in the source.
+    customers = s.item1_customers
+    if not customers or len(customers) < 500:
+        if getattr(s, "item1_full", None):
+            customers = s.item1_full[:60_000]
+    mda = getattr(s, "item7_mda", None) or ""
+    combined = (customers or "")
+    if mda:
+        combined += "\n\n--- Item 7 MD&A (customer concentration) ---\n" + mda[:30_000]
+    return extract_customers(combined)
 
 
 def _extract_suppliers_from(s) -> tuple[list[dict], Any]:
@@ -251,11 +266,13 @@ def _run_pipeline(ticker: str, fact_type: str) -> Dict[str, Any]:
         raise HTTPException(400, f"unknown fact_type: {fact_type}")
     cfg = _PIPELINES[fact_type]
 
-    sections = get_10k_sections(ticker)
+    # 10-K for US filers; fall back to 20-F/S-1 (Business + Risk Factors) for
+    # foreign / pre-IPO filers (ARM/NBIS/CBRS) so they aren't blind.
+    sections = get_10k_sections(ticker) or get_foreign_sections(ticker)
     if sections is None:
         raise HTTPException(
             404,
-            f"no 10-K filing found for {ticker} on SEC EDGAR",
+            f"no 10-K / 20-F / S-1 filing found for {ticker} on SEC EDGAR",
         )
 
     agent_id = f"anchored-{fact_type}"

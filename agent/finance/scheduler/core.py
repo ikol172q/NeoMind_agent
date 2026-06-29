@@ -37,6 +37,14 @@ DEFAULT_JOBS = [
     # this module to the default registry is safe even on machines
     # without docker miniflux booted.
     "agent.finance.scheduler.jobs.news_pull",
+    # Official company newsroom RSS → official_news table, hourly
+    # (真·定时) so the drawer serves fresh primary-source PRs without an
+    # open tab. Best-effort per ticker; endpoint also refreshes on demand.
+    "agent.finance.scheduler.jobs.official_news_pull",
+    # Daily metric snapshots (quote+fundamentals+holders) → metric_snapshot
+    # table, so the drawer can show metrics as-of any past day (verified,
+    # tool-sourced, auditable). Runs after US close.
+    "agent.finance.scheduler.jobs.metric_snapshot_pull",
     # Anti-hallucination Layer 0a (2026-04-27): nightly audit of N
     # 'unverified' strategies. Promotes them to 'verified' /
     # 'partially_verified' once their numeric claims are grounded in

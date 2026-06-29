@@ -3,10 +3,26 @@ export function cn(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ')
 }
 
-/** ts.slice(0, 19) + replace T with space */
+/**
+ * Render a UTC ISO timestamp in the user's LOCAL timezone (so every displayed
+ * time matches the global header clock — DB stores UTC, we display local).
+ * A pure date ("YYYY-MM-DD", no time) is returned as-is (TZ-shifting a bare
+ * date would wrongly roll it a day). Unparseable input falls back to a slice.
+ */
 export function fmtTs(ts: string | undefined | null): string {
   if (!ts) return ''
-  return String(ts).slice(0, 19).replace('T', ' ')
+  const s = String(ts)
+  if (!s.includes('T') && !s.includes(':')) return s.slice(0, 10)  // date-only → leave alone
+  const d = new Date(s)
+  if (Number.isNaN(d.getTime())) return s.slice(0, 19).replace('T', ' ')
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
+}
+
+/** Current LOCAL date as YYYY-MM-DD (same TZ as the global clock). Use this
+ * instead of the word "今天/Today" so a date is always explicit. */
+export function todayLocal(): string {
+  return new Date().toLocaleDateString('sv-SE')
 }
 
 export function fmtNum(v: unknown, digits = 2): string {

@@ -38,10 +38,9 @@ import {
   type StrategyWidgetCoverage,
   type WidgetMeta,
 } from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn, todayLocal } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
 import { WatchlistSection } from '@/tabs/Watchlist'
-import { PortfolioSummaryWidget } from '@/components/widgets/PortfolioSummaryWidget'
 import { AddLotModal } from '@/components/widgets/AddLotModal'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
@@ -371,18 +370,12 @@ export function StrategiesTab({
         <PriorityListWidget />
       </div>
 
-      {/* Phase 1B (2026-05-10): Portfolio summary — actual holdings,
-          ABOVE the watchlist (because positions matter more than
-          potential positions for daily decisions). */}
+      {/* 2026-06-24: holdings + watchlist unified into ONE onion section.
+          The separate "我的持仓" summary widget was removed — the onion
+          already shows held positions as nodes, and per-stock cost/P&L
+          lives in the node drawer. Add-lot moved into the section header. */}
       <div className="max-w-[1100px] mx-auto">
-        <PortfolioSummaryWidget onAddLot={() => setAddLotOpen(true)} />
-      </div>
-
-      {/* Watchlist — moved here 2026-05-08 from its own tab so the
-          user has one workspace. Collapsible header lets them focus
-          on strategies; collapse state persists in localStorage. */}
-      <div className="max-w-[1100px] mx-auto">
-        <WatchlistSection />
+        <WatchlistSection onAddLot={() => setAddLotOpen(true)} />
       </div>
 
       <div className="max-w-[1100px] mx-auto">
@@ -452,7 +445,7 @@ export function StrategiesTab({
               ). When a strategy scores ≥3, it appears as a chip on the
               call. Click any chip → land here, on the focused card.
               <div className="mt-1 font-mono text-[var(--color-text)]">
-                Today: <b>{callsTotal}</b> L3 calls · <b>{callsMatched}</b> matched ·{' '}
+                {asOf === 'live' ? todayLocal() : asOfLocalYMD}: <b>{callsTotal}</b> L3 calls · <b>{callsMatched}</b> matched ·{' '}
                 <b>{strategiesUsed} / {q.data?.count ?? 0}</b> strategies referenced.
                 {callsTotal === 0 && (
                   <span className="text-[var(--color-amber,#e5a200)] ml-2">

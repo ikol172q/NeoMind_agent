@@ -11,6 +11,7 @@ import {
   useResearchSupplyChain, useResearchProfile, useResearchSync, type RPost,
 } from '@/lib/api'
 import { Sparkles, RotateCw, Search, Heart, MessageCircle, ExternalLink, Brain, AlertTriangle, GitBranch, X } from 'lucide-react'
+import { fmtTs } from '@/lib/utils'
 
 const EDGE_COLOR: Record<string, string> = { disclosed: '#34d399', high: '#38bdf8', inferred: '#fbbf24', structural: '#4b5563' }
 const fmtCap = (n?: number | null) => n == null ? '—' : n >= 1e12 ? `$${(n / 1e12).toFixed(2)}T` : n >= 1e9 ? `$${(n / 1e9).toFixed(1)}B` : n >= 1e6 ? `$${(n / 1e6).toFixed(0)}M` : `$${n}`
@@ -156,7 +157,7 @@ function PostCard({ p }: { p: RPost }) {
   return (
     <div className="border border-[var(--color-border)] rounded-lg p-3 space-y-2">
       <div className="flex items-center justify-between text-xs text-[var(--color-dim)]">
-        <span>{p.created_at?.slice(0, 16).replace('T', ' ')}</span>
+        <span>{fmtTs(p.created_at)}</span>
         <div className="flex items-center gap-3">
           {p.is_reply ? <span className="opacity-60">↩ reply</span> : null}
           {p.url && <a href={p.url} target="_blank" rel="noreferrer" className="hover:text-white"><ExternalLink size={12} /></a>}

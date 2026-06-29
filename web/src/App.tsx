@@ -19,7 +19,7 @@ import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { ScannerHealthBadge } from '@/components/widgets/ScannerHealthBadge'
-import { Sparkles, LineChart, Zap, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw, Landmark, Network, ChevronDown, Boxes } from 'lucide-react'
+import { Sparkles, LineChart, Zap, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw, ChevronDown, Boxes, Clock } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 import { WhaleResearchProvider } from '@/components/research/WhaleResearchContext'
@@ -43,10 +43,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  // Bucket ① — long-term core holdings: risk monitor + systematic hedge overlay.
-  { id: 'core',       label: 'Core',       icon: Landmark },
-  // 2026-05-22: Short-term Trading Desk — TPS + NL→quant setup distillation
-  // + backtest + paper validation. Folds in the old standalone Paper tab.
+  // 2026-06-29: Core removed (broken /api/core/risk 404 + concentration-centric).
   { id: 'trading',    label: 'Trading',    icon: Zap },
   { id: 'audit',      label: 'Audit',      icon: ClipboardList },
   // Phase B6-Step2: Data Lake tab — provenance browser over the raw
@@ -56,10 +53,10 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // material from miniflux + Tavily + LLM gate, plus 14 hand-curated
   // evergreen Chinese-first cases.
   { id: 'learning',   label: 'Learning',   icon: GraduationCap },
-  // Cognition Map — personal world-model knowledge graph (md+git vault +
-  // provenance-coloured force graph). See agent/finance/cognition_map.py.
-  { id: 'cognition',  label: 'Cognition',  icon: Network },
-  { id: 'watchlist',  label: 'Watchlist',  icon: Network },
+  // 2026-06-29: Cognition·认知图 removed from nav — 0 nodes (never populated).
+  // 2026-06-29: '组合 · 关系网' removed from nav — it was a duplicate of the
+  // WatchlistSection already embedded at the top of the Strategies tab. The
+  // tab==='watchlist' route is kept (below) so old deep-links still resolve.
   { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
 
@@ -73,24 +70,48 @@ const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  { group: '持仓', icon: Landmark, items: [
-    { id: 'core',    label: 'Core · 长线',    icon: Landmark },
-    { id: 'trading', label: 'Trading · 短线', icon: Zap },
-  ] },
-  { group: '知识', icon: Network, items: [
-    { id: 'cognition',  label: 'Cognition · 认知图',  icon: Network },
-    // 2026-06-22: re-surfaced the onion ring (持仓 + 10-K 上下游/竞品关系网).
-    // Route already existed (tab==='watchlist'); it had no nav entry.
-    { id: 'watchlist',  label: 'Watchlist · 关系网',  icon: Network },
-    { id: 'learning',   label: 'Learning · 案例库',   icon: GraduationCap },
-  ] },
+  // 2026-06-29: '持仓'(Core/Trading) + '知识'(Cognition/Learning) groups dissolved.
+  //   · Core — /api/core/risk 404 (broken) + concentration-centric (de-prioritized) → removed from nav
+  //   · Cognition·认知图 — 0 nodes (never populated) → removed from nav
+  //   · Trading (live desk) + Learning (224 cases) — alive but low-freq → moved to 系统 dropdown
+  // Routes/components for all four are kept (reversible; deep-links still resolve).
   { id: 'settings', label: 'Settings', icon: SettingsIcon },
 ]
-// Low-frequency infra surfaces — tucked into a right-aligned 系统 dropdown.
+// Low-frequency surfaces — tucked into a right-aligned 系统 dropdown.
 const SYSTEM_ITEMS: NavSingle[] = [
+  { id: 'trading',   label: 'Trading · 交易台', icon: Zap },
+  { id: 'learning',  label: 'Learning · 案例库', icon: GraduationCap },
   { id: 'audit',     label: 'Audit · 审计追踪', icon: ClipboardList },
   { id: 'data_lake', label: 'Data Lake · 溯源', icon: Database },
 ]
+
+// Global live clock — anchors what "今天" means. Dashboard dates mix UTC (server)
+// and local, which is confusing; this shows the user's LOCAL date + weekday +
+// time + timezone, updating every second.
+function HeaderClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const date = now.toLocaleDateString('sv-SE')                 // 2026-06-28
+  const wd   = now.toLocaleDateString('zh-CN', { weekday: 'short' })  // 周日
+  const time = now.toLocaleTimeString('sv-SE')                 // 23:15:42 (24h)
+  const tz   = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop() || ''
+  return (
+    <div
+      data-testid="global-clock"
+      title={`当前本地时间 — 锚定「今天」。注意 dashboard 部分日期用 UTC,本地 ${tz} 可能差一天。`}
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 text-[11px] font-mono flex-shrink-0"
+    >
+      <Clock size={12} className="text-[var(--color-accent)]" />
+      <span className="text-[var(--color-text)]">{date}</span>
+      <span className="text-[var(--color-dim)] hidden sm:inline">{wd}</span>
+      <span className="text-[var(--color-accent)] font-semibold">{time}</span>
+      <span className="text-[var(--color-dim)]">{tz}</span>
+    </div>
+  )
+}
 
 function NavGroupMenu({ label, icon: Icon, items, tab, onPick, open, onToggle, align = 'left' }: {
   label: string; icon: NavIcon; items: NavSingle[]; tab: Tab
@@ -298,6 +319,9 @@ export default function App() {
           <Sparkles size={15} className="text-[var(--color-accent)] flex-shrink-0" />
           <span className="font-semibold truncate">neomind / fin</span>
         </div>
+
+        {/* Global live clock — anchors "今天" (local date/time + TZ). */}
+        <HeaderClock />
 
         {/* Desktop-only inline nav — grouped (持仓/知识 dropdowns) */}
         <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">

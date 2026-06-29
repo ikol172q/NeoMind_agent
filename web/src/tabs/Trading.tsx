@@ -37,6 +37,7 @@ function clearChartView(setupId: string) {
 import {
   PaperAccountCard, PaperPositionsTable, PaperTradesTable, PaperOrderForm,
 } from '@/components/widgets/PaperPanel'
+import { fmtTs, todayLocal } from '@/lib/utils'
 
 interface Props { projectId: string }
 
@@ -1299,7 +1300,7 @@ function CompareRowView({ r, rank, bestRet }: { r: CompareRow; rank: number; bes
 function TodayCockpit({ projectId }: { projectId: string }) {
   const { data, isFetching, refetch } = useCockpit(projectId)
   return (
-    <Section title="🌅 今日交易计划" subtitle="一屏看全：行情 / 持仓(止损·目标·R) / 临近财报 / 待复盘"
+    <Section title={`🌅 交易计划 · ${todayLocal()}`} subtitle="一屏看全：行情 / 持仓(止损·目标·R) / 临近财报 / 待复盘"
       right={<button onClick={() => refetch()} disabled={isFetching}
         className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]">{isFetching ? '刷新中…' : '↻ 刷新'}</button>}>
       {!data ? <div className="text-[10px] text-[var(--color-dim)]">{isFetching ? '加载中…(查行情/财报)' : '—'}</div> : (
@@ -1798,7 +1799,7 @@ function IbkrPanel() {
                   const good = r.kind === 'order_verify' && r.status === 'verified'
                   return (
                   <tr key={r.id} className={`border-b border-[var(--color-border)]/30 ${bad ? 'bg-[var(--color-red)]/10' : ''}`}>
-                    <td className="py-0.5 pr-2 font-mono text-[var(--color-dim)]">{r.ts?.slice(0, 19).replace('T', ' ')}</td>
+                    <td className="py-0.5 pr-2 font-mono text-[var(--color-dim)]">{fmtTs(r.ts)}</td>
                     <td className="pr-2">{r.kind}</td>
                     <td className="pr-2 font-mono text-[var(--color-text)]">{r.symbol || '—'}</td>
                     <td className="pr-2">{r.action || '—'}</td>
@@ -1919,7 +1920,7 @@ function PaperSection({ projectId }: { projectId: string }) {
       }>
       {isIbkr && (
         <div className="mb-2 text-[9.5px] rounded p-1.5 border border-[var(--color-yellow)]/40 bg-[var(--color-yellow)]/10 text-[var(--color-dim)]">
-          ⚠️ 当前执行去向=<b>IBKR</b>，你的<b>真相在上面的「今日交易计划」(IBKR 账户)</b>。这里是<b>独立的离线模拟引擎</b>，仅供回测/干跑，<b>不反映</b>你的 IBKR 实时持仓/盈亏。
+          ⚠️ 当前执行去向=<b>IBKR</b>，你的<b>真相在上面的「交易计划」(IBKR 账户)</b>。这里是<b>独立的离线模拟引擎</b>，仅供回测/干跑，<b>不反映</b>你的 IBKR 实时持仓/盈亏。
         </div>
       )}
       {risk.data && (

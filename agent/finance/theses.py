@@ -59,25 +59,26 @@ def _now() -> str:
 
 
 def thesis_template() -> str:
-    """Default markdown skeleton — single template per §11 OQ recommendation."""
+    """Default markdown skeleton. Framed as 共识 (grounded, sourced facts)
+    + 推断 (forward-looking inferences to validate). The conviction loop:
+    每把一条『推断』验证成『共识』= 把未知压小一点。Section headers must stay
+    exactly `## 共识` / `## 推断` so _extract_section can pull them."""
     return (
-        "## Bull case\n"
-        "- (Why this works — 3-5 bullets)\n"
-        "- \n"
+        "## 共识\n"
+        "- [业务] (已查证的事实 — 开头加 [标签] 分类: 业务/护城河/财务/估值/"
+        "风险/管理层/股东/竞争/催化剂/技术/组合; 尽量附 source, e.g. [SEC 20-F](url))\n"
         "- \n"
         "\n"
-        "## Bear case\n"
-        "- (What would break it — 3-5 bullets, REQUIRED)\n"
-        "- \n"
+        "## 推断\n"
+        "- [竞争] (基于共识的前瞻判断/赌注 — 开头加 [标签]; 可能错, 标明若错会怎样)\n"
         "- \n"
         "\n"
         "## Exit triggers\n"
-        "- [ ] (Specific condition that means sell — e.g. '2 consecutive earnings miss')\n"
-        "- [ ] \n"
+        "- [ ] (触发卖出的具体条件 — e.g. '连续两季 miss')\n"
         "- [ ] \n"
         "\n"
         "## Horizon\n"
-        "(e.g. '12-18 months' / 'until AI capex thesis breaks' / 'no time bound')\n"
+        "(e.g. '无固定 — 由 L1 a→e 决定' / '12-18 months')\n"
     )
 
 
@@ -95,7 +96,7 @@ def _check_required_sections(body_md: str) -> List[str]:
     soft warning ('your thesis is missing Bear case') but does NOT
     reject the create."""
     missing = []
-    for h in ("Bull case", "Bear case", "Exit triggers"):
+    for h in ("共识", "推断", "Exit triggers"):
         if not _extract_section(body_md, h):
             missing.append(h)
     return missing
@@ -285,10 +286,13 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
         # Section extracts for the chain panel — saves the frontend
         # from re-implementing the markdown parser per render.
         "sections": {
-            "bull_case":     _extract_section(row["body_md"], "Bull case"),
-            "bear_case":     _extract_section(row["body_md"], "Bear case"),
+            "consensus":     _extract_section(row["body_md"], "共识"),
+            "inference":     _extract_section(row["body_md"], "推断"),
             "exit_triggers": _extract_section(row["body_md"], "Exit triggers"),
             "horizon":       _extract_section(row["body_md"], "Horizon"),
+            # kept for any legacy thesis still using English headers
+            "bull_case":     _extract_section(row["body_md"], "Bull case"),
+            "bear_case":     _extract_section(row["body_md"], "Bear case"),
         },
         "missing_sections": _check_required_sections(row["body_md"]),
     }

@@ -442,3 +442,97 @@ def get_10k_sections(ticker: str) -> Optional[SlicedSections]:
         accession=f10k.accession,
         filing_date=f10k.filing_date,
     )
+
+
+# ─── Foreign / pre-IPO filers (20-F / S-1) — Goal-1 P2 blind-spot fill ──
+# Foreign private issuers (ARM, NBIS) file 20-F; fresh IPOs (CBRS) only have an
+# S-1. The 10-K slicer returns None for them → zero anchored facts. This fills
+# the two HIGH-VALUE, FINDABLE sections — Business (item1_full) + Risk Factors
+# (item1a_risks) — so business_summary + risks extractors work. The brittle
+# competitor/supplier/customer slicing is deliberately left None (the verbatim
+# gate then just yields little, never anything false).
+_FOREIGN_FORMS = ("20-F", "20-F/A", "S-1", "S-1/A", "F-1", "F-1/A")
+
+
+def _latest_foreign_filing(submissions: dict) -> Optional[FilingRef]:
+    recent = (submissions.get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    accs = recent.get("accessionNumber") or []
+    docs = recent.get("primaryDocument") or []
+    dates = recent.get("filingDate") or []
+    sizes = recent.get("size") or []
+    cands = [i for i, f in enumerate(forms) if f in _FOREIGN_FORMS]
+    if not cands:
+        return None
+    # Pick the MOST RECENT full foreign filing. Two failure modes to avoid:
+    #   1. thin amendments (a 20-F/A cover page or exhibits-only re-file lacks
+    #      the risk+business body) — exclude anything below a size floor; a real
+    #      annual report / registration is 5-30 MB, amendments are «1 MB.
+    #   2. an old LARGE filing — picking purely by size grabs a years-old 20-F
+    #      that may describe a company that no longer exists (e.g. NBIS's CIK
+    #      still carries pre-spinoff Yandex 20-Fs; ARM's largest is its 2024,
+    #      not the latest 2026). Recency must dominate.
+    def _sz(i: int) -> int:
+        return sizes[i] if i < len(sizes) else 0
+    SIZE_FLOOR = 2_000_000  # ~2 MB — cleanly separates real filings from amendments
+    substantial = [i for i in cands if _sz(i) >= SIZE_FLOOR]
+    pool = substantial or cands  # fall back to all if none clears the floor
+    # most recent by filing date; size breaks ties so a base form beats its /A
+    best = max(pool, key=lambda i: (dates[i] if i < len(dates) else "", _sz(i)))
+    return FilingRef(accession=accs[best], primary_doc=docs[best], filing_date=dates[best], form=forms[best])
+
+
+def _slice_foreign(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (business_region, risk_region). Heuristic but safe — the
+    downstream verbatim gate drops anything not literally in these bytes."""
+    low = text.lower()
+    # Risk Factors: among all "risk factors" hits, the REAL section is the one
+    # with the most content before the next "Item N" heading (TOC entries and
+    # cross-references are short). Picking by content beats "2nd occurrence".
+    risk = None
+    best_start, best_len = None, 0
+    for m in re.finditer(r"risk\s+factors", low):
+        s = m.start()
+        nxt = re.search(r"\n\s*item\s+\d", low[s + 80: s + 80_000])
+        seg_len = nxt.start() if nxt else 60_000
+        if seg_len > best_len:
+            best_len, best_start = seg_len, s
+    if best_start is not None and best_len > 2000:
+        risk = text[best_start: best_start + 60_000]
+    # Business: try the strongest anchors first (20-F Item 4 / S-1 Business).
+    biz = None
+    for pat in (
+        r"item\s*4[.\s].{0,60}?information on the company",
+        r"business overview", r"overview of our business",
+        r"our business", r"company overview", r"prospectus summary",
+        r"\bbusiness\b",
+    ):
+        m = re.search(pat, low)
+        if m and m.start() > 1500:  # skip the TOC near the very top
+            biz = text[m.start():m.start() + 45_000]
+            break
+    if not biz:
+        biz = text[5_000:50_000]  # fallback: skip cover/TOC, take the body
+    return biz, risk
+
+
+def get_foreign_sections(ticker: str) -> Optional[SlicedSections]:
+    """20-F / S-1 → SlicedSections (Business + Risk Factors only). None if no
+    such filing. Used as a fallback when get_10k_sections returns None."""
+    cik = lookup_cik(ticker)
+    if cik is None:
+        return None
+    sub = get_submissions(cik)
+    f = _latest_foreign_filing(sub)
+    if f is None:
+        logger.info("sec_edgar: no 20-F/S-1 for CIK %s", cik)
+        return None
+    html = fetch_filing_html(cik, f.accession, f.primary_doc)
+    text = _html_to_text(html)
+    biz, risk = _slice_foreign(text)
+    return SlicedSections(
+        item1_full=biz, item1_competition=None, item1_customers=None,
+        item1_suppliers=None, item1a_risks=risk, item7_mda=None,
+        source_url=filing_url(cik, f.accession, f.primary_doc),
+        filing_date=f.filing_date, accession=f.accession,
+    )

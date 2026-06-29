@@ -15,7 +15,10 @@ import re
 
 from fastapi import APIRouter, HTTPException
 
-from agent.data_sources.market import get_live_quote, get_next_earnings
+from agent.data_sources.market import (
+    get_live_quote, get_next_earnings, get_holders, get_fundamentals,
+)
+from agent.finance.metric_snapshots import read_metrics_asof, list_snapshot_dates
 
 
 def _normalize_ticker(t: str) -> str:
@@ -43,6 +46,46 @@ def build_market_overlay_router() -> APIRouter:
         if e is None:
             return {"ticker": t, "next_date": None}
         return e.to_dict()
+
+    @router.get("/{ticker}/fundamentals")
+    def fundamentals(ticker: str) -> dict:
+        """Tier-1 quality/valuation metrics (PEG, margins, growth, FCF,
+        ROE, net debt, P/S, P/B, beta, EV/EBITDA) — closes the diagnostic
+        chain. yfinance-sourced (mark the source)."""
+        t = _normalize_ticker(ticker)
+        f = get_fundamentals(t)
+        if f is None:
+            return {"ticker": t, "supported": False}
+        d = f.to_dict()
+        d["supported"] = True
+        return d
+
+    @router.get("/{ticker}/metrics/asof")
+    def metrics_asof(ticker: str, date: str | None = None) -> dict:
+        """Verified metric snapshot as-of a past date (latest on-or-before
+        `date`; omit for most recent). Reads the metric_snapshot table the
+        daily metric_snapshot_pull job fills — current + historical, never
+        hand-computed."""
+        t = _normalize_ticker(ticker)
+        snap = read_metrics_asof(t, date)
+        if snap is None:
+            return {"ticker": t, "available": False, "dates": list_snapshot_dates(t)}
+        snap["available"] = True
+        snap["dates"] = list_snapshot_dates(t)
+        return snap
+
+    @router.get("/{ticker}/holders")
+    def holders(ticker: str) -> dict:
+        """Universal ownership: institution / insider %, float-vs-locked
+        (供给悬顶), top institutional holders with buy/sell direction.
+        Works for any US ticker; from yfinance (mark the source)."""
+        t = _normalize_ticker(ticker)
+        h = get_holders(t)
+        if h is None:
+            return {"ticker": t, "supported": False, "top_holders": []}
+        d = h.to_dict()
+        d["supported"] = True
+        return d
 
     @router.get("/{ticker}/earnings/history")
     def earnings_history(ticker: str, limit: int = 12) -> dict:
