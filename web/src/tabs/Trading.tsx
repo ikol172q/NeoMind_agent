@@ -1894,7 +1894,7 @@ function PipelinePanel() {
         ))}
       </div>
       <div className="text-[9.5px] text-[var(--color-dim)] space-y-1 leading-[1.6] border-t border-[var(--color-border)]/40 pt-2">
-        <div>📊 <b>数据源</b>: yfinance OHLCV (日/时/分线) · Finnhub 实时报价。不接 IBKR（先 paper 验证 edge）。</div>
+        <div>📊 <b>数据源</b>: yfinance OHLCV (日/时/分线) 供回测/扫描 · paper 成交走 DataHub 实时报价。实盘执行走 IBKR venue（连 Gateway 时；DU 账户闸门 + allow_live 双保险）。</div>
         <div>🧮 <b>指标库</b>: SMA·EMA·RSI(Wilder)·MACD·Bollinger·ATR·vol_sma·highest/lowest(N日突破)。</div>
         <div>🧪 <b>回测假设</b>: long-only·单仓·信号bar收盘进场·盘中触stop/target·无滑点佣金·历史≠未来。</div>
         <div>🔁 <b>可溯源</b>: 改①文字→重蒸②③；④回测/图验证；⑤部署受全局停止+kill-switch gate。每步可查可改。</div>

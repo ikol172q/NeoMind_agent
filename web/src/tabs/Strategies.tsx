@@ -8,7 +8,7 @@
  *             which catalog entries are *actually* live in today's
  *             lattice and which are dormant.
  *
- * Sort + filter so 35 entries are navigable.
+ * Sort + filter so 36 entries are navigable.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {

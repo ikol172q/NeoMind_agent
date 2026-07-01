@@ -6,7 +6,7 @@
  *  - fall through to the fleet agent (/api/chat) as free-form prompt.
  *
  * Local-first execution means "quote AAPL" returns data instantly
- * instead of waiting 20s for DeepSeek-R1's chain of thought.
+ * instead of waiting for the LLM's chain of thought.
  */
 
 export interface Command {

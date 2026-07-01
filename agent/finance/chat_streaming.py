@@ -15,10 +15,13 @@ Persona / model / behavior come from the single source of truth:
   (i.e. fin.yaml — same prompt CLI ``neomind`` mode uses)
 - model: ``get_active_model("neomind")`` (i.e. ``provider-state.json``
   — runtime ``/model`` selection takes effect immediately)
-- tools: web channel has no tool dispatch yet, so we append a fence
-  telling the LLM "AVAILABLE TOOLS: (none)" so the fin persona prompt
-  (which expects runtime tool injection) doesn't emit raw <tool_call>
-  XML
+- tools: the web channel runs a real tool-calling agent loop (capped at
+  ``_MAX_TOOL_ITERATIONS`` = 5). The LLM is offered ``_FIN_TOOLS``
+  (finance_get_stock, finance_get_crypto, finance_market_overview,
+  finance_news_search, cognition_save_node, cognition_query_map) via
+  ``tool_choice=auto``; each requested call is run by ``_execute_tool``
+  and fed back as a ``role=tool`` message before the next turn, with
+  ``tool_call_start`` / ``tool_call_result`` SSE events emitted per call.
 
 Web-only concerns kept here (not config dilution, just channel-level):
 - SSE token-by-token streaming
