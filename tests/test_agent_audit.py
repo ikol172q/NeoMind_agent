@@ -255,3 +255,27 @@ def test_http_stats(client):
     assert s["total_entries"] == 2
     assert s["tokens_in"] == 5
     assert s["tokens_out"] == 2
+
+
+def test_openapi_schema_builds(client):
+    """Regression: the audit routes return raw Starlette Response
+    objects, and this module uses `from __future__ import annotations`
+    with the response classes imported at function scope. Without an
+    explicit ``response_model=None`` on each route, the bare
+    ``-> JSONResponse`` / ``-> HTMLResponse`` return hints become
+    unresolved ForwardRefs that FastAPI cannot turn into a schema —
+    which 500s ``/openapi.json`` (and breaks ``/docs``) for the WHOLE
+    app. This test would fail (PydanticUserError → HTTP 500) before that
+    fix and guards against reintroducing the pattern on any audit route.
+    """
+    r = client.get("/openapi.json")
+    assert r.status_code == 200, r.text[:300]
+    paths = r.json()["paths"]
+    for p in (
+        "/audit",
+        "/api/audit/recent",
+        "/api/audit/stats",
+        "/api/audit/task/{task_id}",
+        "/api/audit/req/{req_id}",
+    ):
+        assert p in paths, f"{p} missing from OpenAPI schema"
