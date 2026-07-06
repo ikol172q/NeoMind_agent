@@ -185,16 +185,26 @@ def account() -> Dict[str, Any]:
     return {"connected": True, "readonly": True, "values": r["data"]}
 
 
+def _serialize_position(p) -> Dict[str, Any]:
+    """Serialize an IBKR Position incl. option contract details (strike/right/
+    expiry/multiplier) so spreads are readable — these were dropped before
+    2026-07-05, making 'NVDA OPT -1 / +1' ambiguous (can't tell the legs)."""
+    c = p.contract
+    d = {"symbol": getattr(c, "symbol", "?"),
+         "sec_type": getattr(c, "secType", ""),
+         "position": p.position, "avg_cost": round(p.avgCost, 2),
+         "account": p.account}
+    if getattr(c, "secType", "") in ("OPT", "FOP"):
+        d.update({"expiry": getattr(c, "lastTradeDateOrContractMonth", "") or "",
+                  "strike": getattr(c, "strike", None),
+                  "right": getattr(c, "right", "") or "",
+                  "multiplier": getattr(c, "multiplier", "") or ""})
+    return d
+
+
 def positions() -> Dict[str, Any]:
     def fn(ib, m):
-        out = []
-        for p in ib.positions():
-            c = p.contract
-            out.append({"symbol": getattr(c, "symbol", "?"),
-                        "sec_type": getattr(c, "secType", ""),
-                        "position": p.position, "avg_cost": round(p.avgCost, 2),
-                        "account": p.account})
-        return out
+        return [_serialize_position(p) for p in ib.positions()]
     r = _run_ib(fn)
     if r.get("error"):
         return {"connected": False, "error": r["error"], "readonly": True, "positions": []}
@@ -317,10 +327,7 @@ def account_snapshot() -> Dict[str, Any]:
         except Exception as e:
             values = {}; errs["values"] = str(e)
         try:
-            positions = [{"symbol": getattr(p.contract, "symbol", "?"),
-                          "sec_type": getattr(p.contract, "secType", ""),
-                          "position": p.position, "avg_cost": round(p.avgCost, 2),
-                          "account": p.account} for p in ib.positions()]
+            positions = [_serialize_position(p) for p in ib.positions()]
         except Exception as e:
             positions = []; errs["positions"] = str(e)
         orders = []

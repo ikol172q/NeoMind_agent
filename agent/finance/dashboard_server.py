@@ -58,6 +58,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+# When this module is the process entrypoint (`python -m
+# agent.finance.dashboard_server`), it does NOT go through main.py's
+# load_dotenv(), so vars that live only in .env (e.g. MINIFLUX_USERNAME/
+# MINIFLUX_PASSWORD) are absent from the process env and their features
+# 503 ("credentials missing") even though .env is populated and the
+# service is up. Load the repo-root .env explicitly (by file location,
+# not CWD). override=False so shell/compose-provided vars (e.g.
+# DEEPSEEK_API_KEY from ~/.zshrc) always win; missing .env is a no-op.
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
 from agent.finance import investment_projects
 from agent.finance import technical_indicators as ti
 from agent.finance.signal_schema import AgentAnalysis
@@ -1361,6 +1373,10 @@ def create_app(
         app.include_router(build_learning_router())
         app.include_router(build_cognition_map_router())
         app.include_router(build_research_router())
+        from agent.finance.supply_chain_walker import build_supply_chain_walker_router
+        app.include_router(build_supply_chain_walker_router())
+        from agent.finance.agent_alerts import build_alerts_router
+        app.include_router(build_alerts_router())
 
         # Auto-seed the learning library on every dashboard boot.
         # Idempotent — upserts by slug. Three seed sources, each
@@ -1566,6 +1582,12 @@ def create_app(
         @app.get("/legacy", response_class=HTMLResponse)
         def legacy_alias() -> HTMLResponse:
             return HTMLResponse(content=_INDEX_HTML, status_code=200)
+
+    @app.get("/cockpit", response_class=HTMLResponse)
+    def cockpit_page() -> HTMLResponse:
+        """Three-account trading cockpit (Schwab / IBKR-live / IBKR-paper)."""
+        from agent.finance.cockpit import COCKPIT_HTML
+        return HTMLResponse(content=COCKPIT_HTML, status_code=200)
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
@@ -2043,6 +2065,12 @@ def create_app(
         app.include_router(build_trading_router())
     except Exception as exc:  # pragma: no cover
         logger.warning("trading desk router unavailable: %s", exc)
+
+    try:
+        from agent.finance.cockpit import build_cockpit_router
+        app.include_router(build_cockpit_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("cockpit router unavailable: %s", exc)
 
     # Bucket ① — long-term core holdings risk monitor + (Phase 2) hedge overlay.
     try:
