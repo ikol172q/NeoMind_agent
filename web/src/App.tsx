@@ -200,16 +200,11 @@ export default function App() {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   // Which desktop nav dropdown (研究 / 账户 / 学习 / 系统) is open, by label.
   const [openMenu, setOpenMenu] = useState<string | null>(null)
-  // One-level "back" — remembers the tab you came from, so deep-links (e.g.
-  // DeskStrip account cards → Core/Trading) always have an obvious way home.
-  const [prevTab, setPrevTab] = useState<Tab | null>(null)
-  const prevTabRef = useRef<Tab>(tab)
-  useEffect(() => {
-    if (prevTabRef.current !== tab) {
-      setPrevTab(prevTabRef.current)
-      prevTabRef.current = tab
-    }
-  }, [tab])
+  // Deep-link breadcrumb — when you drill from one tab INTO another (e.g. a
+  // DeskStrip account card → Core), remember where you came FROM. The nav then
+  // shows "‹ Strategies / Core" so you click the origin tab to go back. Set
+  // ONLY by deep-links (not ordinary nav), so it never ping-pongs.
+  const [deepLink, setDeepLink] = useState<{ from: Tab; to: Tab } | null>(null)
   // 2026-05-19: self-restart admin button — POSTs /api/admin/restart
   // then polls /api/health until the new process comes up, then reloads.
   const [restarting, setRestarting] = useState(false)
@@ -358,18 +353,23 @@ export default function App() {
         {/* Global 预警/提案 bell — synced with Telegram (same agent_alerts table). */}
         <AlertsBell />
 
-        {/* One-level back — appears once you've navigated, so a deep-link
-            into Core/Trading (or anywhere) has an explicit way back. */}
-        {prevTab && prevTab !== tab && (
-          <button
-            data-testid="nav-back"
-            onClick={() => setTab(prevTab)}
-            title={`返回 ${TABS.find(t => t.id === prevTab)?.label ?? ''}`}
-            className="hidden md:flex items-center gap-1 px-2 py-1 rounded text-xs text-[var(--color-dim)] hover:text-[var(--color-accent)] hover:bg-[var(--color-border)]/50 transition"
-          >
-            <span className="text-sm leading-none">←</span>
-            返回 {TABS.find(t => t.id === prevTab)?.label ?? ''}
-          </button>
+        {/* Deep-link breadcrumb — after drilling into a sub-page (e.g. an
+            account card → Core), show "‹ origin / current"; click the origin
+            tab name to go back. Auto-hides the moment you leave the target,
+            so it never ping-pongs like a raw back button. */}
+        {deepLink && tab === deepLink.to && (
+          <div data-testid="nav-breadcrumb" className="hidden md:flex items-center gap-1.5 text-xs whitespace-nowrap">
+            <button
+              onClick={() => { setTab(deepLink.from); setDeepLink(null) }}
+              title={`返回 ${TABS.find(t => t.id === deepLink.from)?.label ?? ''}`}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[var(--color-accent)] hover:bg-[var(--color-border)]/50 transition"
+            >
+              <span className="text-sm leading-none">‹</span>
+              {TABS.find(t => t.id === deepLink.from)?.label ?? ''}
+            </button>
+            <span className="text-[var(--color-dim)]">/</span>
+            <span className="text-[var(--color-dim)]">{TABS.find(t => t.id === deepLink.to)?.label ?? ''}</span>
+          </div>
         )}
 
         {/* Desktop-only inline nav — grouped (研究/账户/学习 dropdowns) */}
@@ -565,7 +565,7 @@ export default function App() {
             onChangeAsOf={setAsOfPersist}
             onJumpToAudit={jumpToAudit}
             onNavigateToResearch={jumpToResearch}
-            onNavigate={(t) => setTab(t as Tab)}
+            onNavigate={(t) => { setDeepLink({ from: tab, to: t as Tab }); setTab(t as Tab) }}
             pendingPrompt={pendingChatPrompt}
             pendingContext={pendingChatContext}
             onConsumePendingPrompt={() => {
