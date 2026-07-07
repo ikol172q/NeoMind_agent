@@ -56,6 +56,7 @@ import { CatalystCalendarWidget } from '@/components/widgets/CatalystCalendarWid
 import { InvestmentPhilosophyWidget } from '@/components/widgets/InvestmentPhilosophyWidget'
 import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
+import { DeskStrip } from '@/components/widgets/DeskStrip'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
@@ -337,6 +338,13 @@ export function StrategiesTab({
             )
           }
         />
+      </div>
+
+      {/* 2026-07-06: 交易台驾驶舱 — 账户状态(Schwab 核心/IBKR 量化/Paper) +
+          操作控制(急停/自动进场/regime)。这些原本只在 Core / Trading tab，
+          主页看不到。纯新增一条，复用现有 hooks + EmergencyBrakeBar。 */}
+      <div className="max-w-[1100px] mx-auto">
+        <DeskStrip projectId={projectId} />
       </div>
 
       {/* 2026-05-19: investment philosophy at the very top — the

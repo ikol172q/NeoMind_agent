@@ -154,8 +154,10 @@ export function TradingTab({ projectId }: Props) {
 
 // ════════════════════════════════════════════════════════════
 //  Emergency brake bar — the ONLY manual controls
+//  Exported so the Strategies-tab DeskStrip can render the exact
+//  same controls verbatim (single-sourced halt/auto/flatten logic).
 // ════════════════════════════════════════════════════════════
-function EmergencyBrakeBar({ projectId }: { projectId: string }) {
+export function EmergencyBrakeBar({ projectId }: { projectId: string }) {
   const { data: state } = useTradingState()
   const { data: regime } = useRegime()
   const setHalt = useSetHalt()
