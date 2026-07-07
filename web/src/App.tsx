@@ -531,6 +531,7 @@ export default function App() {
             onChangeAsOf={setAsOfPersist}
             onJumpToAudit={jumpToAudit}
             onNavigateToResearch={jumpToResearch}
+            onNavigate={(t) => setTab(t as Tab)}
             pendingPrompt={pendingChatPrompt}
             pendingContext={pendingChatContext}
             onConsumePendingPrompt={() => {

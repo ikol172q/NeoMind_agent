@@ -121,6 +121,9 @@ interface Props {
   pendingPrompt?: string | null
   pendingContext?: { symbol?: string; project?: boolean } | null
   onConsumePendingPrompt?: () => void
+  /** Top-level tab switcher (App.setTab) — lets DeskStrip's account
+   *  cards deep-link into the Core / Trading tabs. */
+  onNavigate?: (tab: string) => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -141,6 +144,7 @@ export function StrategiesTab({
   pendingPrompt,
   pendingContext,
   onConsumePendingPrompt,
+  onNavigate,
 }: Props) {
   const q = useFinStrategies()
   // Phase A 1:1 sync: when the user picks a past date, the calls data
@@ -344,7 +348,7 @@ export function StrategiesTab({
           操作控制(急停/自动进场/regime)。这些原本只在 Core / Trading tab，
           主页看不到。纯新增一条，复用现有 hooks + EmergencyBrakeBar。 */}
       <div className="max-w-[1100px] mx-auto">
-        <DeskStrip projectId={projectId} />
+        <DeskStrip projectId={projectId} onNavigate={onNavigate} />
       </div>
 
       {/* 2026-05-19: investment philosophy at the very top — the
