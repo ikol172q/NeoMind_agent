@@ -75,26 +75,32 @@ type NavIcon = React.ComponentType<{ size?: number }>
 type NavSingle = { id: Tab; label: string; icon: NavIcon }
 type NavGroupDef = { group: string; icon: NavIcon; items: NavSingle[] }
 
+// 2026-07-06: regrouped for coherence. Functional pages are no longer dumped
+// into "系统" — accounts (Core/Trading) and learning (Learning/Principles) get
+// real, named groups; the home (Strategies) stays top-level. Each group reads
+// as a stage of how you actually work, not an infra bucket.
 const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
-  { id: 'research',   label: 'Research',   icon: LineChart },
-  { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
-  { id: 'keystone',   label: 'Keystone',   icon: Boxes },
-  { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  // 2026-06-29: '持仓'(Core/Trading) + '知识'(Cognition/Learning) groups dissolved.
-  //   · Core — /api/core/risk 404 (broken) + concentration-centric (de-prioritized) → removed from nav
-  //   · Cognition·认知图 — 0 nodes (never populated) → removed from nav
-  //   · Trading (live desk) + Learning (224 cases) — alive but low-freq → moved to 系统 dropdown
-  // Routes/components for all four are kept (reversible; deep-links still resolve).
-  { id: 'settings', label: 'Settings', icon: SettingsIcon },
+  { id: 'strategies', label: 'Strategies', icon: BookOpen },   // 驾驶舱 / home
+  { group: '研究', icon: LineChart, items: [
+    { id: 'research', label: 'Research · 认知图', icon: LineChart },
+    { id: 'serenity', label: 'Serenity · 语料', icon: Sparkles },
+    { id: 'keystone', label: 'Keystone · 卡脖子', icon: Boxes },
+  ] },
+  { group: '账户', icon: Shield, items: [
+    { id: 'core',    label: 'Core · 核心仓/对冲', icon: Shield },
+    { id: 'trading', label: 'Trading · 交易台', icon: Zap },
+  ] },
+  { group: '学习', icon: GraduationCap, items: [
+    { id: 'learning',   label: 'Learning · 案例库', icon: GraduationCap },
+    { id: 'principles', label: 'Principles · 原则', icon: Scale },
+  ] },
 ]
-// Low-frequency surfaces — tucked into a right-aligned 系统 dropdown.
+// 系统 — genuine infra/meta only (audit trail, provenance, config). The
+// functional pages that used to live here moved to 账户 / 学习 above.
 const SYSTEM_ITEMS: NavSingle[] = [
-  { id: 'core',      label: 'Core · 核心仓/对冲', icon: Shield },
-  { id: 'trading',   label: 'Trading · 交易台', icon: Zap },
-  { id: 'learning',  label: 'Learning · 案例库', icon: GraduationCap },
-  { id: 'principles', label: '原则 · Principles', icon: Scale },
   { id: 'audit',     label: 'Audit · 审计追踪', icon: ClipboardList },
   { id: 'data_lake', label: 'Data Lake · 溯源', icon: Database },
+  { id: 'settings',  label: 'Settings · 设置', icon: SettingsIcon },
 ]
 
 // Global live clock — anchors what "今天" means. Dashboard dates mix UTC (server)
@@ -192,8 +198,18 @@ export default function App() {
   // Mobile nav drawer — hamburger toggles. Auto-closes when user
   // picks a tab (so the underlying content shows immediately).
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
-  // Which desktop nav dropdown (持仓 / 知识 / 系统) is open, by label.
+  // Which desktop nav dropdown (研究 / 账户 / 学习 / 系统) is open, by label.
   const [openMenu, setOpenMenu] = useState<string | null>(null)
+  // One-level "back" — remembers the tab you came from, so deep-links (e.g.
+  // DeskStrip account cards → Core/Trading) always have an obvious way home.
+  const [prevTab, setPrevTab] = useState<Tab | null>(null)
+  const prevTabRef = useRef<Tab>(tab)
+  useEffect(() => {
+    if (prevTabRef.current !== tab) {
+      setPrevTab(prevTabRef.current)
+      prevTabRef.current = tab
+    }
+  }, [tab])
   // 2026-05-19: self-restart admin button — POSTs /api/admin/restart
   // then polls /api/health until the new process comes up, then reloads.
   const [restarting, setRestarting] = useState(false)
@@ -342,7 +358,21 @@ export default function App() {
         {/* Global 预警/提案 bell — synced with Telegram (same agent_alerts table). */}
         <AlertsBell />
 
-        {/* Desktop-only inline nav — grouped (持仓/知识 dropdowns) */}
+        {/* One-level back — appears once you've navigated, so a deep-link
+            into Core/Trading (or anywhere) has an explicit way back. */}
+        {prevTab && prevTab !== tab && (
+          <button
+            data-testid="nav-back"
+            onClick={() => setTab(prevTab)}
+            title={`返回 ${TABS.find(t => t.id === prevTab)?.label ?? ''}`}
+            className="hidden md:flex items-center gap-1 px-2 py-1 rounded text-xs text-[var(--color-dim)] hover:text-[var(--color-accent)] hover:bg-[var(--color-border)]/50 transition"
+          >
+            <span className="text-sm leading-none">←</span>
+            返回 {TABS.find(t => t.id === prevTab)?.label ?? ''}
+          </button>
+        )}
+
+        {/* Desktop-only inline nav — grouped (研究/账户/学习 dropdowns) */}
         <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">
           {NAV_GROUPS.map(e => (
             'items' in e ? (
