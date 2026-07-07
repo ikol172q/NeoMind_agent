@@ -143,6 +143,10 @@ function NavGroupMenu({ label, icon: Icon, items, tab, onPick, open, onToggle, a
     return () => document.removeEventListener('mousedown', onDown)
   }, [open, onToggle])
   const active = items.some(i => i.id === tab)
+  // When one of this group's items is the current tab, surface WHICH one in
+  // the trigger (e.g. "系统 · 核心") — otherwise a deep-link into a dropdown
+  // tab lights up the group but gives no clue where you landed.
+  const activeItem = items.find(i => i.id === tab)
   return (
     <div className="relative" ref={ref}>
       <button
@@ -151,7 +155,7 @@ function NavGroupMenu({ label, icon: Icon, items, tab, onPick, open, onToggle, a
           active ? 'bg-[var(--color-border)] text-[var(--color-accent)]'
                  : 'text-[var(--color-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)]/50')}
       >
-        <Icon size={12} /> {label} <ChevronDown size={10} className={open ? 'rotate-180' : ''} />
+        <Icon size={12} /> {label}{active && activeItem ? ` · ${activeItem.label}` : ''} <ChevronDown size={10} className={open ? 'rotate-180' : ''} />
       </button>
       {open && (
         <div className={cn('absolute z-50 mt-1 min-w-[170px] bg-[var(--color-panel)] border border-[var(--color-border)] rounded shadow-xl py-1',
