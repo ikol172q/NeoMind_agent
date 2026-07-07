@@ -16,6 +16,7 @@
  */
 
 import { useMemo, useState } from 'react'
+import { nestedRailClass } from '@/components/ui/Card'
 import { ChevronDown, ChevronRight, Clock, AlertTriangle, CheckCircle2, RefreshCw, Database } from 'lucide-react'
 import { useFinPastRuns, useFinRunRows, type FinPastRun } from '@/lib/api'
 
@@ -91,7 +92,7 @@ function PastRunRow({ row }: { row: FinPastRun }) {
       </button>
 
       {open && (
-        <div className="px-6 pb-2 text-[9px] font-mono text-[var(--color-dim)] flex flex-col gap-0.5">
+        <div className={`px-6 pb-2 text-[9px] font-mono text-[var(--color-dim)] flex flex-col gap-0.5 ${nestedRailClass}`}>
           <div>run_id: <span className="text-[var(--color-text)]">{row.run_id}</span></div>
           <div>run_type: <span className="text-[var(--color-text)]">{row.run_type}</span></div>
           <div>started: <span className="text-[var(--color-text)]">{row.started_at}</span></div>

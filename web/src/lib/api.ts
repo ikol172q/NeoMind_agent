@@ -16,6 +16,51 @@ export async function fetchJSON<T = unknown>(url: string, init?: RequestInit): P
   return r.json() as Promise<T>
 }
 
+// ── Agent alerts (预警/提案 · Telegram 与 dashboard 读同一张表 = 同步) ──
+export interface AgentAlert {
+  id: number; dedup_key: string; source: string; ticker: string
+  severity: string; title: string; body: string; touches: string
+  status: string; created_at: string; pushed_at: string | null
+}
+export function useAlerts(limit = 50) {
+  return useQuery({
+    queryKey: ['alerts', limit],
+    queryFn: () => fetchJSON<{ alerts: AgentAlert[]; chat_ready: boolean }>(`/api/alerts?limit=${limit}`),
+    staleTime: 30000, refetchInterval: 60000,
+  })
+}
+export function useSetAlertStatus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      fetchJSON(`/api/alerts/${id}/status?status=${status}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alerts'] }),
+  })
+}
+
+// ── Keystone (供应链走出去 / 卡脖子发现) ──
+export interface KeystoneBottleneck {
+  ticker: string; name?: string; direction: string; bet_mode: string
+  moat_verdict: string; moat_score: number; moat_signals: string[]
+  serenity_layer: string | null; time_signal: string; time_trend: number | null
+  survival: { status: string; note?: string }; route: string; total_score: number
+  source: string; note?: string
+}
+export interface KeystoneWalk {
+  anchor: string; elapsed_sec: number
+  step1_identity: any; step2_neighbors: any
+  step3_bottlenecks: KeystoneBottleneck[]
+  step4_deep_dive: any; step5_cross_chain: any[]; serenity_comparison: any
+}
+export function useKeystoneWalk(ticker: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['keystone', 'walk', ticker],
+    queryFn: () => fetchJSON<KeystoneWalk>(`/api/walk/${ticker}?max_bottlenecks=6`),
+    enabled: enabled && !!ticker,
+    staleTime: 300000,
+  })
+}
+
 // ── Serenity research corpus (一手语料库) ──────────────────
 export interface RPost {
   post_id: string; platform: string; kind: string; created_at: string | null
@@ -380,6 +425,11 @@ export interface StreamCallbacks {
     url_warnings?: Array<{ url: string; fallback: string; host: string }>;
   }) => void
   onError: (err: string) => void
+  /** Optional: fires on `tool_call_start` / `tool_call_result` SSE frames so
+   *  the UI can surface the agent's tool activity (finance_get_stock, etc.).
+   *  Safe to omit — tool frames are ignored when not provided, and this never
+   *  affects delta/done/error handling. */
+  onTool?: (info: { phase: 'start' | 'result'; name: string; ok?: boolean; error?: string | null }) => void
 }
 
 /**
@@ -473,6 +523,10 @@ export function streamChat(
                 cb.onDone(payload)
               } else if (event === 'error') {
                 cb.onError(String(payload.detail ?? 'stream error'))
+              } else if (event === 'tool_call_start') {
+                cb.onTool?.({ phase: 'start', name: String(payload.name ?? '') })
+              } else if (event === 'tool_call_result') {
+                cb.onTool?.({ phase: 'result', name: String(payload.name ?? ''), ok: payload.ok, error: payload.error })
               }
             } catch (_) {
               // skip non-JSON frames (heartbeats etc.)

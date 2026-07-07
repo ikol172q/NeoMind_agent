@@ -11,15 +11,18 @@ import { LegacyTab } from '@/tabs/Legacy'
 import { StrategiesTab } from '@/tabs/Strategies'
 import { DataLakeTab } from '@/tabs/DataLake'
 import { WatchlistTab } from '@/tabs/Watchlist'
+import { PrinciplesTab } from '@/tabs/Principles'
 import { CognitionMapTab } from '@/tabs/CognitionMap'
 import { SerenityTab } from '@/tabs/Serenity'
+import { KeystoneTab } from '@/tabs/Keystone'
 import { CommandPalette } from '@/components/chat/CommandPalette'
+import { AlertsBell } from '@/components/AlertsBell'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { ScannerHealthBadge } from '@/components/widgets/ScannerHealthBadge'
-import { Sparkles, LineChart, Zap, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw, ChevronDown, Boxes, Clock } from 'lucide-react'
+import { Sparkles, LineChart, Zap, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw, ChevronDown, Boxes, Clock, Shield, Scale } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 import { WhaleResearchProvider } from '@/components/research/WhaleResearchContext'
@@ -34,7 +37,7 @@ import { WhaleProfileDrawer } from '@/components/research/WhaleProfileDrawer'
 // trading desk). Paper trading is part of the trading workflow, not a
 // standalone surface. 'paper' kept in the union only for old deep links
 // (routes to the Trading tab).
-type Tab = 'research' | 'serenity' | 'strategies' | 'core' | 'trading' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'cognition' | 'watchlist' | 'settings' | 'legacy'
+type Tab = 'research' | 'serenity' | 'keystone' | 'strategies' | 'core' | 'trading' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'principles' | 'cognition' | 'watchlist' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   // 2026-05-08: Watchlist removed from nav — content embedded as a
@@ -42,8 +45,13 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // 不好集中看" (scattered, hard to view together).
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
+  { id: 'keystone',   label: 'Keystone',   icon: Boxes },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  // 2026-06-29: Core removed (broken /api/core/risk 404 + concentration-centric).
+  // 2026-06-30: Core re-added. The 2026-06-29 removal cited a "/api/core/risk
+  // 404" that never matched the code — CoreTab calls /api/portfolio/core_risk
+  // (+ /hedge_plan, /hedge_execute), all live & mounted (dashboard_server.py
+  // :2065). It is the only hedge-sizing / one-click-put UI in the dashboard.
+  { id: 'core',       label: 'Core',       icon: Shield },
   { id: 'trading',    label: 'Trading',    icon: Zap },
   { id: 'audit',      label: 'Audit',      icon: ClipboardList },
   // Phase B6-Step2: Data Lake tab — provenance browser over the raw
@@ -53,6 +61,7 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // material from miniflux + Tavily + LLM gate, plus 14 hand-curated
   // evergreen Chinese-first cases.
   { id: 'learning',   label: 'Learning',   icon: GraduationCap },
+  { id: 'principles', label: 'Principles', icon: Scale },
   // 2026-06-29: Cognition·认知图 removed from nav — 0 nodes (never populated).
   // 2026-06-29: '组合 · 关系网' removed from nav — it was a duplicate of the
   // WatchlistSection already embedded at the top of the Strategies tab. The
@@ -69,6 +78,7 @@ type NavGroupDef = { group: string; icon: NavIcon; items: NavSingle[] }
 const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
   { id: 'research',   label: 'Research',   icon: LineChart },
   { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
+  { id: 'keystone',   label: 'Keystone',   icon: Boxes },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
   // 2026-06-29: '持仓'(Core/Trading) + '知识'(Cognition/Learning) groups dissolved.
   //   · Core — /api/core/risk 404 (broken) + concentration-centric (de-prioritized) → removed from nav
@@ -79,8 +89,10 @@ const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
 ]
 // Low-frequency surfaces — tucked into a right-aligned 系统 dropdown.
 const SYSTEM_ITEMS: NavSingle[] = [
+  { id: 'core',      label: 'Core · 核心仓/对冲', icon: Shield },
   { id: 'trading',   label: 'Trading · 交易台', icon: Zap },
   { id: 'learning',  label: 'Learning · 案例库', icon: GraduationCap },
+  { id: 'principles', label: '原则 · Principles', icon: Scale },
   { id: 'audit',     label: 'Audit · 审计追踪', icon: ClipboardList },
   { id: 'data_lake', label: 'Data Lake · 溯源', icon: Database },
 ]
@@ -323,6 +335,9 @@ export default function App() {
         {/* Global live clock — anchors "今天" (local date/time + TZ). */}
         <HeaderClock />
 
+        {/* Global 预警/提案 bell — synced with Telegram (same agent_alerts table). */}
+        <AlertsBell />
+
         {/* Desktop-only inline nav — grouped (持仓/知识 dropdowns) */}
         <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">
           {NAV_GROUPS.map(e => (
@@ -534,9 +549,11 @@ export default function App() {
         )}
         {tab === 'data_lake' && <DataLakeTab projectId={projectId} />}
         {tab === 'learning' && <LearningTab />}
+        {tab === 'principles' && <PrinciplesTab />}
         {tab === 'cognition' && <CognitionMapTab projectId={projectId} />}
         {tab === 'watchlist' && <WatchlistTab />}
         {tab === 'serenity' && <SerenityTab />}
+        {tab === 'keystone' && <KeystoneTab />}
         {tab === 'settings' && (
           <SettingsTab
             projectId={projectId}

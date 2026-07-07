@@ -11,6 +11,7 @@
  * Sort + filter so 36 entries are navigable.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { nestedRailClass } from '@/components/ui/Card'
 import {
   ArrowDownAZ,
   ChevronDown,
@@ -1105,7 +1106,7 @@ function StrategyCard({
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 pt-1 border-t border-[var(--color-border)] flex flex-col gap-2 text-[10px]">
+        <div className={`px-3 pb-3 pt-1 border-t border-[var(--color-border)] flex flex-col gap-2 text-[10px] ${nestedRailClass}`}>
           {/* Reverse map: list the live L3 calls referencing this
               strategy, if any. Lets the user click through to see
               which actual recommendations grounded in this strategy. */}

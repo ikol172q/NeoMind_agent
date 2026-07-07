@@ -20,6 +20,7 @@
  * 折叠默认隐藏（节省视觉空间），用户主动点开看。
  */
 import { useState } from 'react'
+import { NestedGroup } from '@/components/ui/Card'
 
 
 export function AlgorithmAppendix() {
@@ -51,7 +52,7 @@ export function AlgorithmAppendix() {
       </button>
 
       {open && (
-        <div className="px-3 pb-3 space-y-2 text-[10px]">
+        <NestedGroup className="text-[10px]">
           <div className="text-[8.5px] text-[var(--color-dim)] italic mb-2 leading-[1.5]">
             目的：dashboard 上每个数字可以追溯回这里。任何不一致 = bug。
             <span className="text-[var(--color-text)]"> 严谨为先</span>。
@@ -65,7 +66,7 @@ export function AlgorithmAppendix() {
               onToggle={() => toggle(section.id)}
             />
           ))}
-        </div>
+        </NestedGroup>
       )}
     </div>
   )

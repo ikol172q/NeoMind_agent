@@ -355,6 +355,7 @@ export function ChatPanel({
       let accumulated = ''
       let firstToken = true
       let reqId: string | undefined
+      const toolLines: string[] = []
       // Priority: explicit (workflow commands pass this directly because
       // React hasn't committed the setNextSendContext yet) → state.
       // Consume state context so subsequent free-form messages aren't
@@ -400,6 +401,23 @@ export function ChatPanel({
           void persist(sid, { role: 'error', content: errMsg, ts: new Date().toISOString() })
           resolve()
         },
+        onTool: (t) => {
+          // Surface agent tool activity as a transient status in the still-
+          // pending bubble, ONLY before the reply text starts streaming.
+          // Once the first delta arrives (firstToken=false) we stop, so the
+          // reply is never clobbered; tool status is never persisted (persist
+          // uses the accumulated reply text only).
+          if (!firstToken) return
+          if (t.phase === 'start') {
+            toolLines.push(`🔧 ${t.name}…`)
+          } else {
+            const i = toolLines.lastIndexOf(`🔧 ${t.name}…`)
+            const done = `${t.ok === false ? '⚠' : '✓'} ${t.name}`
+            if (i >= 0) toolLines[i] = done
+            else toolLines.push(done)
+          }
+          updateMsg(msgId, { content: toolLines.join('\n') })
+        },
       }, ctx ? { symbol: ctx.symbol, project: ctx.project } : undefined, sid)
     })
   }
@@ -428,7 +446,7 @@ export function ChatPanel({
       <div className="flex-1 flex flex-col min-w-0 max-w-4xl mx-auto">
         <div className="px-4 py-2 border-b border-[var(--color-border)] bg-[var(--color-panel)]">
           <div className="text-[10px] uppercase tracking-wider text-[var(--color-dim)]">
-            Fin persona · DeepSeek-chat (streaming)
+            Fin persona · DeepSeek (streaming)
           </div>
           <div className="text-xs mt-0.5">
             Project: <span className="text-[var(--color-accent)]">{projectId}</span>

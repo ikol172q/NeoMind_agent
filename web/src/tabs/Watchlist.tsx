@@ -25,7 +25,7 @@
  * (what's in each tier, what's stale, what needs review); the drawer
  * shows ACTIONS (open one ticker, edit it, expand it).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useStockResearch } from '@/components/research/StockResearchContext'
 import {
   useWatchlistTiers,
@@ -39,7 +39,7 @@ import {
   type CrossEdge,
   type SharedEntity,
 } from '@/lib/api'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardBody, NestedGroup, nestedRailClass } from '@/components/ui/Card'
 import { PortfolioOnionView } from '@/components/widgets/PortfolioOnionView'
 import { AgentPlaceholder } from '@/components/research/AgentSummary'
 import { PriceMovesPanel } from '@/components/research/PriceMovesPanel'
@@ -98,6 +98,22 @@ export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
     setCollapsed(next)
     try { localStorage.setItem('strategies.watchlist.collapsed', next ? '1' : '0') } catch {}
   }
+  // The 🧭 count in the header looked clickable but only toggled the whole
+  // block. Make it a real jump-link: expand (if collapsed) then smooth-scroll
+  // to the Outside ring card.
+  const outsideRef = useRef<HTMLDivElement>(null)
+  function jumpToOutside(e: MouseEvent) {
+    e.stopPropagation()
+    const wasCollapsed = collapsed
+    if (wasCollapsed) {
+      setCollapsed(false)
+      try { localStorage.setItem('strategies.watchlist.collapsed', '0') } catch {}
+    }
+    window.setTimeout(
+      () => outsideRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+      wasCollapsed ? 80 : 0,
+    )
+  }
 
   const tiers = tiersQ.data?.tiers
   const totals = tiersQ.data?.totals
@@ -117,7 +133,13 @@ export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
       <span className="text-emerald-300">◐ {totals?.adjacent ?? 0}</span>
       <span className="text-[var(--color-dim)]">👁 {totals?.watching ?? 0}</span>
       {outsideQ.data?.candidates && outsideQ.data.candidates.length > 0 && (
-        <span className="text-violet-300">🧭 {outsideQ.data.candidates.length}</span>
+        <span
+          onClick={jumpToOutside}
+          title="跳到 Outside ring（持仓外的多源候选）"
+          className="text-violet-300 cursor-pointer rounded px-1 hover:bg-violet-400/15 hover:underline"
+        >
+          🧭 {outsideQ.data.candidates.length}
+        </span>
       )}
       {(staleEntries('core').length + staleEntries('adjacent').length) > 0 && (
         <span className="text-amber-300 flex items-center gap-1">
@@ -161,7 +183,7 @@ export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
       </div>
 
       {!collapsed && (
-        <>
+        <NestedGroup>
           {/* Stale-thesis banner — only if any core/adjacent overdue */}
           {(staleEntries('core').length > 0 || staleEntries('adjacent').length > 0) && (
             <div className="rounded border border-amber-500/40 bg-amber-500/5 p-2.5 text-[12px]">
@@ -290,6 +312,7 @@ export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
           )}
 
           {/* Outside ring — anti-anchoring */}
+          <div ref={outsideRef}>
           <Card>
             <CardHeader
               title={<span className="flex items-center gap-1.5"><Compass size={14} /> Outside ring</span>}
@@ -320,7 +343,8 @@ export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
               )}
             </CardBody>
           </Card>
-        </>
+          </div>
+        </NestedGroup>
       )}
     </div>
   )
@@ -415,7 +439,7 @@ function CrossStructurePanel({ onOpen }: { onOpen: (t: string) => void }) {
         <span className="text-[10px] italic text-[var(--color-dim)]">(相关性 / chokepoint · 11 只)</span>
       </button>
       {open && (
-        <div className="pl-1">
+        <div className={nestedRailClass}>
           {/* portfolio-level agent read — placeholder until the portfolio-context
               synthesis engine is wired (per-stock 3-sentence is already live) */}
           <AgentPlaceholder label="组合级速读 · 最大相关性 / chokepoint / crowding 综合" />

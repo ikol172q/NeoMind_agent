@@ -1,4 +1,5 @@
 import { useState, useEffect, useReducer } from 'react'
+import { nestedRailClass } from '@/components/ui/Card'
 import {
   useTradingPolicy, useUpdateTradingPolicy,
   useTradingSetups, useSaveTradingSetup, useDeleteTradingSetup,
@@ -1456,7 +1457,7 @@ function JournalRow({ j, onSave, onDelete }: { j: JournalEntry; onSave: (f: Part
       </div>
       {j.thesis && !open && <div className="text-[9px] text-[var(--color-dim)] italic mt-0.5">“{j.thesis}”</div>}
       {open && (
-        <div className="mt-2 space-y-1.5 text-[9.5px]">
+        <div className={`mt-2 space-y-1.5 text-[9.5px] ${nestedRailClass}`}>
           <label className="block"><span className="text-[var(--color-dim)]">thesis (为什么进):</span>
             <textarea defaultValue={j.thesis} onBlur={e => e.target.value !== j.thesis && onSave({ thesis: e.target.value })} rows={2} className={`${inp} w-full mt-0.5 resize-y`} /></label>
           <div className="flex gap-2 flex-wrap items-center">
