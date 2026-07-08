@@ -26,7 +26,8 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
-import { useCoreRisk, useCockpit, useTradingState, usePriorityList } from '@/lib/api'
+import { useCoreRisk, useCockpit, useTradingState, usePriorityList, useIbkrSpreads } from '@/lib/api'
+import type { IbkrSpread } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
 import { EmergencyBrakeBar } from '@/tabs/Trading'
 
@@ -152,12 +153,55 @@ function SchwabCard({ onNavigate }: { onNavigate?: (tab: string) => void }) {
   )
 }
 
+// Status → dot color for an option spread. winning=绿 / at_risk=琥珀 /
+// breached=红 / unknown=灰 (fallback = unknown).
+const SPREAD_STATUS: Record<IbkrSpread['status'], string> = {
+  winning: 'var(--color-green)',
+  at_risk: 'var(--color-amber,#e5a200)',
+  breached: 'var(--color-red)',
+  unknown: 'var(--color-dim)',
+}
+
+// Drop a trailing `.0` from whole-number strikes (140.0 → "140", 140.5 → "140.5").
+const fmtStrike = (s?: number | null) => (s == null ? '?' : String(s))
+
+// One compact line per option spread: SYMBOL 卖{K}P · {dte}d⚠ · ●垫{cushion}% +${maxP}/−${maxL}
+function SpreadRow({ s }: { s: IbkrSpread }) {
+  const dotColor = SPREAD_STATUS[s.status] ?? SPREAD_STATUS.unknown
+  const warn = s.dte <= 5
+  const dteColor = s.dte <= 2 ? 'var(--color-red)' : warn ? 'var(--color-amber,#e5a200)' : 'var(--color-dim)'
+  const mp = s.max_profit == null ? '—' : `+$${Math.round(s.max_profit)}`
+  const ml = s.max_loss == null ? '—' : `−$${Math.round(s.max_loss)}`
+  return (
+    <div className="flex items-center gap-1 text-[9px] font-mono leading-[1.6] min-w-0">
+      <span className="font-bold text-[var(--color-text)]">{s.symbol}</span>
+      <span className="text-[var(--color-dim)]">卖{fmtStrike(s.short_strike)}{s.right}</span>
+      <span className="text-[var(--color-dim)]">·</span>
+      <span style={{ color: dteColor, fontWeight: warn ? 600 : 400 }}>
+        {s.dte}d{warn ? '⚠' : ''}
+      </span>
+      <span className="text-[var(--color-dim)]">·</span>
+      <span className="inline-flex items-center gap-0.5 text-[var(--color-dim)]">
+        <span className="inline-block w-[6px] h-[6px] rounded-full flex-shrink-0" style={{ background: dotColor }} />
+        {s.cushion_pct != null && `垫${s.cushion_pct}%`}
+      </span>
+      <span className="ml-auto flex items-center gap-0.5 flex-shrink-0">
+        <span style={{ color: 'var(--color-green)' }}>{mp}</span>
+        <span className="text-[var(--color-dim)]">/</span>
+        <span style={{ color: 'var(--color-red)' }}>{ml}</span>
+      </span>
+    </div>
+  )
+}
+
 // ② IBKR 量化 — quant swing sandbox execution venue (bucket ②).
 function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (tab: string) => void }) {
   const q = useCockpit(projectId)
+  const sp = useIbkrSpreads()
   const d = q.data
   const isIbkr = d?.venue === 'ibkr'
   const connected = !!d?.ibkr_connected
+  const spreads = sp.data?.spreads ?? []
   return (
     <AccountCard
       role="ibkr"
@@ -188,13 +232,31 @@ function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (
         <Placeholder text="执行路由=模拟引擎（未切 IBKR）" />
       ) : !connected ? (
         <Placeholder text="IBKR 未连接（gateway 未运行？）" />
+      ) : spreads.length > 0 ? (
+        // Has live option spreads → surface them; NetLiq demoted to a small line.
+        <div className="flex flex-col gap-1 min-w-0">
+          <div className="flex flex-col gap-0.5 min-w-0">
+            {spreads.map((s) => (
+              <SpreadRow key={`${s.symbol}-${s.expiry}-${s.short_strike}`} s={s} />
+            ))}
+          </div>
+          <div className="text-[9px] text-[var(--color-dim)]">
+            NetLiq {fmtUsd(d.net_liquidation)} · {d.account ?? '—'} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
+          </div>
+        </div>
       ) : (
+        // Connected but no spreads (loading, error, or genuinely none) → NetLiq.
         <div className="flex flex-col gap-0.5">
           <div className="text-[13px] font-semibold text-[var(--color-text)] font-mono">
             {fmtUsd(d.net_liquidation)}
           </div>
           <div className="text-[9px] text-[var(--color-dim)]">
-            NetLiq · {d.account ?? '—'} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
+            {sp.isLoading
+              ? '加载期权价差…'
+              : sp.isError
+                ? 'NetLiq · 价差暂不可用'
+                : '无期权价差'}{' '}
+            · {d.account ?? '—'} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
           </div>
         </div>
       )}

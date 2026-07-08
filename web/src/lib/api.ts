@@ -4935,6 +4935,27 @@ export function useCockpit(projectId: string) {
   })
 }
 
+// IBKR live option spreads — the user's real vertical spreads (e.g. bull-put),
+// surfaced compact on the home DeskStrip so both open positions stay glanceable.
+export interface IbkrSpreadLeg { strike: number; qty: number; avg_cost: number }
+export interface IbkrSpread {
+  symbol: string; expiry: string; right: string; dte: number
+  underlying: number | null; underlying_source?: string | null; underlying_date?: string | null
+  cushion_pct: number | null; type: string
+  short_strike: number | null; long_strike: number | null; width: number | null
+  net_credit: number | null; max_profit: number | null; max_loss: number | null
+  status: 'winning' | 'at_risk' | 'breached' | 'unknown'
+  legs: IbkrSpreadLeg[]
+}
+export function useIbkrSpreads() {
+  return useQuery({
+    queryKey: ['trading-ibkr-spreads'],
+    queryFn: () => fetchJSON<{ connected: boolean; spreads: IbkrSpread[] }>('/api/trading/ibkr/spreads'),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
 export function useSetAutoTrade() {
   const qc = useQueryClient()
   return useMutation<TradingState, Error, boolean>({
