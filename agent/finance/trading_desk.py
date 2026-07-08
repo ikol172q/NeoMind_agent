@@ -3116,6 +3116,13 @@ def build_trading_router() -> APIRouter:
         from agent.finance import ibkr_connector
         return ibkr_connector.positions()
 
+    @router.get("/ibkr/spreads")
+    def ibkr_spreads() -> Dict[str, Any]:
+        """Live OPT legs grouped into verticals + defined-risk status
+        (credit / max P&L / DTE / cushion) from underlying + terms."""
+        from agent.finance import ibkr_connector
+        return ibkr_connector.spreads()
+
     @router.get("/ibkr/quote/{symbol}")
     def ibkr_quote(symbol: str) -> Dict[str, Any]:
         from agent.finance import ibkr_connector

@@ -211,6 +211,115 @@ def positions() -> Dict[str, Any]:
     return {"connected": True, "readonly": True, "positions": r["data"]}
 
 
+def spreads() -> Dict[str, Any]:
+    """Group live OPT legs into verticals and score each as a defined-risk
+    position — WITHOUT needing an option market-data subscription. The
+    actionable facts (credit, max profit/loss, days-to-expiry, and how far the
+    underlying sits from the short strike) come from the underlying's latest
+    close + the contract terms, so a null option mark doesn't blind us.
+
+    Returns spreads sorted soonest-expiry first (most urgent on top)."""
+    from datetime import date, datetime
+
+    pos = positions()
+    if not pos.get("connected"):
+        return {"connected": False, "error": pos.get("error"), "spreads": []}
+
+    legs = [p for p in pos["positions"] if p.get("sec_type") in ("OPT", "FOP")]
+
+    # Group legs into candidate spreads by (symbol, expiry, right).
+    groups: Dict[tuple, list] = {}
+    for lg in legs:
+        key = (lg["symbol"], lg.get("expiry", ""), lg.get("right", ""))
+        groups.setdefault(key, []).append(lg)
+
+    # Underlying price: tracked-universe names come from market_data_daily
+    # (traceable daily close); anything outside it (an off-watchlist event
+    # ticker you hold but don't track) falls back to a live yfinance quote so
+    # the spread never scores "unknown" just because it's off the watchlist.
+    syms = sorted({k[0] for k in groups})
+    px: Dict[str, Dict[str, Any]] = {}
+    try:
+        from agent.finance.persistence import connect
+        with connect() as c:
+            for sym in syms:
+                row = c.execute(
+                    "SELECT close, trade_date FROM market_data_daily "
+                    "WHERE symbol=? ORDER BY trade_date DESC LIMIT 1", (sym,)).fetchone()
+                if row:
+                    px[sym] = {"price": round(row[0], 2), "date": row[1],
+                               "source": "market_data_daily"}
+    except Exception:
+        pass
+    for sym in syms:
+        if sym not in px:
+            try:
+                from agent.data_sources.validated_quote import _yf_price
+                p = _yf_price(sym)
+                if p:
+                    px[sym] = {"price": round(p, 2), "date": None, "source": "yfinance-live"}
+            except Exception:
+                pass
+
+    today = date.today()
+    out: List[Dict[str, Any]] = []
+    for (sym, expiry, right), lgs in groups.items():
+        dte = None
+        try:
+            dte = (datetime.strptime(expiry, "%Y%m%d").date() - today).days
+        except Exception:
+            pass
+        u = px.get(sym, {})
+        up = u.get("price")
+        rec: Dict[str, Any] = {
+            "symbol": sym, "expiry": expiry, "right": right, "dte": dte,
+            "underlying": up, "underlying_date": u.get("date"),
+            "underlying_source": u.get("source"),
+            "legs": [{"strike": l.get("strike"), "qty": l.get("position"),
+                      "avg_cost": l.get("avg_cost")} for l in lgs],
+        }
+        shorts = [l for l in lgs if (l.get("position") or 0) < 0]
+        longs = [l for l in lgs if (l.get("position") or 0) > 0]
+        if len(lgs) == 2 and len(shorts) == 1 and len(longs) == 1 \
+                and shorts[0].get("strike") is not None and longs[0].get("strike") is not None:
+            sh, lo = shorts[0], longs[0]
+            try:
+                mult = int(float(lgs[0].get("multiplier") or 100))
+            except Exception:
+                mult = 100
+            short_k, long_k = sh["strike"], lo["strike"]
+            width = abs(short_k - long_k)
+            # avg_cost is per-contract dollars (premium × multiplier), so credit
+            # is simply short premium received − long premium paid.
+            credit = round((sh.get("avg_cost") or 0) - (lo.get("avg_cost") or 0), 2)
+            max_loss = round(width * mult - credit, 2)
+            if right == "P" and short_k > long_k:
+                kind = "bull_put_spread"          # bullish credit: want underlying > short strike
+                cushion = round((up - short_k) / short_k * 100, 1) if up else None
+                status = ("winning" if up and up > short_k
+                          else "at_risk" if up and up > long_k
+                          else "breached" if up else "unknown")
+            elif right == "C" and short_k < long_k:
+                kind = "bear_call_spread"         # bearish credit: want underlying < short strike
+                cushion = round((short_k - up) / short_k * 100, 1) if up else None
+                status = ("winning" if up and up < short_k
+                          else "at_risk" if up and up < long_k
+                          else "breached" if up else "unknown")
+            else:
+                kind = "debit_vertical"           # long-biased debit spread (or unclassified)
+                cushion, status = None, "unknown"
+            rec.update({
+                "type": kind, "short_strike": short_k, "long_strike": long_k,
+                "width": width, "net_credit": credit,
+                "max_profit": credit if credit > 0 else None, "max_loss": max_loss,
+                "cushion_pct": cushion, "status": status,
+            })
+        out.append(rec)
+
+    out.sort(key=lambda r: (r.get("dte") is None, r.get("dte") if r.get("dte") is not None else 99999))
+    return {"connected": True, "spreads": out}
+
+
 def quote(symbol: str) -> Dict[str, Any]:
     def fn(ib, m):
         # 1=real-time(needs subscription), 3=delayed(free, ~15min), 4=delayed-frozen.
