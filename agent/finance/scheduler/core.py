@@ -32,6 +32,9 @@ DEFAULT_JOBS = [
     "agent.finance.scheduler.jobs.serenity_sync",
     "agent.finance.scheduler.jobs.daily_market_pull",
     "agent.finance.scheduler.jobs.compliance_check",
+    # IB Gateway 掉线预警 (2026-07-06): 每 20 分钟探测 API 端口,掉线→P1 推,
+    # 否则 IBKR 真仓在 dashboard 上隐形、静默裸管。watchdog 拉起 app;本 job 通知。
+    "agent.finance.scheduler.jobs.ibkr_gateway_health",
     # Phase B3-real (2026-04-26): pull Miniflux entries → RawStore.
     # Graceful skip if Miniflux unconfigured/unreachable, so adding
     # this module to the default registry is safe even on machines
@@ -72,6 +75,13 @@ DEFAULT_JOBS = [
     # went stale or supporting signal types went silent in 30d.
     # Runs 06:30 daily, after learning_daily.
     "agent.finance.scheduler.jobs.thesis_health_check",
+    # Goal-2 闭环主动腿 (2026-06-29): EOD 后重算 thesis_materiality → 破/动摇
+    # 生成提案写 agent_alerts(去重)→ 推 Telegram(与 dashboard 铃铛同步)。
+    # propose-not-dispose。22:00 UTC,美股收盘后。
+    "agent.finance.scheduler.jobs.thesis_alert_daily",
+    # Goal-2 闭环 P1 即时腿 (2026-06-29): 每小时确定性事件扫描 → grounded 判断
+    # → 即时推 P1(下行/生存)。P2 留给上面的每日 digest。
+    "agent.finance.scheduler.jobs.alert_scan_hourly",
     # Phase 3 (2026-05-10): daily earnings calendar scan for Core +
     # Adjacent watchlist tickers. Emits earnings_upcoming signal_event
     # when within 14d (severity by proximity). Backfills
