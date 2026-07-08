@@ -217,7 +217,7 @@ function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (
               color: isIbkr && connected ? 'var(--color-green)' : 'var(--color-dim)',
             }}
           >
-            {isIbkr ? (connected ? '● 已连接' : '○ 未连接') : 'sim'}
+            {isIbkr ? (connected ? 'Gateway ● 已连接' : 'Gateway ○ 未连接') : 'sim'}
           </span>
         ) : undefined
       }

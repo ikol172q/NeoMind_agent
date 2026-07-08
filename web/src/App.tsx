@@ -186,7 +186,7 @@ export default function App() {
     if (typeof window !== 'undefined' && window.location.search.includes('legacy=1')) {
       return 'legacy'
     }
-    return 'research'
+    return 'strategies'   // land on the home cockpit (accounts / gateway / 待办)
   })
   const [projectId, setProjectId] = useState<string>(
     () => localStorage.getItem('neomind.project') ?? 'fin-core'
