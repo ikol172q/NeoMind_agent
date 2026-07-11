@@ -130,6 +130,9 @@ DEFAULT_JOBS = [
     # ibkr_flex_sync so the authoritative fills are already archived. Honest
     # 0 when IBKR is disconnected / no sell fills on record (no fabrication).
     "agent.finance.scheduler.jobs.journal_sync_daily",
+    # Daily 巡检 heartbeat: pushes ALL jobs' health (简报 + per-job 详细) +
+    # key crawl-table persistence to Telegram/铃铛, so nothing dies silently.
+    "agent.finance.scheduler.jobs.scheduler_health_digest",
 ]
 
 

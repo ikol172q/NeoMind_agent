@@ -210,6 +210,13 @@ def scanner_health() -> Dict[str, Any]:
                 return 60
         if "* * * *" in cron:
             return 60
+        # Fires on a single fixed weekday (e.g. "0 4 * * 0" = Sundays) → weekly
+        # cadence, so it shouldn't be called stale after only a day or two.
+        parts = cron.split()
+        if len(parts) == 5:
+            dow = parts[4]
+            if dow != "*" and not any(ch in dow for ch in "-,/"):
+                return 7 * 24 * 60
         if cron.startswith("0 ") or cron.startswith("5 ") or cron.startswith("10 "):
             return 24 * 60
         if "1-5" in cron:
