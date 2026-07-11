@@ -45,9 +45,10 @@ async def run() -> Dict[str, Any]:
             agent_alerts.upsert_alert(dedup_key=f"research_loop_{day}", source="research_loop",
                                       ticker="", severity="P2",
                                       title=f"IC 深研 loop 产出 {n} 张 thesis", body=msg)
+            # push_to_telegram 读 repo .env 的 token+chat（能发）；
+            # send_telegram_alert 只读进程 env,而 dashboard launchd 里没有 → 会 no-op。
             try:
-                from agent.evolution.health_monitor import send_telegram_alert
-                send_telegram_alert(msg)
+                agent_alerts.push_to_telegram(msg, dry_run=False)
             except Exception:
                 pass
     except Exception:
