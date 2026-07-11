@@ -12,6 +12,7 @@
 import { useEffect, useState } from 'react'
 import { FileText, X } from 'lucide-react'
 import { useTradingPlans, useTradingPlan } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 import { MiniMarkdown } from '@/components/widgets/MiniMarkdown'
 
 function TradingPlanModal({ name, onClose }: { name: string; onClose: () => void }) {
@@ -80,7 +81,10 @@ export function TradingPlansWidget() {
         <span className="italic hidden sm:inline">
           · ~/trading_plans 里的纪律卡 / 事件计划
         </span>
-        {q.data && <span className="ml-auto font-mono text-[9.5px]">{plans.length} plans</span>}
+        <span className="ml-auto flex items-center gap-2">
+          <FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={30} />
+          {q.data && <span className="font-mono text-[9.5px]">{plans.length} plans</span>}
+        </span>
       </div>
 
       {q.isLoading && (

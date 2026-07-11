@@ -15,6 +15,7 @@
 import { useState } from 'react'
 import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useAllTheses, type InvestmentThesis, type ThesisStatus } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 import { MiniMarkdown } from '@/components/widgets/MiniMarkdown'
 
 // Conviction chip color (disciplined theses embed "**Conviction: MED**").
@@ -109,9 +110,10 @@ export function ResearchInboxWidget() {
         <span className="italic hidden sm:inline">
           · research_loop 自动生成的 thesis（含表外小盘）
         </span>
-        {q.data && (
-          <span className="ml-auto font-mono text-[9.5px]">{theses.length} theses</span>
-        )}
+        <span className="ml-auto flex items-center gap-2">
+          <FreshnessChip job="research_loop_scan" />
+          {q.data && <span className="font-mono text-[9.5px]">{theses.length} theses</span>}
+        </span>
       </div>
 
       {q.isLoading && (

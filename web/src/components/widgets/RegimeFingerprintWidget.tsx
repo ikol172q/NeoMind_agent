@@ -13,6 +13,7 @@
  */
 import { useState } from 'react'
 import { useRegimeFingerprint } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 
 
 interface BucketDef {
@@ -159,6 +160,9 @@ export function RegimeFingerprintWidget({
             (no fingerprint yet — run regime_backfill.command)
           </span>
         )}
+        <span className="ml-auto">
+          <FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={120} />
+        </span>
       </div>
 
       <div className={

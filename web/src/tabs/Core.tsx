@@ -1,11 +1,12 @@
 import { useState } from 'react'
 import { useCoreRisk, fetchHedgePlan, postHedgeExecute, type HedgePlan } from '@/lib/api'
 import { maskAccount } from '@/lib/utils'
+import { FreshnessChip } from '@/components/widgets/FreshnessChip'
 
 // Bucket ① — 长期核心持仓（买入持有 + 对冲）。与 Trading tab（桶②量化 swing 沙盒）
 // 严格分开：这里是你打算长期持有的钱，量化的角色是「系统化风险管理」，不是择时交易。
 export function CoreTab() {
-  const { data, isFetching, refetch } = useCoreRisk()
+  const { data, isFetching, refetch, dataUpdatedAt, isError } = useCoreRisk()
   const c = data?.concentration
   const r = data?.risk
   const concentrated = !!c && (c.top3_pct > 60 || c.hhi > 0.25)
@@ -23,10 +24,13 @@ export function CoreTab() {
         {/* header line */}
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="text-[13px] font-semibold text-[var(--color-text)]">核心持仓风险监控</div>
-          <button onClick={() => refetch()} disabled={isFetching}
-            className="text-[10px] px-2.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] border border-[var(--color-accent)]/40">
-            {isFetching ? '计算中…(拉行情/算 beta)' : '↻ 刷新'}
-          </button>
+          <div className="flex items-center gap-2">
+            <FreshnessChip updatedAt={dataUpdatedAt} isFetching={isFetching} isError={isError} staleAfterMin={5} />
+            <button onClick={() => refetch()} disabled={isFetching}
+              className="text-[10px] px-2.5 py-0.5 rounded bg-[var(--color-accent)]/20 text-[var(--color-accent)] border border-[var(--color-accent)]/40">
+              {isFetching ? '计算中…(拉行情/算 beta)' : '↻ 刷新'}
+            </button>
+          </div>
         </div>
 
         {!data && <div className="text-[11px] text-[var(--color-dim)]">{isFetching ? '加载中…' : '—'}</div>}

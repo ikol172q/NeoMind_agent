@@ -26,6 +26,7 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import { cn, maskAccount } from '@/lib/utils'
+import { FreshnessChip } from './FreshnessChip'
 import { useCoreRisk, useCockpit, useTradingState, usePriorityList, useIbkrSpreads } from '@/lib/api'
 import type { IbkrSpread } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
@@ -209,17 +210,20 @@ function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (
       onClick={onNavigate ? () => onNavigate('trading') : undefined}
       navHint={onNavigate ? '→ Trading' : undefined}
       right={
-        d ? (
-          <span
-            className="text-[8px] px-1 py-0.5 rounded border font-mono"
-            style={{
-              borderColor: isIbkr && connected ? 'var(--color-green)' : 'var(--color-dim)',
-              color: isIbkr && connected ? 'var(--color-green)' : 'var(--color-dim)',
-            }}
-          >
-            {isIbkr ? (connected ? 'Gateway ● 已连接' : 'Gateway ○ 未连接') : 'sim'}
-          </span>
-        ) : undefined
+        <span className="flex items-center gap-1.5">
+          <FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={2} />
+          {d ? (
+            <span
+              className="text-[8px] px-1 py-0.5 rounded border font-mono"
+              style={{
+                borderColor: isIbkr && connected ? 'var(--color-green)' : 'var(--color-dim)',
+                color: isIbkr && connected ? 'var(--color-green)' : 'var(--color-dim)',
+              }}
+            >
+              {isIbkr ? (connected ? 'Gateway ● 已连接' : 'Gateway ○ 未连接') : 'sim'}
+            </span>
+          ) : null}
+        </span>
       }
     >
       {q.isLoading ? (

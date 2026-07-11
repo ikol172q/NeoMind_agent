@@ -17,6 +17,7 @@
  */
 import { useState } from 'react'
 import { useRiskDashboardAll, type RiskDashboardEntry } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 
 
 const PCT = (x: number | null | undefined, dp = 2) =>
@@ -93,6 +94,7 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={30} />
           <label className="flex items-center gap-1">
             <span>show:</span>
             <select
