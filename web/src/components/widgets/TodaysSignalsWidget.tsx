@@ -16,6 +16,7 @@ import {
   useTodaySignals, dismissSignal, triggerAllScans,
   type SignalConfluence,
 } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 import { todayLocal } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
 
@@ -130,6 +131,7 @@ export function TodaysSignalsWidget() {
         {signals.length > 0 && (
           <span className="font-mono">{signals.length} active</span>
         )}
+        <span className="ml-auto"><FreshnessChip job="signal_hourly" /></span>
         <button
           onClick={onScan}
           disabled={scanning}
@@ -141,7 +143,7 @@ export function TodaysSignalsWidget() {
             '  • 这里：scanner 数据拉取（DB 里加新 events）\n' +
             '  • 顶栏：lattice 重算（LLM, influences strategy 推荐）'
           }
-          className="ml-auto text-[9.5px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60"
+          className="text-[9.5px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60"
         >
           {scanning ? '扫描中…' : '↻ 拉取全部数据源'}
         </button>

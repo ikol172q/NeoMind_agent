@@ -12,6 +12,7 @@
  */
 import { useState } from 'react'
 import { usePortfolioSelection, type PortfolioEntry } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 
 
 export interface PortfolioWidgetProps {
@@ -62,6 +63,7 @@ export function PortfolioWidget({ asOf }: PortfolioWidgetProps) {
         <span>method: {portfolio.selection_method}</span>
         <span>·</span>
         <span>λ={portfolio.lambda.toFixed(2)}</span>
+        <span className="ml-auto"><FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={10} /></span>
         <div className="ml-auto flex items-center gap-2">
           <label className="flex items-center gap-1">
             <span>n=</span>

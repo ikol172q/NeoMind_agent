@@ -39,6 +39,7 @@ import {
   PaperAccountCard, PaperPositionsTable, PaperTradesTable, PaperOrderForm,
 } from '@/components/widgets/PaperPanel'
 import { fmtTs, todayLocal, maskAccount } from '@/lib/utils'
+import { FreshnessChip } from '@/components/widgets/FreshnessChip'
 
 interface Props { projectId: string }
 
@@ -1301,11 +1302,14 @@ function CompareRowView({ r, rank, bestRet }: { r: CompareRow; rank: number; bes
 //  Today cockpit — one-screen morning view (the daily routine)
 // ════════════════════════════════════════════════════════════
 function TodayCockpit({ projectId }: { projectId: string }) {
-  const { data, isFetching, refetch } = useCockpit(projectId)
+  const { data, isFetching, refetch, dataUpdatedAt, isError } = useCockpit(projectId)
   return (
     <Section title={`🌅 交易计划 · ${todayLocal()}`} subtitle="一屏看全：行情 / 持仓(止损·目标·R) / 临近财报 / 待复盘"
-      right={<button onClick={() => refetch()} disabled={isFetching}
-        className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]">{isFetching ? '刷新中…' : '↻ 刷新'}</button>}>
+      right={<span className="flex items-center gap-2">
+        <FreshnessChip updatedAt={dataUpdatedAt} isFetching={isFetching} isError={isError} staleAfterMin={2} />
+        <button onClick={() => refetch()} disabled={isFetching}
+          className="text-[10px] px-2 py-0.5 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)]">{isFetching ? '刷新中…' : '↻ 刷新'}</button>
+      </span>}>
       {!data ? <div className="text-[10px] text-[var(--color-dim)]">{isFetching ? '加载中…(查行情/财报)' : '—'}</div> : (
         <div className="space-y-2 text-[10px]">
           {/* line 1: regime + auto status */}

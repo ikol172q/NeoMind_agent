@@ -19,6 +19,7 @@ import {
   useRecentSignals, usePortfolioSummary, useUserWatchlist,
   type SignalEvent,
 } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
 import { Calendar, Target } from 'lucide-react'
 
 
@@ -167,8 +168,9 @@ export function CatalystCalendarWidget() {
             )
           })}
         </div>
-        <span className="ml-auto text-[9px] font-mono text-[var(--color-dim)]">
-          {items.length} within 30d
+        <span className="ml-auto flex items-center gap-2">
+          <FreshnessChip job="earnings_calendar" />
+          <span className="text-[9px] font-mono text-[var(--color-dim)]">{items.length} within 30d</span>
         </span>
       </div>
 

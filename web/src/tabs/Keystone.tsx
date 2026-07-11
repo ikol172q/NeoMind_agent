@@ -7,6 +7,7 @@
 import { useState } from 'react'
 import { Card, CardHeader, CardBody } from '@/components/ui/Card'
 import { useKeystoneWalk } from '@/lib/api'
+import { FreshnessChip } from '@/components/widgets/FreshnessChip'
 import { Boxes, Search, Loader2, ArrowUp, ArrowDown, Minus } from 'lucide-react'
 
 const HOLDINGS = ['NVDA', 'AMD', 'ARM', 'MRVL', 'META', 'GOOGL', 'AAPL', 'AAOI', 'NBIS', 'MP', 'PANW', 'CBRS']
@@ -32,6 +33,7 @@ export function KeystoneTab() {
         <div className="flex items-center gap-2 flex-wrap">
           <Boxes size={18} /><span className="font-semibold">Keystone · 供应链走出去</span>
           <span className="text-xs text-[var(--color-dim)]">从锚点 → 找相关低估卡脖子候选(提案,你来定)</span>
+          <span className="ml-auto"><FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={30} /></span>
         </div>
         <div className="flex items-center gap-2 mt-2 flex-wrap">
           <input value={input} onChange={e => setInput(e.target.value)}
