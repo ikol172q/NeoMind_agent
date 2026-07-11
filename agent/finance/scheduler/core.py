@@ -35,6 +35,10 @@ DEFAULT_JOBS = [
     # IB Gateway 掉线预警 (2026-07-06): 每 20 分钟探测 API 端口,掉线→P1 推,
     # 否则 IBKR 真仓在 dashboard 上隐形、静默裸管。watchdog 拉起 app;本 job 通知。
     "agent.finance.scheduler.jobs.ibkr_gateway_health",
+    # 纪律化 IC 深研 loop (2026-07-10): 每工作日扫低覆盖小盘 insider 集群 → 深研
+    # (anchored crux) → 纪律 thesis(机制/缺口/invalidation/退役/sizing)。机器自己
+    # 筛,让前向验证的 breadth 组合自动增长;propose-not-dispose,永不下单。
+    "agent.finance.scheduler.jobs.research_loop_scan",
     # Phase B3-real (2026-04-26): pull Miniflux entries → RawStore.
     # Graceful skip if Miniflux unconfigured/unreachable, so adding
     # this module to the default registry is safe even on machines
