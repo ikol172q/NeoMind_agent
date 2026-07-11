@@ -4009,6 +4009,58 @@ export function useTheses(ticker: string | null, status: 'active' | 'all' = 'act
   })
 }
 
+// ── Research inbox (2026-07-10): cross-ticker thesis list ──────────
+// research_loop auto-writes theses for off-book small caps (SSP/LILA/
+// MOBI/EFOR/FCBM…) that have no ticker drawer, so the home tab needs a
+// ticker-independent feed. /api/theses with no ticker returns the
+// active set (status IN active+requires_review). Distinct from
+// useTheses(), which is gated on a ticker and used by the drawer.
+export function useAllTheses() {
+  return useQuery<ThesesListResp>({
+    queryKey: ['theses', '__all__', 'active'],
+    queryFn:  () => fetchJSON<ThesesListResp>('/api/theses'),
+    staleTime: 60_000,
+  })
+}
+
+// ── Trading plans (2026-07-10): ~/trading_plans/*.md discovery ─────
+// Read-only surfacing of the plan library (discipline cards + event
+// checklists) on the home tab. List returns metadata only; detail
+// returns the full markdown (path-traversal-guarded server-side).
+export interface TradingPlanMeta {
+  filename: string
+  title:    string | null
+  mtime:    string
+  size:     number
+}
+export interface TradingPlansResp {
+  plans: TradingPlanMeta[]
+  n:     number
+  note?: string
+}
+export function useTradingPlans() {
+  return useQuery<TradingPlansResp>({
+    queryKey: ['trading-plans'],
+    queryFn:  () => fetchJSON<TradingPlansResp>('/api/trading/plans'),
+    staleTime: 60_000,
+  })
+}
+export interface TradingPlanDetail {
+  filename: string
+  title:    string | null
+  content:  string
+  size:     number
+}
+export function useTradingPlan(name: string | null) {
+  return useQuery<TradingPlanDetail>({
+    queryKey: ['trading-plan', name],
+    queryFn:  () => fetchJSON<TradingPlanDetail>(
+      `/api/trading/plan/${encodeURIComponent(name!)}`),
+    enabled:  !!name,
+    staleTime: 60_000,
+  })
+}
+
 // ── Priority list (2026-05-16) ─────────────────────────────────
 // "What should I look at first today?" — single ranked top-N merged
 // across confluence / thesis-review / outside-ring / near-earnings /

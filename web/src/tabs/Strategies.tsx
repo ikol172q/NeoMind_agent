@@ -57,6 +57,8 @@ import { InvestmentPhilosophyWidget } from '@/components/widgets/InvestmentPhilo
 import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
 import { DeskStrip } from '@/components/widgets/DeskStrip'
+import { ResearchInboxWidget } from '@/components/widgets/ResearchInboxWidget'
+import { TradingPlansWidget } from '@/components/widgets/TradingPlansWidget'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
@@ -349,6 +351,23 @@ export function StrategiesTab({
           主页看不到。纯新增一条，复用现有 hooks + EmergencyBrakeBar。 */}
       <div className="max-w-[1100px] mx-auto">
         <DeskStrip projectId={projectId} onNavigate={onNavigate} />
+      </div>
+
+      {/* 2026-07-10: surface backend output that previously had API-only,
+          no-UI visibility (user: "改动在 dashboard 找不到"). Both are
+          additive, read-only, and sit between the cockpit strip and the
+          investment-philosophy block. */}
+      {/* 🔬 研究收件箱 — research_loop's auto-generated theses, incl.
+          off-book small caps (SSP/LILA/MOBI…) that have no ticker
+          drawer, so this is a flat cross-ticker feed. */}
+      <div className="max-w-[1100px] mx-auto">
+        <ResearchInboxWidget />
+      </div>
+
+      {/* 📋 交易计划 — ~/trading_plans/*.md (discipline cards + event
+          checklists), listed here with full-text open in a modal. */}
+      <div className="max-w-[1100px] mx-auto">
+        <TradingPlansWidget />
       </div>
 
       {/* 2026-05-19: investment philosophy at the very top — the
