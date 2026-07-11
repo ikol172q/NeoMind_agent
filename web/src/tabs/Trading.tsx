@@ -38,7 +38,7 @@ function clearChartView(setupId: string) {
 import {
   PaperAccountCard, PaperPositionsTable, PaperTradesTable, PaperOrderForm,
 } from '@/components/widgets/PaperPanel'
-import { fmtTs, todayLocal } from '@/lib/utils'
+import { fmtTs, todayLocal, maskAccount } from '@/lib/utils'
 
 interface Props { projectId: string }
 
@@ -1319,7 +1319,7 @@ function TodayCockpit({ projectId }: { projectId: string }) {
             <span className="text-[var(--color-dim)]">持仓 {data.n_positions} · 待复盘日志 {data.open_journal}</span>
             {data.venue === 'ibkr'
               ? <span className={data.ibkr_connected ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
-                  🔗 真相=IBKR {data.account ? `${data.account}` : ''} {data.is_paper ? '(paper)' : data.account ? '(⚠真实)' : ''}{data.net_liquidation != null ? ` · NetLiq $${Math.round(data.net_liquidation).toLocaleString()}` : ''}{!data.ibkr_connected ? ' · 未连接!' : ''}
+                  🔗 真相=IBKR {data.account ? maskAccount(data.account) : ''} {data.is_paper ? '(paper)' : data.account ? '(⚠真实)' : ''}{data.net_liquidation != null ? ` · NetLiq $${Math.round(data.net_liquidation).toLocaleString()}` : ''}{!data.ibkr_connected ? ' · 未连接!' : ''}
                 </span>
               : <span className="text-[var(--color-dim)]">真相=模拟引擎</span>}
           </div>
@@ -1573,7 +1573,7 @@ function IbkrPanel() {
     try {
       const s = await fetchIbkrStatus(); setStatus(s)
       if (s.connected) {
-        toast(s.is_paper ? `IBKR paper 已连接 (${s.accounts?.join(',')})` : 'IBKR 已连接', 'success')
+        toast(s.is_paper ? `IBKR paper 已连接 (${s.accounts?.map(maskAccount).join(',')})` : 'IBKR 已连接', 'success')
         const [a, p, o] = await Promise.all([fetchIbkrAccount(), fetchIbkrPositions(), fetchIbkrOpenOrders()])
         setAcct(a); setPos(p); setOrders(o)
       } else {
@@ -1616,10 +1616,10 @@ function IbkrPanel() {
       const v = r.verify
       if (v) {
         const n = v.total_confirming_sources ?? 0
-        if (v.verdict === 'verified') toast(`✅ 测试单已下 + 双重核对通过 (${n} 个独立来源确认, acct ${r.account})`, 'success')
+        if (v.verdict === 'verified') toast(`✅ 测试单已下 + 双重核对通过 (${n} 个独立来源确认, acct ${maskAccount(r.account)})`, 'success')
         else if (v.verdict === 'rejected') toast(`已记录：测试单被 IBKR 拒绝 (一致：账本里也查无此单)。原因多半是 Gateway 还开着 Read-Only`, 'info')
         else toast(`⚠️ 异常：单子已 ack 但 ${n} 个来源都查不到 — 已记 UNCONFIRMED 待排查`, 'error')
-      } else if (r.ok) toast(`测试单已下 (acct ${r.account})`, 'success')
+      } else if (r.ok) toast(`测试单已下 (acct ${maskAccount(r.account)})`, 'success')
       else toast(`测试单失败: ${(r.error || '').slice(0, 60)}`, 'error')
       const o = await fetchIbkrOpenOrders(); setOrders(o); await loadLog()
     } catch (e) { toast(`测试单失败: ${String((e as Error)?.message).slice(0, 40)}`, 'error') }
@@ -1686,7 +1686,7 @@ function IbkrPanel() {
       {status?.connected && (
         <div className="text-[10px] space-y-2">
           <div className={isPaper ? 'text-[var(--color-green)]' : 'text-[var(--color-red)]'}>
-            {isPaper ? '✓' : '⚠'} 已连接 · 账户 {status.accounts?.join(', ')} · server v{status.server_version} · {isPaper ? 'PAPER (DU)' : '⚠ 非 paper 账户 — 下单已禁用'}
+            {isPaper ? '✓' : '⚠'} 已连接 · 账户 {status.accounts?.map(maskAccount).join(', ')} · server v{status.server_version} · {isPaper ? 'PAPER (DU)' : '⚠ 非 paper 账户 — 下单已禁用'}
           </div>
           {acct?.values && (
             <div className="flex flex-wrap gap-x-3 gap-y-0.5">
@@ -1748,7 +1748,7 @@ function IbkrPanel() {
                     <td className="pr-2 text-[var(--color-dim)]">{p.sec_type}</td>
                     <td className="pr-2 text-right font-mono">{p.position}</td>
                     <td className="pr-2 text-right font-mono">{p.avg_cost}</td>
-                    <td className="pr-2 text-[var(--color-dim)] font-mono">{p.account}</td>
+                    <td className="pr-2 text-[var(--color-dim)] font-mono">{maskAccount(p.account)}</td>
                   </tr>
                 ))}
               </tbody>

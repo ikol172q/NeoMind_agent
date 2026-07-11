@@ -42,6 +42,17 @@ export function fmtCap(v: number | null | undefined): string {
   return `¥${v.toLocaleString()}`
 }
 
+/** Mask a brokerage account id for display: keep the leading letter + last 4,
+ * mask the middle (so dogfood screenshots of the local dashboard don't leak the
+ * full account number). "U12345678" → "U••••5678". Short ids (≤4) pass through. */
+export function maskAccount(acct: string | number | null | undefined): string {
+  if (acct === null || acct === undefined || acct === '') return '—'
+  const s = String(acct)
+  if (s.length <= 4) return s
+  const head = /^[A-Za-z]/.test(s) ? s[0] : ''
+  return `${head}••••${s.slice(-4)}`
+}
+
 export function fmtRelativeTime(iso: string | undefined): string {
   if (!iso) return ''
   const t = new Date(iso).getTime()

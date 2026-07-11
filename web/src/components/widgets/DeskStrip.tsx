@@ -25,7 +25,7 @@
  *     onNavigate('trading'), so the strip routes into the full tab.
  */
 import { useEffect, useRef, useState } from 'react'
-import { cn } from '@/lib/utils'
+import { cn, maskAccount } from '@/lib/utils'
 import { useCoreRisk, useCockpit, useTradingState, usePriorityList, useIbkrSpreads } from '@/lib/api'
 import type { IbkrSpread } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
@@ -241,7 +241,7 @@ function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (
             ))}
           </div>
           <div className="text-[9px] text-[var(--color-dim)]">
-            NetLiq {fmtUsd(d.net_liquidation)} · {d.account ?? '—'} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
+            NetLiq {fmtUsd(d.net_liquidation)} · {maskAccount(d.account)} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
           </div>
         </div>
       ) : (
@@ -256,7 +256,7 @@ function IbkrCard({ projectId, onNavigate }: { projectId: string; onNavigate?: (
               : sp.isError
                 ? 'NetLiq · 价差暂不可用'
                 : '无期权价差'}{' '}
-            · {d.account ?? '—'} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
+            · {maskAccount(d.account)} {d.is_paper ? '(paper)' : d.account ? '(⚠真实)' : ''}
           </div>
         </div>
       )}

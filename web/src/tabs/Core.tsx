@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { useCoreRisk, fetchHedgePlan, postHedgeExecute, type HedgePlan } from '@/lib/api'
+import { maskAccount } from '@/lib/utils'
 
 // Bucket ① — 长期核心持仓（买入持有 + 对冲）。与 Trading tab（桶②量化 swing 沙盒）
 // 严格分开：这里是你打算长期持有的钱，量化的角色是「系统化风险管理」，不是择时交易。
@@ -204,7 +205,7 @@ function HedgePanel() {
     setPlacing(true); setPlaceMsg(null)
     try {
       const r = await postHedgeExecute(coverage, otm, true)
-      if (r.ok) setPlaceMsg(`✅ 已下对冲单（${r.paper ? 'paper' : '⚠真实'} ${r.account || ''}）· 状态 ${r.result?.status || 'ok'}`)
+      if (r.ok) setPlaceMsg(`✅ 已下对冲单（${r.paper ? 'paper' : '⚠真实'} ${r.account ? maskAccount(r.account) : ''}）· 状态 ${r.result?.status || 'ok'}`)
       else setPlaceMsg(`下单未成功：${(r.result?.error || r.error || '').slice(0, 90)}`)
     } catch (e) { setPlaceMsg(`下单失败：${String((e as Error)?.message).slice(0, 80)}`) }
     finally { setPlacing(false); setConfirmStep(false) }
