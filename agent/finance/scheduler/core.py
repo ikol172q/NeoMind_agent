@@ -124,6 +124,12 @@ DEFAULT_JOBS = [
     # statement → ibkr_log (deduped by tradeID). Lossless catch-all for fills
     # the live snapshot missed. No-op until the user configures token+query.
     "agent.finance.scheduler.jobs.ibkr_flex_sync",
+    # Journal auto-sync (2026-07-10): weekday after-close reconcile of the
+    # trade journal against real IBKR fills (durable ibkr_log) — auto-closes
+    # open entries whose position left the book. Runs 22:30 UTC, right AFTER
+    # ibkr_flex_sync so the authoritative fills are already archived. Honest
+    # 0 when IBKR is disconnected / no sell fills on record (no fabrication).
+    "agent.finance.scheduler.jobs.journal_sync_daily",
 ]
 
 

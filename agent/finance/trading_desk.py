@@ -31,6 +31,7 @@ import re
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException
@@ -2781,6 +2782,90 @@ def journal_weekly(days: int = 7) -> Dict[str, Any]:
 
 
 # ════════════════════════════════════════════════════════════════════
+#  TRADING PLANS — local markdown playbooks (SpaceX event plan, discipline
+#  cards, manual checklists, …).
+#
+#  These are PERSONAL trading data. They are served ONLY from the local
+#  ~/trading_plans directory, strictly READ-ONLY, and MUST NEVER be written
+#  to git or uploaded anywhere. File CONTENTS are never logged — only names.
+# ════════════════════════════════════════════════════════════════════
+
+
+def _trading_plans_dir() -> Path:
+    return (Path.home() / "trading_plans").resolve()
+
+
+def _safe_plan_path(name: str) -> Path:
+    """Resolve ``name`` to a file strictly inside ~/trading_plans, ending in
+    ``.md``. Path-traversal hardened: ``name`` must be a bare ``.md`` basename
+    with no separators and no parent refs. Raises HTTPException on any breach.
+    """
+    # (1) bare basename only — reject separators, parent refs, absolute paths
+    if (not name
+            or name != Path(name).name          # any '/' collapses to the last segment
+            or "/" in name or "\\" in name
+            or ".." in name
+            or not name.endswith(".md")):
+        raise HTTPException(status_code=400, detail="非法计划名")
+    base = _trading_plans_dir()
+    target = (base / name).resolve()
+    # (2) defense in depth: the resolved path must stay directly under base
+    if target.parent != base:
+        raise HTTPException(status_code=400, detail="非法路径")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="计划不存在")
+    return target
+
+
+def _plan_title(path: Path) -> Optional[str]:
+    """First markdown ``# `` heading, else None. Scans only the file head."""
+    try:
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for _ in range(200):               # head only — never slurp the whole file
+                line = fh.readline()
+                if not line:
+                    break
+                s = line.strip()
+                if s.startswith("#"):
+                    return s.lstrip("#").strip() or None
+    except OSError:
+        return None
+    return None
+
+
+def list_trading_plans() -> Dict[str, Any]:
+    """List ~/trading_plans/*.md — {filename, title, mtime, size}, newest first.
+    No file contents are read beyond each plan's title heading."""
+    base = _trading_plans_dir()
+    if not base.is_dir():
+        return {"plans": [], "n": 0, "note": "无 ~/trading_plans 目录"}
+    plans: List[Dict[str, Any]] = []
+    for p in base.glob("*.md"):                # non-recursive: direct children only
+        if not p.is_file():
+            continue
+        try:
+            st = p.stat()
+        except OSError:
+            continue
+        plans.append({
+            "filename": p.name,
+            "title": _plan_title(p),
+            "mtime": datetime.fromtimestamp(st.st_mtime, tz=timezone.utc).isoformat(),
+            "size": st.st_size,
+        })
+    plans.sort(key=lambda x: x["mtime"], reverse=True)
+    return {"plans": plans, "n": len(plans)}
+
+
+def read_trading_plan(name: str) -> Dict[str, Any]:
+    """Return one plan's raw markdown content. Path-traversal-guarded."""
+    path = _safe_plan_path(name)
+    content = path.read_text(encoding="utf-8", errors="replace")
+    return {"filename": path.name, "title": _plan_title(path),
+            "content": content, "size": len(content.encode("utf-8"))}
+
+
+# ════════════════════════════════════════════════════════════════════
 #  ROUTER
 # ════════════════════════════════════════════════════════════════════
 
@@ -3094,6 +3179,29 @@ def build_trading_router() -> APIRouter:
     def post_journal_sync(project_id: str = "fin-core") -> Dict[str, Any]:
         """Auto-close journal entries whose paper position has exited."""
         return journal_sync_from_paper(project_id)
+
+    @router.post("/journal/sync-ibkr")
+    def post_journal_sync_ibkr() -> Dict[str, Any]:
+        """Reconcile the trade journal against REAL IBKR fills: close open
+        entries whose symbol has left the IBKR book, using the durable
+        ibkr_log SELL fill as the exit. Venue-independent (always the IBKR
+        path) — this is what the daily scheduler job calls so the real
+        trading process leaves an automatic paper trail. Honest 0 when
+        IBKR is disconnected or no sell fills are on record."""
+        return _journal_sync_ibkr()
+
+    # ── Trading plans (local markdown playbooks — personal, read-only) ──
+    @router.get("/plans")
+    def get_trading_plans() -> Dict[str, Any]:
+        """List ~/trading_plans/*.md → {filename, title, mtime, size}.
+        Local-only personal data; never uploaded."""
+        return list_trading_plans()
+
+    @router.get("/plan/{name}")
+    def get_trading_plan(name: str) -> Dict[str, Any]:
+        """Return one plan's markdown content. Path-traversal-guarded:
+        only bare ``.md`` basenames under ~/trading_plans are served."""
+        return read_trading_plan(name)
 
     @router.post("/cockpit")
     def post_cockpit(project_id: str = "fin-core") -> Dict[str, Any]:

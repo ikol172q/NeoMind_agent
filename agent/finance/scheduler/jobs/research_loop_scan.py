@@ -31,5 +31,26 @@ async def run() -> Dict[str, Any]:
     summary = {"status": "completed", "n_theses": len(out or []),
                "theses": [{"ticker": r.get("ticker"), "conviction": r.get("conviction"),
                            "thesis_id": r.get("thesis_id")} for r in (out or [])]}
+    # 跑完通知：dashboard 铃铛(agent_alerts) + Telegram(若配置)。propose-not-dispose。
+    try:
+        n = summary["n_theses"]
+        if n:
+            from datetime import datetime, timezone
+            from agent.finance import agent_alerts
+            day = datetime.now(timezone.utc).date().isoformat()
+            lines = "\n".join(f"· {t.get('ticker')} [{t.get('conviction')}]"
+                              for t in summary["theses"] if t.get("ticker"))
+            msg = (f"🔬 IC 深研 loop 产出 {n} 张纪律 thesis（低覆盖小盘 insider 触发→深研），"
+                   f"待你 gate：\n{lines}\n（在 cockpit 研究收件箱查看）")
+            agent_alerts.upsert_alert(dedup_key=f"research_loop_{day}", source="research_loop",
+                                      ticker="", severity="P2",
+                                      title=f"IC 深研 loop 产出 {n} 张 thesis", body=msg)
+            try:
+                from agent.evolution.health_monitor import send_telegram_alert
+                send_telegram_alert(msg)
+            except Exception:
+                pass
+    except Exception:
+        logger.warning("[research_loop_scan] notify failed", exc_info=True)
     logger.info("[research_loop_scan] %s", summary)
     return summary
