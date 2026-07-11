@@ -234,6 +234,55 @@ def _body_anchors(text: str, starts: list[int]) -> list[int]:
     return body or starts
 
 
+def _find_mda_body(text: str) -> Optional[str]:
+    """Locate the real Item-7 MD&A body when the primary "Item 7." header
+    is only a stub.
+
+    Many filers (e.g. E.W. Scripps / SSP) put nothing under the "Item 7."
+    heading but a reference — "...required by this item is filed as part of
+    this Form 10-K. See Index to Consolidated Financial Statement
+    Information at page F-1" — and place the actual MD&A prose later, in the
+    financial ("F-page") section, under the SAME full title. The default
+    slicer keys off the "Item 7." prefix and lands on the stub (bounded by
+    the equally-stubby "Item 7A."/"Item 8." a few hundred chars later),
+    yielding a near-empty slice that starves the segment / debt extractors.
+
+    Strategy: find every occurrence of the full MD&A title, bound each below
+    by the auditor's report ("Report of Independent Registered Public
+    Accounting Firm" — a PCAOB-required phrase present in every US 10-K, and
+    the reliable start of the financial statements that follow MD&A). Take
+    the SHORTEST span that still contains the MD&A hallmark headings
+    (Liquidity and Capital Resources + Results of Operations). Shortest-valid
+    skips the TOC entries and the stub occurrence and isolates the real body.
+    Returns None if no such body is found (sparse > wrong).
+    """
+    if not text:
+        return None
+    starts = [m.start() for m in re.finditer(
+        r"(?i)management.{0,3}s\s*discussion\s*and\s*analysis\s*of\s*"
+        r"financial\s*condition\s*and\s*results\s*of\s*operations", text)]
+    ends = [m.start() for m in re.finditer(
+        r"(?i)report\s*of\s*independent\s*registered\s*public\s*accounting\s*firm",
+        text)]
+    if not starts or not ends:
+        return None
+    best: Optional[str] = None
+    best_len: Optional[int] = None
+    for s in starts:
+        e_cands = [a for a in ends if a > s + 2000]
+        if not e_cands:
+            continue
+        e = min(e_cands)
+        seg = text[s:e]
+        if not re.search(r"(?i)liquidity\s+and\s+capital\s+resources", seg):
+            continue
+        if not re.search(r"(?i)results\s+of\s+operations", seg):
+            continue
+        if best_len is None or (e - s) < best_len:
+            best_len, best = (e - s), seg
+    return best
+
+
 def slice_10k_sections(html: str, source_url: str,
                        accession: str, filing_date: str
                        ) -> SlicedSections:
@@ -321,6 +370,16 @@ def slice_10k_sections(html: str, source_url: str,
             e = min(ends)
             if item7_text is None or (e - s) > len(item7_text):
                 item7_text = text[s:e]
+
+    # F-page fallback: when the "Item 7." header is only a stub pointing to
+    # the financial pages (SSP-class filers), the primary slice is a few
+    # hundred chars. Recover the real MD&A body from the F-pages so the
+    # segment + debt extractors have their source. Only triggers when the
+    # primary slice is too short to be a real MD&A — normal filers untouched.
+    if not item7_text or len(item7_text) < 2000:
+        fallback_mda = _find_mda_body(text)
+        if fallback_mda:
+            item7_text = fallback_mda
 
     competition_text = _slice_subsection(item1_text, "competition")
     customers_text = _slice_subsection(item1_text, r"customers?")

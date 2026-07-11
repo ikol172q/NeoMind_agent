@@ -258,12 +258,185 @@ def execute_hedge(coverage: float = 0.5, otm_pct: float = 0.10, expiry_days: int
             "account": res.get("account"), "paper": not allow_live}
 
 
+# ── Position sizing (IPS-driven) ────────────────────────────────────
+#
+# Turns the IPS `sizing_rules` (max-loss risk budget + fractional Kelly +
+# single-name cap) into a concrete "how many shares" recommendation for a
+# NEW entry, given (entry, invalidation, conviction). All rule VALUES are
+# read live from investment_philosophy.sizing_rules — never hard-coded — so
+# editing the IPS immediately changes sizing.
+#
+# The one interpretation the IPS does NOT store is how conviction maps to a
+# Kelly edge; that table lives here, clearly labelled + tunable in one place.
+# We use a deliberately conservative even-money (b=1) full-Kelly f*=2p-1,
+# then apply the IPS's own kelly_fraction (¼-Kelly) and edge_haircut.
+
+_CONVICTION_WIN_PROB = {"LOW": 0.55, "MED": 0.60, "HIGH": 0.67}
+_DEFAULT_ACCOUNT_VALUE = 100_000.0
+
+# IPS fallbacks — used ONLY if a key is missing from sizing_rules, so the
+# tool degrades gracefully rather than crashing. Live IPS values win.
+_SIZING_DEFAULTS = {
+    "per_trade_risk_budget_pct": 0.02,
+    "kelly_fraction": 0.25,
+    "edge_haircut": 0.5,
+    "max_single_position_pct": 0.12,
+}
+
+
+def _load_sizing_rules():
+    """Return (sizing_rules_dict, ips_version) from the active IPS."""
+    from agent.finance.investment_philosophy import get_active
+    p = get_active() or {}
+    sr = p.get("sizing_rules")
+    if not isinstance(sr, dict):
+        sr = {}
+    return sr, p.get("version")
+
+
+def _resolve_account_value(account_value: Optional[float]):
+    """Explicit value wins; else fall back to /api/trading/state (NetLiq
+    high-water mark, then ring-fenced budget); else a neutral default."""
+    if account_value and float(account_value) > 0:
+        return float(account_value), "explicit"
+    try:
+        from agent.finance.trading_desk import get_state
+        st = get_state() or {}
+        for key in ("ibkr_hwm", "trading_budget_usd"):
+            v = st.get(key)
+            if v and float(v) > 0:
+                return float(v), f"trading_state.{key}"
+    except Exception:
+        pass
+    return _DEFAULT_ACCOUNT_VALUE, "default"
+
+
+def size_position(ticker: str, entry_price: float, invalidation_price: float,
+                  account_value: Optional[float] = None,
+                  conviction: str = "MED") -> Dict[str, Any]:
+    """Suggest a NEW-entry position from the IPS sizing_rules.
+
+    Three constraints, each producing a candidate $ size; the recommendation
+    is the MIN (the tightest binds), and we report WHICH one bound it:
+
+      · risk_budget      — max tolerable loss: account × per_trade_risk_budget_pct
+                           / ((entry − invalidation) / entry). Caps the $ lost
+                           if the stop (=invalidation) trades.
+      · kelly            — ¼-Kelly of an edge-haircut'd, conviction-derived edge:
+                           f* = 2p−1 (even-money), × kelly_fraction × (1−edge_haircut).
+      · single_name_cap  — account × max_single_position_pct (concentration ceiling).
+
+    Read-only; suggests, never trades.
+    """
+    conv = (conviction or "MED").upper()
+    if conv not in _CONVICTION_WIN_PROB:
+        conv = "MED"
+
+    sr, ips_version = _load_sizing_rules()
+
+    def _rule(key: str) -> float:
+        v = sr.get(key)
+        return float(v) if v is not None else float(_SIZING_DEFAULTS[key])
+
+    risk_budget_pct = _rule("per_trade_risk_budget_pct")
+    kelly_fraction  = _rule("kelly_fraction")
+    edge_haircut    = _rule("edge_haircut")
+    max_single_pct  = _rule("max_single_position_pct")
+
+    acct, acct_src = _resolve_account_value(account_value)
+
+    try:
+        entry = float(entry_price)
+        inval = float(invalidation_price)
+    except (TypeError, ValueError):
+        return {"error": "entry_price and invalidation_price must be numbers"}
+    if entry <= 0:
+        return {"error": "entry_price must be > 0"}
+    if inval >= entry:
+        return {"error": "invalidation_price must be BELOW entry_price "
+                         "(this sizes a long with a stop at invalidation)"}
+
+    stop_frac = (entry - inval) / entry           # fractional loss if stopped
+
+    # ① risk budget (max tolerable loss)
+    size_risk = acct * risk_budget_pct / stop_frac
+
+    # ② fractional Kelly (conviction edge, ¼-Kelly, edge haircut)
+    p = _CONVICTION_WIN_PROB[conv]
+    full_kelly = max(0.0, 2 * p - 1)              # even-money (b=1), conservative
+    kelly_pct = full_kelly * kelly_fraction * (1 - edge_haircut)
+    size_kelly = acct * kelly_pct
+
+    # ③ single-name concentration cap
+    size_cap = acct * max_single_pct
+
+    candidates = {
+        "risk_budget": round(size_risk, 2),
+        "kelly": round(size_kelly, 2),
+        "single_name_cap": round(size_cap, 2),
+    }
+    binding = min(candidates, key=candidates.get)
+    size_dollars = candidates[binding]
+
+    shares = int(size_dollars // entry)           # whole shares, never over
+    dollars = round(shares * entry, 2)
+    risk_at_stop = round(shares * (entry - inval), 2)
+
+    return {
+        "ticker": (ticker or "").upper(),
+        "conviction": conv,
+        "entry_price": entry,
+        "invalidation_price": inval,
+        "stop_distance_pct": round(stop_frac * 100, 2),
+        "account_value": round(acct, 2),
+        "account_value_source": acct_src,
+        "suggested_position": {
+            "dollars": dollars,
+            "shares": shares,
+            "pct_of_account": round(dollars / acct * 100, 2) if acct else None,
+            "dollar_risk_at_stop": risk_at_stop,
+            "risk_pct_of_account": round(risk_at_stop / acct * 100, 2) if acct else None,
+        },
+        "binding_constraint": binding,
+        "candidates_dollars": candidates,
+        "rules_used": {
+            "per_trade_risk_budget_pct": risk_budget_pct,
+            "kelly_fraction": kelly_fraction,
+            "edge_haircut": edge_haircut,
+            "max_single_position_pct": max_single_pct,
+            "conviction_win_prob": p,
+            "kelly_pct_of_account": round(kelly_pct, 4),
+            "ips_version": ips_version,
+        },
+        "notes": [
+            "建议仓位 = min(风险预算, Kelly, 单名顶) — 最紧的约束 binding。",
+            "风险预算法先封死下行：止损打到失效价时亏损 = "
+            f"{round(risk_budget_pct * 100, 2)}% 账户。",
+            "Kelly 用保守 even-money(b=1) f*=2p−1，再 ¼-Kelly + edge 砍半。",
+            f"account_value 来源: {acct_src}（可传 account_value 覆盖；"
+            "trading_state 是 ring-fenced 交易 sleeve netliq，非整户）。",
+            "只做建议，不下单。",
+        ],
+    }
+
+
 def build_portfolio_router() -> APIRouter:
     router = APIRouter(prefix="/api/portfolio", tags=["portfolio-hedge"])
 
     @router.get("/core_risk")
     def get_core_risk() -> Dict[str, Any]:
         return core_risk_monitor()
+
+    @router.get("/size_position")
+    def get_size_position(ticker: str, entry_price: float, invalidation_price: float,
+                          account_value: Optional[float] = None,
+                          conviction: str = "MED") -> Dict[str, Any]:
+        """Suggest a NEW-entry size from the IPS sizing_rules: risk-budget
+        (max tolerable loss) vs ¼-Kelly vs single-name cap → recommend the min
+        + report the binding constraint. Read-only (suggests, never trades)."""
+        return size_position(ticker=ticker, entry_price=entry_price,
+                             invalidation_price=invalidation_price,
+                             account_value=account_value, conviction=conviction)
 
     @router.get("/hedge_plan")
     def get_hedge_plan(coverage: float = 0.5, otm_pct: float = 0.10,

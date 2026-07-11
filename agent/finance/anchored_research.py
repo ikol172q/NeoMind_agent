@@ -35,6 +35,7 @@ from agent.finance import agent_audit
 from agent.finance.extractors.business_summary import extract_business_summary
 from agent.finance.extractors.competitors import extract_competitors
 from agent.finance.extractors.customers import extract_customers
+from agent.finance.extractors.debt import extract_debt
 from agent.finance.extractors.risks import extract_risks
 from agent.finance.extractors.segments import extract_segments
 from agent.finance.extractors.style_verdict import synthesize_style_verdict
@@ -228,6 +229,14 @@ def _extract_segments_from(s) -> tuple[list[dict], Any]:
     return extract_segments(s.item7_mda)
 
 
+def _extract_debt_from(s) -> tuple[list[dict], Any]:
+    # Debt structure + maturities + leverage live in Item 7 MD&A
+    # (Liquidity and Capital Resources narrative + Contractual Obligations
+    # maturity table). Same source as segments; the F-page fallback in the
+    # slicer ensures SSP-class filers (stub Item 7) still get real bytes.
+    return extract_debt(s.item7_mda)
+
+
 _PIPELINES: dict[str, dict] = {
     "competitor": {
         "extract": _extract_competitors_from,
@@ -251,6 +260,10 @@ _PIPELINES: dict[str, dict] = {
     },
     "segment": {
         "extract": _extract_segments_from,
+        "section": "item7.mda",
+    },
+    "debt": {
+        "extract": _extract_debt_from,
         "section": "item7.mda",
     },
 }
