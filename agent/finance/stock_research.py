@@ -31,7 +31,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
-from agent.finance import agent_audit
+from agent.services import agent_audit
 from agent.finance.persistence import connect, ensure_schema
 
 logger = logging.getLogger(__name__)

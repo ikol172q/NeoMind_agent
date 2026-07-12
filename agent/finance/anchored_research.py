@@ -31,7 +31,7 @@ from fastapi import APIRouter, HTTPException
 
 from agent.data_sources.market import get_live_quote
 from agent.data_sources.sec_edgar import get_10k_sections, get_foreign_sections
-from agent.finance import agent_audit
+from agent.services import agent_audit
 from agent.finance.extractors.business_summary import extract_business_summary
 from agent.finance.extractors.competitors import extract_competitors
 from agent.finance.extractors.customers import extract_customers

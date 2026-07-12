@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from agent.finance import agent_audit
+from agent.services import agent_audit
 from agent.finance.learning import persistence as dao
 from agent.finance.learning import fetcher
 from agent.finance.learning.seed_cases import all_seeds

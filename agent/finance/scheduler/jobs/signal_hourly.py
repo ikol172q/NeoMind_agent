@@ -59,7 +59,7 @@ async def run() -> Dict[str, Any]:
         # entry in NeoMind Live (agent_id="scanner:13f" etc). Without
         # this they were invisible — only the parent signal_hourly
         # job's analysis_runs row was tracked.
-        from agent.finance.agent_audit import audited_call
+        from agent.services.agent_audit import audited_call
         try:
             wl_result = audited_call(
                 agent_id="scanner:watchlist",

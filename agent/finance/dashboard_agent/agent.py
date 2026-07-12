@@ -29,7 +29,8 @@ import httpx
 
 from agent.finance.dashboard_agent.tools import TOOL_SCHEMAS, dispatch
 from agent.finance.persistence import connect, ensure_schema
-from agent.finance import agent_audit, fin_reward, fin_router
+from agent.services import agent_audit
+from agent.finance import fin_reward, fin_router
 
 # Episode capture feeds the (dormant) evolution loop. Best-effort: if the
 # module can't import (e.g. trimmed deploy) the agent still answers.

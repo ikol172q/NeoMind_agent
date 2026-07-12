@@ -1373,10 +1373,15 @@ def create_app(
         app.include_router(build_learning_router())
         app.include_router(build_cognition_map_router())
         app.include_router(build_research_router())
-        from agent.finance.supply_chain_walker import build_supply_chain_walker_router
-        app.include_router(build_supply_chain_walker_router())
-        from agent.finance.agent_alerts import build_alerts_router
-        app.include_router(build_alerts_router())
+        # Open-core: these routers ship with the private full fin impl —
+        # a public clone doesn't have the modules. Degrade, don't die.
+        try:
+            from agent.finance.supply_chain_walker import build_supply_chain_walker_router
+            app.include_router(build_supply_chain_walker_router())
+            from agent.finance.agent_alerts import build_alerts_router
+            app.include_router(build_alerts_router())
+        except ImportError as e:
+            logger.warning("optional fin routers unavailable (public build): %s", e)
 
         # Auto-seed the learning library on every dashboard boot.
         # Idempotent — upserts by slug. Three seed sources, each
@@ -1988,7 +1993,7 @@ def create_app(
         logger.warning("cn_data router unavailable: %s", exc)
 
     try:
-        from agent.finance.agent_audit import build_audit_router
+        from agent.services.agent_audit import build_audit_router
         app.include_router(build_audit_router())
     except Exception as exc:  # pragma: no cover
         logger.warning("audit router unavailable: %s", exc)

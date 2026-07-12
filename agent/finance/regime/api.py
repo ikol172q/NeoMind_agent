@@ -293,7 +293,7 @@ def post_watchlist_bulk(body: Dict[str, Any]) -> Dict[str, Any]:
 # (agent_id="scanner:<name>") with timing + emit count, alongside
 # the periodic scheduler runs.
 def _audited_scan(scanner_label: str, scan_fn, **scan_kwargs) -> Dict[str, Any]:
-    from agent.finance.agent_audit import audited_call
+    from agent.services.agent_audit import audited_call
     from agent.finance.regime.signals import detect_confluences
     agent_id = f"scanner:{scanner_label}"
     result = audited_call(

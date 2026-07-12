@@ -78,8 +78,13 @@ def check_signal_run_fk(conn: sqlite3.Connection) -> Dict[str, Any]:
 
 
 def check_scheduler_registry_alignment(conn: sqlite3.Connection) -> Dict[str, Any]:
-    from agent.finance.scheduler.core import build_default_registry
-    reg = build_default_registry()
+    # Open-core: the shared DB is written by whichever fin impl is ACTIVE
+    # (the private full impl registers extra jobs the bundled baseline
+    # doesn't know about). Judge alignment against the resolved impl's
+    # registry, not blindly the baseline's — otherwise every full-impl-only
+    # job shows up here as a false "orphan".
+    from agent.fin_provider import fin_module
+    reg = fin_module('scheduler.core').build_default_registry()
     registered = set(reg.names())
     in_db = {
         r["job_name"] for r in conn.execute("SELECT job_name FROM scheduler_jobs")

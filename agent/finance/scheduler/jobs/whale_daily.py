@@ -39,7 +39,7 @@ async def run() -> Dict[str, Any]:
     try:
         from agent.finance.regime.scanners.whale_scanner import run_whale_scan
         from agent.finance.regime.signals import detect_confluences
-        from agent.finance.agent_audit import audited_call
+        from agent.services.agent_audit import audited_call
 
         # Wrap so 13F whale scanner shows as own entry in NeoMind Live
         # (agent_id="scanner:13f"), separate from this job's wrapper.

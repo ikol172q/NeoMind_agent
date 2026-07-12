@@ -199,7 +199,12 @@ def build_default_registry() -> JobRegistry:
     if _cached_registry is None:
         reg = JobRegistry()
         for path in DEFAULT_JOBS:
-            reg.register_module(path)
+            try:
+                reg.register_module(path)
+            except ImportError as e:
+                # Open-core: some jobs ship only with the private full fin
+                # impl — skip them on a public build instead of dying.
+                logger.warning("skipping job module %s (unavailable): %s", path, e)
         _cached_registry = reg
     return _cached_registry
 
@@ -216,7 +221,7 @@ async def _invoke_audited(name: str, runner: Callable[..., Awaitable[Any]],
     independently — they show up as scanner:<name> entries that the
     operator can use to drill from the parent job into per-scanner
     runs."""
-    from agent.finance.agent_audit import audited_call_async
+    from agent.services.agent_audit import audited_call_async
     return await audited_call_async(
         agent_id=f"scheduler:{name}",
         endpoint=f"scheduler:{name}",
