@@ -348,12 +348,29 @@ def _keep_recent_reasoning(msgs: List[Dict[str, Any]]) -> None:
 
 
 def _strip_orphan_tool_calls(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Drop assistant turns whose tool_calls have no matching tool reply.
+    """Drop assistant turns whose tool_calls have no matching tool reply,
+    and tool turns whose parent assistant fell outside the history window.
 
     DeepSeek 400s on malformed conversations where an assistant promises
     tool_calls but the next turn isn't `role=tool`. This can happen if
     a previous answer() crashed mid-loop.
+
+    The reverse also 400s ("Messages with role 'tool' must be a response
+    to a preceding message with 'tool_calls'"): the _HISTORY_WINDOW LIMIT
+    can slice through a tool exchange, leaving tool replies at the head
+    of the window with their assistant parent cut off — which then breaks
+    EVERY reply in that chat until new turns push the orphan out.
     """
+    known_ids: set = set()
+    pruned: List[Dict[str, Any]] = []
+    for m in msgs:
+        if m["role"] == "assistant" and m.get("tool_calls"):
+            known_ids.update(tc.get("id") for tc in m["tool_calls"])
+        if m["role"] == "tool" and m.get("tool_call_id") not in known_ids:
+            continue
+        pruned.append(m)
+    msgs = pruned
+
     out: List[Dict[str, Any]] = []
     i = 0
     while i < len(msgs):

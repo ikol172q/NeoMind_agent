@@ -1730,6 +1730,10 @@ class NeoMindTelegramBot:
                 await self._process_subscriptions()
             except Exception as e:
                 print(f"[bot] Scheduler error: {e}", flush=True)
+            try:
+                await self._ingest_pushed_alerts()
+            except Exception as e:
+                print(f"[bot] Alert ingest error: {e}", flush=True)
             await asyncio.sleep(300)  # check every 5 minutes
 
     async def _process_subscriptions(self):
@@ -1779,6 +1783,7 @@ class NeoMindTelegramBot:
                         pushed_ids.add(s.id)
                     hn["pushed_ids"] = list(pushed_ids)[-200:]
                     changed = True
+                    self._record_outbound(chat_id, text, "HN 订阅")
                     print(f"[bot] Pushed {len(new_stories)} HN stories to {chat_id}", flush=True)
                 except Exception as e:
                     print(f"[bot] Failed to push HN to {chat_id}: {e}", flush=True)
@@ -1801,12 +1806,102 @@ class NeoMindTelegramBot:
                             )
                             digest_cfg["last_push"] = now
                             changed = True
+                            self._record_outbound(chat_id, text, "digest 订阅")
                             print(f"[bot] Pushed digest to {chat_id}", flush=True)
                     except Exception as e:
                         print(f"[bot] Failed to push digest to {chat_id}: {e}", flush=True)
 
         if changed:
             self._save_subscriptions(subs)
+
+    # ── Proactive-push awareness (2026-07-12) ────────────────────
+    # Everything pushed into the Telegram thread must land in chat
+    # history too, or the conversational LLM can't answer follow-ups
+    # like "这条预警怎么回事". In-process pushes call _record_outbound
+    # at send time; host-side pushers (alert loop, scheduler digests,
+    # trading desk) all write the agent_alerts outbox table behind
+    # /api/alerts, which _ingest_pushed_alerts mirrors incrementally.
+
+    def _record_outbound(self, chat_id: int, text: str, source: str,
+                         chat_type: str = "private"):
+        """Persist a proactively-pushed message into chat history.
+
+        Written to BOTH conversation stores: ChatStore (chat/coding-mode
+        LLM calls) and agent_chat_history (fin dashboard-agent keeps its
+        own history) — a push missing from either store is invisible to
+        that surface.
+        """
+        plain = re.sub(r"<[^>]+>", "", text).strip()
+        content = f"[主动推送 · {source}]\n{plain[:1500]}"
+        self._store.add_message(chat_id, "assistant", content, chat_type)
+        try:
+            from agent.finance.dashboard_agent import agent as fin_agent
+            fin_agent._persist_turn(
+                str(chat_id), fin_agent._next_turn_idx(str(chat_id)),
+                {"role": "assistant", "content": content},
+            )
+        except Exception as e:
+            logger.debug(f"fin history mirror failed: {e}")
+
+    def _ingest_state_path(self) -> Path:
+        return Path(os.getenv("HOME", "/data")) / ".neomind" / "alert_ingest_state.json"
+
+    def _save_ingest_state(self, seen: list):
+        path = self._ingest_state_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps({"seen": seen[-500:]}, indent=2), encoding="utf-8")
+            tmp.rename(path)
+        except Exception as e:
+            print(f"[bot] Failed to save ingest state: {e}", flush=True)
+
+    async def _ingest_pushed_alerts(self):
+        """Mirror new agent_alerts rows into chat history for the admin chat."""
+        base = (os.getenv("NEOMIND_FIN_DASHBOARD_URL") or "").rstrip("/")
+        if not base or not self.config.admin_users:
+            return
+
+        import requests as req
+
+        def _fetch():
+            r = req.get(f"{base}/api/alerts", params={"limit": 30}, timeout=8)
+            r.raise_for_status()
+            return r.json().get("alerts", [])
+
+        try:
+            alerts = await asyncio.get_event_loop().run_in_executor(None, _fetch)
+        except Exception as e:
+            logger.debug(f"[ingest] alerts fetch failed: {e}")
+            return
+
+        try:
+            state = json.loads(self._ingest_state_path().read_text(encoding="utf-8"))
+            seen_list = list(state.get("seen", []))
+        except Exception:
+            # First run: seed the watermark with everything already in the
+            # table — old alerts predate this feature and backfilling 30 of
+            # them would evict the whole 20-message LLM window.
+            seed = [a["dedup_key"] for a in reversed(alerts) if a.get("dedup_key")]
+            self._save_ingest_state(seed)
+            print(f"[bot] Alert ingest: seeded watermark with {len(seed)} existing alerts", flush=True)
+            return
+
+        seen = set(seen_list)
+        fresh = [a for a in reversed(alerts)  # oldest first
+                 if a.get("dedup_key") and a["dedup_key"] not in seen]
+        if not fresh:
+            return
+
+        chat_id = self.config.admin_users[0]
+        for a in fresh:
+            src = a.get("source") or "alert"
+            sev = f" {a['severity']}" if a.get("severity") else ""
+            body = (a.get("body") or "").strip() or (a.get("title") or "").strip()
+            self._record_outbound(chat_id, body, f"{src}{sev}")
+            seen_list.append(a["dedup_key"])
+        self._save_ingest_state(seen_list)
+        print(f"[bot] Alert ingest: mirrored {len(fresh)} pushed alerts into chat history", flush=True)
 
     async def _generate_digest_push(self) -> str:
         """Generate a compact Telegram digest summary.
@@ -3930,7 +4025,10 @@ class NeoMindTelegramBot:
             "你在 Telegram 上运行。回复简洁但有深度。"
             "回复用用户的语言（中文问中文答，英文问英文答）。"
             "如果用户只是打招呼或闲聊，正常回复，不要强行推荐命令。"
-            "用户可以用 /help 查看命令列表。"
+            "用户可以用 /help 查看命令列表。\n"
+            "历史里以「[主动推送 · 来源]」开头的 assistant 消息不是你写的回复，"
+            "而是系统自动推进这个对话的预警/巡检/摘要。"
+            "用户问到「这条推送/预警/提醒」时，指的就是最近的这类消息，直接基于其内容回答。"
         )
 
         # Search awareness: tell LLM it has auto-search
