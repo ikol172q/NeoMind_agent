@@ -24,7 +24,8 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query
 
 from agent.constants.models import get_active_model
-from agent.finance import agent_audit, investment_projects
+from agent.services import agent_audit
+from agent.finance import investment_projects
 from agent.finance.dashboard_context import WEB_CHANNEL_FENCE, build_context_block
 from agent_config import agent_config
 
