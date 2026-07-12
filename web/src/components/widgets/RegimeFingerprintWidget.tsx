@@ -14,6 +14,8 @@
 import { useState } from 'react'
 import { useRegimeFingerprint } from '@/lib/api'
 import { FreshnessChip } from './FreshnessChip'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 interface BucketDef {
@@ -122,6 +124,7 @@ export function RegimeFingerprintWidget({
 }: RegimeFingerprintWidgetProps) {
   const q = useRegimeFingerprint(asOf)
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [collapsed, toggle] = useCollapsed('regime')
 
   const fp = q.data
   const isLoading = q.isLoading
@@ -149,9 +152,14 @@ export function RegimeFingerprintWidget({
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
       <div className="flex items-center gap-2 mb-1.5 text-[10px] text-[var(--color-dim)]">
-        <span className="font-semibold text-[var(--color-text)]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 font-semibold text-[var(--color-text)] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           🎯 今日市场状态 / Today's Regime
-        </span>
+        </button>
         <span className="font-mono">
           {fp?.fingerprint_date ?? (isLoading ? 'loading…' : '—')}
         </span>
@@ -165,6 +173,7 @@ export function RegimeFingerprintWidget({
         </span>
       </div>
 
+      {!collapsed && (<>
       <div className={
         compact
           ? 'grid grid-cols-5 gap-1.5'
@@ -268,6 +277,7 @@ export function RegimeFingerprintWidget({
         都源自 raw_market_data SQLite 表（双击桌面 regime_backfill.command
         来拉 1 年 yfinance 数据）。每天的 regime 不一样 → 推荐策略也不一样。
       </div>
+      </>)}
     </div>
   )
 }

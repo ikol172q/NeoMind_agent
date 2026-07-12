@@ -20,6 +20,7 @@ import {
   Compass, Edit3, Save, X, ChevronDown, ChevronRight,
   AlertTriangle, RotateCw, HelpCircle,
 } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 interface Philosophy {
   version?:               string
@@ -89,18 +90,9 @@ function daysSince(iso?: string): number | null {
 export function InvestmentPhilosophyWidget() {
   const q = usePhilosophy()
   const touchMu = useTouchReview()
-  const [collapsed, setCollapsed] = useState<boolean>(() =>
-    typeof window !== 'undefined'
-      && localStorage.getItem('strategies.philosophy.collapsed') === '1'
-  )
+  const [collapsed, toggle] = useCollapsed('investment-philosophy')
   const [openSections, setOpenSections] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<string | null>(null)
-
-  function toggle() {
-    const next = !collapsed
-    setCollapsed(next)
-    try { localStorage.setItem('strategies.philosophy.collapsed', next ? '1' : '0') } catch {}
-  }
 
   function toggleSection(k: string) {
     const next = new Set(openSections)
