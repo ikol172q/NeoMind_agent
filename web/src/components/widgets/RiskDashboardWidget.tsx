@@ -17,6 +17,9 @@
  */
 import { useState } from 'react'
 import { useRiskDashboardAll, type RiskDashboardEntry } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 const PCT = (x: number | null | undefined, dp = 2) =>
@@ -38,6 +41,7 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
   const [holdDays, setHoldDays] = useState<number>(30)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [colorFilter, setColorFilter] = useState<'all' | 'green' | 'amber' | 'red' | 'real' | 'proxy'>('real')
+  const [collapsed, toggle] = useCollapsed('risk-dashboard')
 
   const q = useRiskDashboardAll({ asOf, holdDays })
   const all = q.data?.strategies ?? []
@@ -70,9 +74,14 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="font-semibold text-[var(--color-text)]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 font-semibold text-[var(--color-text)] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           📊 Risk Dashboard / 多维度风险量化（替代单一 fit score）
-        </span>
+        </button>
         {q.data && (
           <>
             <span className="font-mono">{q.data.fingerprint_date}</span>
@@ -93,6 +102,7 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
           </>
         )}
         <div className="ml-auto flex items-center gap-2">
+          <FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={30} />
           <label className="flex items-center gap-1">
             <span>show:</span>
             <select
@@ -123,6 +133,7 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
         </div>
       </div>
 
+      {!collapsed && (<>
       {q.isLoading && (
         <div className="text-[10px] text-[var(--color-dim)] py-3">
           正在算 {36} 个 strategy 的 6 维度风险（需要 ~30s 第一次 — 后续缓存）…
@@ -160,6 +171,7 @@ export function RiskDashboardWidget({ asOf }: RiskDashboardWidgetProps) {
         Math: VaR/CVaR (Rockafellar-Uryasev), half-Kelly (1956), Markowitz hedge, ATR (Wilder 1978),
         regime k-NN. <strong>不预测未来</strong> — 只描述历史分布。
       </div>
+      </>)}
     </div>
   )
 }

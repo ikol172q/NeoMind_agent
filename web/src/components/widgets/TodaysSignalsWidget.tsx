@@ -16,7 +16,11 @@ import {
   useTodaySignals, dismissSignal, triggerAllScans,
   type SignalConfluence,
 } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
+import { todayLocal } from '@/lib/utils'
 import { useQueryClient } from '@tanstack/react-query'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 function relTime(iso: string): string {
@@ -43,6 +47,7 @@ interface ScanReport {
 export function TodaysSignalsWidget() {
   const q = useTodaySignals(5)
   const qc = useQueryClient()
+  const [collapsed, toggle] = useCollapsed('todays-signals')
   const [scanning, setScanning] = useState(false)
   const [expanded, setExpanded] = useState<string | null>(null)
   const [report, setReport] = useState<ScanReport | null>(null)
@@ -123,12 +128,18 @@ export function TodaysSignalsWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="font-semibold text-[var(--color-text)]">
-          📬 Today's Signals — only when something matters
-        </span>
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 font-semibold text-[var(--color-text)] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          📬 信号 · {todayLocal()} — only when something matters
+        </button>
         {signals.length > 0 && (
           <span className="font-mono">{signals.length} active</span>
         )}
+        <span className="ml-auto"><FreshnessChip job="signal_hourly" /></span>
         <button
           onClick={onScan}
           disabled={scanning}
@@ -140,7 +151,7 @@ export function TodaysSignalsWidget() {
             '  • 这里：scanner 数据拉取（DB 里加新 events）\n' +
             '  • 顶栏：lattice 重算（LLM, influences strategy 推荐）'
           }
-          className="ml-auto text-[9.5px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60"
+          className="text-[9.5px] px-2 py-0.5 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60"
         >
           {scanning ? '扫描中…' : '↻ 拉取全部数据源'}
         </button>
@@ -181,6 +192,7 @@ export function TodaysSignalsWidget() {
         </div>
       </div>
 
+      {!collapsed && (<>
       {report && (
         <div className="mb-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)]/40 p-1.5 text-[9.5px] leading-[1.5] flex items-start gap-2">
           <span className="font-semibold text-[var(--color-accent)] flex-shrink-0">扫描结果</span>
@@ -255,6 +267,7 @@ export function TodaysSignalsWidget() {
           />
         ))}
       </div>
+      </>)}
     </div>
   )
 }

@@ -16,6 +16,8 @@ import { useState } from 'react'
 import { useRecentSignals, useSignalsByWhale, type SignalEvent } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
 import { useWhaleResearch } from '@/components/research/WhaleResearchContext'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 function relTime(iso: string): string {
@@ -172,6 +174,7 @@ export function SmartMoneyWidget() {
   // bump. Single state per scanner so each tab's pagination is
   // independent and survives tab switches.
   const limit13f = 100  // legacy firehose query kept for n_stale calc in non-whale tabs; not user-adjustable anymore
+  const [collapsed, toggle] = useCollapsed('smart-money')
   const [limitStockAct, setLimitStockAct] = useState(100)
   const [limitHouseClerk, setLimitHouseClerk] = useState(100)
   const [limitInsider, setLimitInsider] = useState(100)
@@ -370,7 +373,14 @@ export function SmartMoneyWidget() {
     >
       {/* === Tab bar === */}
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)] flex-wrap">
-        <span className="font-semibold text-[var(--color-text)]">Smart Money</span>
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 font-semibold text-[var(--color-text)] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
+          Smart Money
+        </button>
         <button
           onClick={() => setShowHelp((v) => !v)}
           className="text-[10px] w-4 h-4 rounded-full border border-[var(--color-border)] hover:border-[var(--color-accent)] text-[var(--color-dim)] hover:text-[var(--color-text)] flex items-center justify-center"
@@ -403,6 +413,7 @@ export function SmartMoneyWidget() {
         <span className="ml-auto text-[8.5px] italic">{activeTab.subtitle}</span>
       </div>
 
+      {!collapsed && (<>
       {/* === Help panel (toggle via ?) === */}
       {showHelp && (
         <div className="mb-2 rounded border border-[var(--color-border)] bg-[var(--color-panel)]/40 p-2 text-[9.5px] leading-[1.55] text-[var(--color-dim)]">
@@ -726,6 +737,7 @@ export function SmartMoneyWidget() {
           currentLimit={limitInsider}
         />
       )}
+      </>)}
     </div>
   )
 }

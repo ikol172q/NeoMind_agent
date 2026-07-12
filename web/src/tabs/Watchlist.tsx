@@ -25,18 +25,25 @@
  * (what's in each tier, what's stale, what needs review); the drawer
  * shows ACTIONS (open one ticker, edit it, expand it).
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { useStockResearch } from '@/components/research/StockResearchContext'
 import {
   useWatchlistTiers,
   useWatchlistOutsideRing,
   useWatchlistRemoveTier,
+  useCrossStructure,
   type WatchlistEntry,
   type WatchlistTier,
   type OutsideRingCandidate,
+  type CrossStructure,
+  type CrossEdge,
+  type SharedEntity,
 } from '@/lib/api'
-import { Card, CardHeader, CardBody } from '@/components/ui/Card'
+import { Card, CardHeader, CardBody, NestedGroup, nestedRailClass } from '@/components/ui/Card'
 import { PortfolioOnionView } from '@/components/widgets/PortfolioOnionView'
+import { AgentPlaceholder } from '@/components/research/AgentSummary'
+import { PriceMovesPanel } from '@/components/research/PriceMovesPanel'
+import { useWhaleResearch } from '@/components/research/WhaleResearchContext'
 import {
   AlertTriangle, Clock, Compass, Star, CircleDot, Eye, X, ChevronDown,
   ChevronRight, ArrowRight, List, Network,
@@ -54,7 +61,7 @@ const TIER_META: Record<WatchlistTier, { label: string; icon: typeof Star; color
  * now the primary surface; user can collapse via the section header
  * to focus on the strategy catalog.
  */
-export function WatchlistSection() {
+export function WatchlistSection({ onAddLot }: { onAddLot?: () => void } = {}) {
   const tiersQ = useWatchlistTiers()
   const outsideQ = useWatchlistOutsideRing()
   const removeMu = useWatchlistRemoveTier()
@@ -91,6 +98,22 @@ export function WatchlistSection() {
     setCollapsed(next)
     try { localStorage.setItem('strategies.watchlist.collapsed', next ? '1' : '0') } catch {}
   }
+  // The 🧭 count in the header looked clickable but only toggled the whole
+  // block. Make it a real jump-link: expand (if collapsed) then smooth-scroll
+  // to the Outside ring card.
+  const outsideRef = useRef<HTMLDivElement>(null)
+  function jumpToOutside(e: MouseEvent) {
+    e.stopPropagation()
+    const wasCollapsed = collapsed
+    if (wasCollapsed) {
+      setCollapsed(false)
+      try { localStorage.setItem('strategies.watchlist.collapsed', '0') } catch {}
+    }
+    window.setTimeout(
+      () => outsideRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+      wasCollapsed ? 80 : 0,
+    )
+  }
 
   const tiers = tiersQ.data?.tiers
   const totals = tiersQ.data?.totals
@@ -110,7 +133,13 @@ export function WatchlistSection() {
       <span className="text-emerald-300">◐ {totals?.adjacent ?? 0}</span>
       <span className="text-[var(--color-dim)]">👁 {totals?.watching ?? 0}</span>
       {outsideQ.data?.candidates && outsideQ.data.candidates.length > 0 && (
-        <span className="text-violet-300">🧭 {outsideQ.data.candidates.length}</span>
+        <span
+          onClick={jumpToOutside}
+          title="跳到 Outside ring（持仓外的多源候选）"
+          className="text-violet-300 cursor-pointer rounded px-1 hover:bg-violet-400/15 hover:underline"
+        >
+          🧭 {outsideQ.data.candidates.length}
+        </span>
       )}
       {(staleEntries('core').length + staleEntries('adjacent').length) > 0 && (
         <span className="text-amber-300 flex items-center gap-1">
@@ -123,25 +152,38 @@ export function WatchlistSection() {
 
   return (
     <div className="space-y-3 mb-3">
-      {/* Section header — clickable to collapse/expand */}
-      <button
-        onClick={toggle}
-        className="w-full flex items-center gap-2 px-3 py-2 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60 bg-[var(--color-panel)]/60 text-left group"
-        title={collapsed ? '展开 watchlist' : '折叠 watchlist'}
-      >
-        {collapsed
-          ? <ChevronRight size={14} className="text-[var(--color-dim)] group-hover:text-[var(--color-accent)] flex-shrink-0" />
-          : <ChevronDown size={14} className="text-[var(--color-dim)] group-hover:text-[var(--color-accent)] flex-shrink-0" />}
-        <Star size={14} className="text-amber-300 flex-shrink-0" />
-        <span className="text-[12px] font-semibold text-[var(--color-text)] flex-shrink-0">我的 watchlist</span>
-        <span className="text-[10px] italic text-[var(--color-dim)] flex-shrink-0">
-          · 点 ticker 打开详细分析
-        </span>
-        <span className="ml-auto">{summaryChip}</span>
-      </button>
+      {/* Section header — collapse toggle + add-position. This is the
+          single unified "我的组合" workspace: holdings + watchlist in one
+          onion (the separate "我的持仓" summary widget was removed). */}
+      <div className="w-full flex items-center gap-2">
+        <button
+          onClick={toggle}
+          className="flex-1 flex items-center gap-2 px-3 py-2 rounded border border-[var(--color-border)] hover:border-[var(--color-accent)]/60 bg-[var(--color-panel)]/60 text-left group"
+          title={collapsed ? '展开' : '折叠'}
+        >
+          {collapsed
+            ? <ChevronRight size={14} className="text-[var(--color-dim)] group-hover:text-[var(--color-accent)] flex-shrink-0" />
+            : <ChevronDown size={14} className="text-[var(--color-dim)] group-hover:text-[var(--color-accent)] flex-shrink-0" />}
+          <Star size={14} className="text-amber-300 flex-shrink-0" />
+          <span className="text-[12px] font-semibold text-[var(--color-text)] flex-shrink-0">我的组合 · 持仓 + watchlist</span>
+          <span className="text-[10px] italic text-[var(--color-dim)] flex-shrink-0">
+            · 点 ticker 打开详细分析
+          </span>
+          <span className="ml-auto">{summaryChip}</span>
+        </button>
+        {onAddLot && (
+          <button
+            onClick={onAddLot}
+            className="flex-shrink-0 px-3 py-2 rounded border border-[var(--color-border)] text-[var(--color-dim)] hover:text-[var(--color-text)] hover:border-[var(--color-accent)]/60 text-[11px]"
+            title="加一笔持仓"
+          >
+            + 持仓
+          </button>
+        )}
+      </div>
 
       {!collapsed && (
-        <>
+        <NestedGroup>
           {/* Stale-thesis banner — only if any core/adjacent overdue */}
           {(staleEntries('core').length > 0 || staleEntries('adjacent').length > 0) && (
             <div className="rounded border border-amber-500/40 bg-amber-500/5 p-2.5 text-[12px]">
@@ -211,10 +253,18 @@ export function WatchlistSection() {
             )}
             {viewMode === 'onion' && (
               <span className="text-[10px] text-[var(--color-dim)] italic ml-2">
-                · 点节点高亮关系链, 双击打开详细分析
+                · 点节点 = 高亮关系链 + 打开详细分析
               </span>
             )}
           </div>
+
+          {/* 今日异动 — validated real-time price moves (Slice 1). Most
+              time-sensitive glance, so above the (slower) cross-structure. */}
+          <PriceMovesPanel onOpen={openTicker} />
+
+          {/* Portfolio-level cross-structure: who's SHARED across holdings
+              (chokepoint / correlation) — the thing per-stock metrics can't show */}
+          <CrossStructurePanel onOpen={openTicker} />
 
           {viewMode === 'onion' ? (
             <Card>
@@ -262,6 +312,7 @@ export function WatchlistSection() {
           )}
 
           {/* Outside ring — anti-anchoring */}
+          <div ref={outsideRef}>
           <Card>
             <CardHeader
               title={<span className="flex items-center gap-1.5"><Compass size={14} /> Outside ring</span>}
@@ -292,7 +343,8 @@ export function WatchlistSection() {
               )}
             </CardBody>
           </Card>
-        </>
+          </div>
+        </NestedGroup>
       )}
     </div>
   )
@@ -310,6 +362,175 @@ export function WatchlistTab() {
       <div className="p-2 md:p-4 max-w-6xl mx-auto">
         <WatchlistSection />
       </div>
+    </div>
+  )
+}
+
+
+/**
+ * CrossStructurePanel — portfolio-level shared edges. The per-stock drawer
+ * shows what ONE company is; this shows who my holdings SHARE: institutional
+ * owners (crowding), competitors (same arena), value-chain links between names
+ * I hold both sides of. Suppliers/customers are sparse (10-Ks under-disclose)
+ * so the gap is surfaced honestly. All DB-sourced (no yfinance throttle).
+ */
+function CrossStructurePanel({ onOpen }: { onOpen: (t: string) => void }) {
+  const [open, setOpen] = useState(true)
+  const [ownerExpanded, setOwnerExpanded] = useState(false)
+  const { openWhale } = useWhaleResearch()
+  const q = useCrossStructure()
+  const d: CrossStructure | undefined = q.data
+  if (!d || d.n_held === 0) return null
+  const { shared, internal, coverage } = d
+
+  // owner name → in-app whale profile (whale_key) or its SEC 13F filing (url)
+  const ownerName = (s: SharedEntity) =>
+    s.whale_key
+      ? <button onClick={() => openWhale(s.whale_key!)}
+          className="text-[var(--color-text)] hover:text-cyan-300 underline decoration-dotted">{s.entity}</button>
+      : s.source_url
+        ? <a href={s.source_url} target="_blank" rel="noopener noreferrer"
+            className="text-[var(--color-text)] hover:text-cyan-300 underline decoration-dotted">{s.entity}</a>
+        : <span className="text-[var(--color-text)]">{s.entity}</span>
+
+  const chip = (t: string, key?: string | number) => (
+    <button key={key ?? t} onClick={() => onOpen(t)}
+      className="px-1 py-0.5 rounded bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/30 text-[var(--color-accent)] font-mono text-[9px] hover:bg-[var(--color-accent)]/20">
+      {t}
+    </button>
+  )
+  // provenance-carrying chip for value-chain edges: tooltip = source filing +
+  // date + verbatim quote; ↩ marks a reverse (derived-from-counterparty) edge
+  const vcChip = (h: string, e: CrossEdge | undefined, key: string) => (
+    <button key={key} onClick={() => onOpen(h)}
+      title={e
+        ? `${e.kind === 'reverse' ? '↩ 反向推导自 ' + (e.via ?? '?') + ' 的 10-K (关系已翻转)' : 'from ' + h + ' 10-K'} · filed ${e.filing_date ?? '—'}${e.stale ? ' ⚠️ stale' : ''}\n"${(e.quote || '').slice(0, 220)}"`
+        : h}
+      className="px-1 py-0.5 rounded bg-[var(--color-accent)]/10 border border-[var(--color-accent)]/30 text-[var(--color-accent)] font-mono text-[9px] hover:bg-[var(--color-accent)]/20 inline-flex items-center gap-0.5">
+      {h}{e?.kind === 'reverse' && <span className="text-violet-300 text-[8px]">↩</span>}
+    </button>
+  )
+  const arrow = (dir?: string | null) =>
+    !dir ? null
+    : /加|新建|建仓|increase|add/i.test(dir) ? <span className="text-emerald-400 text-[8px]">▲</span>
+    : /减|清|exit|trim|reduce/i.test(dir)    ? <span className="text-red-400 text-[8px]">▼</span>
+    : null
+
+  const relIcon: Record<string, string> = { competitor: '⚔', supplier: '🏭→', customer: '→👥' }
+  const supplierGap = Object.entries(coverage).filter(([, c]) => (c.supplier ?? 0) === 0).map(([t]) => t)
+  const noChain = Object.entries(coverage)
+    .filter(([, c]) => (c.competitor ?? 0) + (c.supplier ?? 0) + (c.customer ?? 0) === 0).map(([t]) => t)
+
+  const Section = ({ title, hint, children }: { title: string; hint?: string; children: React.ReactNode }) => (
+    <div className="mb-2">
+      <div className="text-[10px] font-semibold text-[var(--color-text)] mb-0.5">
+        {title}{hint && <span className="font-normal text-[var(--color-dim)] ml-1">· {hint}</span>}
+      </div>
+      {children}
+    </div>
+  )
+
+  return (
+    <div className="rounded border border-violet-500/30 bg-violet-500/[0.04] p-2.5">
+      <button onClick={() => setOpen(!open)} className="w-full flex items-center gap-1.5 text-left mb-1">
+        {open ? <ChevronDown size={13} className="text-violet-300" /> : <ChevronRight size={13} className="text-violet-300" />}
+        <Network size={13} className="text-violet-300" />
+        <span className="text-[12px] font-semibold text-violet-200">组合交叉结构 · 谁被多只持仓共享</span>
+        <span className="text-[10px] italic text-[var(--color-dim)]">(相关性 / chokepoint · 11 只)</span>
+      </button>
+      {open && (
+        <div className={nestedRailClass}>
+          {/* portfolio-level agent read — placeholder until the portfolio-context
+              synthesis engine is wired (per-stock 3-sentence is already live) */}
+          <AgentPlaceholder label="组合级速读 · 最大相关性 / chokepoint / crowding 综合" />
+          {/* source + freshness — every edge is traceable to a dated SEC filing */}
+          <div className="text-[9px] text-[var(--color-dim)] mb-1.5 leading-snug">
+            来源: SEC 10-K {d.freshness.value_chain_oldest_filing ?? '—'} ~ {d.freshness.value_chain_newest_filing ?? '—'} · 机构 = {d.freshness.owner_source}
+            {' · '}{d.freshness.n_edges} 边 ({d.freshness.n_reverse} 反向推导 ↩)
+            {d.freshness.n_stale_edges > 0 && <span className="text-amber-400"> · ⚠️ {d.freshness.n_stale_edges} 过期</span>}
+            <span className="block mt-0.5">↩ = 从对方 10-K 反向推导(同一条 verbatim 事实,关系已正确翻转) · 悬停 ticker 看来源原文</span>
+          </div>
+          {shared.owner.length > 0 && (
+            <Section title="🏛 机构股东重叠" hint="同一只手押注你的多只 → 一起 de-risk 时同跌 (▲加仓 ▼减仓) · 点机构名看其档案">
+              <div className="space-y-0.5">
+                {(ownerExpanded ? shared.owner : shared.owner.slice(0, 6)).map(s => (
+                  <div key={s.entity} className="flex items-start gap-1.5 flex-wrap text-[10px]">
+                    {ownerName(s)}
+                    <span className="text-[var(--color-dim)]">×{s.n}</span>
+                    <span className="flex gap-1 flex-wrap items-center">
+                      {s.holdings.map(h => <span key={h} className="inline-flex items-center">{chip(h, s.entity + h)}{arrow(s.edges[h]?.dir)}</span>)}
+                    </span>
+                  </div>
+                ))}
+                {shared.owner.length > 6 && (
+                  <button onClick={() => setOwnerExpanded(v => !v)}
+                    className="text-[9px] text-cyan-400 hover:text-cyan-300 italic">
+                    {ownerExpanded ? '收起 ▲' : `展开全部 +${shared.owner.length - 6} 家共享机构 ▾`}
+                  </button>
+                )}
+              </div>
+            </Section>
+          )}
+
+          {shared.competitor.length > 0 && (
+            <Section title="⚔ 同战场竞争对手" hint="多只持仓共同对手 → 同主题、易同向">
+              <div className="space-y-0.5">
+                {shared.competitor.slice(0, 6).map(s => (
+                  <div key={s.entity} className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                    {s.entity_ticker ? chip(s.entity_ticker) : <span className="text-[var(--color-text)]">{s.entity}</span>}
+                    <span className="text-[var(--color-dim)]">×{s.n} ←</span>
+                    <span className="flex gap-1 flex-wrap">{s.holdings.map(h => vcChip(h, s.edges[h], s.entity + h))}</span>
+                  </div>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          {internal.length > 0 && (
+            <Section title="🔗 你同时持有、互为对手/上下游的" hint="你押了关系的两端">
+              <div className="flex flex-wrap gap-x-3 gap-y-0.5 text-[10px]">
+                {internal.map((x, i) => (
+                  <span key={i} className="inline-flex items-center gap-1">
+                    {chip(x.from, 'if' + i)}<span className="text-[var(--color-dim)]">{relIcon[x.rel] ?? x.rel}</span>{chip(x.to, 'it' + i)}
+                  </span>
+                ))}
+              </div>
+            </Section>
+          )}
+
+          {(shared.supplier.length > 0 || shared.customer.length > 0) ? (
+            <>
+              {shared.supplier.length > 0 && (
+                <Section title="🏭 共享供应商" hint="输入端 chokepoint / 单点故障">
+                  <div className="space-y-0.5">{shared.supplier.slice(0, 6).map(s => (
+                    <div key={s.entity} className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                      {s.entity_ticker ? chip(s.entity_ticker) : <span>{s.entity}</span>}
+                      <span className="text-[var(--color-dim)]">×{s.n} ←</span>
+                      <span className="flex gap-1 flex-wrap">{s.holdings.map(h => vcChip(h, s.edges[h], s.entity + h))}</span>
+                    </div>))}</div>
+                </Section>
+              )}
+              {shared.customer.length > 0 && (
+                <Section title="👥 共享客户" hint="需求端相关">
+                  <div className="space-y-0.5">{shared.customer.slice(0, 6).map(s => (
+                    <div key={s.entity} className="flex items-center gap-1.5 flex-wrap text-[10px]">
+                      {s.entity_ticker ? chip(s.entity_ticker) : <span>{s.entity}</span>}
+                      <span className="text-[var(--color-dim)]">×{s.n} ←</span>
+                      <span className="flex gap-1 flex-wrap">{s.holdings.map(h => vcChip(h, s.edges[h], s.entity + h))}</span>
+                    </div>))}</div>
+                </Section>
+              )}
+            </>
+          ) : (
+            <div className="text-[9.5px] text-amber-300/80 leading-snug mt-1">
+              ⚠️ 共享供应商/客户暂为空 = 数据缺口,不是没有。10-K 基本不点名供应商、客户只在 ≥10% 时才披露;
+              {supplierGap.length > 0 && <> 供应商顶点空的有 <b>{supplierGap.length}</b> 只</>}
+              {noChain.length > 0 && <>;无任何 10-K 价值链数据(20-F/S-1 或抽取缺): {noChain.join(' ')}</>}。
+              下一步需多源(供应链库/电话会/反向客户 10-K)才能补实。
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }

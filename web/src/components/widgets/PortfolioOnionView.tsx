@@ -24,7 +24,6 @@ import ForceGraph2D, { type ForceGraphMethods } from 'react-force-graph-2d'
 import { useStockResearch } from '@/components/research/StockResearchContext'
 import { usePortfolioView, useLatticeCalls, usePortfolioSummary, useChain, type PortfolioGraphNode, type PortfolioGraphEdge, type LatticeTheme } from '@/lib/api'
 import { Loader2, Eye, EyeOff, Clock, Layers } from 'lucide-react'
-import { NodeChainPanel } from '@/components/widgets/NodeChainPanel'
 
 /**
  * Common 2-5 letter UPPERCASE English tokens that aren't tickers.
@@ -130,13 +129,18 @@ const THEME_SEVERITY_COLOR: Record<LatticeTheme['severity'], string> = {
 // any pre-migration cached graph still renders sensibly.
 const TIER_RADIUS: Record<string, number> = {
   // new render_tier values
-  held:          90,
+  // 2026-06-26: held ring widened 90→110 — with 11 held names the old
+  // 90px ring's arc-spacing (~51px) was smaller than two adjacent node
+  // diameters, so dots overlapped/ambiguous. 110 buys ~62px spacing
+  // (comfortable up to ~16 holdings) while staying well inside the
+  // buy_candidate ring (180).
+  held:          110,
   buy_candidate: 180,
   watchlist:     280,
   outside:       340,
   external:      410,
   // legacy fallbacks (old `tier` field, in case render_tier missing)
-  core:     90,
+  core:     110,
   adjacent: 280,
   watching: 280,
   held_unwatched: 310,
@@ -179,8 +183,13 @@ const TIER_NODE_FACT_BUMP: Record<string, number> = {
 // bump so tier nesting reads correctly even for unheld tickers.
 //
 // Formula:
-//   exposure_px = sqrt(held_cost / 100) capped at +20px
-//     (held_cost in dollars; sqrt softens so $1K → 3.2px and $40K → 20px)
+//   exposure_px = sqrt(held_cost) × 0.032 capped at +14px
+//     (held_cost in dollars; sqrt softens, ×0.032 scales it down so the
+//     whole held ring stays proportional but small enough not to overlap:
+//     $5K → 2.3px, $30K → 5.5px, $140K → 12px. 2026-06-26: coefficient
+//     cut ~3× from the old sqrt(cost/100) because 11 held names made the
+//     old +20px dots collide on the ring — user asked to scale node size
+//     down proportionally.)
 //   facts_px = sqrt(n_facts) × tier_bump (research-depth nudge)
 //   total = base[tier] + exposure_px + facts_px
 // 2026-05-19: prefer server-computed render_tier; fall back to tier.
@@ -194,7 +203,7 @@ function nodeRadius(n: PortfolioGraphNode): number {
   const factsBump = TIER_NODE_FACT_BUMP[t] ?? 0
   const factsPx = factsBump * Math.sqrt(Math.max(0, n.n_facts))
   const cost = Math.max(0, n.held_cost ?? 0)
-  const exposurePx = Math.min(20, Math.sqrt(cost / 100))
+  const exposurePx = Math.min(14, Math.sqrt(cost) * 0.032)
   return base + exposurePx + factsPx
 }
 
@@ -975,14 +984,15 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
         // Click handlers
         onNodeClick={(node) => {
           const n = node as PortfolioGraphNode
-          if (selected === n.id) {
-            // Second click — open drawer for full detail
-            openTicker(n.id)
-          } else {
-            setSelected(n.id)
-            setHopDepth(1)        // start fresh; user can expand via +/−
-            setThemeFilter(null)  // selection supersedes theme filter
-          }
+          // One click = highlight this node's neighborhood in the graph
+          // AND open the full research drawer. Previously the rich drawer
+          // was a 2nd-click action and the 1st click showed a lite chain
+          // panel; we retired that split so the onion (holdings+watchlist,
+          // one graph) always opens the SAME rich drawer everywhere.
+          setSelected(n.id)
+          setHopDepth(1)        // start fresh; user can expand via +/−
+          setThemeFilter(null)  // selection supersedes theme filter
+          openTicker(n.id)
         }}
         onBackgroundClick={() => { setSelected(null); setHopDepth(1) }}
         // Drag enabled by default; node fix on drag
@@ -993,23 +1003,10 @@ export function PortfolioOnionView({ height = 540 }: { height?: number }) {
         }}
       />}
 
-      {/* Chain panel — absolute overlay on the right when a node is
-          selected. Doesn't resize the canvas (which would re-trigger
-          ForceGraph2D's translateBy stale-state bug). User can dismiss
-          via the X button or click empty canvas to deselect. */}
-      {selected && (
-        <div
-          className="absolute top-0 right-0 bottom-0 z-20"
-          style={{ width: 380, maxWidth: '40%' }}
-        >
-          <NodeChainPanel
-            ticker={selected}
-            onClose={() => { setSelected(null); setHopDepth(1) }}
-            onOpenFullDetail={() => openTicker(selected)}
-            asOf={asOf}
-          />
-        </div>
-      )}
+      {/* Lite chain panel removed (2026-06-24): node click now opens the
+          full StockResearchDrawer, so holdings + watchlist share one rich
+          drawer. The graph still highlights the selected node's chain
+          (driven by `selected`). */}
     </div>
   )
 }

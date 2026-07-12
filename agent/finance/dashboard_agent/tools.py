@@ -9,6 +9,7 @@ via the openapi-style probe in tests/test_dashboard_agent_tools.py.
 """
 from __future__ import annotations
 
+import inspect
 import os
 from typing import Any, Dict, List, Optional
 
@@ -455,5 +456,20 @@ async def dispatch(name: str, args: Dict[str, Any]) -> Dict[str, Any]:
     fn = TOOL_FUNCTIONS.get(name)
     if fn is None:
         return {"error": f"unknown tool: {name}"}
-    result = await fn(**(args or {}))
+    args = args or {}
+    # LLMs hallucinate extra kwargs (e.g. ticker= on a tool with no ticker
+    # param). Without a guard, fn(**args) raises TypeError and crashes the
+    # whole turn. Drop unknown kwargs, then catch any residual TypeError
+    # (e.g. a missing required arg) and return it as an {"error": ...} the
+    # agent loop can recover from / self-correct on its next iteration.
+    try:
+        params = inspect.signature(fn).parameters
+        if not any(p.kind == p.VAR_KEYWORD for p in params.values()):
+            args = {k: v for k, v in args.items() if k in params}
+    except (TypeError, ValueError):
+        pass
+    try:
+        result = await fn(**args)
+    except TypeError as exc:
+        return {"error": f"bad arguments for {name}: {exc}"}
     return _redact(result, _privacy_mode())

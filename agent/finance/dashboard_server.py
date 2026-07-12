@@ -58,6 +58,18 @@ from typing import Any, Dict, List, Optional
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import HTMLResponse, JSONResponse
 
+# When this module is the process entrypoint (`python -m
+# agent.finance.dashboard_server`), it does NOT go through main.py's
+# load_dotenv(), so vars that live only in .env (e.g. MINIFLUX_USERNAME/
+# MINIFLUX_PASSWORD) are absent from the process env and their features
+# 503 ("credentials missing") even though .env is populated and the
+# service is up. Load the repo-root .env explicitly (by file location,
+# not CWD). override=False so shell/compose-provided vars (e.g.
+# DEEPSEEK_API_KEY from ~/.zshrc) always win; missing .env is a no-op.
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[2] / ".env", override=False)
+
 from agent.finance import investment_projects
 from agent.finance import technical_indicators as ti
 from agent.finance.signal_schema import AgentAnalysis
@@ -1334,6 +1346,8 @@ def create_app(
         from agent.finance.anchored_research import build_anchored_research_router
         from agent.finance.market_overlay_router import build_market_overlay_router
         from agent.finance.learning import build_learning_router
+        from agent.finance.cognition_map_router import build_cognition_map_router
+        from agent.finance.research_corpus import build_research_router
         app.include_router(_fin_db_router)
         app.include_router(_fin_scheduler_router)
         app.include_router(_fin_integrity_router)
@@ -1345,8 +1359,24 @@ def create_app(
         app.include_router(build_stock_research_router())
         app.include_router(build_architecture_router())
         app.include_router(build_anchored_research_router())
+        from agent.finance.portfolio_crossstructure import build_crossstructure_router
+        app.include_router(build_crossstructure_router())
+        from agent.finance.fin_agent_synth import build_fin_agent_router
+        app.include_router(build_fin_agent_router())
+        from agent.finance.recent_filings import build_recent_filings_router
+        app.include_router(build_recent_filings_router())
+        from agent.finance.thesis_materiality import build_thesis_materiality_router
+        app.include_router(build_thesis_materiality_router())
+        from agent.finance.price_watch import build_price_watch_router
+        app.include_router(build_price_watch_router())
         app.include_router(build_market_overlay_router())
         app.include_router(build_learning_router())
+        app.include_router(build_cognition_map_router())
+        app.include_router(build_research_router())
+        from agent.finance.supply_chain_walker import build_supply_chain_walker_router
+        app.include_router(build_supply_chain_walker_router())
+        from agent.finance.agent_alerts import build_alerts_router
+        app.include_router(build_alerts_router())
 
         # Auto-seed the learning library on every dashboard boot.
         # Idempotent — upserts by slug. Three seed sources, each
@@ -1454,16 +1484,10 @@ def create_app(
     paper_engines: Dict[str, PaperTradingEngine] = {}
 
     def _default_paper_factory(project_id: str) -> PaperTradingEngine:
-        proj_dir = investment_projects.get_project_dir(project_id)
-        data_dir = proj_dir / "paper_trading"
-        data_dir.mkdir(parents=True, exist_ok=True)
-        eng = PaperTradingEngine(
-            initial_capital=100_000.0,
-            data_dir=data_dir,
-        )
-        # Restore prior state if present
-        eng.load_state(_paper_state_filename())
-        return eng
+        # Delegate to the shared accessor so the trading-desk's automated
+        # order placement and these read endpoints share ONE engine instance.
+        from agent.finance.paper_trading import get_project_engine
+        return get_project_engine(project_id)
 
     engine_factory = paper_engine_factory or _default_paper_factory
 
@@ -1514,26 +1538,35 @@ def create_app(
 
         @app.get("/", response_class=HTMLResponse)
         def index() -> HTMLResponse:
+            # no-cache so the browser always revalidates index.html and
+            # picks up the new content-hashed JS/CSS after every build.
+            # Without this, mobile Safari heuristically caches index.html
+            # and keeps loading a stale bundle (e.g. an old tab set).
+            # The /assets/* files are content-hashed so they stay cacheable.
             return HTMLResponse(
                 content=(_WEB_DIST / "index.html").read_text(encoding="utf-8"),
                 status_code=200,
+                headers={"Cache-Control": "no-cache, max-age=0, must-revalidate"},
             )
 
-        # Any other static files in web/dist/ root (favicon, icons, etc.)
-        # Covered manually because we don't want to shadow /api /openbb etc.
+        # Any other static files in web/dist/ root (favicon, icons, manifest).
+        # FileResponse so MIME types are correct — the old HTMLResponse +
+        # utf-8 decode corrupted binary icons and served the manifest as
+        # text/html (browser rejected it → console errors). index.html
+        # references /manifest.webmanifest, so that name must be present.
+        from fastapi.responses import FileResponse
+        import mimetypes
+        mimetypes.add_type("application/manifest+json", ".webmanifest")
         _STATIC_ROOT_FILES = (
             "favicon.ico", "favicon.svg", "robots.txt",
-            "manifest.json", "apple-touch-icon.png",
+            "manifest.webmanifest", "manifest.json", "apple-touch-icon.png",
         )
         for _fname in _STATIC_ROOT_FILES:
             _path = _WEB_DIST / _fname
             if _path.exists():
                 @app.get(f"/{_fname}", include_in_schema=False)
                 def _serve_static(_p: Path = _path):
-                    return HTMLResponse(
-                        content=_p.read_bytes().decode("utf-8", errors="replace"),
-                        status_code=200,
-                    )
+                    return FileResponse(str(_p))
 
         @app.get("/legacy", response_class=HTMLResponse)
         def legacy_index() -> HTMLResponse:
@@ -1549,6 +1582,12 @@ def create_app(
         @app.get("/legacy", response_class=HTMLResponse)
         def legacy_alias() -> HTMLResponse:
             return HTMLResponse(content=_INDEX_HTML, status_code=200)
+
+    @app.get("/cockpit", response_class=HTMLResponse)
+    def cockpit_page() -> HTMLResponse:
+        """Three-account trading cockpit (Schwab / IBKR-live / IBKR-paper)."""
+        from agent.finance.cockpit import COCKPIT_HTML
+        return HTMLResponse(content=COCKPIT_HTML, status_code=200)
 
     @app.get("/api/health")
     def health() -> Dict[str, Any]:
@@ -2017,6 +2056,28 @@ def create_app(
         app.include_router(build_philosophy_router())
     except Exception as exc:  # pragma: no cover
         logger.warning("philosophy router unavailable: %s", exc)
+
+    # 2026-05-22: Short-term Trading Desk — TPS + setup CRUD + NL→quant
+    # distillation + backtest + paper-parallel scan. Deliberately separate
+    # from the long-term smart-money stack (those signals are quarterly).
+    try:
+        from agent.finance.trading_desk import build_trading_router
+        app.include_router(build_trading_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("trading desk router unavailable: %s", exc)
+
+    try:
+        from agent.finance.cockpit import build_cockpit_router
+        app.include_router(build_cockpit_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("cockpit router unavailable: %s", exc)
+
+    # Bucket ① — long-term core holdings risk monitor + (Phase 2) hedge overlay.
+    try:
+        from agent.finance.portfolio_hedge import build_portfolio_router
+        app.include_router(build_portfolio_router())
+    except Exception as exc:  # pragma: no cover
+        logger.warning("portfolio hedge router unavailable: %s", exc)
 
     # 2026-05-17: Strategy signals compiler — bridge from NeoMind slow
     # loop (you + Claude + scanners) into deterministic execution

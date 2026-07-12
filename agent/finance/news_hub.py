@@ -49,6 +49,110 @@ _TAG_RE = re.compile(r"<[^>]+>")
 _WS_RE = re.compile(r"\s+")
 
 
+# ── Official company newsroom feeds (RSS) ───────────────────────────
+# Primary-source PRs straight from the company's own newsroom, fully
+# independent of Miniflux. Map ticker → RSS feed URL. ARM's newsroom is
+# WordPress (/feed verified 2026-06-25).
+#
+# Persistence: items live in the `official_news` table so the
+# `official_news_pull` scheduler job (a SEPARATE process) can keep them
+# fresh hourly (真·定时) and the endpoint serves from the table
+# instantly. The endpoint ALSO live-refreshes on cold start, when the
+# stored copy is older than the TTL, or when ?refresh=1 is passed — so
+# freshness holds even if the scheduler is down.
+OFFICIAL_FEEDS: Dict[str, str] = {
+    "ARM": "https://newsroom.arm.com/feed",
+    # 2026-06-26: added for held names. Each URL curl-verified to return
+    # valid RSS 2.0 <item> elements (NOT guessed — see anti-hallucination
+    # skill). AAPL/MRVL/MP/AAOI/NBIS/CBRS deliberately omitted: no public
+    # standard-RSS feed found (Apple feed returns 0 <item>; the rest 404 or
+    # serve HTML SPAs). SEC-filings fallback is the scalable next step.
+    "META":  "https://about.fb.com/news/feed/",            # Meta newsroom
+    "GOOGL": "https://blog.google/rss/",                    # The Keyword (official)
+    "AMD":   "https://ir.amd.com/rss/news-releases.xml",   # AMD IR press releases
+    "PANW":  "https://www.paloaltonetworks.com/blog/feed/", # PANW blog
+}
+_OFFICIAL_TTL_S = 3600.0
+_OFFICIAL_UA = "Mozilla/5.0 (NeoMind-Fin newsbot) research@example.com"
+
+
+def _fetch_official_feed(url: str) -> List[Dict[str, str]]:
+    """Fetch + parse a company newsroom RSS into normalised items.
+    Server-side (no CORS); standard RSS 2.0 <item> shape."""
+    import xml.etree.ElementTree as ET
+    req = urllib.request.Request(url, headers={"User-Agent": _OFFICIAL_UA})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        raw = resp.read()
+    root = ET.fromstring(raw)
+    items: List[Dict[str, str]] = []
+    for it in root.findall(".//item"):
+        desc = it.findtext("description") or ""
+        snippet = _WS_RE.sub(" ", _TAG_RE.sub("", html.unescape(desc))).strip()
+        items.append({
+            "title":        (it.findtext("title") or "").strip(),
+            "url":          (it.findtext("link") or "").strip(),
+            "published_at": (it.findtext("pubDate") or "").strip(),
+            "snippet":      snippet[:280],
+        })
+    return items
+
+
+def _age_seconds(iso: Optional[str]) -> Optional[float]:
+    if not iso:
+        return None
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds()
+    except Exception:
+        return None
+
+
+def _ensure_official_table(conn) -> None:
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS official_news ("
+        " ticker TEXT PRIMARY KEY, fetched_at TEXT, items_json TEXT)"
+    )
+
+
+def _read_official(ticker: str):
+    """Return (fetched_at_iso, items) from the table, or None."""
+    from agent.finance.persistence import connect
+    with connect() as conn:
+        _ensure_official_table(conn)
+        row = conn.execute(
+            "SELECT fetched_at, items_json FROM official_news WHERE ticker = ?",
+            (ticker,),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        items = _json.loads(row[1] or "[]")
+    except Exception:
+        items = []
+    return row[0], items
+
+
+def refresh_official(ticker: str):
+    """Fetch the live feed + upsert into official_news. Returns
+    (fetched_at_iso, items). Used by the endpoint (cold start / forced
+    refresh) AND the official_news_pull scheduler job."""
+    from agent.finance.persistence import connect
+    feed = OFFICIAL_FEEDS.get(ticker)
+    if not feed:
+        return None
+    items = _fetch_official_feed(feed)
+    now = datetime.now(timezone.utc).isoformat()
+    with connect() as conn:
+        _ensure_official_table(conn)
+        conn.execute(
+            "INSERT INTO official_news (ticker, fetched_at, items_json) "
+            "VALUES (?, ?, ?) "
+            "ON CONFLICT(ticker) DO UPDATE SET "
+            "  fetched_at = excluded.fetched_at, items_json = excluded.items_json",
+            (ticker, now, _json.dumps(items, ensure_ascii=False)),
+        )
+    return now, items
+
+
 @dataclass(frozen=True)
 class NewsEntry:
     id: int
@@ -260,6 +364,44 @@ def build_news_router() -> APIRouter:
             "fetched_at": datetime.now(timezone.utc).isoformat(),
             "fallback_search_url":
                 f"https://news.google.com/search?q={urllib.parse.quote(sym)}+stock",
+        }
+
+    @router.get("/api/news/official/{ticker}")
+    def official_news(
+        ticker: str,
+        limit: int = Query(8, ge=1, le=30),
+        refresh: bool = Query(False, description="force a live re-fetch now"),
+    ) -> Dict[str, Any]:
+        """Primary-source PRs from the company's OWN newsroom RSS,
+        DB-backed (official_news table). Served instantly from the table
+        (kept fresh hourly by the official_news_pull scheduler job).
+        Live-refreshes on cold start, when the stored copy is older than
+        the TTL, or when ?refresh=1. `source` = 'live' (fetched this
+        request) or 'store'; `stale` = older than the TTL."""
+        sym = (ticker or "").strip().upper()
+        feed = OFFICIAL_FEEDS.get(sym)
+        if not feed:
+            return {"ticker": sym, "supported": False, "items": [], "feed_url": None}
+        stored = _read_official(sym)            # (fetched_at, items) | None
+        age = _age_seconds(stored[0]) if stored else None
+        did_fetch = False
+        if refresh or stored is None or age is None or age > _OFFICIAL_TTL_S:
+            try:
+                fetched_at, items = refresh_official(sym)
+                stored = (fetched_at, items)
+                did_fetch = True
+            except Exception as exc:
+                logger.warning("official feed refresh failed for %s: %s", sym, exc)
+                # keep whatever was stored (serve stale) — endpoint never 500s
+        fetched_at, items = stored if stored else (None, [])
+        age = _age_seconds(fetched_at)
+        return {
+            "ticker": sym, "supported": True, "feed_url": feed,
+            "count": len(items), "items": items[:limit],
+            "fetched_at": fetched_at,
+            "age_seconds": age,
+            "source": "live" if did_fetch else "store",
+            "stale": (age is not None and age > _OFFICIAL_TTL_S),
         }
 
     @router.get("/api/news/categories")

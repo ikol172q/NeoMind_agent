@@ -1,8 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { cn } from '@/lib/utils'
 import { useHealth } from '@/lib/api'
 import { ResearchTab } from '@/tabs/Research'
-import { PaperTab } from '@/tabs/Paper'
+import { TradingTab } from '@/tabs/Trading'
+import { CoreTab } from '@/tabs/Core'
 import { AuditTab } from '@/tabs/Audit'
 import { SettingsTab } from '@/tabs/Settings'
 import { LearningTab } from '@/tabs/Learning'
@@ -10,13 +11,18 @@ import { LegacyTab } from '@/tabs/Legacy'
 import { StrategiesTab } from '@/tabs/Strategies'
 import { DataLakeTab } from '@/tabs/DataLake'
 import { WatchlistTab } from '@/tabs/Watchlist'
+import { PrinciplesTab } from '@/tabs/Principles'
+import { CognitionMapTab } from '@/tabs/CognitionMap'
+import { SerenityTab } from '@/tabs/Serenity'
+import { KeystoneTab } from '@/tabs/Keystone'
 import { CommandPalette } from '@/components/chat/CommandPalette'
+import { AlertsBell } from '@/components/AlertsBell'
 import type { DigestFocus } from '@/components/widgets/DigestView'
 import { FinIntegrityBadge } from '@/components/widgets/FinIntegrityBadge'
 import { PdtCounter } from '@/components/widgets/PdtCounter'
 import { AsOfPicker } from '@/components/widgets/AsOfPicker'
 import { ScannerHealthBadge } from '@/components/widgets/ScannerHealthBadge'
-import { Sparkles, LineChart, Wallet, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw } from 'lucide-react'
+import { Sparkles, LineChart, Zap, ClipboardList, Settings as SettingsIcon, Command, BookOpen, Database, GraduationCap, Menu, X, RotateCw, ChevronDown, Boxes, Clock, Shield, Scale } from 'lucide-react'
 import { StockResearchProvider } from '@/components/research/StockResearchContext'
 import { StockResearchDrawer } from '@/components/research/StockResearchDrawer'
 import { WhaleResearchProvider } from '@/components/research/WhaleResearchContext'
@@ -27,15 +33,26 @@ import { WhaleProfileDrawer } from '@/components/research/WhaleProfileDrawer'
 // 'watchlist' kept in the union for any legacy ?tab=watchlist deep
 // link; it routes to <WatchlistTab> which still works as a standalone
 // page even though it's no longer in the nav array.
-type Tab = 'research' | 'strategies' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'watchlist' | 'settings' | 'legacy'
+// 2026-05-22: 'paper' tab folded into the new 'trading' tab (short-term
+// trading desk). Paper trading is part of the trading workflow, not a
+// standalone surface. 'paper' kept in the union only for old deep links
+// (routes to the Trading tab).
+type Tab = 'research' | 'serenity' | 'keystone' | 'strategies' | 'core' | 'trading' | 'paper' | 'audit' | 'data_lake' | 'learning' | 'principles' | 'cognition' | 'watchlist' | 'settings' | 'legacy'
 
 const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: number }> }> = [
   // 2026-05-08: Watchlist removed from nav — content embedded as a
   // section at top of the Strategies tab. User feedback was "零零散散
   // 不好集中看" (scattered, hard to view together).
   { id: 'research',   label: 'Research',   icon: LineChart },
+  { id: 'serenity',   label: 'Serenity',   icon: Sparkles },
+  { id: 'keystone',   label: 'Keystone',   icon: Boxes },
   { id: 'strategies', label: 'Strategies', icon: BookOpen },
-  { id: 'paper',      label: 'Paper',      icon: Wallet },
+  // 2026-06-30: Core re-added. The 2026-06-29 removal cited a "/api/core/risk
+  // 404" that never matched the code — CoreTab calls /api/portfolio/core_risk
+  // (+ /hedge_plan, /hedge_execute), all live & mounted (dashboard_server.py
+  // :2065). It is the only hedge-sizing / one-click-put UI in the dashboard.
+  { id: 'core',       label: 'Core',       icon: Shield },
+  { id: 'trading',    label: 'Trading',    icon: Zap },
   { id: 'audit',      label: 'Audit',      icon: ClipboardList },
   // Phase B6-Step2: Data Lake tab — provenance browser over the raw
   // store (B1-B3) and the dep_hash compute cache (B4-B5).
@@ -44,15 +61,132 @@ const TABS: Array<{ id: Tab; label: string; icon: React.ComponentType<{ size?: n
   // material from miniflux + Tavily + LLM gate, plus 14 hand-curated
   // evergreen Chinese-first cases.
   { id: 'learning',   label: 'Learning',   icon: GraduationCap },
+  { id: 'principles', label: 'Principles', icon: Scale },
+  // 2026-06-29: Cognition·认知图 removed from nav — 0 nodes (never populated).
+  // 2026-06-29: '组合 · 关系网' removed from nav — it was a duplicate of the
+  // WatchlistSection already embedded at the top of the Strategies tab. The
+  // tab==='watchlist' route is kept (below) so old deep-links still resolve.
   { id: 'settings',   label: 'Settings',   icon: SettingsIcon },
 ]
+
+// Desktop grouped nav (9 flat tabs → 5 top-level + a right-side 系统 dropdown).
+// Mobile keeps the flat TABS list above (a vertical drawer isn't cluttered).
+type NavIcon = React.ComponentType<{ size?: number }>
+type NavSingle = { id: Tab; label: string; icon: NavIcon }
+type NavGroupDef = { group: string; icon: NavIcon; items: NavSingle[] }
+
+// 2026-07-06: regrouped for coherence. Functional pages are no longer dumped
+// into "系统" — accounts (Core/Trading) and learning (Learning/Principles) get
+// real, named groups; the home (Strategies) stays top-level. Each group reads
+// as a stage of how you actually work, not an infra bucket.
+const NAV_GROUPS: Array<NavSingle | NavGroupDef> = [
+  { id: 'strategies', label: 'Strategies', icon: BookOpen },   // 驾驶舱 / home
+  { group: '研究', icon: LineChart, items: [
+    { id: 'research', label: 'Research · 认知图', icon: LineChart },
+    { id: 'serenity', label: 'Serenity · 语料', icon: Sparkles },
+    { id: 'keystone', label: 'Keystone · 卡脖子', icon: Boxes },
+  ] },
+  { group: '账户', icon: Shield, items: [
+    { id: 'core',    label: 'Core · 核心仓/对冲', icon: Shield },
+    { id: 'trading', label: 'Trading · 交易台', icon: Zap },
+  ] },
+  { group: '学习', icon: GraduationCap, items: [
+    { id: 'learning',   label: 'Learning · 案例库', icon: GraduationCap },
+    { id: 'principles', label: 'Principles · 原则', icon: Scale },
+  ] },
+]
+// 系统 — genuine infra/meta only (audit trail, provenance, config). The
+// functional pages that used to live here moved to 账户 / 学习 above.
+const SYSTEM_ITEMS: NavSingle[] = [
+  { id: 'audit',     label: 'Audit · 审计追踪', icon: ClipboardList },
+  { id: 'data_lake', label: 'Data Lake · 溯源', icon: Database },
+  { id: 'settings',  label: 'Settings · 设置', icon: SettingsIcon },
+]
+
+// Global live clock — anchors what "今天" means. Dashboard dates mix UTC (server)
+// and local, which is confusing; this shows the user's LOCAL date + weekday +
+// time + timezone, updating every second.
+function HeaderClock() {
+  const [now, setNow] = useState(() => new Date())
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000)
+    return () => clearInterval(id)
+  }, [])
+  const date = now.toLocaleDateString('sv-SE')                 // 2026-06-28
+  const wd   = now.toLocaleDateString('zh-CN', { weekday: 'short' })  // 周日
+  const time = now.toLocaleTimeString('sv-SE')                 // 23:15:42 (24h)
+  const tz   = now.toLocaleTimeString('en-US', { timeZoneName: 'short' }).split(' ').pop() || ''
+  return (
+    <div
+      data-testid="global-clock"
+      title={`当前本地时间 — 锚定「今天」。注意 dashboard 部分日期用 UTC,本地 ${tz} 可能差一天。`}
+      className="flex items-center gap-1.5 px-2 py-0.5 rounded border border-[var(--color-border)] bg-[var(--color-bg)]/40 text-[11px] font-mono flex-shrink-0"
+    >
+      <Clock size={12} className="text-[var(--color-accent)]" />
+      <span className="text-[var(--color-text)]">{date}</span>
+      <span className="text-[var(--color-dim)] hidden sm:inline">{wd}</span>
+      <span className="text-[var(--color-accent)] font-semibold">{time}</span>
+      <span className="text-[var(--color-dim)]">{tz}</span>
+    </div>
+  )
+}
+
+function NavGroupMenu({ label, icon: Icon, items, tab, onPick, open, onToggle, align = 'left' }: {
+  label: string; icon: NavIcon; items: NavSingle[]; tab: Tab
+  onPick: (id: Tab) => void; open: boolean; onToggle: (v: string | null) => void
+  align?: 'left' | 'right'
+}) {
+  const ref = useRef<HTMLDivElement>(null)
+  // Close on click outside (NOT mouse-leave: the menu is absolutely positioned
+  // outside the button box, so mouse-leave fired before the cursor reached the
+  // items and the dropdown was unselectable).
+  useEffect(() => {
+    if (!open) return
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) onToggle(null)
+    }
+    document.addEventListener('mousedown', onDown)
+    return () => document.removeEventListener('mousedown', onDown)
+  }, [open, onToggle])
+  const active = items.some(i => i.id === tab)
+  // When one of this group's items is the current tab, surface WHICH one in
+  // the trigger (e.g. "系统 · 核心") — otherwise a deep-link into a dropdown
+  // tab lights up the group but gives no clue where you landed.
+  const activeItem = items.find(i => i.id === tab)
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        onClick={() => onToggle(open ? null : label)}
+        className={cn('flex items-center gap-1.5 px-3 py-1 rounded text-xs transition',
+          active ? 'bg-[var(--color-border)] text-[var(--color-accent)]'
+                 : 'text-[var(--color-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)]/50')}
+      >
+        <Icon size={12} /> {label}{active && activeItem ? ` · ${activeItem.label}` : ''} <ChevronDown size={10} className={open ? 'rotate-180' : ''} />
+      </button>
+      {open && (
+        <div className={cn('absolute z-50 mt-1 min-w-[170px] bg-[var(--color-panel)] border border-[var(--color-border)] rounded shadow-xl py-1',
+          align === 'right' ? 'right-0' : 'left-0')}>
+          {items.map(it => (
+            <button key={it.id} data-testid={`tab-${it.id}`}
+              onClick={() => { onPick(it.id); onToggle(null) }}
+              className={cn('w-full flex items-center gap-2 px-3 py-1.5 text-xs text-left transition',
+                tab === it.id ? 'text-[var(--color-accent)] bg-[var(--color-border)]/60'
+                              : 'text-[var(--color-text)] hover:bg-[var(--color-border)]/50')}>
+              <it.icon size={12} /> {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function App() {
   const [tab, setTab] = useState<Tab>(() => {
     if (typeof window !== 'undefined' && window.location.search.includes('legacy=1')) {
       return 'legacy'
     }
-    return 'research'
+    return 'strategies'   // land on the home cockpit (accounts / gateway / 待办)
   })
   const [projectId, setProjectId] = useState<string>(
     () => localStorage.getItem('neomind.project') ?? 'fin-core'
@@ -64,6 +198,13 @@ export default function App() {
   // Mobile nav drawer — hamburger toggles. Auto-closes when user
   // picks a tab (so the underlying content shows immediately).
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
+  // Which desktop nav dropdown (研究 / 账户 / 学习 / 系统) is open, by label.
+  const [openMenu, setOpenMenu] = useState<string | null>(null)
+  // Deep-link breadcrumb — when you drill from one tab INTO another (e.g. a
+  // DeskStrip account card → Core), remember where you came FROM. The nav then
+  // shows "‹ Strategies / Core" so you click the origin tab to go back. Set
+  // ONLY by deep-links (not ordinary nav), so it never ping-pongs.
+  const [deepLink, setDeepLink] = useState<{ from: Tab; to: Tab } | null>(null)
   // 2026-05-19: self-restart admin button — POSTs /api/admin/restart
   // then polls /api/health until the new process comes up, then reloads.
   const [restarting, setRestarting] = useState(false)
@@ -190,7 +331,7 @@ export default function App() {
               below header). Drawer auto-closes on tab pick.
             - >=md (desktop): full inline nav + status widgets, exactly
               as before. */}
-      <header className="flex items-center gap-2 md:gap-4 px-3 md:px-4 py-2 bg-[var(--color-panel)] border-b border-[var(--color-border)] shrink-0 min-w-0">
+      <header className="flex flex-wrap items-center gap-2 md:gap-4 px-3 md:px-4 py-2 bg-[var(--color-panel)] border-b border-[var(--color-border)] shrink-0 min-w-0">
         {/* Mobile-only hamburger */}
         <button
           aria-label="Open navigation"
@@ -206,23 +347,55 @@ export default function App() {
           <span className="font-semibold truncate">neomind / fin</span>
         </div>
 
-        {/* Desktop-only inline nav */}
-        <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">
-          {TABS.map(({ id, label, icon: Icon }) => (
+        {/* Global live clock — anchors "今天" (local date/time + TZ). */}
+        <HeaderClock />
+
+        {/* Global 预警/提案 bell — synced with Telegram (same agent_alerts table). */}
+        <AlertsBell />
+
+        {/* Deep-link breadcrumb — after drilling into a sub-page (e.g. an
+            account card → Core), show "‹ origin / current"; click the origin
+            tab name to go back. Auto-hides the moment you leave the target,
+            so it never ping-pongs like a raw back button. */}
+        {deepLink && tab === deepLink.to && (
+          <div data-testid="nav-breadcrumb" className="hidden md:flex items-center gap-1.5 text-xs whitespace-nowrap">
             <button
-              key={id}
-              data-testid={`tab-${id}`}
-              onClick={() => setTab(id)}
-              className={cn(
-                'flex items-center gap-1.5 px-3 py-1 rounded text-xs transition',
-                tab === id
-                  ? 'bg-[var(--color-border)] text-[var(--color-accent)]'
-                  : 'text-[var(--color-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)]/50',
-              )}
+              onClick={() => { setTab(deepLink.from); setDeepLink(null) }}
+              title={`返回 ${TABS.find(t => t.id === deepLink.from)?.label ?? ''}`}
+              className="flex items-center gap-1 px-2 py-1 rounded text-[var(--color-accent)] hover:bg-[var(--color-border)]/50 transition"
             >
-              <Icon size={12} />
-              {label}
+              <span className="text-sm leading-none">‹</span>
+              {TABS.find(t => t.id === deepLink.from)?.label ?? ''}
             </button>
+            <span className="text-[var(--color-dim)]">/</span>
+            <span className="text-[var(--color-dim)]">{TABS.find(t => t.id === deepLink.to)?.label ?? ''}</span>
+          </div>
+        )}
+
+        {/* Desktop-only inline nav — grouped (研究/账户/学习 dropdowns) */}
+        <nav className="hidden md:flex items-center gap-1" data-testid="top-nav">
+          {NAV_GROUPS.map(e => (
+            'items' in e ? (
+              <NavGroupMenu
+                key={e.group} label={e.group} icon={e.icon} items={e.items}
+                tab={tab} onPick={setTab} open={openMenu === e.group} onToggle={setOpenMenu}
+              />
+            ) : (
+              <button
+                key={e.id}
+                data-testid={`tab-${e.id}`}
+                onClick={() => setTab(e.id)}
+                className={cn(
+                  'flex items-center gap-1.5 px-3 py-1 rounded text-xs transition',
+                  tab === e.id
+                    ? 'bg-[var(--color-border)] text-[var(--color-accent)]'
+                    : 'text-[var(--color-dim)] hover:text-[var(--color-text)] hover:bg-[var(--color-border)]/50',
+                )}
+              >
+                <e.icon size={12} />
+                {e.label}
+              </button>
+            )
           ))}
         </nav>
 
@@ -232,6 +405,14 @@ export default function App() {
         <span className="md:hidden text-[11px] text-[var(--color-accent)] truncate">
           {TABS.find(t => t.id === tab)?.label ?? ''}
         </span>
+
+        {/* 系统 — low-frequency infra surfaces, tucked right (desktop) */}
+        <div className="hidden md:block">
+          <NavGroupMenu
+            label="系统" icon={Boxes} items={SYSTEM_ITEMS}
+            tab={tab} onPick={setTab} open={openMenu === '系统'} onToggle={setOpenMenu} align="right"
+          />
+        </div>
 
         {/* ⌘K — desktop only (no keyboard on mobile) */}
         <button
@@ -384,6 +565,7 @@ export default function App() {
             onChangeAsOf={setAsOfPersist}
             onJumpToAudit={jumpToAudit}
             onNavigateToResearch={jumpToResearch}
+            onNavigate={(t) => { setDeepLink({ from: tab, to: t as Tab }); setTab(t as Tab) }}
             pendingPrompt={pendingChatPrompt}
             pendingContext={pendingChatContext}
             onConsumePendingPrompt={() => {
@@ -392,7 +574,8 @@ export default function App() {
             }}
           />
         </div>
-        {tab === 'paper'    && <PaperTab projectId={projectId} />}
+        {tab === 'core' && <CoreTab />}
+        {(tab === 'trading' || tab === 'paper') && <TradingTab projectId={projectId} />}
         {tab === 'audit'    && (
           <AuditTab
             initialReqFilter={auditReqFilter}
@@ -401,7 +584,11 @@ export default function App() {
         )}
         {tab === 'data_lake' && <DataLakeTab projectId={projectId} />}
         {tab === 'learning' && <LearningTab />}
+        {tab === 'principles' && <PrinciplesTab />}
+        {tab === 'cognition' && <CognitionMapTab projectId={projectId} />}
         {tab === 'watchlist' && <WatchlistTab />}
+        {tab === 'serenity' && <SerenityTab />}
+        {tab === 'keystone' && <KeystoneTab />}
         {tab === 'settings' && (
           <SettingsTab
             projectId={projectId}

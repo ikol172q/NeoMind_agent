@@ -526,11 +526,19 @@ def build_audit_router():
     router = APIRouter()
     log = get_default_audit()
 
-    @router.get("/audit", response_class=HTMLResponse)
+    # response_model=None on every route below: each returns a raw
+    # Starlette Response (HTMLResponse/JSONResponse), and this module
+    # uses `from __future__ import annotations` while these classes are
+    # imported at function scope — so a bare `-> JSONResponse` return
+    # hint becomes an unresolved ForwardRef in the module globals that
+    # FastAPI cannot turn into a schema, which 500s `/openapi.json`
+    # (and breaks `/docs`). Explicit `response_model=None` tells FastAPI
+    # "no schema — I return the Response myself", bypassing inference.
+    @router.get("/audit", response_class=HTMLResponse, response_model=None)
     def audit_viewer() -> HTMLResponse:
         return HTMLResponse(content=_AUDIT_HTML)
 
-    @router.get("/api/audit/recent")
+    @router.get("/api/audit/recent", response_model=None)
     def recent(
         limit: int = Query(50, ge=1, le=500),
         days: int = Query(1, ge=1, le=90),
@@ -541,21 +549,21 @@ def build_audit_router():
             "audit_root": str(log.root),
         })
 
-    @router.get("/api/audit/task/{task_id}")
+    @router.get("/api/audit/task/{task_id}", response_model=None)
     def by_task(task_id: str, days: int = Query(7, ge=1, le=90)) -> JSONResponse:
         return JSONResponse(content={
             "task_id": task_id,
             "entries": log.by_task(task_id, days=days),
         })
 
-    @router.get("/api/audit/req/{req_id}")
+    @router.get("/api/audit/req/{req_id}", response_model=None)
     def by_req(req_id: str, days: int = Query(7, ge=1, le=90)) -> JSONResponse:
         return JSONResponse(content={
             "req_id": req_id,
             "entries": log.by_req(req_id, days=days),
         })
 
-    @router.get("/api/audit/stats")
+    @router.get("/api/audit/stats", response_model=None)
     def stats(days: int = Query(1, ge=1, le=90)) -> JSONResponse:
         return JSONResponse(content=log.stats(days=days))
 

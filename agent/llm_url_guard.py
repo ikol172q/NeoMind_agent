@@ -132,7 +132,9 @@ def verify_url(url: str, cache_ttl_days: int = 7) -> bool:
     """HEAD-verify URL. Cached in url_verification_cache table for 7d."""
     if not url:
         return False
-    from agent.finance.persistence import connect, ensure_schema
+    from agent.fin_provider import fin_module
+    _persistence = fin_module('persistence')
+    connect, ensure_schema = _persistence.connect, _persistence.ensure_schema
     ensure_schema()
     cutoff = (datetime.now(timezone.utc) - timedelta(days=cache_ttl_days)).isoformat()
     try:
@@ -246,7 +248,7 @@ def sanitize_text(
     # an audit failure (it's a low-level utility called from many
     # surfaces; defense in depth).
     try:
-        from agent.finance import agent_audit
+        from agent.services import agent_audit
         req_id = agent_audit.new_req_id()
         endpoint = f"url-guard:{(context_hint or 'unknown')[:30]}"
         agent_audit.audit_request(

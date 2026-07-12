@@ -245,7 +245,9 @@ class AuditEngine:
         findings = []
         # Test MessageRouter with empty/weird inputs
         try:
-            from agent.finance.telegram_bot import MessageRouter, TelegramConfig
+            from agent.fin_provider import fin_module
+            _tb = fin_module('telegram_bot')
+            MessageRouter, TelegramConfig = _tb.MessageRouter, _tb.TelegramConfig
             router = MessageRouter("test_bot", TelegramConfig())
             empty_cases = ["", None, " ", "\n", "   "]
             for case in empty_cases:
@@ -267,7 +269,8 @@ class AuditEngine:
             os.environ.pop("LITELLM_ENABLED", None)
             os.environ.pop("LITELLM_API_KEY", None)
 
-            from agent.finance.telegram_bot import NeoMindTelegramBot
+            from agent.fin_provider import fin_module
+            NeoMindTelegramBot = fin_module('telegram_bot').NeoMindTelegramBot
             chain_method = NeoMindTelegramBot._get_provider_chain
             chain = chain_method(type('obj', (), {})(), thinking=False)
             if chain:
@@ -325,10 +328,10 @@ class AuditEngine:
     def _check_module_composition(self) -> List[AuditFinding]:
         findings = []
         try:
-            from agent.finance import get_finance_components
+            from agent.fin_provider import fin_package
             from agent_config import AgentConfigManager
             cfg = AgentConfigManager(mode="fin")
-            components = get_finance_components(cfg)
+            components = fin_package().get_finance_components(cfg)
             expected = ["search", "data_hub", "memory", "digest", "quant", "diagram", "dashboard", "sync"]
             for name in expected:
                 if name not in components or components[name] is None:
@@ -353,7 +356,8 @@ class AuditEngine:
     def _check_provider_chain(self) -> List[AuditFinding]:
         findings = []
         os.environ.setdefault("DEEPSEEK_API_KEY", "test")
-        from agent.finance.telegram_bot import NeoMindTelegramBot
+        from agent.fin_provider import fin_module
+        NeoMindTelegramBot = fin_module('telegram_bot').NeoMindTelegramBot
         chain_method = NeoMindTelegramBot._get_provider_chain
         obj = type('obj', (), {})()
 

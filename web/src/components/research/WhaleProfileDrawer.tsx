@@ -29,6 +29,11 @@ import {
   type WhaleResearchSummary as ResearchSummary,
 } from '@/lib/api'
 import { useWhaleResearch } from './WhaleResearchContext'
+import { fmtTs } from '@/lib/utils'
+
+/** whale research generated_at can be naive (no TZ) — treat as UTC, render local */
+const asLocal = (s?: string | null): string =>
+  s ? fmtTs(/Z$|[+-]\d\d:?\d\d$/.test(s) ? s : s + 'Z') : ''
 import {
   X, Languages, TrendingUp, TrendingDown, AlertTriangle,
   ExternalLink, BookOpen, Mic, AtSign, FileText, Newspaper,
@@ -334,10 +339,8 @@ function ResearchSummarySection({
   const generated_at = data?.generated_at
   const has_summary = data?.exists && summary
 
-  // Format generated_at to local-ish display
-  const tsLabel = generated_at
-    ? new Date(generated_at + (generated_at.endsWith('Z') ? '' : 'Z')).toISOString().slice(0, 16).replace('T', ' ')
-    : '从未生成'
+  // Format generated_at in the user's LOCAL timezone (matches the global clock)
+  const tsLabel = generated_at ? asLocal(generated_at) : '从未生成'
 
   return (
     <section className="border border-[var(--color-accent,#7ed9d9)]/40 rounded bg-[var(--color-accent,#7ed9d9)]/5">
@@ -469,7 +472,7 @@ function ResearchSummarySection({
                   <div className="mt-1 ml-2 space-y-0.5">
                     {historyQ.data.history.map(h => (
                       <div key={h.id} className="font-mono text-[9.5px]">
-                        {h.is_active ? '★' : ' '} {h.generated_at?.slice(0, 16) ?? '?'}
+                        {h.is_active ? '★' : ' '} {asLocal(h.generated_at) || '?'}
                         · {h.model_used ?? '?'}
                         · {h.n_urls_validated ?? 0} URLs OK
                         {h.error_message ? <span className="text-[var(--color-red,#e07070)]"> · {h.error_message.slice(0, 50)}</span> : null}

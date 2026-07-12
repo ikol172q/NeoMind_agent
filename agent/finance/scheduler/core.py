@@ -27,13 +27,31 @@ logger = logging.getLogger(__name__)
 
 # Modules to auto-register at startup. Add new jobs here.
 DEFAULT_JOBS = [
+    # Serenity (@aleabitoreddit) 一手语料库每日增量抓取 (2026-06-02).
+    # Best-effort: Apify 抓取失败/额度用尽则跳过,不影响其他 job。
+    "agent.finance.scheduler.jobs.serenity_sync",
     "agent.finance.scheduler.jobs.daily_market_pull",
     "agent.finance.scheduler.jobs.compliance_check",
+    # IB Gateway 掉线预警 (2026-07-06): 每 20 分钟探测 API 端口,掉线→P1 推,
+    # 否则 IBKR 真仓在 dashboard 上隐形、静默裸管。watchdog 拉起 app;本 job 通知。
+    "agent.finance.scheduler.jobs.ibkr_gateway_health",
+    # 纪律化 IC 深研 loop (2026-07-10): 每工作日扫低覆盖小盘 insider 集群 → 深研
+    # (anchored crux) → 纪律 thesis(机制/缺口/invalidation/退役/sizing)。机器自己
+    # 筛,让前向验证的 breadth 组合自动增长;propose-not-dispose,永不下单。
+    "agent.finance.scheduler.jobs.research_loop_scan",
     # Phase B3-real (2026-04-26): pull Miniflux entries → RawStore.
     # Graceful skip if Miniflux unconfigured/unreachable, so adding
     # this module to the default registry is safe even on machines
     # without docker miniflux booted.
     "agent.finance.scheduler.jobs.news_pull",
+    # Official company newsroom RSS → official_news table, hourly
+    # (真·定时) so the drawer serves fresh primary-source PRs without an
+    # open tab. Best-effort per ticker; endpoint also refreshes on demand.
+    "agent.finance.scheduler.jobs.official_news_pull",
+    # Daily metric snapshots (quote+fundamentals+holders) → metric_snapshot
+    # table, so the drawer can show metrics as-of any past day (verified,
+    # tool-sourced, auditable). Runs after US close.
+    "agent.finance.scheduler.jobs.metric_snapshot_pull",
     # Anti-hallucination Layer 0a (2026-04-27): nightly audit of N
     # 'unverified' strategies. Promotes them to 'verified' /
     # 'partially_verified' once their numeric claims are grounded in
@@ -61,6 +79,13 @@ DEFAULT_JOBS = [
     # went stale or supporting signal types went silent in 30d.
     # Runs 06:30 daily, after learning_daily.
     "agent.finance.scheduler.jobs.thesis_health_check",
+    # Goal-2 闭环主动腿 (2026-06-29): EOD 后重算 thesis_materiality → 破/动摇
+    # 生成提案写 agent_alerts(去重)→ 推 Telegram(与 dashboard 铃铛同步)。
+    # propose-not-dispose。22:00 UTC,美股收盘后。
+    "agent.finance.scheduler.jobs.thesis_alert_daily",
+    # Goal-2 闭环 P1 即时腿 (2026-06-29): 每小时确定性事件扫描 → grounded 判断
+    # → 即时推 P1(下行/生存)。P2 留给上面的每日 digest。
+    "agent.finance.scheduler.jobs.alert_scan_hourly",
     # Phase 3 (2026-05-10): daily earnings calendar scan for Core +
     # Adjacent watchlist tickers. Emits earnings_upcoming signal_event
     # when within 14d (severity by proximity). Backfills
@@ -86,6 +111,28 @@ DEFAULT_JOBS = [
     # signal_snapshots table holds the historical (date, combined_score)
     # sequence needed for proper edge-validation backtests in vectorbt.
     "agent.finance.scheduler.jobs.signal_snapshot_daily",
+    # 2026-05-22: short-term trading desk daily auto-scan. Scans armed
+    # setups (status paper/live) for entry triggers on the latest bar and
+    # auto-places risk-sized paper orders — UNLESS the global halt is on.
+    # Runs the kill-switch check first. Weekday evening (after US close).
+    "agent.finance.scheduler.jobs.trading_scan",
+    # IBKR durable archive (2026-05-23): every 5 min in market hours, snapshot
+    # paper account/positions/orders/fills into ibkr_log so backtrace never
+    # loses a fill. Graceful no-op (records snapshot_error) if Gateway is down.
+    "agent.finance.scheduler.jobs.ibkr_snapshot",
+    # IBKR Flex backstop (2026-05-23): daily after-close pull of the official
+    # statement → ibkr_log (deduped by tradeID). Lossless catch-all for fills
+    # the live snapshot missed. No-op until the user configures token+query.
+    "agent.finance.scheduler.jobs.ibkr_flex_sync",
+    # Journal auto-sync (2026-07-10): weekday after-close reconcile of the
+    # trade journal against real IBKR fills (durable ibkr_log) — auto-closes
+    # open entries whose position left the book. Runs 22:30 UTC, right AFTER
+    # ibkr_flex_sync so the authoritative fills are already archived. Honest
+    # 0 when IBKR is disconnected / no sell fills on record (no fabrication).
+    "agent.finance.scheduler.jobs.journal_sync_daily",
+    # Daily 巡检 heartbeat: pushes ALL jobs' health (简报 + per-job 详细) +
+    # key crawl-table persistence to Telegram/铃铛, so nothing dies silently.
+    "agent.finance.scheduler.jobs.scheduler_health_digest",
 ]
 
 

@@ -238,6 +238,19 @@ class PaperTradingEngine:
             if should_execute:
                 self._fill_order(order, execute_price)
                 orders_to_remove.append(order_id)
+                # OCO: when one leg of a bracket fills, cancel its siblings
+                # (e.g. stop fills → cancel the take-profit limit) so we never
+                # over-sell into a phantom short.
+                grp = order.metadata.get('oco_group')
+                if grp and order.status == OrderStatus.FILLED:
+                    for other_id in self.pending_orders:
+                        if other_id == order_id:
+                            continue
+                        other = self.orders.get(other_id)
+                        if other and other.metadata.get('oco_group') == grp:
+                            other.status = OrderStatus.CANCELLED
+                            other.metadata['cancelled_reason'] = 'oco_sibling_filled'
+                            orders_to_remove.append(other_id)
 
         for order_id in orders_to_remove:
             if order_id in self.pending_orders:
@@ -597,6 +610,37 @@ class PaperTradingEngine:
             return False
 
 
+# ── Shared per-project engine accessor ──────────────────────────────
+# A single source of truth for "the paper engine for project X" so the
+# dashboard's read endpoints and the trading-desk's automated order
+# placement operate on the SAME in-memory instance (otherwise auto-placed
+# orders wouldn't show in the UI until a restart re-read state.json).
+_SHARED_ENGINES: Dict[str, "PaperTradingEngine"] = {}
+_SHARED_STATE_FILE = "state.json"
+
+
+def get_project_engine(project_id: str) -> "PaperTradingEngine":
+    """Get (or lazily build) the shared paper engine for a project."""
+    if project_id not in _SHARED_ENGINES:
+        from agent.finance import investment_projects
+        proj_dir = investment_projects.get_project_dir(project_id)
+        data_dir = proj_dir / "paper_trading"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        eng = PaperTradingEngine(initial_capital=100_000.0, data_dir=data_dir)
+        eng.load_state(_SHARED_STATE_FILE)
+        _SHARED_ENGINES[project_id] = eng
+    return _SHARED_ENGINES[project_id]
+
+
+def save_project_engine(project_id: str) -> None:
+    eng = _SHARED_ENGINES.get(project_id)
+    if eng is not None:
+        try:
+            eng.save_state(_SHARED_STATE_FILE)
+        except Exception:
+            pass
+
+
 __all__ = [
     'PaperTradingEngine',
     'Account',
@@ -606,6 +650,8 @@ __all__ = [
     'OrderSide',
     'OrderType',
     'OrderStatus',
+    'get_project_engine',
+    'save_project_engine',
 ]
 
 

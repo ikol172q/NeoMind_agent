@@ -159,8 +159,8 @@ class FinancePersonality(BasePersonality, SharedCommandsMixin):
             return  # Already initialized
 
         try:
-            from agent.finance import get_finance_only_components
-            self._finance_components = get_finance_only_components()
+            from agent.fin_provider import fin_package
+            self._finance_components = fin_package().get_finance_only_components()
             self._finance_validator = self._finance_components.get('validator')
         except Exception:
             self._finance_components = {}
@@ -168,10 +168,10 @@ class FinancePersonality(BasePersonality, SharedCommandsMixin):
 
         # Also init full finance subsystems on core (for NL routing)
         try:
-            from agent.finance import get_finance_components
+            from agent.fin_provider import fin_package
             from agent_config import agent_config as cfg
             if not getattr(self.core, '_finance_components', None):
-                self.core._finance_components = get_finance_components(cfg)
+                self.core._finance_components = fin_package().get_finance_components(cfg)
         except Exception:
             pass
 

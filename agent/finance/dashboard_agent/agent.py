@@ -29,6 +29,22 @@ import httpx
 
 from agent.finance.dashboard_agent.tools import TOOL_SCHEMAS, dispatch
 from agent.finance.persistence import connect, ensure_schema
+from agent.finance import agent_audit, fin_reward, fin_router
+
+# Episode capture feeds the (dormant) evolution loop. Best-effort: if the
+# module can't import (e.g. trimmed deploy) the agent still answers.
+try:
+    from agent.evolution.episode_capture import record_episode as _record_episode
+except Exception:  # noqa: BLE001
+    _record_episode = None
+
+# Outcome ledger (Phase 3.1) closes the reward loop: log proposed directional
+# decisions so fin_outcome.backfill() can later attach the realized forward
+# return as a sparse reward. Best-effort, ZERO network on the reply path.
+try:
+    from agent.finance import fin_outcome as _fin_outcome
+except Exception:  # noqa: BLE001
+    _fin_outcome = None
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +96,12 @@ def _agent_connect():
         "CREATE INDEX IF NOT EXISTS idx_ach_chat "
         "ON agent_chat_history(chat_id, turn_idx)"
     )
+    # Phase 1b: persist reasoning_content so interleaved thinking can carry
+    # across user-message boundaries. Guarded ALTER for pre-existing DBs.
+    try:
+        conn.execute("ALTER TABLE agent_chat_history ADD COLUMN reasoning_content TEXT")
+    except sqlite3.OperationalError:
+        pass  # column already exists
     return conn
 
 
@@ -232,18 +254,27 @@ def _parse_proposals(text: str) -> AgentReply:
 
 
 async def _llm_call(messages: List[Dict[str, Any]],
-                    model: str) -> Dict[str, Any]:
+                    model: str,
+                    *,
+                    reasoning_effort: Optional[str] = None,
+                    max_tokens: int = 2000,
+                    temperature: float = 0.3) -> Dict[str, Any]:
     base = (os.getenv("LLM_ROUTER_BASE_URL") or "http://127.0.0.1:8000/v1").rstrip("/")
     key = (os.getenv("LLM_ROUTER_API_KEY")
            or os.getenv("DEEPSEEK_API_KEY")
            or "dummy")
-    payload = {
+    payload: Dict[str, Any] = {
         "model":       model,
         "messages":    messages,
         "tools":       TOOL_SCHEMAS,
-        "temperature": 0.3,
-        "max_tokens":  2000,
+        "temperature": temperature,
+        "max_tokens":  max_tokens,
     }
+    # DeepSeek V4 thinking budget. Valid: low/medium/high/max/xhigh (the
+    # API 400s on anything else, incl. "none" — both models think by
+    # default). Omit the field rather than send an unsupported value.
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
     async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as c:
         r = await c.post(
             f"{base}/chat/completions",
@@ -265,14 +296,16 @@ def _now_iso() -> str:
 def _load_history(chat_id: str) -> List[Dict[str, Any]]:
     """Load most recent _HISTORY_WINDOW turns for a chat, oldest first.
 
-    Note we don't restore `reasoning_content` from past turns — once a
-    turn is committed to the DB, the next `answer()` call is a fresh
-    LLM round-trip that re-derives reasoning. Only the active loop
-    within one answer() call needs to forward reasoning back.
+    Phase 1b — interleaved thinking: we now persist + restore
+    `reasoning_content`, but keep it ONLY on the most-recent assistant
+    turn (see _keep_recent_reasoning). That lets the model continue its
+    prior chain of thought across a user-message boundary (V4's
+    interleaved-thinking behaviour — verified the API accepts historical
+    reasoning without a 400) while bounding the extra input tokens.
     """
     with _agent_connect() as conn:
         rows = conn.execute(
-            "SELECT role, content, tool_call_id, tool_calls_json "
+            "SELECT role, content, tool_call_id, tool_calls_json, reasoning_content "
             "FROM agent_chat_history "
             "WHERE chat_id = ? AND role IN ('user','assistant','tool') "
             "ORDER BY turn_idx DESC LIMIT ?",
@@ -289,8 +322,28 @@ def _load_history(chat_id: str) -> List[Dict[str, Any]]:
                 pass
         if r["tool_call_id"]:
             msg["tool_call_id"] = r["tool_call_id"]
+        if r["reasoning_content"]:
+            msg["reasoning_content"] = r["reasoning_content"]
         out.append(msg)
-    return _strip_orphan_tool_calls(out)
+    out = _strip_orphan_tool_calls(out)
+    _keep_recent_reasoning(out)
+    return out
+
+
+def _keep_recent_reasoning(msgs: List[Dict[str, Any]]) -> None:
+    """Strip reasoning_content from every assistant turn except the last.
+
+    Mutates ``msgs`` in place. Carrying every turn's reasoning would blow
+    up input tokens; the most-recent assistant turn is the high-value one
+    (the model's last conclusion) and is enough for continuity.
+    """
+    last_assistant = -1
+    for i, m in enumerate(msgs):
+        if m.get("role") == "assistant":
+            last_assistant = i
+    for i, m in enumerate(msgs):
+        if m.get("role") == "assistant" and i != last_assistant:
+            m.pop("reasoning_content", None)
 
 
 def _strip_orphan_tool_calls(msgs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -341,14 +394,15 @@ def _persist_turn(chat_id: str, turn_idx: int, msg: Dict[str, Any],
             "INSERT INTO agent_chat_history "
             "(chat_id, turn_idx, role, content, tool_call_id, "
             " tool_calls_json, model, tokens_in, tokens_out, cost_usd, "
-            " created_at) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " created_at, reasoning_content) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 chat_id, turn_idx, msg["role"],
                 msg.get("content") or "",
                 msg.get("tool_call_id"),
                 (json.dumps(msg["tool_calls"]) if msg.get("tool_calls") else None),
                 model, tokens_in, tokens_out, cost, _now_iso(),
+                msg.get("reasoning_content"),
             ),
         )
 
@@ -365,19 +419,109 @@ def _approx_cost(model: Optional[str], t_in: Optional[int],
     return None
 
 
+# ── trajectory + reward (Phase 0: Fin Harness Evolution Loop) ─────────
+
+
+def _finalize_turn(
+    reply: AgentReply,
+    *,
+    chat_id: str,
+    req_id: str,
+    query: str,
+    tool_results: List[Dict[str, Any]],
+    episode_tool_calls: List[Dict[str, Any]],
+    model: str,
+    usage: Optional[Dict[str, Any]],
+    finish_reason: str,
+    iterations: int,
+    t0: float,
+    route: Optional[Dict[str, Any]] = None,
+) -> AgentReply:
+    """Close out one answer(): audit the response, compute the per-turn
+    reward, and append a reward-labelled episode for the evolution loop.
+
+    Every step is best-effort — instrumentation must never break a reply.
+    Returns ``reply`` unchanged so call sites can ``return _finalize_turn(...)``.
+    """
+    duration_ms = int((time.monotonic() - t0) * 1000)
+    decisions = [p.args for p in reply.proposals if p.kind == "decision"]
+
+    try:
+        agent_audit.audit_response(
+            req_id=req_id, agent_id="dashboard-agent",
+            endpoint="dashboard_agent.answer",
+            content=reply.text, finish_reason=finish_reason,
+            usage=usage, duration_ms=duration_ms,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("audit_response failed", exc_info=True)
+
+    reward: Optional[Dict[str, Any]] = None
+    try:
+        reward = fin_reward.compute_reward(
+            query=query, reply=reply.text, tool_results=tool_results,
+            decisions=decisions, finish_reason=finish_reason,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("compute_reward failed", exc_info=True)
+
+    if _fin_outcome is not None and decisions:
+        try:
+            _fin_outcome.record_decisions(
+                decisions=decisions, req_id=req_id, chat_id=chat_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("fin_outcome.record_decisions failed", exc_info=True)
+
+    if _record_episode is not None:
+        try:
+            _record_episode(
+                mode="fin", query=query, reply=reply.text,
+                tool_calls=episode_tool_calls,
+                signals={
+                    "model": model,
+                    "intent": (route or {}).get("intent"),
+                    "reasoning_effort": (route or {}).get("reasoning_effort"),
+                    "finish_reason": finish_reason,
+                    "duration_ms": duration_ms,
+                    "n_iterations": iterations,
+                    "tokens_in": (usage or {}).get("prompt_tokens"),
+                    "tokens_out": (usage or {}).get("completion_tokens"),
+                    "reward": reward,
+                },
+                session_id=str(chat_id), project_id="fin-core", req_id=req_id,
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("record_episode failed", exc_info=True)
+
+    return reply
+
+
 # ── main entry ────────────────────────────────────────────────────────
 
 
 async def answer(chat_id: str, user_msg: str,
-                 model: str = _DEFAULT_MODEL) -> AgentReply:
+                 model: Optional[str] = None,
+                 temperature: Optional[float] = None) -> AgentReply:
     """Receive a message, run the tool-calling loop, return final reply.
 
     Persists user message, every tool call/result, and final assistant
     reply to agent_chat_history. Bounded to _MAX_TURNS_PER_CALL LLM
     round-trips per call to prevent runaway.
+
+    Difficulty routing (Phase 1): when ``model`` is None the query is
+    classified and routed to flash/pro + a reasoning_effort. An explicit
+    ``model`` (e.g. from a /model override) is honoured but still gets a
+    sensible effort.
     """
     chat_id = str(chat_id)
     system_prompt = _SYSTEM_MD.read_text(encoding="utf-8")
+
+    # Route: query → (model, reasoning_effort, max_tokens).
+    route = fin_router.route(user_msg, explicit_model=model)
+    model = route["model"]
+    reasoning_effort = route["reasoning_effort"]
+    route_max_tokens = route["max_tokens"]
+    logger.info("fin route: %s", route["reason"])
 
     history = _load_history(chat_id)
     turn_idx = _next_turn_idx(chat_id)
@@ -388,26 +532,57 @@ async def answer(chat_id: str, user_msg: str,
 
     messages = [{"role": "system", "content": system_prompt}] + history + [user_turn]
 
+    # Trajectory instrumentation (Phase 0). req_id ties the audit request,
+    # audit response, and the episode together.
+    req_id = agent_audit.new_req_id()
+    t0 = time.monotonic()
+    iterations = 0
+    last_usage: Optional[Dict[str, Any]] = None
+    episode_tool_calls: List[Dict[str, Any]] = []
+    tool_results_for_reward: List[Dict[str, Any]] = []
+    try:
+        agent_audit.audit_request(
+            req_id=req_id, endpoint="dashboard_agent.answer",
+            agent_id="dashboard-agent", messages=messages, model=model,
+            max_tokens=route_max_tokens, temperature=0.3,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("audit_request failed", exc_info=True)
+
     for _ in range(_MAX_TURNS_PER_CALL):
+        iterations += 1
         try:
-            resp = await _llm_call(messages, model)
+            resp = await _llm_call(messages, model,
+                                   reasoning_effort=reasoning_effort,
+                                   max_tokens=route_max_tokens,
+                                   temperature=0.3 if temperature is None else temperature)
         except httpx.HTTPError as exc:
             err = f"⚠️ LLM 调用失败 ({type(exc).__name__})。dashboard 还在，请稍后重试。"
             _persist_turn(chat_id, turn_idx, {"role": "assistant", "content": err}, model=model)
-            return AgentReply(text=err)
+            return _finalize_turn(
+                AgentReply(text=err), chat_id=chat_id, req_id=req_id,
+                query=user_msg, tool_results=tool_results_for_reward,
+                episode_tool_calls=episode_tool_calls, model=model,
+                usage=last_usage, finish_reason="llm_error",
+                iterations=iterations, t0=t0, route=route)
 
         choice = resp["choices"][0]
         assistant_msg = choice["message"]
         usage = resp.get("usage")
+        last_usage = usage or last_usage
 
-        # Persist the assistant turn (may include tool_calls). We don't
-        # persist reasoning_content — it's only needed within one loop.
+        # Persist the assistant turn (may include tool_calls + reasoning).
+        # Phase 1b: reasoning_content is now persisted so it can carry to
+        # the next answer() (interleaved thinking); _load_history keeps it
+        # only on the most-recent assistant turn to bound token cost.
         persist_msg = {
             "role":    "assistant",
             "content": assistant_msg.get("content") or "",
         }
         if assistant_msg.get("tool_calls"):
             persist_msg["tool_calls"] = assistant_msg["tool_calls"]
+        if assistant_msg.get("reasoning_content"):
+            persist_msg["reasoning_content"] = assistant_msg["reasoning_content"]
         _persist_turn(chat_id, turn_idx, persist_msg, model=model, usage=usage)
         turn_idx += 1
 
@@ -427,7 +602,12 @@ async def answer(chat_id: str, user_msg: str,
         tool_calls = assistant_msg.get("tool_calls") or []
         if not tool_calls:
             raw = assistant_msg.get("content") or "(空回复)"
-            return _parse_proposals(raw)
+            return _finalize_turn(
+                _parse_proposals(raw), chat_id=chat_id, req_id=req_id,
+                query=user_msg, tool_results=tool_results_for_reward,
+                episode_tool_calls=episode_tool_calls, model=model,
+                usage=last_usage, finish_reason="stop",
+                iterations=iterations, t0=t0, route=route)
 
         # Execute each tool the LLM asked for (parallel — they're all read-only).
         async def _run_one(tc: Dict[str, Any]) -> Dict[str, Any]:
@@ -441,21 +621,35 @@ async def answer(chat_id: str, user_msg: str,
         results = await asyncio.gather(*[_run_one(tc) for tc in tool_calls])
 
         for r in results:
+            tc = r["tc"]
+            try:
+                _args = json.loads(tc["function"]["arguments"] or "{}")
+            except json.JSONDecodeError:
+                _args = {}
+            episode_tool_calls.append(
+                {"name": tc["function"]["name"], "args": _args})
             tool_turn = {
                 "role":         "tool",
-                "tool_call_id": r["tc"]["id"],
+                "tool_call_id": tc["id"],
                 "content":      json.dumps(r["result"], ensure_ascii=False),
             }
+            tool_results_for_reward.append({"content": tool_turn["content"]})
             _persist_turn(chat_id, turn_idx, tool_turn, model=model)
             turn_idx += 1
             messages.append(tool_turn)
 
     final = "⚠️ 推理超过 8 轮，可能 LLM 陷入循环。请重新提问，或检查 dashboard 数据是否完整。"
     _persist_turn(chat_id, turn_idx, {"role": "assistant", "content": final}, model=model)
-    return AgentReply(text=final)
+    return _finalize_turn(
+        AgentReply(text=final), chat_id=chat_id, req_id=req_id,
+        query=user_msg, tool_results=tool_results_for_reward,
+        episode_tool_calls=episode_tool_calls, model=model,
+        usage=last_usage, finish_reason="max_turns",
+        iterations=iterations, t0=t0, route=route)
 
 
 def answer_sync(chat_id: str, user_msg: str,
-                model: str = _DEFAULT_MODEL) -> AgentReply:
-    """Sync wrapper for non-async callers."""
+                model: Optional[str] = None) -> AgentReply:
+    """Sync wrapper for non-async callers. ``model=None`` → difficulty
+    routing (Phase 1); pass a model to force it."""
     return asyncio.run(answer(chat_id, user_msg, model))

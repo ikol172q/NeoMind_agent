@@ -30,11 +30,12 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter, HTTPException
 
 from agent.data_sources.market import get_live_quote
-from agent.data_sources.sec_edgar import get_10k_sections
+from agent.data_sources.sec_edgar import get_10k_sections, get_foreign_sections
 from agent.finance import agent_audit
 from agent.finance.extractors.business_summary import extract_business_summary
 from agent.finance.extractors.competitors import extract_competitors
 from agent.finance.extractors.customers import extract_customers
+from agent.finance.extractors.debt import extract_debt
 from agent.finance.extractors.risks import extract_risks
 from agent.finance.extractors.segments import extract_segments
 from agent.finance.extractors.style_verdict import synthesize_style_verdict
@@ -179,7 +180,7 @@ def _extract_competitors_from(s) -> tuple[list[dict], Any]:
     competition = s.item1_competition
     if not competition or len(competition) < 500:
         if s.item1_full and len(s.item1_full) >= 500:
-            competition = s.item1_full[:40_000]   # cap for prompt budget
+            competition = s.item1_full[:60_000]   # cap for prompt budget (raised 2026-06-21: AMD competition/supplier prose sits ~41-46K into Item 1)
     return extract_competitors(competition, s.item1a_risks)
 
 
@@ -189,7 +190,7 @@ def _extract_suppliers_from_with_fallback(s) -> tuple[list[dict], Any]:
     suppliers = s.item1_suppliers
     if not suppliers or len(suppliers) < 500:
         if s.item1_full and len(s.item1_full) >= 500:
-            suppliers = s.item1_full[:40_000]
+            suppliers = s.item1_full[:60_000]   # raised 2026-06-21: AMD foundry suppliers (TSMC/GF/Samsung) sit ~45K into Item 1
     return extract_suppliers(suppliers)
 
 
@@ -202,7 +203,22 @@ def _extract_business_summary_from(s) -> tuple[list[dict], Any]:
 
 
 def _extract_customers_from(s) -> tuple[list[dict], Any]:
-    return extract_customers(s.item1_customers)
+    # Named customers + their concentration % live in TWO places: customer
+    # names in Item 1, but the concentration figures ("Customer A 14%") are
+    # usually in Item 7 (MD&A) / notes — NOT Item 1. So:
+    #  1) Item 1 (with full-Item-1 fallback like competitors/suppliers, since
+    #     most 10-Ks lack a clean "Customers" header → AAPL/AMD/NVDA got 0),
+    #  2) PLUS Item 7 MD&A, where the concentration disclosure sits.
+    # Verbatim gate still drops anything not literally in the source.
+    customers = s.item1_customers
+    if not customers or len(customers) < 500:
+        if getattr(s, "item1_full", None):
+            customers = s.item1_full[:60_000]
+    mda = getattr(s, "item7_mda", None) or ""
+    combined = (customers or "")
+    if mda:
+        combined += "\n\n--- Item 7 MD&A (customer concentration) ---\n" + mda[:30_000]
+    return extract_customers(combined)
 
 
 def _extract_suppliers_from(s) -> tuple[list[dict], Any]:
@@ -211,6 +227,14 @@ def _extract_suppliers_from(s) -> tuple[list[dict], Any]:
 
 def _extract_segments_from(s) -> tuple[list[dict], Any]:
     return extract_segments(s.item7_mda)
+
+
+def _extract_debt_from(s) -> tuple[list[dict], Any]:
+    # Debt structure + maturities + leverage live in Item 7 MD&A
+    # (Liquidity and Capital Resources narrative + Contractual Obligations
+    # maturity table). Same source as segments; the F-page fallback in the
+    # slicer ensures SSP-class filers (stub Item 7) still get real bytes.
+    return extract_debt(s.item7_mda)
 
 
 _PIPELINES: dict[str, dict] = {
@@ -238,6 +262,10 @@ _PIPELINES: dict[str, dict] = {
         "extract": _extract_segments_from,
         "section": "item7.mda",
     },
+    "debt": {
+        "extract": _extract_debt_from,
+        "section": "item7.mda",
+    },
 }
 
 
@@ -251,11 +279,13 @@ def _run_pipeline(ticker: str, fact_type: str) -> Dict[str, Any]:
         raise HTTPException(400, f"unknown fact_type: {fact_type}")
     cfg = _PIPELINES[fact_type]
 
-    sections = get_10k_sections(ticker)
+    # 10-K for US filers; fall back to 20-F/S-1 (Business + Risk Factors) for
+    # foreign / pre-IPO filers (ARM/NBIS/CBRS) so they aren't blind.
+    sections = get_10k_sections(ticker) or get_foreign_sections(ticker)
     if sections is None:
         raise HTTPException(
             404,
-            f"no 10-K filing found for {ticker} on SEC EDGAR",
+            f"no 10-K / 20-F / S-1 filing found for {ticker} on SEC EDGAR",
         )
 
     agent_id = f"anchored-{fact_type}"

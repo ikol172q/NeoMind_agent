@@ -59,25 +59,26 @@ def _now() -> str:
 
 
 def thesis_template() -> str:
-    """Default markdown skeleton — single template per §11 OQ recommendation."""
+    """Default markdown skeleton. Framed as 共识 (grounded, sourced facts)
+    + 推断 (forward-looking inferences to validate). The conviction loop:
+    每把一条『推断』验证成『共识』= 把未知压小一点。Section headers must stay
+    exactly `## 共识` / `## 推断` so _extract_section can pull them."""
     return (
-        "## Bull case\n"
-        "- (Why this works — 3-5 bullets)\n"
-        "- \n"
+        "## 共识\n"
+        "- [业务] (已查证的事实 — 开头加 [标签] 分类: 业务/护城河/财务/估值/"
+        "风险/管理层/股东/竞争/催化剂/技术/组合; 尽量附 source, e.g. [SEC 20-F](url))\n"
         "- \n"
         "\n"
-        "## Bear case\n"
-        "- (What would break it — 3-5 bullets, REQUIRED)\n"
-        "- \n"
+        "## 推断\n"
+        "- [竞争] (基于共识的前瞻判断/赌注 — 开头加 [标签]; 可能错, 标明若错会怎样)\n"
         "- \n"
         "\n"
         "## Exit triggers\n"
-        "- [ ] (Specific condition that means sell — e.g. '2 consecutive earnings miss')\n"
-        "- [ ] \n"
+        "- [ ] (触发卖出的具体条件 — e.g. '连续两季 miss')\n"
         "- [ ] \n"
         "\n"
         "## Horizon\n"
-        "(e.g. '12-18 months' / 'until AI capex thesis breaks' / 'no time bound')\n"
+        "(e.g. '无固定 — 由 L1 a→e 决定' / '12-18 months')\n"
     )
 
 
@@ -85,20 +86,55 @@ def _extract_section(body: str, header: str) -> str:
     """Pull the markdown section under a `## header` line. Returns empty
     string if not present. Used by the chain panel to surface bull/bear
     case separately."""
-    pattern = rf"^##\s+{re.escape(header)}\s*$(.*?)(?=^##\s|\Z)"
+    # Header may carry descriptive trailing text (e.g. `## Sizing（auto 计算）`);
+    # match the section name as a prefix, up to end-of-line ([^\n] so DOTALL
+    # below doesn't let `.` swallow following lines). Exact headers still match.
+    pattern = rf"^##\s+{re.escape(header)}[^\n]*$(.*?)(?=^##\s|\Z)"
     m = re.search(pattern, body or "", re.MULTILINE | re.DOTALL)
     return (m.group(1).strip() if m else "")
 
 
+# ── Section schemas ─────────────────────────────────────────────────
+#
+# Two thesis schemas are recognized. A body is treated as a *disciplined
+# IC thesis* the moment it carries ANY disciplined section; otherwise the
+# *legacy conviction-loop* schema applies. This keeps every pre-existing
+# 共识/推断/Exit-triggers thesis validating EXACTLY as before (backward
+# compatible) while making the disciplined structure a first-class citizen.
+
+# Legacy conviction-loop schema (共识 grounded facts + 推断 inferences).
+_LEGACY_REQUIRED_SECTIONS = ("共识", "推断", "Exit triggers")
+
+# Disciplined IC thesis — first-class sections:
+#   机制          who is mispricing + who won't correct it (the edge)
+#   认知缺口      honest unknowns
+#   Invalidation  falsification / exit conditions
+#   退役          retire once the info goes public
+#   Sizing        position sizing
+# All five are legal sections; the three below are the non-negotiable
+# discipline core required of a new disciplined thesis.
+_DISCIPLINED_SECTIONS = ("机制", "认知缺口", "Invalidation", "退役", "Sizing")
+_DISCIPLINED_REQUIRED_SECTIONS = ("机制", "Invalidation", "Sizing")
+
+
 def _check_required_sections(body_md: str) -> List[str]:
     """Return list of MISSING required sections. UI uses this as a
-    soft warning ('your thesis is missing Bear case') but does NOT
-    reject the create."""
-    missing = []
-    for h in ("Bull case", "Bear case", "Exit triggers"):
-        if not _extract_section(body_md, h):
-            missing.append(h)
-    return missing
+    soft warning ('your thesis is missing Invalidation') but does NOT
+    reject the create.
+
+    Schema is auto-detected: any disciplined section (机制/认知缺口/
+    Invalidation/退役/Sizing) present ⇒ validate against the disciplined
+    required core (机制 + Invalidation + Sizing); otherwise fall back to
+    the legacy required set (共识/推断/Exit triggers). Legacy theses thus
+    keep their exact prior behaviour — nothing pre-existing breaks."""
+    is_disciplined = any(
+        _extract_section(body_md, h) for h in _DISCIPLINED_SECTIONS
+    )
+    required = (
+        _DISCIPLINED_REQUIRED_SECTIONS if is_disciplined
+        else _LEGACY_REQUIRED_SECTIONS
+    )
+    return [h for h in required if not _extract_section(body_md, h)]
 
 
 # ── Phase 4 (2026-05-10): exit-trigger parser + evaluator ──
@@ -285,10 +321,19 @@ def _row_to_dict(row: Any) -> Dict[str, Any]:
         # Section extracts for the chain panel — saves the frontend
         # from re-implementing the markdown parser per render.
         "sections": {
-            "bull_case":     _extract_section(row["body_md"], "Bull case"),
-            "bear_case":     _extract_section(row["body_md"], "Bear case"),
+            "consensus":     _extract_section(row["body_md"], "共识"),
+            "inference":     _extract_section(row["body_md"], "推断"),
             "exit_triggers": _extract_section(row["body_md"], "Exit triggers"),
             "horizon":       _extract_section(row["body_md"], "Horizon"),
+            # Disciplined IC thesis first-class sections.
+            "mechanism":     _extract_section(row["body_md"], "机制"),
+            "knowledge_gap": _extract_section(row["body_md"], "认知缺口"),
+            "invalidation":  _extract_section(row["body_md"], "Invalidation"),
+            "retirement":    _extract_section(row["body_md"], "退役"),
+            "sizing":        _extract_section(row["body_md"], "Sizing"),
+            # kept for any legacy thesis still using English headers
+            "bull_case":     _extract_section(row["body_md"], "Bull case"),
+            "bear_case":     _extract_section(row["body_md"], "Bear case"),
         },
         "missing_sections": _check_required_sections(row["body_md"]),
     }

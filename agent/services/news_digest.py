@@ -967,8 +967,8 @@ class NewsDigestEngine:
 
         # Generate persona prompts
         try:
-            from agent.finance.investment_personas import multi_persona_analysis
-            persona_prompts = multi_persona_analysis(symbol, data_context)
+            from agent.fin_provider import fin_module
+            persona_prompts = fin_module('investment_personas').multi_persona_analysis(symbol, data_context)
         except ImportError:
             persona_prompts = []
 

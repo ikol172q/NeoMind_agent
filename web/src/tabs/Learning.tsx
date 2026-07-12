@@ -76,7 +76,7 @@ export function LearningTab() {
         {/* Today */}
         <Card>
           <CardHeader
-            title="📚 Today"
+            title="📚 最新 (近 7 天)"
             subtitle={`${fresh.length} 条 fresh + 1 经典轮换 · 最近 7 天 fetch 的为 fresh`}
           />
           <CardBody>
@@ -107,7 +107,7 @@ export function LearningTab() {
             {fresh.length === 0 && !todayQ.isLoading && (
               <div className="text-[11px] text-[var(--color-dim)] mb-3 italic">
                 目前没有 fresh case (是新装的？或最近 7 天 daily fetcher 没跑过)。
-                点上面 ✨ 立刻拉一批 — 大约 30-60 秒。或者下方 Today's Classic 先看着。
+                点上面 ✨ 立刻拉一批 — 大约 30-60 秒。或者下方经典轮换先看着。
               </div>
             )}
 
@@ -120,7 +120,7 @@ export function LearningTab() {
             {classic && (
               <div>
                 <div className="text-[10px] text-[var(--color-dim)] mb-1.5 flex items-center gap-1">
-                  <Clock size={10} /> 今日经典 (轮换中)
+                  <Clock size={10} /> 经典轮换
                 </div>
                 <CaseCard c={classic} onOpen={setOpenSlug} />
               </div>
@@ -197,7 +197,7 @@ export function LearningTab() {
 
             {!libraryQ.isLoading && (libraryQ.data?.cases.length ?? 0) === 0 && (
               <div className="text-[11px] italic text-[var(--color-dim)] py-3">
-                没有匹配的 case。试试清空筛选，或者上面 Today 区点 ✨ 拉一批新内容。
+                没有匹配的 case。试试清空筛选，或者上面「最新」区点 ✨ 拉一批新内容。
               </div>
             )}
 

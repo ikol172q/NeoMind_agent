@@ -16,6 +16,97 @@ export async function fetchJSON<T = unknown>(url: string, init?: RequestInit): P
   return r.json() as Promise<T>
 }
 
+// ── Agent alerts (预警/提案 · Telegram 与 dashboard 读同一张表 = 同步) ──
+export interface AgentAlert {
+  id: number; dedup_key: string; source: string; ticker: string
+  severity: string; title: string; body: string; touches: string
+  status: string; created_at: string; pushed_at: string | null
+}
+export function useAlerts(limit = 50) {
+  return useQuery({
+    queryKey: ['alerts', limit],
+    queryFn: () => fetchJSON<{ alerts: AgentAlert[]; chat_ready: boolean }>(`/api/alerts?limit=${limit}`),
+    staleTime: 30000, refetchInterval: 60000,
+  })
+}
+export function useSetAlertStatus() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, status }: { id: number; status: string }) =>
+      fetchJSON(`/api/alerts/${id}/status?status=${status}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['alerts'] }),
+  })
+}
+
+// ── Keystone (供应链走出去 / 卡脖子发现) ──
+export interface KeystoneBottleneck {
+  ticker: string; name?: string; direction: string; bet_mode: string
+  moat_verdict: string; moat_score: number; moat_signals: string[]
+  serenity_layer: string | null; time_signal: string; time_trend: number | null
+  survival: { status: string; note?: string }; route: string; total_score: number
+  source: string; note?: string
+}
+export interface KeystoneWalk {
+  anchor: string; elapsed_sec: number
+  step1_identity: any; step2_neighbors: any
+  step3_bottlenecks: KeystoneBottleneck[]
+  step4_deep_dive: any; step5_cross_chain: any[]; serenity_comparison: any
+}
+export function useKeystoneWalk(ticker: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['keystone', 'walk', ticker],
+    queryFn: () => fetchJSON<KeystoneWalk>(`/api/walk/${ticker}?max_bottlenecks=6`),
+    enabled: enabled && !!ticker,
+    staleTime: 300000,
+  })
+}
+
+// ── Serenity research corpus (一手语料库) ──────────────────
+export interface RPost {
+  post_id: string; platform: string; kind: string; created_at: string | null
+  url: string | null; title: string | null; text: string
+  is_reply: number; tickers: string[]; media_paths: string[]
+  metrics: Record<string, number | null>; source_method: string
+}
+export function useResearchStats() {
+  return useQuery({ queryKey: ['research', 'stats'], queryFn: () => fetchJSON<any>('/api/research/stats'), staleTime: 60000 })
+}
+export function useResearchChokepoint() {
+  return useQuery({ queryKey: ['research', 'chokepoint'], queryFn: () => fetchJSON<any>('/api/research/chokepoint_map'), staleTime: 60000 })
+}
+export function useResearchAnalysis() {
+  return useQuery({ queryKey: ['research', 'analysis'], queryFn: () => fetchJSON<any>('/api/research/analysis'), staleTime: 300000 })
+}
+export function useResearchSupplyChain() {
+  return useQuery({ queryKey: ['research', 'supply_chain'], queryFn: () => fetchJSON<any>('/api/research/supply_chain'), staleTime: 60000 })
+}
+export function useResearchTimeline() {
+  return useQuery({ queryKey: ['research', 'timeline'], queryFn: () => fetchJSON<any>('/api/research/timeline'), staleTime: 60000 })
+}
+export function useResearchProfile(ticker: string | null) {
+  return useQuery({
+    queryKey: ['research', 'profile', ticker],
+    queryFn: () => fetchJSON<any>(`/api/research/profile/${encodeURIComponent((ticker || '').replace('$', ''))}`),
+    enabled: !!ticker, staleTime: 300000,
+  })
+}
+export function useResearchPosts(params: { ticker?: string; q?: string; originals_only?: boolean; limit?: number }) {
+  const sp = new URLSearchParams()
+  if (params.ticker) sp.set('ticker', params.ticker)
+  if (params.q) sp.set('q', params.q)
+  if (params.originals_only) sp.set('originals_only', 'true')
+  sp.set('limit', String(params.limit ?? 80))
+  const qs = sp.toString()
+  return useQuery({ queryKey: ['research', 'posts', qs], queryFn: () => fetchJSON<RPost[]>(`/api/research/posts?${qs}`), placeholderData: keepPreviousData })
+}
+export function useResearchOutcomes() {
+  return useQuery({ queryKey: ['research', 'outcomes'], queryFn: () => fetchJSON<any>('/api/research/outcomes?top_n=25'), staleTime: 300000 })
+}
+export function useResearchSync() {
+  const qc = useQueryClient()
+  return useMutation({ mutationFn: () => fetchJSON('/api/research/sync', { method: 'POST' }), onSuccess: () => qc.invalidateQueries({ queryKey: ['research'] }) })
+}
+
 // ── Health ────────────────────────────────────────────────
 export function useHealth() {
   return useQuery({
@@ -334,6 +425,11 @@ export interface StreamCallbacks {
     url_warnings?: Array<{ url: string; fallback: string; host: string }>;
   }) => void
   onError: (err: string) => void
+  /** Optional: fires on `tool_call_start` / `tool_call_result` SSE frames so
+   *  the UI can surface the agent's tool activity (finance_get_stock, etc.).
+   *  Safe to omit — tool frames are ignored when not provided, and this never
+   *  affects delta/done/error handling. */
+  onTool?: (info: { phase: 'start' | 'result'; name: string; ok?: boolean; error?: string | null }) => void
 }
 
 /**
@@ -427,6 +523,10 @@ export function streamChat(
                 cb.onDone(payload)
               } else if (event === 'error') {
                 cb.onError(String(payload.detail ?? 'stream error'))
+              } else if (event === 'tool_call_start') {
+                cb.onTool?.({ phase: 'start', name: String(payload.name ?? '') })
+              } else if (event === 'tool_call_result') {
+                cb.onTool?.({ phase: 'result', name: String(payload.name ?? ''), ok: payload.ok, error: payload.error })
               }
             } catch (_) {
               // skip non-JSON frames (heartbeats etc.)
@@ -2051,6 +2151,72 @@ export function useWhaleResearchHistory(whaleKey: string | null) {
 }
 
 
+// 2026-05-22: Decision Scorecard — synthesizes all signals into a
+// suggested lean (add/hold/trim/sell/watch_only/pass) + degree.
+export interface ScorecardSource {
+  label: string
+  url: string | null
+  kind: string
+  validated: boolean
+}
+export interface ScorecardWhaleDetail {
+  whale: string
+  whale_key: string
+  action: string
+  date: string
+  url: string | null
+  weight: number
+}
+export interface ScorecardMetric {
+  k: string
+  v: string
+  verdict: 'good' | 'ok' | 'bad'
+}
+export interface ScorecardLens {
+  score: number
+  read: string
+  pending?: boolean
+  conv_raw?: number
+  buyers?: string[]
+  sellers?: string[]
+  insider_buys?: number
+  activist?: string[]
+  pe?: number | null
+  pe_kind?: string | null
+  held?: boolean
+  weight?: number
+  metrics?: ScorecardMetric[]
+  sources?: ScorecardSource[]
+  detail?: ScorecardWhaleDetail[]
+}
+export interface DecisionScorecard {
+  ticker: string
+  held: boolean
+  suggested_lean: 'add' | 'hold' | 'trim' | 'sell' | 'watch_only' | 'pass'
+  degree: string
+  raw_score: number
+  summary: string
+  lenses: {
+    quality: ScorecardLens
+    positioning: ScorecardLens
+    valuation: ScorecardLens
+    fit: ScorecardLens
+  }
+  help: Record<string, string>
+  disclaimer: string
+}
+export function useScorecard(ticker: string | null) {
+  return useQuery({
+    queryKey: ['scorecard', ticker],
+    queryFn: () => fetchJSON<DecisionScorecard>(
+      `/api/regime/scorecard/${encodeURIComponent(ticker!)}`),
+    enabled: !!ticker,
+    staleTime: 60_000 * 5,
+    retry: false,
+  })
+}
+
+
 export function useRecentSignals(opts: {
   limit?:   number
   ticker?:  string
@@ -3062,6 +3228,149 @@ export function useTickerNews(ticker: string | null, limit = 20) {
   })
 }
 
+// Official company-newsroom PRs (primary source, RSS, independent of
+// Miniflux). supported=false for tickers without a mapped feed.
+export interface OfficialNewsItem {
+  title: string
+  url: string
+  published_at: string
+  snippet: string
+}
+export interface OfficialNewsResp {
+  ticker: string
+  supported: boolean
+  feed_url: string | null
+  count?: number
+  items: OfficialNewsItem[]
+  fetched_at?: string | null
+  age_seconds?: number | null
+  source?: 'live' | 'store'
+  stale?: boolean
+}
+export function useOfficialNews(ticker: string | null, limit = 8) {
+  return useQuery<OfficialNewsResp>({
+    queryKey: ['official-news', ticker, limit],
+    queryFn: () => fetchJSON<OfficialNewsResp>(
+      `/api/news/official/${encodeURIComponent(ticker!)}?limit=${limit}`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+// Force a live re-fetch (the "立刻刷新" button), then refresh the query.
+export function useRefreshOfficialNews() {
+  const qc = useQueryClient()
+  return useMutation<OfficialNewsResp, Error, string>({
+    mutationFn: (ticker) => fetchJSON<OfficialNewsResp>(
+      `/api/news/official/${encodeURIComponent(ticker)}?refresh=1`),
+    onSuccess: (_data, ticker) =>
+      qc.invalidateQueries({ queryKey: ['official-news', ticker] }),
+  })
+}
+
+// Universal ownership / who's-holding (yfinance). pct_locked = supply
+// overhang (low float = a big locked block, e.g. SoftBank/ARM). Each top
+// holder carries pct_change = their recent buy/sell direction.
+export interface TopHolder {
+  holder: string
+  pct_held: number | null
+  shares: number | null
+  value: number | null
+  pct_change: number | null
+  date_reported: string
+}
+export interface HoldersResp {
+  ticker: string
+  supported: boolean
+  pct_institutions?: number | null
+  pct_insiders?: number | null
+  institutions_count?: number | null
+  shares_outstanding?: number | null
+  float_shares?: number | null
+  pct_float?: number | null
+  pct_locked?: number | null
+  top_holders: TopHolder[]
+  source?: string
+  fetched_at?: string
+}
+export function useHolders(ticker: string | null) {
+  return useQuery<HoldersResp>({
+    queryKey: ['holders', ticker],
+    queryFn: () => fetchJSON<HoldersResp>(`/api/stock/${encodeURIComponent(ticker!)}/holders`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
+// Tier-1 quality / valuation fundamentals (yfinance) — closes the
+// diagnostic chain (PEG, margins, growth, FCF, ROE, net debt, …).
+export interface Fundamentals {
+  ticker: string
+  supported: boolean
+  peg: number | null
+  gross_margin: number | null
+  profit_margin: number | null
+  operating_margin: number | null
+  revenue_growth: number | null
+  earnings_growth: number | null
+  fcf: number | null
+  operating_cf: number | null
+  roe: number | null
+  roa: number | null
+  total_debt: number | null
+  total_cash: number | null
+  net_debt: number | null
+  price_to_sales: number | null
+  price_to_book: number | null
+  debt_to_equity: number | null
+  beta: number | null
+  dividend_yield: number | null
+  ev_ebitda: number | null
+  capex: number | null
+  dep_amort: number | null
+  revenue: number | null
+  capex_intensity: number | null
+  analyst_rating: number | null
+  analyst_rating_key: string | null
+  analyst_count: number | null
+  target_mean: number | null
+  target_high: number | null
+  target_low: number | null
+  source?: string
+  fetched_at?: string
+}
+export function useFundamentals(ticker: string | null) {
+  return useQuery<Fundamentals>({
+    queryKey: ['fundamentals', ticker],
+    queryFn: () => fetchJSON<Fundamentals>(`/api/stock/${encodeURIComponent(ticker!)}/fundamentals`),
+    enabled: !!ticker,
+    staleTime: 30 * 60_000,
+    retry: false,
+  })
+}
+
+// Verified metric snapshot as-of a past date (or latest). The `dates`
+// list shows how much history has accrued (daily metric_snapshot_pull).
+export interface MetricsAsofResp {
+  ticker: string
+  available: boolean
+  snapshot_date?: string
+  fetched_at?: string
+  metrics?: { quote?: any; fundamentals?: any; holders?: any }
+  dates: string[]
+}
+export function useMetricsAsof(ticker: string | null, date?: string | null) {
+  return useQuery<MetricsAsofResp>({
+    queryKey: ['metrics-asof', ticker, date ?? 'latest'],
+    queryFn: () => fetchJSON<MetricsAsofResp>(
+      `/api/stock/${encodeURIComponent(ticker!)}/metrics/asof${date ? `?date=${date}` : ''}`),
+    enabled: !!ticker,
+    staleTime: 10 * 60_000,
+    retry: false,
+  })
+}
+
 // ── Learning library (Phase L) ──────────────────────────────────
 export interface LearningCase {
   slug: string
@@ -3343,10 +3652,12 @@ export interface InvestmentThesis {
   invalidated_reason?:     string | null
   last_health_check_at?:   string | null
   sections: {
-    bull_case:     string
-    bear_case:     string
+    consensus:     string
+    inference:     string
     exit_triggers: string
     horizon:       string
+    bull_case:     string
+    bear_case:     string
   }
   missing_sections: string[]   // ['Bear case', ...] if not all required present
   // Phase 4: only present on single-thesis GET (not list)
@@ -3563,6 +3874,124 @@ export function usePortfolioView(asOf?: string | null, includeExternalEdges?: bo
   })
 }
 
+// ── Portfolio cross-structure ("chokepoint") — shared edges across holdings ──
+export interface CrossEdge {
+  // value-chain edges carry full provenance (source-reliable + dated)
+  kind?: 'direct' | 'reverse'   // reverse = derived from counterparty's filing
+  weight?: number | null        // concentration % (customer) when disclosed
+  via?: string                  // which company's 10-K this edge came from
+  fact_id?: number
+  quote?: string                // verbatim quote from that filing
+  filing_date?: string | null   // freshness
+  source_url?: string
+  stale?: boolean | null
+  // owner (13F) edges
+  dir?: string | null           // 加仓 / 减仓 / 清仓 …
+}
+export interface SharedEntity {
+  entity: string; entity_ticker: string | null; is_held: boolean
+  whale_key?: string | null; source_url?: string | null
+  n: number; holdings: string[]; edges: Record<string, CrossEdge>
+}
+export interface CrossFreshness {
+  value_chain_oldest_filing: string | null
+  value_chain_newest_filing: string | null
+  n_edges: number; n_reverse: number; n_stale_edges: number
+  owner_source: string
+}
+export interface CrossStructure {
+  held: string[]; n_held: number
+  shared: { supplier: SharedEntity[]; customer: SharedEntity[]; competitor: SharedEntity[]; owner: SharedEntity[] }
+  internal: { from: string; rel: string; to: string; kind?: string; via?: string }[]
+  coverage: Record<string, Record<string, number>>
+  freshness: CrossFreshness
+}
+export function useCrossStructure() {
+  return useQuery<CrossStructure>({
+    queryKey: ['portfolio-crossstructure'],
+    queryFn:  () => fetchJSON<CrossStructure>('/api/portfolio/crossstructure'),
+    staleTime: 120_000,
+  })
+}
+
+// ── NeoMind fin agent — grounded 3-sentence synthesis (优势/劣势/综合) ──
+export interface AgentSynthesis {
+  ticker: string
+  advantage: string | null; disadvantage: string | null; synthesis: string | null
+  sources: { source: string; asof: string; url?: string }[]
+  generated_at: string | null; status: string
+}
+export function useAgentSynthesis(ticker: string | null) {
+  return useQuery<AgentSynthesis>({
+    queryKey: ['agent-synth', ticker],
+    queryFn:  () => fetchJSON<AgentSynthesis>(`/api/stock/${encodeURIComponent(ticker!)}/agent_synthesis`),
+    enabled:  !!ticker,
+    staleTime: 10 * 60_000,
+  })
+}
+export function useRefreshAgentSynthesis() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ticker: string) => fetchJSON<AgentSynthesis>(`/api/stock/${encodeURIComponent(ticker)}/agent_synthesis?refresh=true`),
+    onSuccess: (_d, ticker) => qc.invalidateQueries({ queryKey: ['agent-synth', ticker] }),
+  })
+}
+
+// ── Goal 2: evidence-driven review trigger (证据驱动复盘触发) ──
+export interface ThesisReviewItem {
+  ref: string; classification: '印证' | '动摇' | '破' | '无关'; touches: string; why: string
+}
+export interface ThesisReview {
+  ticker: string; thesis_id?: string | null; verdict: string | null
+  items: ThesisReviewItem[]; anchor_at: string | null; computed_at: string; status: string
+}
+export function useThesisReview(ticker: string | null) {
+  return useQuery<ThesisReview>({
+    queryKey: ['thesis-review', ticker],
+    queryFn:  () => fetchJSON<ThesisReview>(`/api/stock/${encodeURIComponent(ticker!)}/thesis_review`),
+    enabled:  !!ticker,
+    staleTime: 10 * 60_000,
+  })
+}
+export function useRefreshThesisReview() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (ticker: string) => fetchJSON<ThesisReview>(`/api/stock/${encodeURIComponent(ticker)}/thesis_review?refresh=true`),
+    onSuccess: (_d, ticker) => qc.invalidateQueries({ queryKey: ['thesis-review', ticker] }),
+  })
+}
+
+// ── Slice 1: validated quote + 今日异动 (price-move observation) ──
+export interface PriceMove {
+  ticker: string; price: number; day_change_pct: number
+  move_since_review: number | null; ref_date: string | null; ref_stale: boolean
+  confidence: string; sources: string[]
+}
+export interface PriceMoves {
+  moves: PriceMove[]; threshold_pct: number; n_held: number
+  note: string; eod_data_stale: boolean; eod_asof: string | null; asof: string
+}
+export function usePriceMoves(thresholdPct = 5) {
+  return useQuery<PriceMoves>({
+    queryKey: ['price-moves', thresholdPct],
+    queryFn:  () => fetchJSON<PriceMoves>(`/api/portfolio/price_moves?threshold_pct=${thresholdPct}`),
+    staleTime: 60_000,
+    refetchInterval: 5 * 60_000,   // refresh every 5 min (timeliness)
+  })
+}
+
+// ── Recent SEC material filings (8-K/6-K) — the freshness layer ──
+export interface RecentFiling { form: string; date: string; event: string; items: string; url: string }
+export interface RecentFilings { ticker: string; filings: RecentFiling[]; fetched_at: string; source: string }
+export function useRecentFilings(ticker: string | null) {
+  return useQuery<RecentFilings>({
+    queryKey: ['recent-filings', ticker],
+    queryFn:  () => fetchJSON<RecentFilings>(`/api/stock/${encodeURIComponent(ticker!)}/recent_filings`),
+    enabled:  !!ticker,
+    staleTime: 30 * 60_000,
+  })
+}
+
 export interface ThesesListResp {
   theses: InvestmentThesis[]
   count:  number
@@ -3577,6 +4006,58 @@ export function useTheses(ticker: string | null, status: 'active' | 'all' = 'act
     queryFn:  () => fetchJSON<ThesesListResp>(`/api/theses?${qs}`),
     staleTime: 30_000,
     enabled:  ticker !== null,   // don't fetch the all-theses list unless explicitly asked
+  })
+}
+
+// ── Research inbox (2026-07-10): cross-ticker thesis list ──────────
+// research_loop auto-writes theses for off-book small caps (SSP/LILA/
+// MOBI/EFOR/FCBM…) that have no ticker drawer, so the home tab needs a
+// ticker-independent feed. /api/theses with no ticker returns the
+// active set (status IN active+requires_review). Distinct from
+// useTheses(), which is gated on a ticker and used by the drawer.
+export function useAllTheses() {
+  return useQuery<ThesesListResp>({
+    queryKey: ['theses', '__all__', 'active'],
+    queryFn:  () => fetchJSON<ThesesListResp>('/api/theses'),
+    staleTime: 60_000,
+  })
+}
+
+// ── Trading plans (2026-07-10): ~/trading_plans/*.md discovery ─────
+// Read-only surfacing of the plan library (discipline cards + event
+// checklists) on the home tab. List returns metadata only; detail
+// returns the full markdown (path-traversal-guarded server-side).
+export interface TradingPlanMeta {
+  filename: string
+  title:    string | null
+  mtime:    string
+  size:     number
+}
+export interface TradingPlansResp {
+  plans: TradingPlanMeta[]
+  n:     number
+  note?: string
+}
+export function useTradingPlans() {
+  return useQuery<TradingPlansResp>({
+    queryKey: ['trading-plans'],
+    queryFn:  () => fetchJSON<TradingPlansResp>('/api/trading/plans'),
+    staleTime: 60_000,
+  })
+}
+export interface TradingPlanDetail {
+  filename: string
+  title:    string | null
+  content:  string
+  size:     number
+}
+export function useTradingPlan(name: string | null) {
+  return useQuery<TradingPlanDetail>({
+    queryKey: ['trading-plan', name],
+    queryFn:  () => fetchJSON<TradingPlanDetail>(
+      `/api/trading/plan/${encodeURIComponent(name!)}`),
+    enabled:  !!name,
+    staleTime: 60_000,
   })
 }
 
@@ -4103,6 +4584,530 @@ export function useCloseLot() {
       // Onion node carries position weight (held_qty / held_cost). Close
       // or delete must update the size+overlay immediately.
       qc.invalidateQueries({ queryKey: ['portfolio-view'] })
+    },
+  })
+}
+
+// ── Short-term Trading Desk ───────────────────────────────
+// Separate from the long-term smart-money stack. TPS + setup CRUD +
+// NL→quant distillation + backtest + paper-parallel scan.
+
+export interface TradingPolicy {
+  version: string
+  north_star?: string
+  identity?: string
+  red_lines?: string[]
+  risk_rules?: Record<string, unknown>
+  entry_protocol?: string
+  exit_protocol?: string
+  kill_switch?: string
+  execution_rules?: string
+  validation_rules?: string
+  tax_note?: string
+  review_cadence?: string
+  last_reviewed_at?: string
+  change_note?: string
+}
+
+export interface QuantCondition { left: string; op: string; right: string | number; rmult?: number; note?: string }
+export interface EntryDetailRow { left: string; op: string; right: string; lval: number | null; rval: number | null; note?: string }
+export interface QuantSpec {
+  timeframe?: string
+  lookback?: string
+  direction?: string
+  entry?: { logic?: string; conditions?: QuantCondition[] }
+  exit?: { stop?: { type: string; value: number }; target?: { type: string; value: number }; time_stop_bars?: number }
+  sizing?: { risk_pct?: number; max_pos_pct?: number }
+}
+export interface BacktestStats {
+  n_trades: number; win_rate: number | null; avg_R: number | null
+  total_return_pct: number; max_drawdown_pct: number; avg_bars_held: number | null
+  best_R?: number; worst_R?: number; assumptions?: string; symbol?: string
+  buy_hold_pct?: number; beats_buy_hold?: boolean
+}
+export interface BacktestTrade {
+  entry_date: string; entry_px: number; exit_date: string; exit_px: number
+  reason: string; bars_held: number; return_pct: number; R: number
+  entry_detail?: EntryDetailRow[]
+}
+export interface Robustness { verdict: 'robust' | 'weak' | 'overfit' | 'unknown'; note: string }
+export interface BacktestResult {
+  symbol?: string; timeframe?: string; n_bars?: number
+  trades?: BacktestTrade[]; stats?: BacktestStats; error?: string
+  is_stats?: BacktestStats; oos_stats?: BacktestStats; robustness?: Robustness; oos_cutoff?: string
+}
+export interface TradingSetup {
+  setup_id: string; version: number; name: string
+  status: 'idea' | 'paper' | 'live' | 'retired'
+  nl_description?: string
+  quant_spec?: QuantSpec
+  backtest_stats?: BacktestStats
+  score?: { score: number; grade: string; expectancy_R: number; win_rate: number; n_trades: number; confidence: number; robustness?: string; overfit?: boolean } | null
+  change_note?: string; created_at?: string; updated_at?: string
+}
+
+export function useTradingPolicy() {
+  return useQuery({
+    queryKey: ['trading-policy'],
+    queryFn: () => fetchJSON<TradingPolicy>('/api/trading/policy'),
+    staleTime: 60_000,
+  })
+}
+
+export function useUpdateTradingPolicy() {
+  const qc = useQueryClient()
+  return useMutation<TradingPolicy, Error, Partial<TradingPolicy>>({
+    mutationFn: (body) => fetchJSON('/api/trading/policy', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-policy'] }),
+  })
+}
+
+export function useTradingSetups() {
+  return useQuery({
+    queryKey: ['trading-setups'],
+    queryFn: () => fetchJSON<{ setups: TradingSetup[]; n: number }>('/api/trading/setups'),
+    staleTime: 30_000,
+  })
+}
+
+export function useSaveTradingSetup() {
+  const qc = useQueryClient()
+  return useMutation<TradingSetup, Error, { setup_id?: string; body: Partial<TradingSetup> }>({
+    mutationFn: ({ setup_id, body }) => fetchJSON(
+      setup_id ? `/api/trading/setups/${encodeURIComponent(setup_id)}` : '/api/trading/setups',
+      { method: setup_id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-setups'] }),
+  })
+}
+
+export function useDeleteTradingSetup() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (setup_id) => fetchJSON(`/api/trading/setups/${encodeURIComponent(setup_id)}`,
+      { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-setups'] }),
+  })
+}
+
+export function useDistillSetup() {
+  return useMutation<{ ok: boolean; quant_spec: QuantSpec }, Error, { nl_description: string; current_spec?: QuantSpec }>({
+    mutationFn: (body) => fetchJSON('/api/trading/setups/distill', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  })
+}
+
+export function useBacktestSetup() {
+  const qc = useQueryClient()
+  return useMutation<BacktestResult, Error, { setup_id: string; symbol: string; quant_spec?: QuantSpec }>({
+    mutationFn: ({ setup_id, symbol, quant_spec }) => fetchJSON(
+      `/api/trading/setups/${encodeURIComponent(setup_id)}/backtest`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol, quant_spec }) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-setups'] }),
+  })
+}
+
+export function useBacktestAdhoc() {
+  return useMutation<BacktestResult, Error, { symbol: string; quant_spec: QuantSpec }>({
+    mutationFn: (body) => fetchJSON('/api/trading/backtest_adhoc', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }),
+  })
+}
+
+export interface TradingChartPoint { date: string; close: number }
+export interface TradingChartData {
+  symbol?: string; series?: TradingChartPoint[]; trades?: BacktestTrade[]
+  stats?: BacktestStats; error?: string
+  is_stats?: BacktestStats; oos_stats?: BacktestStats; robustness?: Robustness; oos_cutoff?: string
+}
+export interface PortfolioRisk {
+  symbols: string[]; matrix: { symbol: string; row: (number | null)[] }[]
+  warnings: { a: string; b: string; corr: number }[]; threshold: number; n_positions: number
+}
+export function useSetupChart() {
+  return useMutation<TradingChartData, Error, { setup_id: string; symbol: string }>({
+    mutationFn: ({ setup_id, symbol }) => fetchJSON(
+      `/api/trading/setups/${encodeURIComponent(setup_id)}/chart`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }) }),
+  })
+}
+
+// Query variant — cacheable + auto-runs when enabled, so the verify view
+// (curve + stats + trade detail) survives a page reload (driven by a
+// localStorage-remembered symbol).
+export function useSetupChartQuery(setupId: string, symbol: string, enabled: boolean) {
+  return useQuery({
+    queryKey: ['setup-chart', setupId, symbol],
+    queryFn: () => fetchJSON<TradingChartData>(
+      `/api/trading/setups/${encodeURIComponent(setupId)}/chart`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ symbol }) }),
+    enabled: enabled && !!symbol,
+    staleTime: 5 * 60_000,
+    retry: false,
+  })
+}
+
+// Combos — modular strategy combinations + shared-capital portfolio backtest.
+export interface ComboMember { setup_id: string; weight?: number }
+export interface TradingCombo {
+  combo_id: string; name: string; members?: ComboMember[]; symbols?: string[]
+  status: 'idea' | 'paper' | 'live' | 'retired'; stats?: BacktestStats
+}
+export interface ComboBacktest {
+  symbols?: string[]; n_members?: number; stats?: BacktestStats; error?: string
+  equity_curve?: { date: string; equity: number }[]
+  contributions?: { setup_id: string; name: string; n: number; win_rate: number | null; avg_R: number | null }[]
+  capital?: number
+}
+export function useCombos() {
+  return useQuery({ queryKey: ['trading-combos'], queryFn: () => fetchJSON<{ combos: TradingCombo[]; n: number }>('/api/trading/combos'), staleTime: 30_000 })
+}
+export function useSaveCombo() {
+  const qc = useQueryClient()
+  return useMutation<TradingCombo, Error, { combo_id?: string; body: Partial<TradingCombo> }>({
+    mutationFn: ({ combo_id, body }) => fetchJSON(
+      combo_id ? `/api/trading/combos/${encodeURIComponent(combo_id)}` : '/api/trading/combos',
+      { method: combo_id ? 'PUT' : 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-combos'] }),
+  })
+}
+export function useDeleteCombo() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (id) => fetchJSON(`/api/trading/combos/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-combos'] }),
+  })
+}
+export function useBacktestCombo() {
+  const qc = useQueryClient()
+  return useMutation<ComboBacktest, Error, { combo_id: string; lookback?: string }>({
+    mutationFn: ({ combo_id, lookback }) => fetchJSON(
+      `/api/trading/combos/${encodeURIComponent(combo_id)}/backtest?lookback=${encodeURIComponent(lookback || '3y')}`,
+      { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-combos'] }),
+  })
+}
+
+// Strategy comparison — run every setup on the same symbol/period.
+export interface CompareRow { setup_id: string; name: string; status: string; stats: BacktestStats; score: { score: number; grade: string } | null }
+export function useCompareSetups() {
+  return useMutation<{ symbol: string; lookback: string; rows: CompareRow[] }, Error, { symbol: string; lookback: string }>({
+    mutationFn: ({ symbol, lookback }) => fetchJSON(
+      `/api/trading/compare?symbol=${encodeURIComponent(symbol)}&lookback=${encodeURIComponent(lookback)}`,
+      { method: 'POST' }),
+  })
+}
+
+export interface ScanTrigger { setup_id: string; setup_name: string; symbol: string; as_of: string; entry_px: number }
+export function useScanSetups() {
+  return useMutation<{ n_triggers: number; triggers: ScanTrigger[]; scanned: number }, Error, void>({
+    mutationFn: () => fetchJSON('/api/trading/scan', { method: 'POST' }),
+  })
+}
+
+// ── Trading state / emergency brakes / automated scan ──
+export interface TradingState {
+  global_halt: number; halt_reason?: string | null; halted_by?: string | null
+  auto_trade: number; ibkr_route?: number; venue?: string; allow_live?: number; trading_budget_usd?: number; updated_at?: string
+}
+export interface SetupScore { score: number; grade: string; expectancy_R: number; win_rate: number; n_trades: number; confidence: number }
+export interface ScanTradeExec extends ScanTrigger { stop_px?: number; qty?: number; entry_status?: string; stop_placed?: boolean; skipped?: string }
+export interface MarketRegime { regime: 'risk_on' | 'risk_off' | 'unknown'; spy?: number; spy_sma200?: number; note: string }
+export interface ScanTradeResult {
+  halted: boolean
+  kill_switch: { breached: boolean; reason?: string | null; total_pnl_pct: number; consecutive_losses: number; dd_limit_pct: number; consec_limit: number }
+  regime?: MarketRegime; risk_off?: boolean
+  n_triggers: number; triggers: ScanTradeExec[]
+  n_executed: number; executed: ScanTradeExec[]; scanned: number
+}
+export interface ReviewResult {
+  retired: { setup_id: string; name: string; reason: string }[]
+  suggestions: { setup_id: string; name: string; tips: string[] }[]
+  n_retired: number; n_suggestions: number
+}
+export function useReviewSetups() {
+  const qc = useQueryClient()
+  return useMutation<ReviewResult, Error, void>({
+    mutationFn: () => fetchJSON('/api/trading/review?auto_retire=true', { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-setups'] }),
+  })
+}
+export function useRegime() {
+  return useQuery({ queryKey: ['trading-regime'], queryFn: () => fetchJSON<MarketRegime>('/api/trading/regime'), staleTime: 5 * 60_000 })
+}
+
+// Earnings calendar guard
+export interface EarningsRow { symbol: string; next_earnings_date?: string | null; days_until?: number | null }
+export function useTradingEarnings(symbols: string) {
+  return useQuery({
+    queryKey: ['trading-earnings', symbols],
+    queryFn: () => fetchJSON<{ earnings: Record<string, EarningsRow>; upcoming: EarningsRow[]; guard_days: number }>(
+      `/api/trading/earnings?symbols=${encodeURIComponent(symbols)}`, { method: 'POST' }),
+    enabled: !!symbols, staleTime: 30 * 60_000, retry: false,
+  })
+}
+
+// Trade journal + weekly review
+export interface JournalEntry {
+  journal_id: string; symbol?: string; setup_name?: string; status: 'open' | 'closed'
+  thesis?: string; catalyst?: string; emotion?: string; followed_plan?: number | null
+  entry_date?: string; entry_px?: number; stop_px?: number; target_px?: number
+  exit_date?: string; exit_px?: number; exit_reason?: string; return_pct?: number; r_multiple?: number; lesson?: string
+}
+export interface WeeklyReview {
+  days: number; n: number; win_rate?: number; avg_R?: number | null; avg_return_pct?: number
+  followed_plan_pct?: number; by_catalyst?: { catalyst: string; n: number; win_rate: number }[]; note?: string
+}
+export function useJournal() {
+  return useQuery({ queryKey: ['trade-journal'], queryFn: () => fetchJSON<{ entries: JournalEntry[]; n: number }>('/api/trading/journal'), staleTime: 10_000 })
+}
+export function useSaveJournal() {
+  const qc = useQueryClient()
+  return useMutation<JournalEntry, Error, Partial<JournalEntry>>({
+    mutationFn: (body) => fetchJSON('/api/trading/journal', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['trade-journal'] }); qc.invalidateQueries({ queryKey: ['journal-weekly'] }) },
+  })
+}
+export function useDeleteJournal() {
+  const qc = useQueryClient()
+  return useMutation<{ ok: boolean }, Error, string>({
+    mutationFn: (id) => fetchJSON(`/api/trading/journal/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trade-journal'] }),
+  })
+}
+export function useSyncJournal(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ closed: number }, Error, void>({
+    mutationFn: () => fetchJSON(`/api/trading/journal/sync?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+    onSuccess: () => { qc.invalidateQueries({ queryKey: ['trade-journal'] }); qc.invalidateQueries({ queryKey: ['journal-weekly'] }) },
+  })
+}
+export function useJournalWeekly(days = 7) {
+  return useQuery({ queryKey: ['journal-weekly', days], queryFn: () => fetchJSON<WeeklyReview>(`/api/trading/journal/weekly?days=${days}`), staleTime: 10_000 })
+}
+
+export interface CockpitPosition { symbol: string; qty: number; entry: number; current: number | null; stop: number | null; target: number | null; R: number | null; unrealized_pct: number | null; days: number | null }
+export interface Cockpit {
+  regime: MarketRegime; halted: boolean; auto_armed: boolean
+  venue?: string; ibkr_connected?: boolean; account?: string | null; is_paper?: boolean; net_liquidation?: number | null; ibkr_error?: string | null
+  positions: CockpitPosition[]; n_positions: number
+  earnings_soon: EarningsRow[]; held_into_earnings: EarningsRow[]; open_journal: number
+}
+export const postVenue = (venue: 'sim' | 'ibkr') => fetchJSON<TradingState>(`/api/trading/venue?venue=${venue}`, { method: 'POST' })
+
+// Bucket ① — long-term core holdings risk monitor
+export interface CoreHolding { ticker: string; qty: number; price: number | null; value: number | null; weight_pct: number | null; unrealized_pct: number | null; sector?: string }
+export interface CoreRisk {
+  total_value: number; total_cost?: number; unrealized?: number; unrealized_pct?: number; n_tickers: number
+  holdings: CoreHolding[]
+  by_sector?: Array<{ sector: string; value: number; pct: number }>
+  regime?: MarketRegime
+  concentration?: { largest: { ticker: string; pct: number }; top3_pct: number; hhi: number }
+  risk?: { ann_vol_pct?: number; max_drawdown_1y_pct?: number; beta_qqq?: number; beta_spy?: number; error?: string }
+  correlation_warnings?: Array<{ a: string; b: string; corr: number }>
+  correlation_threshold?: number
+  note?: string
+}
+export function useCoreRisk() {
+  return useQuery({
+    queryKey: ['core-risk'],
+    queryFn: () => fetchJSON<CoreRisk>('/api/portfolio/core_risk'),
+    staleTime: 60_000,
+    retry: false,
+  })
+}
+export interface HedgeScenario { qqq_move_pct: number; port_loss_unhedged: number; put_net_payoff: number; port_loss_hedged: number }
+export interface HedgePlan {
+  total_value: number; realized_beta_qqq?: number | null; hedge_beta?: number; coverage?: number; otm_pct?: number
+  qqq_spot?: number; strike?: number; expiry?: string; premium_per_share?: number; premium_per_contract?: number; iv_pct?: number
+  contracts?: number; cost?: number; cost_pct?: number; hedged_notional?: number
+  scenarios?: HedgeScenario[]
+  rule_status?: { regime?: string; regime_risk_off?: boolean; max_drawdown_1y_pct?: number | null; triggered?: boolean; reason?: string }
+  order_ticket?: string; caveats?: string[]; note?: string; error?: string
+}
+export const fetchHedgePlan = (coverage: number, otm_pct: number) =>
+  fetchJSON<HedgePlan>(`/api/portfolio/hedge_plan?coverage=${coverage}&otm_pct=${otm_pct}`)
+export interface HedgeExecResult { ok: boolean; needs_confirm?: boolean; message?: string; error?: string; paper?: boolean; account?: string; result?: { ok: boolean; error?: string; status?: string; order_id?: number } }
+export const postHedgeExecute = (coverage: number, otm_pct: number, confirm: boolean) =>
+  fetchJSON<HedgeExecResult>(`/api/portfolio/hedge_execute?coverage=${coverage}&otm_pct=${otm_pct}&confirm=${confirm}`, { method: 'POST' })
+export const postBudget = (usd: number) => fetchJSON<TradingState>(`/api/trading/budget?usd=${usd}`, { method: 'POST' })
+// IBKR — read paths are readonly; the ONE order path (place_paper_bracket) is
+// DU-account-guarded so it can only ever touch a paper (DU…) account.
+// Button-triggered (each call opens a socket to the gateway).
+export interface IbkrStatus { connected: boolean; readonly: boolean; error?: string; lib_missing?: boolean; accounts?: string[]; server_version?: number; is_paper?: boolean; order_enabled?: boolean; config?: { host: string; port: number; client_id: number } }
+export interface IbkrAccount { connected: boolean; readonly: boolean; error?: string; values?: Record<string, string> }
+export interface IbkrPositions { connected: boolean; readonly: boolean; error?: string; positions?: Array<{ symbol: string; sec_type: string; position: number; avg_cost: number; account: string }> }
+export interface IbkrOrderRow { order_id: number; symbol: string; action: string; qty: number; type: string; limit?: number | null; stop?: number | null; status: string; filled: number; remaining: number; oca?: string }
+export interface IbkrOpenOrders { connected: boolean; error?: string; orders?: IbkrOrderRow[] }
+export interface IbkrVerify { verdict: string; sent_ok?: boolean; independent_confirms?: number; total_confirming_sources?: number; checks?: Record<string, { ok: boolean; n: number; err?: string }> }
+export interface IbkrOrderResult { ok: boolean; error?: string; account?: string; orders?: Array<{ order_id: number; kind: string; action: string; qty: number; status: string }>; verify?: IbkrVerify }
+export const fetchIbkrStatus = () => fetchJSON<IbkrStatus>('/api/trading/ibkr/status')
+export const fetchIbkrAccount = () => fetchJSON<IbkrAccount>('/api/trading/ibkr/account')
+export const fetchIbkrPositions = () => fetchJSON<IbkrPositions>('/api/trading/ibkr/positions')
+export const fetchIbkrOpenOrders = () => fetchJSON<IbkrOpenOrders>('/api/trading/ibkr/open_orders')
+export const postIbkrRoute = (on: boolean) => fetchJSON<{ ibkr_route?: number }>(`/api/trading/ibkr/route?on=${on}`, { method: 'POST' })
+export const postIbkrTestOrder = (symbol: string, quantity: number, limitPrice?: number) =>
+  fetchJSON<IbkrOrderResult>(`/api/trading/ibkr/test_order?symbol=${encodeURIComponent(symbol)}&quantity=${quantity}${limitPrice != null ? `&limit_price=${limitPrice}` : ''}`, { method: 'POST' })
+export const postIbkrCancelAll = () => fetchJSON<{ ok: boolean; error?: string; cancelled?: number }>('/api/trading/ibkr/cancel_all', { method: 'POST' })
+export interface IbkrLogRow { id: number; ts: string; kind: string; account?: string; symbol?: string; action?: string; qty?: number; order_type?: string; price?: number; status?: string; source?: string; detail?: string }
+export interface IbkrLog { n: number; rows: IbkrLogRow[] }
+export const postIbkrSnapshot = () => fetchJSON<{ ok?: boolean; error?: string; ts?: string; captured?: Record<string, number> }>('/api/trading/ibkr/snapshot', { method: 'POST' })
+export const fetchIbkrLog = (p: { symbol?: string; kind?: string; limit?: number } = {}) => {
+  const q = new URLSearchParams()
+  if (p.symbol) q.set('symbol', p.symbol)
+  if (p.kind) q.set('kind', p.kind)
+  q.set('limit', String(p.limit ?? 200))
+  return fetchJSON<IbkrLog>(`/api/trading/ibkr/log?${q.toString()}`)
+}
+// Flex Web Service backstop — token is NEVER returned by the API.
+export interface IbkrFlexStatus { configured: boolean; query_id?: string | null }
+export const fetchIbkrFlexConfig = () => fetchJSON<IbkrFlexStatus>('/api/trading/ibkr/flex/config')
+export const postIbkrFlexConfig = (token: string, query_id: string) =>
+  fetchJSON<IbkrFlexStatus>('/api/trading/ibkr/flex/config', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token, query_id }) })
+export const postIbkrFlexSync = () =>
+  fetchJSON<{ ok: boolean; error?: string; account?: string; archived?: Record<string, number> }>('/api/trading/ibkr/flex/sync', { method: 'POST' })
+export interface IbkrReconcile { ok: boolean; error?: string; summary?: { flex_trades: number; local_fills: number; matched: number; flex_only: number; local_only: number; complete: boolean }; flex_only?: Array<{ symbol: string; side: string; qty: number; price: number; count: number }>; local_only?: Array<{ symbol: string; side: string; qty: number; price: number; count: number }> }
+export const postIbkrReconcile = () => fetchJSON<IbkrReconcile>('/api/trading/ibkr/flex/reconcile?sync=true', { method: 'POST' })
+
+export function useCockpit(projectId: string) {
+  return useQuery({
+    queryKey: ['trading-cockpit', projectId],
+    queryFn: () => fetchJSON<Cockpit>(`/api/trading/cockpit?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+    staleTime: 30_000,
+  })
+}
+
+// IBKR live option spreads — the user's real vertical spreads (e.g. bull-put),
+// surfaced compact on the home DeskStrip so both open positions stay glanceable.
+export interface IbkrSpreadLeg { strike: number; qty: number; avg_cost: number }
+export interface IbkrSpread {
+  symbol: string; expiry: string; right: string; dte: number
+  underlying: number | null; underlying_source?: string | null; underlying_date?: string | null
+  cushion_pct: number | null; type: string
+  short_strike: number | null; long_strike: number | null; width: number | null
+  net_credit: number | null; max_profit: number | null; max_loss: number | null
+  status: 'winning' | 'at_risk' | 'breached' | 'unknown'
+  legs: IbkrSpreadLeg[]
+}
+export function useIbkrSpreads() {
+  return useQuery({
+    queryKey: ['trading-ibkr-spreads'],
+    queryFn: () => fetchJSON<{ connected: boolean; spreads: IbkrSpread[] }>('/api/trading/ibkr/spreads'),
+    refetchInterval: 60_000,
+    retry: false,
+  })
+}
+
+export function useSetAutoTrade() {
+  const qc = useQueryClient()
+  return useMutation<TradingState, Error, boolean>({
+    mutationFn: (on) => fetchJSON(`/api/trading/auto_trade?on=${on}`, { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-state'] }),
+  })
+}
+
+export interface OptimizeRow {
+  size: number; is_single: boolean; members: string[]; member_ids: string[]
+  n_trades: number; win_rate: number | null; total_return_pct: number; max_drawdown_pct: number
+  avg_R: number | null; score: number
+}
+export interface OptimizeResult {
+  symbols?: string[]; lookback?: string; n_tested?: number; rows: OptimizeRow[]
+  best_overall?: OptimizeRow; best_single?: OptimizeRow; candidates?: string[]; error?: string
+}
+export function useOptimizeCombos() {
+  return useMutation<OptimizeResult, Error, { symbols: string; max_size: number; lookback: string }>({
+    mutationFn: ({ symbols, max_size, lookback }) => fetchJSON(
+      `/api/trading/optimize?symbols=${encodeURIComponent(symbols)}&max_size=${max_size}&lookback=${encodeURIComponent(lookback)}`,
+      { method: 'POST' }),
+  })
+}
+export interface OptimizeSubset { member_ids: string[]; names: string[]; size: number; is_single: boolean }
+export async function fetchOptimizePlan(symbols: string, maxSize: number): Promise<{ subsets: OptimizeSubset[]; n: number; candidates: string[]; error?: string }> {
+  return fetchJSON(`/api/trading/optimize/plan?symbols=${encodeURIComponent(symbols)}&max_size=${maxSize}`, { method: 'POST' })
+}
+export async function fetchComboAdhoc(member_ids: string[], symbols: string[], lookback: string): Promise<ComboBacktest & { start_date?: string; end_date?: string; n_bars?: number }> {
+  return fetchJSON('/api/trading/backtest_combo_adhoc', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ member_ids, symbols, lookback }),
+  })
+}
+
+export function useSaveOptimizedCombo() {
+  const qc = useQueryClient()
+  return useMutation<TradingCombo, Error, { member_ids: string; symbols: string; name: string }>({
+    mutationFn: ({ member_ids, symbols, name }) => fetchJSON(
+      `/api/trading/optimize/save?member_ids=${encodeURIComponent(member_ids)}&symbols=${encodeURIComponent(symbols)}&name=${encodeURIComponent(name)}`,
+      { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-combos'] }),
+  })
+}
+
+export function useTradingState() {
+  return useQuery({
+    queryKey: ['trading-state'],
+    queryFn: () => fetchJSON<TradingState>('/api/trading/state'),
+    refetchInterval: 15_000,
+  })
+}
+
+export function useSetHalt() {
+  const qc = useQueryClient()
+  return useMutation<TradingState, Error, { on: boolean; reason?: string }>({
+    mutationFn: ({ on, reason }) => fetchJSON(
+      `/api/trading/halt?on=${on}${reason ? `&reason=${encodeURIComponent(reason)}` : ''}`,
+      { method: 'POST' }),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ['trading-state'] }),
+  })
+}
+
+export function useFlatten(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ flattened: number; positions: unknown[] }, Error, void>({
+    mutationFn: () => fetchJSON(`/api/trading/flatten?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['paper-positions'] })
+      qc.invalidateQueries({ queryKey: ['paper-account'] })
+    },
+  })
+}
+
+export function useRefreshPositions(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<{ updated: { symbol: string; price: number }[]; n: number; orders_settled: number }, Error, void>({
+    mutationFn: () => fetchJSON(`/api/trading/refresh_positions?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['paper-positions'] })
+      qc.invalidateQueries({ queryKey: ['paper-account'] })
+      qc.invalidateQueries({ queryKey: ['paper-trades'] })
+    },
+  })
+}
+
+export function usePortfolioRisk(projectId: string) {
+  return useMutation<PortfolioRisk, Error, void>({
+    mutationFn: () => fetchJSON(`/api/trading/portfolio_risk?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+  })
+}
+
+export function useScanTrade(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation<ScanTradeResult, Error, void>({
+    mutationFn: () => fetchJSON(`/api/trading/scan_trade?project_id=${encodeURIComponent(projectId)}`, { method: 'POST' }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['paper-positions'] })
+      qc.invalidateQueries({ queryKey: ['paper-account'] })
+      qc.invalidateQueries({ queryKey: ['trading-state'] })
     },
   })
 }

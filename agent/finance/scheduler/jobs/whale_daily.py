@@ -50,14 +50,35 @@ async def run() -> Dict[str, Any]:
             extra_request={"job": JOB_NAME},
             summarize_result=lambda r: f"13F scan: {r.get('n_emitted', 0)} events across {r.get('n_whales', 0)} whales",
         )
+
+        # SC 13D activist scan (EDGAR full-text) — same slow-moving SEC
+        # cadence as 13F, so it shares this daily job. Feeds the decision
+        # scorecard's positioning lens (activist 举牌 signal).
+        try:
+            from agent.finance.regime.scanners.activist_13d_scanner import (
+                run_activist_13d_scan,
+            )
+            result_13d = audited_call(
+                agent_id="scanner:13d",
+                endpoint="scanner:13d",
+                fn=run_activist_13d_scan,
+                extra_request={"job": JOB_NAME},
+                summarize_result=lambda r: f"13D scan: {r.get('n_emitted', 0)} events across {r.get('n_tickers', 0)} tickers",
+            )
+        except Exception as exc:
+            logger.exception("activist_13d scanner failed")
+            result_13d = {"error": str(exc)}
+
         confluences = detect_confluences()
         summary.update({
             "status":          "completed",
             "scan":            result,
+            "scan_13d":        result_13d,
             "new_confluences": len(confluences),
         })
-        logger.info("[whale_daily] emitted=%d new_confluences=%d",
-                    result.get("n_emitted", 0), len(confluences))
+        logger.info("[whale_daily] 13f_emitted=%d 13d_emitted=%s new_confluences=%d",
+                    result.get("n_emitted", 0),
+                    result_13d.get("n_emitted", "?"), len(confluences))
     except Exception as exc:
         logger.exception("whale_daily failed")
         summary.update({"status": "failed", "error": str(exc)})

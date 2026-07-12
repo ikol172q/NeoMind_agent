@@ -123,16 +123,34 @@ def _compute_priority(limit: int = 5) -> Dict[str, Any]:
             logger.warning("priority_list confluence stream failed: %s", exc)
 
         # ── Stream 2: theses flagged requires_review ──────────────
-        # thesis_health_check sets this when supporting facts/signals
-        # decay. User must decide: keep / edit / invalidate.
+        # Set by thesis_health_check (supporting facts/signals decay) OR by
+        # thesis_materiality (a new SEC event is material to the thesis).
+        # When a materiality verdict exists, surface its WHY (the triggering
+        # event + which L0/L1 it touches) so the inbox says why, not just that.
         try:
+            mat = {}
+            try:
+                for m in conn.execute(
+                    "SELECT ticker, verdict, items_json FROM thesis_materiality "
+                    "WHERE verdict IN ('破','动摇')"
+                ):
+                    items = json.loads(m["items_json"] or "[]")
+                    top = next((it for it in items if it["classification"] in ("破", "动摇")), None)
+                    mat[m["ticker"]] = (m["verdict"], top)
+            except Exception:
+                pass  # table may not exist yet
             for r in conn.execute(
                 "SELECT ticker FROM investment_theses "
                 "WHERE status = 'requires_review'"
             ):
                 tk = r["ticker"]
                 score = _W_THESIS_REVIEW * held_mul(tk)
-                add(tk, "⚠ thesis 需要 review", score, "thesis_review")
+                verdict, top = mat.get(tk, (None, None))
+                if top:
+                    reason = f"⚠ 复盘:{verdict} — {top['ref'][:28]} ({top['touches']})"
+                else:
+                    reason = "⚠ thesis 需要 review"
+                add(tk, reason, score, "thesis_review")
         except Exception as exc:
             logger.warning("priority_list thesis stream failed: %s", exc)
 

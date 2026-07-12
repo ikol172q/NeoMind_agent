@@ -973,7 +973,7 @@ class HybridSearchEngine:
         _t0 = _time.monotonic()
         _audit_req_id = None
         try:
-            from agent.finance import agent_audit as _audit
+            from agent.services import agent_audit as _audit
             _audit_req_id = _audit.new_req_id()
             _audit.audit_request(
                 req_id=_audit_req_id,

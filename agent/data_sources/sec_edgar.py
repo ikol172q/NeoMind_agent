@@ -197,6 +197,14 @@ def _html_to_text(html: str) -> str:
     almost always a styling artifact), then collapse whitespace.
     """
     soup = BeautifulSoup(html, "html.parser")
+    # 2026-06-21: inline-XBRL filings (Workiva etc.) carry an
+    # ix:header / ix:resources block (~60K chars of CIK / period /
+    # dimension-member soup) at the document top. get_text() would dump
+    # that ahead of the real narrative, pushing Item 1 past the slicer's
+    # window and starving every downstream extractor. Drop the
+    # non-rendered iXBRL metadata before flattening to text.
+    for _meta in soup.find_all(["ix:header", "ix:hidden", "ix:resources"]):
+        _meta.decompose()
     text = soup.get_text(separator="\n")
     # NBSP and other whitespace unicode → regular space
     text = text.replace("\xa0", " ").replace(" ", " ").replace("​", "")
@@ -212,6 +220,67 @@ def _html_to_text(html: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", text)
     text = re.sub(r"[ \t]+", " ", text)
     return text
+
+
+def _body_anchors(text: str, starts: list[int]) -> list[int]:
+    """Drop table-of-contents anchors from a list of section-header match
+    positions. A real (body) section header is followed by prose; a TOC
+    row is followed by another "Item N" within a few hundred chars. If
+    filtering would remove every candidate, return the originals unchanged
+    (sparse > wrong).
+    """
+    body = [s for s in starts
+            if not re.search(r"(?i)\bitem\s*\d", text[s + 15: s + 300])]
+    return body or starts
+
+
+def _find_mda_body(text: str) -> Optional[str]:
+    """Locate the real Item-7 MD&A body when the primary "Item 7." header
+    is only a stub.
+
+    Many filers (e.g. E.W. Scripps / SSP) put nothing under the "Item 7."
+    heading but a reference — "...required by this item is filed as part of
+    this Form 10-K. See Index to Consolidated Financial Statement
+    Information at page F-1" — and place the actual MD&A prose later, in the
+    financial ("F-page") section, under the SAME full title. The default
+    slicer keys off the "Item 7." prefix and lands on the stub (bounded by
+    the equally-stubby "Item 7A."/"Item 8." a few hundred chars later),
+    yielding a near-empty slice that starves the segment / debt extractors.
+
+    Strategy: find every occurrence of the full MD&A title, bound each below
+    by the auditor's report ("Report of Independent Registered Public
+    Accounting Firm" — a PCAOB-required phrase present in every US 10-K, and
+    the reliable start of the financial statements that follow MD&A). Take
+    the SHORTEST span that still contains the MD&A hallmark headings
+    (Liquidity and Capital Resources + Results of Operations). Shortest-valid
+    skips the TOC entries and the stub occurrence and isolates the real body.
+    Returns None if no such body is found (sparse > wrong).
+    """
+    if not text:
+        return None
+    starts = [m.start() for m in re.finditer(
+        r"(?i)management.{0,3}s\s*discussion\s*and\s*analysis\s*of\s*"
+        r"financial\s*condition\s*and\s*results\s*of\s*operations", text)]
+    ends = [m.start() for m in re.finditer(
+        r"(?i)report\s*of\s*independent\s*registered\s*public\s*accounting\s*firm",
+        text)]
+    if not starts or not ends:
+        return None
+    best: Optional[str] = None
+    best_len: Optional[int] = None
+    for s in starts:
+        e_cands = [a for a in ends if a > s + 2000]
+        if not e_cands:
+            continue
+        e = min(e_cands)
+        seg = text[s:e]
+        if not re.search(r"(?i)liquidity\s+and\s+capital\s+resources", seg):
+            continue
+        if not re.search(r"(?i)results\s+of\s+operations", seg):
+            continue
+        if best_len is None or (e - s) < best_len:
+            best_len, best = (e - s), seg
+    return best
 
 
 def slice_10k_sections(html: str, source_url: str,
@@ -244,8 +313,13 @@ def slice_10k_sections(html: str, source_url: str,
     # text after BeautifulSoup's separator='\n' + our mid-word join
     # (e.g. "RISK FACTORSOur operations" — no space, no boundary). The
     # leading \bitem\s*1a\b still constrains false positives.
-    item1a_starts = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*1a\b\.?\s*\n*\s*risk\s*factors", text)]
+    # No leading \b: running page-headers ("Table of Contents") can glue to
+    # the section header after BeautifulSoup flattening — AMD/META render the
+    # body as "...ContentsITEM 1A. RISK FACTORS", which \bitem would miss
+    # (matching only the TOC entry). The required "risk factors" suffix keeps
+    # false positives out.
+    item1a_starts = _body_anchors(text, [m.start() for m in re.finditer(
+        r"(?i)item\s*1a\b\.?\s*\n*\s*risk\s*factors", text)])
     next_section_starts = [m.start() for m in re.finditer(
         r"(?i)\bitem\s*(1b|2|3)\b\.?\s*\n*\s*"
         r"(unresolved\s*staff\s*comments|properties|legal\s*proceedings)",
@@ -277,10 +351,15 @@ def slice_10k_sections(html: str, source_url: str,
     # by Item 6 (now reserved, often missing) or Item 5, and bounded
     # below by Item 7A or Item 8.
     item7_text = None
-    item7_starts = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)]
+    item7_starts = _body_anchors(text, [m.start() for m in re.finditer(
+        r"(?i)item\s*7\b\.?\s*\n*\s*management.{0,3}s\s*discussion", text)])
+    # No leading \b (body "Item 8. Financial Statements" can render glued to
+    # a page-header). NOT _body_anchors-filtered: a short Item 7A legitimately
+    # sits within ~300 chars of Item 8, and filtering it would push the MD&A
+    # end deep into the financial statements. min(ends>start) below already
+    # picks the earliest correct bound; pre-start TOC ends are just ignored.
     item7_ends = [m.start() for m in re.finditer(
-        r"(?i)\bitem\s*(7a|8)\b\.?\s*\n*\s*"
+        r"(?i)item\s*(7a|8)\b\.?\s*\n*\s*"
         r"(quantitative|financial\s*statements)", text)]
     if item7_starts and item7_ends:
         # "biggest gap" picker, same as item1a
@@ -291,6 +370,16 @@ def slice_10k_sections(html: str, source_url: str,
             e = min(ends)
             if item7_text is None or (e - s) > len(item7_text):
                 item7_text = text[s:e]
+
+    # F-page fallback: when the "Item 7." header is only a stub pointing to
+    # the financial pages (SSP-class filers), the primary slice is a few
+    # hundred chars. Recover the real MD&A body from the F-pages so the
+    # segment + debt extractors have their source. Only triggers when the
+    # primary slice is too short to be a real MD&A — normal filers untouched.
+    if not item7_text or len(item7_text) < 2000:
+        fallback_mda = _find_mda_body(text)
+        if fallback_mda:
+            item7_text = fallback_mda
 
     competition_text = _slice_subsection(item1_text, "competition")
     customers_text = _slice_subsection(item1_text, r"customers?")
@@ -411,4 +500,98 @@ def get_10k_sections(ticker: str) -> Optional[SlicedSections]:
         source_url=filing_url(cik, f10k.accession, f10k.primary_doc),
         accession=f10k.accession,
         filing_date=f10k.filing_date,
+    )
+
+
+# ─── Foreign / pre-IPO filers (20-F / S-1) — Goal-1 P2 blind-spot fill ──
+# Foreign private issuers (ARM, NBIS) file 20-F; fresh IPOs (CBRS) only have an
+# S-1. The 10-K slicer returns None for them → zero anchored facts. This fills
+# the two HIGH-VALUE, FINDABLE sections — Business (item1_full) + Risk Factors
+# (item1a_risks) — so business_summary + risks extractors work. The brittle
+# competitor/supplier/customer slicing is deliberately left None (the verbatim
+# gate then just yields little, never anything false).
+_FOREIGN_FORMS = ("20-F", "20-F/A", "S-1", "S-1/A", "F-1", "F-1/A")
+
+
+def _latest_foreign_filing(submissions: dict) -> Optional[FilingRef]:
+    recent = (submissions.get("filings") or {}).get("recent") or {}
+    forms = recent.get("form") or []
+    accs = recent.get("accessionNumber") or []
+    docs = recent.get("primaryDocument") or []
+    dates = recent.get("filingDate") or []
+    sizes = recent.get("size") or []
+    cands = [i for i, f in enumerate(forms) if f in _FOREIGN_FORMS]
+    if not cands:
+        return None
+    # Pick the MOST RECENT full foreign filing. Two failure modes to avoid:
+    #   1. thin amendments (a 20-F/A cover page or exhibits-only re-file lacks
+    #      the risk+business body) — exclude anything below a size floor; a real
+    #      annual report / registration is 5-30 MB, amendments are «1 MB.
+    #   2. an old LARGE filing — picking purely by size grabs a years-old 20-F
+    #      that may describe a company that no longer exists (e.g. NBIS's CIK
+    #      still carries pre-spinoff Yandex 20-Fs; ARM's largest is its 2024,
+    #      not the latest 2026). Recency must dominate.
+    def _sz(i: int) -> int:
+        return sizes[i] if i < len(sizes) else 0
+    SIZE_FLOOR = 2_000_000  # ~2 MB — cleanly separates real filings from amendments
+    substantial = [i for i in cands if _sz(i) >= SIZE_FLOOR]
+    pool = substantial or cands  # fall back to all if none clears the floor
+    # most recent by filing date; size breaks ties so a base form beats its /A
+    best = max(pool, key=lambda i: (dates[i] if i < len(dates) else "", _sz(i)))
+    return FilingRef(accession=accs[best], primary_doc=docs[best], filing_date=dates[best], form=forms[best])
+
+
+def _slice_foreign(text: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (business_region, risk_region). Heuristic but safe — the
+    downstream verbatim gate drops anything not literally in these bytes."""
+    low = text.lower()
+    # Risk Factors: among all "risk factors" hits, the REAL section is the one
+    # with the most content before the next "Item N" heading (TOC entries and
+    # cross-references are short). Picking by content beats "2nd occurrence".
+    risk = None
+    best_start, best_len = None, 0
+    for m in re.finditer(r"risk\s+factors", low):
+        s = m.start()
+        nxt = re.search(r"\n\s*item\s+\d", low[s + 80: s + 80_000])
+        seg_len = nxt.start() if nxt else 60_000
+        if seg_len > best_len:
+            best_len, best_start = seg_len, s
+    if best_start is not None and best_len > 2000:
+        risk = text[best_start: best_start + 60_000]
+    # Business: try the strongest anchors first (20-F Item 4 / S-1 Business).
+    biz = None
+    for pat in (
+        r"item\s*4[.\s].{0,60}?information on the company",
+        r"business overview", r"overview of our business",
+        r"our business", r"company overview", r"prospectus summary",
+        r"\bbusiness\b",
+    ):
+        m = re.search(pat, low)
+        if m and m.start() > 1500:  # skip the TOC near the very top
+            biz = text[m.start():m.start() + 45_000]
+            break
+    if not biz:
+        biz = text[5_000:50_000]  # fallback: skip cover/TOC, take the body
+    return biz, risk
+
+
+def get_foreign_sections(ticker: str) -> Optional[SlicedSections]:
+    """20-F / S-1 → SlicedSections (Business + Risk Factors only). None if no
+    such filing. Used as a fallback when get_10k_sections returns None."""
+    cik = lookup_cik(ticker)
+    if cik is None:
+        return None
+    sub = get_submissions(cik)
+    f = _latest_foreign_filing(sub)
+    if f is None:
+        logger.info("sec_edgar: no 20-F/S-1 for CIK %s", cik)
+        return None
+    html = fetch_filing_html(cik, f.accession, f.primary_doc)
+    text = _html_to_text(html)
+    biz, risk = _slice_foreign(text)
+    return SlicedSections(
+        item1_full=biz, item1_competition=None, item1_customers=None,
+        item1_suppliers=None, item1a_risks=risk, item7_mda=None,
+        source_url=filing_url(cik, f.accession, f.primary_doc),
+        filing_date=f.filing_date, accession=f.accession,
     )

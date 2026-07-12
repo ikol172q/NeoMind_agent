@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuditRecent, useAuditStats, type AuditEntry } from '@/lib/api'
-import { Card } from '@/components/ui/Card'
+import { Card, nestedRailClass } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
 import { fmtTs } from '@/lib/utils'
@@ -223,7 +223,7 @@ function AuditEntryCard({
         {dur != null && <span className="text-[var(--color-text)]">{dur}ms</span>}
       </div>
       {open && (
-        <div className="px-4 pb-3 border-t border-[var(--color-border)] text-[11px]">
+        <div className={`px-4 pb-3 border-t border-[var(--color-border)] text-[11px] ${nestedRailClass}`}>
           {/* Toggle: pretty view ↔ raw JSON */}
           <div className="flex gap-2 items-center mt-3 mb-1">
             <div className="flex gap-1">

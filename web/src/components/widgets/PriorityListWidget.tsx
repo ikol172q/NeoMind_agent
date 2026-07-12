@@ -13,9 +13,10 @@
  * Money + earnings calendar.
  */
 import { useState } from 'react'
-import { Compass, AlertTriangle, Calendar, Clock, Zap, Briefcase, BookOpen, Target } from 'lucide-react'
+import { Compass, AlertTriangle, Calendar, Clock, Zap, Briefcase, BookOpen, Target, ChevronDown, ChevronRight } from 'lucide-react'
 import { usePriorityList, type PriorityListItem } from '@/lib/api'
 import { useStockResearch } from '@/components/research/StockResearchContext'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 // Per-stream icon + color. Mapped so a row's "streams" array becomes
@@ -42,6 +43,7 @@ function fmtMoney(n: number | null): string {
 export function PriorityListWidget() {
   const q = usePriorityList(5)
   const { openTicker } = useStockResearch()
+  const [collapsed, toggle] = useCollapsed('priority-list')
 
   // Show even on loading so the slot doesn't jump in once data arrives.
   return (
@@ -50,9 +52,14 @@ export function PriorityListWidget() {
       className="mb-3 rounded border border-[var(--color-accent)]/40 bg-gradient-to-r from-[var(--color-accent)]/[0.04] to-transparent p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="text-[var(--color-accent)] flex items-center gap-1 font-semibold text-[11px]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 text-[var(--color-accent)] font-semibold text-[11px] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           📌 今日 priority
-        </span>
+        </button>
         <span className="italic">
           · 跨 5 个信号源合并的"今天先看这几个"
         </span>
@@ -63,6 +70,7 @@ export function PriorityListWidget() {
         )}
       </div>
 
+      {!collapsed && (<>
       {q.isLoading && (
         <div className="text-[10px] italic text-[var(--color-dim)]">computing…</div>
       )}
@@ -81,6 +89,7 @@ export function PriorityListWidget() {
           ))}
         </div>
       )}
+      </>)}
     </div>
   )
 }

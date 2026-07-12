@@ -210,6 +210,13 @@ def scanner_health() -> Dict[str, Any]:
                 return 60
         if "* * * *" in cron:
             return 60
+        # Fires on a single fixed weekday (e.g. "0 4 * * 0" = Sundays) → weekly
+        # cadence, so it shouldn't be called stale after only a day or two.
+        parts = cron.split()
+        if len(parts) == 5:
+            dow = parts[4]
+            if dow != "*" and not any(ch in dow for ch in "-,/"):
+                return 7 * 24 * 60
         if cron.startswith("0 ") or cron.startswith("5 ") or cron.startswith("10 "):
             return 24 * 60
         if "1-5" in cron:
@@ -217,6 +224,19 @@ def scanner_health() -> Dict[str, Any]:
         return 24 * 60
 
     now = datetime.now(timezone.utc)
+
+    def _parse(ts: Any):
+        """Parse a UTC timestamp from either format we store — analysis_runs
+        ISO ('...T..+00:00') or scheduler_jobs' SQLite datetime ('YYYY-MM-DD
+        HH:MM:SS', naive UTC). Returns an aware datetime or None."""
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+            return dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt
+        except Exception:
+            return None
+
     out = []
     n_stale = 0
     with connect() as conn:
@@ -226,25 +246,33 @@ def scanner_health() -> Dict[str, Any]:
             except KeyError:
                 cron = ""
             interval_min = expected_interval_min(cron)
-            row = conn.execute(
+            # Last successful completion. Two truthful sources — take the more
+            # recent: (1) analysis_runs, granular but only populated by jobs
+            # that write their own run row; (2) scheduler_jobs.last_run_at, the
+            # canonical per-job mirror the runner updates for EVERY job it
+            # completes. Jobs like official_news_pull / alert_scan_hourly run
+            # fine on schedule but write no analysis_runs row, so (1) alone
+            # reported a phantom "从未成功"; (2) is the truth for them.
+            ar = conn.execute(
                 "SELECT MAX(completed_at) AS last_ok "
                 "FROM analysis_runs "
                 "WHERE job_name = ? AND status = 'completed'",
                 (jn,),
             ).fetchone()
-            last_ok = row["last_ok"] if row else None
+            sj = conn.execute(
+                "SELECT last_run_at FROM scheduler_jobs "
+                "WHERE job_name = ? AND last_run_status = 'completed'",
+                (jn,),
+            ).fetchone()
+            cand = [d for d in (_parse(ar["last_ok"] if ar else None),
+                                _parse(sj["last_run_at"] if sj else None)) if d]
+            last_dt = max(cand) if cand else None
+            last_ok = last_dt.isoformat() if last_dt else None
             minutes_since = None
             is_stale = False
-            if last_ok:
-                try:
-                    last_dt = datetime.fromisoformat(last_ok.replace("Z","+00:00"))
-                    if last_dt.tzinfo is None:
-                        last_dt = last_dt.replace(tzinfo=timezone.utc)
-                    minutes_since = int((now - last_dt).total_seconds() / 60)
-                    # 2× expected interval = stale
-                    is_stale = minutes_since > interval_min * 2
-                except Exception:
-                    pass
+            if last_dt is not None:
+                minutes_since = int((now - last_dt).total_seconds() / 60)
+                is_stale = minutes_since > interval_min * 2   # 2× interval = stale
             else:
                 is_stale = True   # never ran = stale
             if is_stale:

@@ -29,7 +29,8 @@ import {
   useRecentSignals, useUserWatchlist, useAnchoredFacts,
   type SignalEvent,
 } from '@/lib/api'
-import { Newspaper, GitBranch, Globe, Filter } from 'lucide-react'
+import { Newspaper, GitBranch, Globe, Filter, ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 function relTime(iso: string): string {
@@ -68,6 +69,7 @@ const FILTER_META: Record<FilterMode, { label: string; icon: typeof Filter; help
 
 export function NewsFlowWidget() {
   const [mode, setMode] = useState<FilterMode>('anchor')
+  const [collapsed, toggle] = useCollapsed('news-flow')
   const [limit, setLimit] = useState(40)
   const { openTicker } = useStockResearch()
   const wlQ = useUserWatchlist()
@@ -121,9 +123,14 @@ export function NewsFlowWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-panel)]/40 p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] flex-wrap">
-        <span className="text-[var(--color-text)] font-semibold flex items-center gap-1 text-[11px]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 text-[var(--color-text)] font-semibold text-[11px] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           <Newspaper size={12} /> 消息流
-        </span>
+        </button>
         <span className="italic text-[var(--color-dim)]">
           · 从这里 click ticker walk 到 chain
         </span>
@@ -153,6 +160,7 @@ export function NewsFlowWidget() {
         </span>
       </div>
 
+      {!collapsed && (<>
       {sigsQ.isLoading && (
         <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
       )}
@@ -187,6 +195,7 @@ export function NewsFlowWidget() {
           )}
         </div>
       )}
+      </>)}
     </div>
   )
 }

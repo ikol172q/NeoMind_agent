@@ -28,6 +28,8 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from agent.finance import investment_projects
+
 from .cache import open_dep_cache
 from .dep_hash import (
     DepHashInputs,
@@ -40,17 +42,14 @@ from .dep_hash import (
 router = APIRouter(prefix="/api/compute", tags=["fin-compute"])
 
 
-# Same allowlist convention RawStore uses.  Hard-coded today; promote
-# to a config table when fin grows beyond one project.
-_KNOWN_PROJECTS = {"fin-core"}
-
-
 def _check_project(project_id: str) -> None:
-    if project_id not in _KNOWN_PROJECTS:
-        raise HTTPException(
-            400,
-            f"unknown project_id {project_id!r}; known: {sorted(_KNOWN_PROJECTS)}",
-        )
+    # 2026-06-30: aligned with RawStore's convention (agent/finance/
+    # raw_store/api.py). Was a hard-coded {"fin-core"} stopgap that 400'd
+    # every other project — the original comment already noted the intent
+    # was "same allowlist convention RawStore uses". Now any registered
+    # project is accepted; unknown ones 404 like /api/raw does.
+    if project_id not in investment_projects.list_projects():
+        raise HTTPException(404, f"project {project_id!r} is not registered")
 
 
 def _dev_enabled() -> bool:

@@ -12,6 +12,9 @@
  */
 import { useState } from 'react'
 import { usePortfolioSelection, type PortfolioEntry } from '@/lib/api'
+import { FreshnessChip } from './FreshnessChip'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 export interface PortfolioWidgetProps {
@@ -22,6 +25,7 @@ export interface PortfolioWidgetProps {
 export function PortfolioWidget({ asOf }: PortfolioWidgetProps) {
   const [nAlts, setNAlts] = useState<number>(5)
   const [lambda, setLambda] = useState<number>(0.65)
+  const [collapsed, toggle] = useCollapsed('portfolio')
   const q = usePortfolioSelection(asOf, nAlts, lambda)
 
   if (q.isLoading) {
@@ -54,14 +58,20 @@ export function PortfolioWidget({ asOf }: PortfolioWidgetProps) {
       className="mb-3 rounded border border-[var(--color-accent)]/40 bg-[var(--color-accent)]/[0.04] p-3"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="font-semibold text-[var(--color-text)]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 font-semibold text-[var(--color-text)] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           🏆 今日最推荐 + 替代方案 / Top + Alternatives (MMR)
-        </span>
+        </button>
         <span className="font-mono">{portfolio.fingerprint_date}</span>
         <span>·</span>
         <span>method: {portfolio.selection_method}</span>
         <span>·</span>
         <span>λ={portfolio.lambda.toFixed(2)}</span>
+        <span className="ml-auto"><FreshnessChip updatedAt={q.dataUpdatedAt} isFetching={q.isFetching} isError={q.isError} staleAfterMin={10} /></span>
         <div className="ml-auto flex items-center gap-2">
           <label className="flex items-center gap-1">
             <span>n=</span>
@@ -92,6 +102,7 @@ export function PortfolioWidget({ asOf }: PortfolioWidgetProps) {
         </div>
       </div>
 
+      {!collapsed && (<>
       {/* TOP — most recommended */}
       <div
         data-testid="portfolio-top"
@@ -168,6 +179,7 @@ export function PortfolioWidget({ asOf }: PortfolioWidgetProps) {
           {' '}考察了 {portfolio.n_candidates_considered ?? '?'} 个候选。
         </span>
       </div>
+      </>)}
     </div>
   )
 }

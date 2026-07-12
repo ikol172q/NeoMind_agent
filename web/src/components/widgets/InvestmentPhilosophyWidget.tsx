@@ -1,31 +1,26 @@
 /**
  * InvestmentPhilosophyWidget — your "Ulysses contract".
  *
- * Industry-standard Investment Policy Statement (IPS) adapted for an
- * individual concentrated investor. Designed to be:
- *   · READABLE in 5 minutes when emotion runs hot
- *   · EDITABLE incrementally (every save = new version)
- *   · ANCHOR for self — agent references it when discussing trades
+ * v0.12 structure — 道简单, 术千变万化. The framework holds only 道;
+ * tactics are generated per-trade, never enumerated here.
  *
- * Layout (Buffett's "Owner's Manual" + Marks memo + Dalio Principles):
- *   📜 v1.X · last reviewed YYYY-MM-DD · [edit] [history]
+ *   📜 v0.X · 复盘 Nd 前 · [今日已 review] [编辑]
  *   ──────────────────────────────────────
- *   🌟 NORTH STAR  (always visible — 1 sentence)
- *   👤 Identity                   [collapsible]
- *   💡 Core Beliefs (N axioms)    [collapsible]
- *   🎯 Circle of Competence       [collapsible]
- *   ⏰ Time Horizon + Sizing       [collapsible]
- *   ➕ Entry Rules                 [collapsible]
- *   ➖ Exit Rules                  [collapsible]
- *   🛡️ Hedge & Risk Plan           [collapsible]
- *   ⚖️ Disagreement Protocol       [collapsible]
+ *   🌟 总纲  (always visible — 1 句话; 「收益/风险/认知三角」带 "?" 解释)
+ *      · 自洽持有者  (identity, subtitle)
+ *      · 无固定持有期 (time_horizon, subtitle)
+ *   🔒 L0 铁律 — 永不破            [collapsible]
+ *   🧭 L1 判断过程 — a→b→c→d→e     [collapsible]
+ *   📍 观察 — 只汇报, 不进「道」    [collapsible]
  */
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { NestedGroup } from '@/components/ui/Card'
 import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query'
 import {
   Compass, Edit3, Save, X, ChevronDown, ChevronRight,
-  AlertTriangle, RotateCw,
+  AlertTriangle, RotateCw, HelpCircle,
 } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 interface Philosophy {
   version?:               string
@@ -46,6 +41,9 @@ interface Philosophy {
   change_note?:           string
   updated_at?:            string
 }
+
+/** The exact phrase in north_star that gets the "?" explainer. */
+const TRIANGLE_TERM = '收益 / 风险 / 认知三角'
 
 
 function usePhilosophy() {
@@ -92,18 +90,9 @@ function daysSince(iso?: string): number | null {
 export function InvestmentPhilosophyWidget() {
   const q = usePhilosophy()
   const touchMu = useTouchReview()
-  const [collapsed, setCollapsed] = useState<boolean>(() =>
-    typeof window !== 'undefined'
-      && localStorage.getItem('strategies.philosophy.collapsed') === '1'
-  )
+  const [collapsed, toggle] = useCollapsed('investment-philosophy')
   const [openSections, setOpenSections] = useState<Set<string>>(new Set())
   const [editing, setEditing] = useState<string | null>(null)
-
-  function toggle() {
-    const next = !collapsed
-    setCollapsed(next)
-    try { localStorage.setItem('strategies.philosophy.collapsed', next ? '1' : '0') } catch {}
-  }
 
   function toggleSection(k: string) {
     const next = new Set(openSections)
@@ -133,7 +122,7 @@ export function InvestmentPhilosophyWidget() {
           📜 投资理念
         </span>
         <span className="text-[10px] text-[var(--color-dim)] italic">
-          · Ulysses contract · 防自己冲动 · 每月 review
+          · 道简单, 术千变万化 · 防自己冲动 · 每月 review
         </span>
         <span className="ml-auto flex items-center gap-2 text-[10px]">
           <span className="text-[var(--color-dim)] font-mono">{p.version || 'v0'}</span>
@@ -147,18 +136,23 @@ export function InvestmentPhilosophyWidget() {
       </button>
 
       {!collapsed && (
-        <div className="px-3 pb-3 space-y-3 text-[11px]">
-          {/* NORTH STAR — always front and center */}
-          {p.north_star && (
-            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-2.5">
-              <div className="text-[9px] uppercase tracking-wider text-amber-300/80 mb-1 flex items-center gap-1">
-                🌟 NORTH STAR — 1 句话不能丢
-              </div>
-              <div className="text-[13px] text-[var(--color-text)] font-medium leading-relaxed">
-                {p.north_star}
-              </div>
+        <NestedGroup className="text-[11px]">
+          {/* 总纲 — always front and center */}
+          <div className="rounded border border-amber-500/30 bg-amber-500/5 p-2.5">
+            <div className="text-[9px] uppercase tracking-wider text-amber-300/80 mb-1">
+              🌟 总纲（道）— 1 句话不能丢
             </div>
-          )}
+            <div className="text-[13px] text-[var(--color-text)] font-medium leading-relaxed">
+              <NorthStar text={p.north_star} help={p.circle_competence} />
+            </div>
+            {/* identity + horizon as quiet subtitles under the 道 */}
+            {(p.identity || p.time_horizon) && (
+              <div className="mt-2 pt-2 border-t border-amber-500/20 space-y-1 text-[10px] text-[var(--color-dim)] leading-relaxed">
+                {p.identity && <div>👤 {p.identity}</div>}
+                {p.time_horizon && <div>⏰ {p.time_horizon}</div>}
+              </div>
+            )}
+          </div>
 
           {/* Quick-actions row */}
           <div className="flex items-center gap-2 text-[10px]">
@@ -176,47 +170,24 @@ export function InvestmentPhilosophyWidget() {
             </span>
           </div>
 
-          {/* Collapsible sections */}
-          <Section title="👤 Identity — 我是什么 investor"
-                   k="identity" openSections={openSections} toggle={toggleSection}>
-            <Markdown text={p.identity} />
-          </Section>
-
-          <Section title={`💡 Core Beliefs — ${(p.beliefs?.length ?? 0)} axioms 我在 bet 的`}
-                   k="beliefs" openSections={openSections} toggle={toggleSection}>
-            <BeliefsList beliefs={p.beliefs} />
-          </Section>
-
-          <Section title="🎯 Circle of Competence — 我会做 / 不会做"
-                   k="circle" openSections={openSections} toggle={toggleSection}>
-            <Markdown text={p.circle_competence} />
-          </Section>
-
-          <Section title="⏰ Time Horizon + 仓位规则"
-                   k="sizing" openSections={openSections} toggle={toggleSection}>
-            <Markdown text={p.time_horizon} />
-            {p.sizing_rules && (
-              <SizingRulesGrid rules={p.sizing_rules as Record<string, unknown>} />
-            )}
-          </Section>
-
-          <Section title="➕ Entry Rules — 什么情况下买入"
-                   k="entry" openSections={openSections} toggle={toggleSection}>
-            <Markdown text={p.entry_rules} />
-          </Section>
-
-          <Section title="➖ Exit Rules — 什么情况下卖出"
-                   k="exit" openSections={openSections} toggle={toggleSection}>
-            <Markdown text={p.exit_rules} />
-          </Section>
-
-          <Section title="🛡️ Hedge & Risk Plan — 主线失败怎么办"
-                   k="hedge" openSections={openSections} toggle={toggleSection}>
+          {/* Collapsible sections — only 道, no 术 */}
+          <Section title="🔒 L0 铁律 — 永不破"
+                   k="l0" openSections={openSections} toggle={toggleSection}>
             <Markdown text={p.hedge_plan} />
           </Section>
 
-          <Section title="⚖️ Disagreement Protocol — 跟 smart money 反向时"
-                   k="disagree" openSections={openSections} toggle={toggleSection}>
+          <Section title="🧭 L1 判断过程 — a → b → c → d → e"
+                   k="l1" openSections={openSections} toggle={toggleSection}>
+            <Markdown text={p.entry_rules} />
+            {p.exit_rules && (
+              <div className="mt-2 pt-2 border-t border-[var(--color-border)]/30">
+                <Markdown text={p.exit_rules} />
+              </div>
+            )}
+          </Section>
+
+          <Section title="📍 观察 — 只汇报, 不进「道」"
+                   k="obs" openSections={openSections} toggle={toggleSection}>
             <Markdown text={p.disagreement_protocol} />
           </Section>
 
@@ -228,16 +199,91 @@ export function InvestmentPhilosophyWidget() {
               className="hover:text-[var(--color-text)] flex items-center gap-1"
               data-testid="philosophy-edit"
             >
-              <Edit3 size={10} /> 编辑 (打开完整 IPS 文档)
+              <Edit3 size={10} /> 编辑
             </button>
           </div>
-        </div>
+        </NestedGroup>
       )}
 
       {editing && (
         <EditModal philosophy={p} onClose={() => setEditing(null)} />
       )}
     </div>
+  )
+}
+
+
+/**
+ * Renders the 总纲 sentence, attaching a click-toggle "?" explainer to
+ * the 收益/风险/认知三角 phrase so it can be reviewed any time. Click
+ * (not hover) — works on touch / mobile.
+ */
+function NorthStar({ text, help }: { text?: string; help?: string }) {
+  if (!text) return <span className="italic text-[var(--color-dim)]">(空 — 点编辑添加)</span>
+  const idx = text.indexOf(TRIANGLE_TERM)
+  if (idx < 0 || !help) return <span>{text}</span>
+  const before = text.slice(0, idx)
+  const after = text.slice(idx + TRIANGLE_TERM.length)
+  return (
+    <span>
+      {before}
+      <span className="font-semibold text-amber-200">{TRIANGLE_TERM}</span>
+      <TriangleHelp help={help} />
+      {after}
+    </span>
+  )
+}
+
+
+function TriangleHelp({ help }: { help: string }) {
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLSpanElement>(null)
+
+  useEffect(() => {
+    if (!open) return
+    function onDown(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false)
+    }
+    function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setOpen(false) }
+    document.addEventListener('mousedown', onDown)
+    document.addEventListener('keydown', onKey)
+    return () => {
+      document.removeEventListener('mousedown', onDown)
+      document.removeEventListener('keydown', onKey)
+    }
+  }, [open])
+
+  return (
+    <span ref={ref} className="relative inline-block align-baseline">
+      <button
+        onClick={(e) => { e.stopPropagation(); setOpen(o => !o) }}
+        className="ml-0.5 -mt-1 inline-flex align-text-top text-amber-300/80 hover:text-amber-200"
+        title="收益 / 风险 / 认知三角 是什么 — 点开复习"
+        aria-label="收益/风险/认知三角 解释"
+        data-testid="triangle-help-toggle"
+      >
+        <HelpCircle size={12} />
+      </button>
+      {open && (
+        <div
+          data-testid="triangle-help-popover"
+          className="absolute z-50 mt-1 left-0 top-full w-[320px] max-w-[80vw] px-3 py-2.5 rounded-md bg-[#0e1219] border border-amber-500/50 shadow-lg shadow-black/40 text-[11px] leading-[1.6] text-[var(--color-text)] font-normal text-left"
+        >
+          <div className="flex items-center justify-between mb-1.5">
+            <span className="text-[9px] uppercase tracking-wider text-amber-300">
+              🔺 收益 / 风险 / 认知 三角
+            </span>
+            <button
+              onClick={(e) => { e.stopPropagation(); setOpen(false) }}
+              className="text-[var(--color-dim)] hover:text-[var(--color-text)]"
+            >
+              <X size={11} />
+            </button>
+          </div>
+          <Markdown text={help} />
+        </div>
+      )}
+    </span>
   )
 }
 
@@ -281,8 +327,15 @@ function Markdown({ text }: { text?: string }) {
         if (line.startsWith('**') && line.endsWith('**')) {
           return <div key={i} className="font-semibold text-[var(--color-text)] mt-1">{line.slice(2, -2)}</div>
         }
-        if (/^[-•]/.test(line.trim())) {
-          return <div key={i} className="pl-4 -indent-3">· {line.replace(/^[-•]\s*/, '')}</div>
+        const trimmed = line.trim()
+        if (/^[-•·]/.test(trimmed)) {
+          const nested = /^\s+/.test(line)   // indented sub-bullet
+          const body = trimmed.replace(/^[-•·]\s*/, '')
+          return (
+            <div key={i} className={nested ? 'pl-8 -indent-3 text-[var(--color-dim)]' : 'pl-4 -indent-3'}>
+              {nested ? '–' : '·'} {body}
+            </div>
+          )
         }
         // Inline bold conversion
         const segments = line.split(/(\*\*[^*]+\*\*)/g)
@@ -293,62 +346,6 @@ function Markdown({ text }: { text?: string }) {
                 ? <span key={j} className="font-semibold text-[var(--color-text)]">{seg.slice(2, -2)}</span>
                 : <span key={j}>{seg}</span>
             )}
-          </div>
-        )
-      })}
-    </div>
-  )
-}
-
-
-function BeliefsList({ beliefs }: { beliefs?: Array<{ claim: string; why?: string; falsified_if?: string }> }) {
-  if (!beliefs || !beliefs.length) {
-    return <span className="italic text-[var(--color-dim)]">(空)</span>
-  }
-  return (
-    <div className="space-y-2">
-      {beliefs.map((b, i) => (
-        <div key={i} className="rounded border border-[var(--color-border)]/30 p-2 bg-[var(--color-bg)]/30">
-          <div className="text-[11px] font-semibold text-[var(--color-text)]">
-            #{i + 1} {b.claim}
-          </div>
-          {b.why && (
-            <div className="text-[10px] text-[var(--color-dim)] mt-1">
-              <span className="text-[var(--color-text)]/60">why:</span> {b.why}
-            </div>
-          )}
-          {b.falsified_if && (
-            <div className="text-[10px] text-amber-300/80 mt-1">
-              <span className="text-amber-300">falsified if:</span> {b.falsified_if}
-            </div>
-          )}
-        </div>
-      ))}
-    </div>
-  )
-}
-
-
-function SizingRulesGrid({ rules }: { rules: Record<string, unknown> }) {
-  const entries = Object.entries(rules)
-  if (!entries.length) return null
-  return (
-    <div className="mt-2 grid grid-cols-2 gap-1 text-[10px]">
-      {entries.map(([k, v]) => {
-        if (k === 'notes') {
-          return (
-            <div key={k} className="col-span-2 mt-1 italic text-amber-300/70">
-              📝 {String(v)}
-            </div>
-          )
-        }
-        const v_str = typeof v === 'number' && k.endsWith('_pct')
-          ? `${(v * 100).toFixed(0)}%`
-          : String(v)
-        return (
-          <div key={k} className="flex items-center justify-between border-b border-[var(--color-border)]/30 py-0.5">
-            <span className="text-[var(--color-dim)]">{k.replace(/_/g, ' ')}</span>
-            <span className="font-mono text-[var(--color-text)]">{v_str}</span>
           </div>
         )
       })}
@@ -370,11 +367,11 @@ function EditModal({ philosophy, onClose }: { philosophy: Philosophy; onClose: (
   const [draft, setDraft] = useState({
     north_star:            philosophy.north_star ?? '',
     identity:              philosophy.identity ?? '',
-    circle_competence:     philosophy.circle_competence ?? '',
     time_horizon:          philosophy.time_horizon ?? '',
+    circle_competence:     philosophy.circle_competence ?? '',
+    hedge_plan:            philosophy.hedge_plan ?? '',
     entry_rules:           philosophy.entry_rules ?? '',
     exit_rules:            philosophy.exit_rules ?? '',
-    hedge_plan:            philosophy.hedge_plan ?? '',
     disagreement_protocol: philosophy.disagreement_protocol ?? '',
   })
   const [changeNote, setChangeNote] = useState('')
@@ -406,14 +403,14 @@ function EditModal({ philosophy, onClose }: { philosophy: Philosophy; onClose: (
 
         <div className="flex-1 overflow-y-auto p-4 space-y-3 text-[11px]">
           {([
-            ['north_star',            '🌟 NORTH STAR — 1 句话核心目标', 2],
-            ['identity',              '👤 Identity — 你是什么 investor', 3],
-            ['circle_competence',     '🎯 Circle of Competence — 会做 / 不会做', 4],
-            ['time_horizon',          '⏰ Time Horizon — 默认持有期', 3],
-            ['entry_rules',           '➕ Entry Rules — 什么情况下买入', 10],
-            ['exit_rules',            '➖ Exit Rules — 什么情况下卖出', 10],
-            ['hedge_plan',            '🛡️ Hedge & Risk Plan — 主线失败怎么办', 12],
-            ['disagreement_protocol', '⚖️ Disagreement Protocol — 跟 smart money 反向时', 10],
+            ['north_star',            '🌟 总纲 — 1 句话(含「收益 / 风险 / 认知三角」)', 3],
+            ['identity',              '👤 自洽持有者 — 我是什么 investor', 4],
+            ['time_horizon',          '⏰ 持有期', 3],
+            ['circle_competence',     '🔺 收益/风险/认知三角 — 总纲里 "?" 弹出的解释', 12],
+            ['hedge_plan',            '🔒 L0 铁律 — 永不破(下行可承受)', 5],
+            ['entry_rules',           '🧭 L1 判断过程 — a → b → c → d → e', 12],
+            ['exit_rules',            '➖ 卖出补充 — 卖也走 L1(可留空)', 5],
+            ['disagreement_protocol', '📍 观察 — 只汇报, 不进「道」', 8],
           ] as const).map(([key, label, rows]) => (
             <div key={key}>
               <div className="text-[10px] text-[var(--color-dim)] uppercase tracking-wider mb-1">{label}</div>
@@ -435,7 +432,7 @@ function EditModal({ philosophy, onClose }: { philosophy: Philosophy; onClose: (
               type="text"
               value={changeNote}
               onChange={(e) => setChangeNote(e.target.value)}
-              placeholder="e.g. 'Tepper减仓 NVDA 让我重新审视, 加了 belief #6'"
+              placeholder="e.g. '某次大波动让我重审 L1 的 c, 把 d 改成收益/亏损概率分开估'"
               className="w-full bg-[var(--color-panel)] border border-[var(--color-border)] rounded px-2 py-1.5 text-[11px] outline-none focus:border-[var(--color-accent)]"
               data-testid="philosophy-change-note"
             />

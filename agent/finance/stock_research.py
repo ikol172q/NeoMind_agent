@@ -182,44 +182,83 @@ def append_note(
                 "trigger_thesis_id": trigger_thesis_id}
 
 
+_PAREN_TICKER = re.compile(r"\(([A-Z]{2,5})\)")
+
+
+def _news_relevant(ticker: str, title: str) -> bool:
+    """De-noise: the news scanner trusts Yahoo's per-ticker tagging, but Yahoo
+    attaches multi-stock listicles to any ticker they merely mention (e.g. a
+    '...Meta Platforms (META)...' headline shows up under GOOGL). Drop a news
+    item when its headline parenthesizes a DIFFERENT company's ticker and never
+    names THIS ticker. Keep when: no other ticker is parenthesized, a
+    same-family ticker appears (GOOG/GOOGL), or this ticker's symbol is present.
+    Conservative by design (only drops explicit other-ticker mis-tags)."""
+    if not title:
+        return True
+    head = title.split(":", 1)[1] if title.startswith(ticker + ":") else title
+    up = head.upper()
+    parens = _PAREN_TICKER.findall(up)
+    if not parens:
+        return True
+    for p in parens:
+        if p == ticker or ticker.startswith(p) or p.startswith(ticker):
+            return True   # same ticker or family (e.g. GOOG vs GOOGL)
+    return bool(re.search(rf"\b{re.escape(ticker)}\b", up))
+
+
 def aggregate_exposure(ticker: str, max_age_days: int = 365) -> List[Dict[str, Any]]:
     """Pull all signal_events for this ticker across scanners. Includes
     13F whales, congress, house clerk PDF, insider Form 4 — each tagged
     with its scanner so the drawer can mix them in one timeline."""
     ensure_schema()
     cutoff = datetime.now(timezone.utc).isoformat()  # cutoff comparison done via SQL date
+    # Phase W (2026-05-10): include event_id so the drawer's NoteTriggerSelector
+    # can pass a real reference into stock_notes.trigger_signal_id.
+    _COLS = ("SELECT event_id, scanner_name, signal_type, severity, title, body_json, "
+             "       source_url, source_timestamp, detected_at FROM signal_events ")
+    # 2026-06-27: smart-money scanners get their OWN row budget so high-volume
+    # `news` can't crowd them out. Before, a single `ORDER BY detected_at DESC
+    # LIMIT 200` returned 196 news / 2 watchlist / 2 stock_act for GOOGL — the
+    # 33 13F + 4 House-Clerk + Form-4 events fell past row 200, so the drawer's
+    # "13F"/"Form 4" filter showed NOTHING despite the data existing.
+    SMART = ("13f", "insider_form4", "stock_act", "house_clerk_pdf", "13d")
+    _ph = ",".join("?" * len(SMART))
+
+    def _to_event(r) -> Dict[str, Any]:
+        try:
+            body = json.loads(r["body_json"]) if r["body_json"] else {}
+        except json.JSONDecodeError:
+            body = {}
+        return {
+            "event_id":         r["event_id"],
+            "scanner":          r["scanner_name"],
+            "signal_type":      r["signal_type"],
+            "severity":         r["severity"],
+            "title":            r["title"],
+            "body":             body,
+            "source_url":       r["source_url"],
+            "source_timestamp": r["source_timestamp"],
+            "detected_at":      r["detected_at"],
+        }
+
     with connect() as conn:
-        cur = conn.execute(
-            # Phase W (2026-05-10): include event_id so the drawer's
-            # NoteTriggerSelector can pass a real reference into
-            # stock_notes.trigger_signal_id (instead of a useless
-            # array index that breaks audit traceability).
-            "SELECT event_id, scanner_name, signal_type, severity, title, body_json, "
-            "       source_url, source_timestamp, detected_at "
-            "FROM signal_events "
-            "WHERE ticker=? "
-            "  AND date(detected_at) >= date(?, ?) "
-            "ORDER BY detected_at DESC LIMIT 200",
-            (ticker, cutoff, f"-{max_age_days} days"),
-        )
-        events = []
-        for r in cur.fetchall():
-            try:
-                body = json.loads(r["body_json"]) if r["body_json"] else {}
-            except json.JSONDecodeError:
-                body = {}
-            events.append({
-                "event_id":         r["event_id"],
-                "scanner":          r["scanner_name"],
-                "signal_type":      r["signal_type"],
-                "severity":         r["severity"],
-                "title":            r["title"],
-                "body":             body,
-                "source_url":       r["source_url"],
-                "source_timestamp": r["source_timestamp"],
-                "detected_at":      r["detected_at"],
-            })
-        return events
+        smart_rows = conn.execute(
+            _COLS + "WHERE ticker=? AND date(detected_at) >= date(?, ?) "
+            f"AND scanner_name IN ({_ph}) ORDER BY detected_at DESC LIMIT 150",
+            (ticker, cutoff, f"-{max_age_days} days", *SMART),
+        ).fetchall()
+        other_rows = conn.execute(
+            _COLS + "WHERE ticker=? AND date(detected_at) >= date(?, ?) "
+            f"AND scanner_name NOT IN ({_ph}) ORDER BY detected_at DESC LIMIT 100",
+            (ticker, cutoff, f"-{max_age_days} days", *SMART),
+        ).fetchall()
+    rows = sorted(list(smart_rows) + list(other_rows),
+                  key=lambda r: r["detected_at"] or "", reverse=True)
+    # De-noise news mis-tagged to this ticker (multi-stock listicles Yahoo
+    # loosely attached). Only filters `news`; smart-money rows pass untouched.
+    rows = [r for r in rows
+            if r["scanner_name"] != "news" or _news_relevant(ticker, r["title"] or "")]
+    return [_to_event(r) for r in rows]
 
 
 # ─── LLM business summary generator ───────────────────────────────

@@ -163,10 +163,39 @@ def _do_check() -> Dict[str, Any]:
             else:
                 n_ok += 1
 
+    # ── Goal 2 pass: evidence-driven materiality ───────────────────
+    # The decay checks above are inert for free-text theses with no linked
+    # fact_ids/signal_types (the user's holdings). This pass compares NEW SEC
+    # events against the thesis body_md and flags requires_review on 破/动摇.
+    # Runs AFTER the decay loop so it overrides 'active' set above; only flags,
+    # never un-flags (review = user bumps last_reviewed_at → next run no_new).
+    n_materiality_flagged = 0
+    try:
+        from agent.finance.thesis_materiality import compute as _materiality
+        with connect() as conn:
+            held = [r["symbol"] for r in conn.execute(
+                "SELECT DISTINCT symbol FROM tax_lots WHERE close_date IS NULL"
+            ).fetchall() if r["symbol"]]
+            thesis_tickers = {r["ticker"] for r in conn.execute(
+                "SELECT ticker FROM investment_theses WHERE status IN ('active','requires_review')"
+            ).fetchall()}
+        for tk in sorted(set(held) & thesis_tickers):
+            try:
+                res = _materiality(tk)
+                if res.get("verdict") in ("破", "动摇"):
+                    n_materiality_flagged += 1
+                    logger.info("[thesis_health_check] materiality flagged %s — %s",
+                                tk, res["verdict"])
+            except Exception as exc:
+                logger.warning("materiality pass failed for %s: %s", tk, exc)
+    except Exception as exc:
+        logger.warning("materiality pass unavailable: %s", exc)
+
     return {
         "n_checked":         n_checked,
         "n_ok":              n_ok,
         "n_flagged":         n_flagged,
         "n_already_flagged": n_already_flagged,
+        "n_materiality_flagged": n_materiality_flagged,
         "checked_at":        now_iso,
     }

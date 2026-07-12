@@ -8,9 +8,10 @@
  *             which catalog entries are *actually* live in today's
  *             lattice and which are dormant.
  *
- * Sort + filter so 35 entries are navigable.
+ * Sort + filter so 36 entries are navigable.
  */
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { nestedRailClass } from '@/components/ui/Card'
 import {
   ArrowDownAZ,
   ChevronDown,
@@ -38,10 +39,9 @@ import {
   type StrategyWidgetCoverage,
   type WidgetMeta,
 } from '@/lib/api'
-import { cn } from '@/lib/utils'
+import { cn, todayLocal } from '@/lib/utils'
 import { FreshnessBar } from '@/components/FreshnessBar'
 import { WatchlistSection } from '@/tabs/Watchlist'
-import { PortfolioSummaryWidget } from '@/components/widgets/PortfolioSummaryWidget'
 import { AddLotModal } from '@/components/widgets/AddLotModal'
 import { HoverPopover } from '@/components/widgets/HoverPopover'
 import { LastAuditPanel } from '@/components/widgets/LastAuditPanel'
@@ -56,6 +56,9 @@ import { CatalystCalendarWidget } from '@/components/widgets/CatalystCalendarWid
 import { InvestmentPhilosophyWidget } from '@/components/widgets/InvestmentPhilosophyWidget'
 import { SmartMoneyWidget } from '@/components/widgets/SmartMoneyWidget'
 import { NeoMindLiveStream } from '@/components/widgets/NeoMindLiveStream'
+import { DeskStrip } from '@/components/widgets/DeskStrip'
+import { ResearchInboxWidget } from '@/components/widgets/ResearchInboxWidget'
+import { TradingPlansWidget } from '@/components/widgets/TradingPlansWidget'
 import { ChatPanel } from '@/components/chat/ChatPanel'
 
 const HORIZON_ORDER: StrategyEntry['horizon'][] = [
@@ -120,6 +123,9 @@ interface Props {
   pendingPrompt?: string | null
   pendingContext?: { symbol?: string; project?: boolean } | null
   onConsumePendingPrompt?: () => void
+  /** Top-level tab switcher (App.setTab) — lets DeskStrip's account
+   *  cards deep-link into the Core / Trading tabs. */
+  onNavigate?: (tab: string) => void
 }
 
 // Increased from 2500ms → 6000ms so the user actually sees where the
@@ -140,6 +146,7 @@ export function StrategiesTab({
   pendingPrompt,
   pendingContext,
   onConsumePendingPrompt,
+  onNavigate,
 }: Props) {
   const q = useFinStrategies()
   // Phase A 1:1 sync: when the user picks a past date, the calls data
@@ -339,6 +346,30 @@ export function StrategiesTab({
         />
       </div>
 
+      {/* 2026-07-06: 交易台驾驶舱 — 账户状态(Schwab 核心/IBKR 量化/Paper) +
+          操作控制(急停/自动进场/regime)。这些原本只在 Core / Trading tab，
+          主页看不到。纯新增一条，复用现有 hooks + EmergencyBrakeBar。 */}
+      <div className="max-w-[1100px] mx-auto">
+        <DeskStrip projectId={projectId} onNavigate={onNavigate} />
+      </div>
+
+      {/* 2026-07-10: surface backend output that previously had API-only,
+          no-UI visibility (user: "改动在 dashboard 找不到"). Both are
+          additive, read-only, and sit between the cockpit strip and the
+          investment-philosophy block. */}
+      {/* 🔬 研究收件箱 — research_loop's auto-generated theses, incl.
+          off-book small caps (SSP/LILA/MOBI…) that have no ticker
+          drawer, so this is a flat cross-ticker feed. */}
+      <div className="max-w-[1100px] mx-auto">
+        <ResearchInboxWidget />
+      </div>
+
+      {/* 📋 交易计划 — ~/trading_plans/*.md (discipline cards + event
+          checklists), listed here with full-text open in a modal. */}
+      <div className="max-w-[1100px] mx-auto">
+        <TradingPlansWidget />
+      </div>
+
       {/* 2026-05-19: investment philosophy at the very top — the
           "Ulysses contract" the user binds themselves to. Industry-
           standard IPS structure adapted for concentrated AI investor
@@ -371,18 +402,12 @@ export function StrategiesTab({
         <PriorityListWidget />
       </div>
 
-      {/* Phase 1B (2026-05-10): Portfolio summary — actual holdings,
-          ABOVE the watchlist (because positions matter more than
-          potential positions for daily decisions). */}
+      {/* 2026-06-24: holdings + watchlist unified into ONE onion section.
+          The separate "我的持仓" summary widget was removed — the onion
+          already shows held positions as nodes, and per-stock cost/P&L
+          lives in the node drawer. Add-lot moved into the section header. */}
       <div className="max-w-[1100px] mx-auto">
-        <PortfolioSummaryWidget onAddLot={() => setAddLotOpen(true)} />
-      </div>
-
-      {/* Watchlist — moved here 2026-05-08 from its own tab so the
-          user has one workspace. Collapsible header lets them focus
-          on strategies; collapse state persists in localStorage. */}
-      <div className="max-w-[1100px] mx-auto">
-        <WatchlistSection />
+        <WatchlistSection onAddLot={() => setAddLotOpen(true)} />
       </div>
 
       <div className="max-w-[1100px] mx-auto">
@@ -452,7 +477,7 @@ export function StrategiesTab({
               ). When a strategy scores ≥3, it appears as a chip on the
               call. Click any chip → land here, on the focused card.
               <div className="mt-1 font-mono text-[var(--color-text)]">
-                Today: <b>{callsTotal}</b> L3 calls · <b>{callsMatched}</b> matched ·{' '}
+                {asOf === 'live' ? todayLocal() : asOfLocalYMD}: <b>{callsTotal}</b> L3 calls · <b>{callsMatched}</b> matched ·{' '}
                 <b>{strategiesUsed} / {q.data?.count ?? 0}</b> strategies referenced.
                 {callsTotal === 0 && (
                   <span className="text-[var(--color-amber,#e5a200)] ml-2">
@@ -773,17 +798,21 @@ function ChatRail({
     if (stored !== null) return stored !== '0'
     return !window.matchMedia('(max-width: 767px)').matches
   })
-  // Open default: true on desktop, false on mobile (don't ambush
-  // mobile users with a full-screen overlay on first visit).
+  // Open default: desktop persists the user's choice (default open).
+  // Mobile ALWAYS starts closed — the persisted desktop "open" must not
+  // leak to a phone and ambush it with a full-screen overlay on load.
   const [open, setOpen] = useState<boolean>(() => {
+    if (window.matchMedia('(max-width: 767px)').matches) return false
     const stored = localStorage.getItem(KEY_OPEN)
     if (stored !== null) return stored !== '0'
-    return !window.matchMedia('(max-width: 767px)').matches
+    return true
   })
 
   useEffect(() => { localStorage.setItem(KEY_W,  String(width)) }, [width])
   useEffect(() => { localStorage.setItem(KEY_SS, showSessions ? '1' : '0') }, [showSessions])
-  useEffect(() => { localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open])
+  // Only desktop persists the open preference — mobile opens/closes must not
+  // overwrite the shared key (else closing on a phone would also collapse it on desktop).
+  useEffect(() => { if (!isMobile) localStorage.setItem(KEY_OPEN, open ? '1' : '0') }, [open, isMobile])
 
   // Drag-to-resize via global mousemove/mouseup so cursor doesn't
   // snap back if it leaves the handle while dragging.
@@ -1108,7 +1137,7 @@ function StrategyCard({
       </button>
 
       {expanded && (
-        <div className="px-3 pb-3 pt-1 border-t border-[var(--color-border)] flex flex-col gap-2 text-[10px]">
+        <div className={`px-3 pb-3 pt-1 border-t border-[var(--color-border)] flex flex-col gap-2 text-[10px] ${nestedRailClass}`}>
           {/* Reverse map: list the live L3 calls referencing this
               strategy, if any. Lets the user click through to see
               which actual recommendations grounded in this strategy. */}

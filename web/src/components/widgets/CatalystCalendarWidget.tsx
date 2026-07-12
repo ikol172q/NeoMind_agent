@@ -19,7 +19,9 @@ import {
   useRecentSignals, usePortfolioSummary, useUserWatchlist,
   type SignalEvent,
 } from '@/lib/api'
-import { Calendar, Target } from 'lucide-react'
+import { FreshnessChip } from './FreshnessChip'
+import { Calendar, Target, ChevronDown, ChevronRight } from 'lucide-react'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 
 function parseEarningsBody(body: unknown): { date: string; days: number; eps_est?: number } | null {
@@ -62,6 +64,7 @@ type ScopeMode = 'held' | 'watchlist' | 'all'
 
 export function CatalystCalendarWidget() {
   const [scope, setScope] = useState<ScopeMode>('held')
+  const [collapsed, toggle] = useCollapsed('catalyst')
   const { openTicker } = useStockResearch()
   const portfolio = usePortfolioSummary()
   const wl = useUserWatchlist()
@@ -144,9 +147,14 @@ export function CatalystCalendarWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-panel)]/40 p-2.5"
     >
       <div className="flex items-baseline gap-2 mb-2 text-[10px] flex-wrap">
-        <span className="text-[var(--color-text)] font-semibold flex items-center gap-1 text-[11px]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 text-[var(--color-text)] font-semibold text-[11px] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           <Calendar size={12} /> 30d catalysts
-        </span>
+        </button>
         <span className="italic text-[var(--color-dim)]">
           · 业绩 + macro events within 30d
         </span>
@@ -167,11 +175,13 @@ export function CatalystCalendarWidget() {
             )
           })}
         </div>
-        <span className="ml-auto text-[9px] font-mono text-[var(--color-dim)]">
-          {items.length} within 30d
+        <span className="ml-auto flex items-center gap-2">
+          <FreshnessChip job="earnings_calendar" />
+          <span className="text-[9px] font-mono text-[var(--color-dim)]">{items.length} within 30d</span>
         </span>
       </div>
 
+      {!collapsed && (<>
       {earningsQ.isLoading && (
         <div className="text-[10px] italic text-[var(--color-dim)]">loading…</div>
       )}
@@ -230,6 +240,7 @@ export function CatalystCalendarWidget() {
           ))}
         </div>
       )}
+      </>)}
     </div>
   )
 }
