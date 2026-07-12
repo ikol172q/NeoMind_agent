@@ -319,8 +319,8 @@ class NeoMindAgent:
         # backward compat until core.py's inline validation is fully removed.
         self._finance_validator = None
         try:
-            from agent.finance.response_validator import get_finance_validator
-            self._finance_validator = get_finance_validator(strict=False)
+            from agent.fin_provider import fin_module
+            self._finance_validator = fin_module('response_validator').get_finance_validator(strict=False)
             self._status_print("Finance response validator loaded", "debug")
         except Exception as e:
             self._status_print(f"Finance validator not available (non-fatal): {e}", "debug")
@@ -838,9 +838,9 @@ class NeoMindAgent:
             return  # already initialized
 
         try:
-            from agent.finance import get_finance_components
+            from agent.fin_provider import fin_package
             from agent_config import agent_config as cfg
-            self._finance_components = get_finance_components(cfg)
+            self._finance_components = fin_package().get_finance_components(cfg)
         except ImportError as e:
             self._safe_print(f"⚠️  Finance module not fully available: {e}")
             self._safe_print("   Install finance deps: pip install -e '.[finance]'")

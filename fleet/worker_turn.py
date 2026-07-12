@@ -123,7 +123,7 @@ async def _default_llm_call(
     # messages[] array and FULL response body go to
     # ~/Desktop/Investment/_audit/YYYY-MM-DD.jsonl. Failures go as
     # `error` events. See agent/finance/agent_audit.py.
-    from agent.finance import agent_audit
+    from agent.services import agent_audit
     req_id = agent_audit.new_req_id()
     agent_audit.audit_request(
         req_id=req_id,
@@ -233,7 +233,8 @@ async def _execute_fin(
     member_name: str = "",
 ) -> Dict[str, Any]:
     """Fin persona: parse signal, write analysis record, return summary."""
-    from agent.finance.signal_schema import parse_signal
+    from agent.fin_provider import fin_module
+    parse_signal = fin_module('signal_schema').parse_signal
 
     # Read per-persona context through the proxy (contextvar-bound to fin)
     system_prompt = agent_config.system_prompt or ""
@@ -271,7 +272,8 @@ async def _execute_fin(
         analysis, layer = parse_signal(raw_response)
         if project_id:
             try:
-                from agent.finance import investment_projects
+                from agent.fin_provider import fin_module
+                investment_projects = fin_module('investment_projects')
                 path = investment_projects.write_analysis(
                     project_id, symbol, analysis.model_dump()
                 )

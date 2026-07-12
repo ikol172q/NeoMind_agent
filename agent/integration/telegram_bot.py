@@ -892,9 +892,9 @@ class NeoMindTelegramBot:
         # Reload finance components if switching to/from fin
         if target == "fin":
             from agent_config import AgentConfigManager
-            from agent.finance import get_finance_components
+            from agent.fin_provider import fin_package
             cfg = AgentConfigManager(mode='fin')
-            self.components = get_finance_components(cfg)
+            self.components = fin_package().get_finance_components(cfg)
             from .openclaw_skill import OpenClawFinanceSkill
             self._skill = OpenClawFinanceSkill(components=self.components)
 
@@ -1912,10 +1912,8 @@ class NeoMindTelegramBot:
         args = context.args if context.args else []
 
         if not args or args[0].lower() == "list":
-            try:
-                from agent.finance.investment_personas import PERSONAS
-            except ImportError:
-                from agent.finance.investment_personas import PERSONAS  # fallback
+            from agent.fin_provider import fin_module
+            PERSONAS = fin_module('investment_personas').PERSONAS
 
             lines = ["🎭 <b>投资人格分析</b>\n"]
             for key, p in PERSONAS.items():
@@ -3381,7 +3379,8 @@ class NeoMindTelegramBot:
         """Route a natural-language query to the dashboard-watching agent."""
         await self._react(msg, "👀")
         try:
-            from agent.finance.dashboard_agent import answer
+            from agent.fin_provider import fin_module
+            answer = fin_module('dashboard_agent').answer
             reply = await answer(str(msg.chat_id), query)
         except Exception as exc:
             logger.exception("dashboard_agent failed")

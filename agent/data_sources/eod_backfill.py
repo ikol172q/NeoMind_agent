@@ -14,7 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any, Dict, List
 
-from agent.finance.persistence import connect, dao, ensure_schema
+from agent.fin_provider import fin_module
+
+_persistence = fin_module('persistence')
+connect, ensure_schema = _persistence.connect, _persistence.ensure_schema
+dao = getattr(_persistence, 'dao', None) or fin_module('persistence.dao')
 
 logger = logging.getLogger(__name__)
 

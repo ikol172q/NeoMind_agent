@@ -76,6 +76,10 @@ run.sh
 # Safety audit logs
 *.safety_audit.log
 
+# Strategy validation audit logs — auto-generated daily by the strategy
+# refresh job; noise in a public repo, no need to track.
+docs/strategies/audit_logs/
+
 # Secrets / credentials — NEVER check in
 *.pem
 *.key

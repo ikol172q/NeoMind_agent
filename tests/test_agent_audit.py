@@ -1,4 +1,4 @@
-"""Tests for agent.finance.agent_audit — zero-data-loss LLM-call audit.
+"""Tests for agent.services.agent_audit — zero-data-loss LLM-call audit.
 
 Verifies:
 - Request / response / error events are written as JSONL lines
@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from agent.finance import agent_audit
+from agent.services import agent_audit
 
 
 @pytest.fixture

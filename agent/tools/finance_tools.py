@@ -255,8 +255,8 @@ async def finance_news_search(
     # Stage 1: miniflux (curated RSS, instant)
     miniflux_items: list[dict] = []
     try:
-        from agent.finance.news_hub import search_entries
-        entries = search_entries(query, limit=requested)
+        from agent.fin_provider import fin_module
+        entries = fin_module('news_hub').search_entries(query, limit=requested)
         miniflux_items = [{
             "title":     e.title,
             "url":       e.url,
@@ -740,7 +740,8 @@ async def finance_persona_debate(
     if not digest_engine:
         return {"ok": False, "error": "digest engine not available"}
     try:
-        from agent.finance.investment_personas import PERSONAS
+        from agent.fin_provider import fin_module
+        PERSONAS = fin_module('investment_personas').PERSONAS
     except ImportError:
         return {"ok": False, "error": "investment personas module unavailable"}
 
@@ -748,7 +749,8 @@ async def finance_persona_debate(
     # Empty symbol → list-only mode: return the persona catalogue.
     if not symbol:
         try:
-            from agent.finance.investment_personas import PERSONAS
+            from agent.fin_provider import fin_module
+            PERSONAS = fin_module('investment_personas').PERSONAS
         except ImportError:
             return {"ok": False, "error": "investment personas module unavailable"}
         return {
