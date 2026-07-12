@@ -17,6 +17,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { useAllTheses, type InvestmentThesis, type ThesisStatus } from '@/lib/api'
 import { FreshnessChip } from './FreshnessChip'
 import { MiniMarkdown } from '@/components/widgets/MiniMarkdown'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 // Conviction chip color (disciplined theses embed "**Conviction: MED**").
 const CONVICTION_COLOR: Record<string, string> = {
@@ -96,6 +97,7 @@ function ThesisRow({
 export function ResearchInboxWidget() {
   const q = useAllTheses()
   const [expanded, setExpanded] = useState<string | null>(null)
+  const [collapsed, toggle] = useCollapsed('research-inbox')
   const theses = q.data?.theses ?? []
 
   return (
@@ -104,9 +106,14 @@ export function ResearchInboxWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="text-[var(--color-text)] flex items-center gap-1 font-semibold text-[11px]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 text-[var(--color-text)] font-semibold text-[11px] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           🔬 研究收件箱
-        </span>
+        </button>
         <span className="italic hidden sm:inline">
           · research_loop 自动生成的 thesis（含表外小盘）
         </span>
@@ -116,6 +123,7 @@ export function ResearchInboxWidget() {
         </span>
       </div>
 
+      {!collapsed && (<>
       {q.isLoading && (
         <div className="text-[10px] italic text-[var(--color-dim)] py-1">loading…</div>
       )}
@@ -142,6 +150,7 @@ export function ResearchInboxWidget() {
           ))}
         </div>
       )}
+      </>)}
     </div>
   )
 }

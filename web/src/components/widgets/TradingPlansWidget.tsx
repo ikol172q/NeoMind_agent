@@ -10,10 +10,11 @@
  * Detail→ useTradingPlan(name) (full content, fetched on open)
  */
 import { useEffect, useState } from 'react'
-import { FileText, X } from 'lucide-react'
+import { FileText, X, ChevronDown, ChevronRight } from 'lucide-react'
 import { useTradingPlans, useTradingPlan } from '@/lib/api'
 import { FreshnessChip } from './FreshnessChip'
 import { MiniMarkdown } from '@/components/widgets/MiniMarkdown'
+import { useCollapsed } from '@/lib/useCollapsed'
 
 function TradingPlanModal({ name, onClose }: { name: string; onClose: () => void }) {
   const q = useTradingPlan(name)
@@ -67,6 +68,7 @@ function TradingPlanModal({ name, onClose }: { name: string; onClose: () => void
 export function TradingPlansWidget() {
   const q = useTradingPlans()
   const [openName, setOpenName] = useState<string | null>(null)
+  const [collapsed, toggle] = useCollapsed('trading-plans')
   const plans = q.data?.plans ?? []
 
   return (
@@ -75,9 +77,14 @@ export function TradingPlansWidget() {
       className="mb-3 rounded border border-[var(--color-border)] bg-[var(--color-panel)] p-2.5"
     >
       <div className="flex items-center gap-2 mb-2 text-[10px] text-[var(--color-dim)]">
-        <span className="text-[var(--color-text)] flex items-center gap-1 font-semibold text-[11px]">
+        <button
+          onClick={toggle}
+          title={collapsed ? '展开' : '折叠'}
+          className="flex items-center gap-1 text-[var(--color-text)] font-semibold text-[11px] hover:opacity-80"
+        >
+          {collapsed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}
           📋 交易计划
-        </span>
+        </button>
         <span className="italic hidden sm:inline">
           · ~/trading_plans 里的纪律卡 / 事件计划
         </span>
@@ -87,6 +94,7 @@ export function TradingPlansWidget() {
         </span>
       </div>
 
+      {!collapsed && (<>
       {q.isLoading && (
         <div className="text-[10px] italic text-[var(--color-dim)] py-1">loading…</div>
       )}
@@ -121,6 +129,7 @@ export function TradingPlansWidget() {
           ))}
         </div>
       )}
+      </>)}
 
       {openName && <TradingPlanModal name={openName} onClose={() => setOpenName(null)} />}
     </div>
