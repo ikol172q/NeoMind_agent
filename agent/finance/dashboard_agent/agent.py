@@ -23,7 +23,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 
 import httpx
 
@@ -287,6 +287,122 @@ async def _llm_call(messages: List[Dict[str, Any]],
         return r.json()
 
 
+def _accumulate_tool_call_deltas(accumulated: Dict[int, Dict[str, str]],
+                                 tool_call_deltas: Optional[List[Dict[str, Any]]]) -> None:
+    """Accumulate streaming ``delta.tool_calls`` by index, in place.
+
+    Same shape OpenAI/DeepSeek streams tool_calls in: each chunk carries a
+    partial entry keyed by ``index``; name/arguments arrive in pieces and
+    must be concatenated until the stream ends.
+    """
+    for tc in tool_call_deltas or []:
+        idx = tc.get("index", 0)
+        slot = accumulated.setdefault(idx, {"id": "", "name": "", "args": ""})
+        if tc.get("id"):
+            slot["id"] = tc["id"]
+        fn = tc.get("function") or {}
+        if fn.get("name"):
+            slot["name"] += fn["name"]
+        if fn.get("arguments"):
+            slot["args"] += fn["arguments"]
+
+
+async def _llm_call_streaming(messages: List[Dict[str, Any]],
+                              model: str,
+                              *,
+                              reasoning_effort: Optional[str] = None,
+                              max_tokens: int = 2000,
+                              temperature: float = 0.3,
+                              on_delta: Callable[[str], Awaitable[None]]) -> Dict[str, Any]:
+    """Streaming twin of :func:`_llm_call` — same request, ``stream=True``.
+
+    Reassembles the SSE chunks into the exact same response shape
+    ``_llm_call`` returns (``choices[0].message`` incl. ``tool_calls`` /
+    ``reasoning_content``), so the caller's tool-loop logic doesn't need to
+    know which variant ran. ``on_delta`` fires per content token as it
+    arrives — in practice that's only the loop's *final* round (the one
+    with no tool_calls, i.e. the actual user-facing answer), since a round
+    that requests tools emits ``delta.tool_calls`` instead of prose.
+    """
+    base = (os.getenv("LLM_ROUTER_BASE_URL") or "http://127.0.0.1:8000/v1").rstrip("/")
+    key = (os.getenv("LLM_ROUTER_API_KEY")
+           or os.getenv("DEEPSEEK_API_KEY")
+           or "dummy")
+    payload: Dict[str, Any] = {
+        "model":       model,
+        "messages":    messages,
+        "tools":       TOOL_SCHEMAS,
+        "temperature": temperature,
+        "max_tokens":  max_tokens,
+        "stream":      True,
+        "stream_options": {"include_usage": True},
+    }
+    if reasoning_effort:
+        payload["reasoning_effort"] = reasoning_effort
+
+    content_parts: List[str] = []
+    reasoning_parts: List[str] = []
+    accumulated_tcs: Dict[int, Dict[str, str]] = {}
+    finish_reason: Optional[str] = None
+    usage: Optional[Dict[str, Any]] = None
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as c:
+        async with c.stream(
+            "POST", f"{base}/chat/completions",
+            headers={"Authorization": f"Bearer {key}",
+                     "Content-Type":  "application/json"},
+            json=payload,
+        ) as resp:
+            resp.raise_for_status()
+            async for line in resp.aiter_lines():
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                except json.JSONDecodeError:
+                    continue
+                choices = chunk.get("choices") or []
+                if choices:
+                    delta = choices[0].get("delta") or {}
+                    token = delta.get("content") or ""
+                    if token:
+                        content_parts.append(token)
+                        await on_delta(token)
+                    rc = delta.get("reasoning_content") or ""
+                    if rc:
+                        reasoning_parts.append(rc)
+                    _accumulate_tool_call_deltas(accumulated_tcs, delta.get("tool_calls"))
+                    fr = choices[0].get("finish_reason")
+                    if fr:
+                        finish_reason = fr
+                u = chunk.get("usage")
+                if u:
+                    usage = u
+
+    tool_calls_out = []
+    for idx in sorted(accumulated_tcs.keys()):
+        slot = accumulated_tcs[idx]
+        tool_calls_out.append({
+            "id":       slot["id"] or f"call_{idx}",
+            "type":     "function",
+            "function": {"name": slot["name"], "arguments": slot["args"] or "{}"},
+        })
+
+    message: Dict[str, Any] = {"role": "assistant", "content": "".join(content_parts)}
+    if tool_calls_out:
+        message["tool_calls"] = tool_calls_out
+    if reasoning_parts:
+        message["reasoning_content"] = "".join(reasoning_parts)
+
+    return {
+        "choices": [{"message": message, "finish_reason": finish_reason}],
+        "usage": usage,
+    }
+
+
 # ── persistence ──────────────────────────────────────────────────────
 
 
@@ -519,7 +635,8 @@ def _finalize_turn(
 
 async def answer(chat_id: str, user_msg: str,
                  model: Optional[str] = None,
-                 temperature: Optional[float] = None) -> AgentReply:
+                 temperature: Optional[float] = None,
+                 on_delta: Optional[Callable[[str], Awaitable[None]]] = None) -> AgentReply:
     """Receive a message, run the tool-calling loop, return final reply.
 
     Persists user message, every tool call/result, and final assistant
@@ -530,6 +647,12 @@ async def answer(chat_id: str, user_msg: str,
     classified and routed to flash/pro + a reasoning_effort. An explicit
     ``model`` (e.g. from a /model override) is honoured but still gets a
     sensible effort.
+
+    ``on_delta``: optional async callback invoked with each content token
+    as it streams in. When set, every round's LLM call goes through
+    :func:`_llm_call_streaming` instead of the blocking :func:`_llm_call`
+    — callers that don't pass it (CLI, rollout harness) see byte-identical
+    behavior to before this existed.
     """
     chat_id = str(chat_id)
     system_prompt = _SYSTEM_MD.read_text(encoding="utf-8")
@@ -570,10 +693,18 @@ async def answer(chat_id: str, user_msg: str,
     for _ in range(_MAX_TURNS_PER_CALL):
         iterations += 1
         try:
-            resp = await _llm_call(messages, model,
-                                   reasoning_effort=reasoning_effort,
-                                   max_tokens=route_max_tokens,
-                                   temperature=0.3 if temperature is None else temperature)
+            if on_delta is not None:
+                resp = await _llm_call_streaming(
+                    messages, model,
+                    reasoning_effort=reasoning_effort,
+                    max_tokens=route_max_tokens,
+                    temperature=0.3 if temperature is None else temperature,
+                    on_delta=on_delta)
+            else:
+                resp = await _llm_call(messages, model,
+                                       reasoning_effort=reasoning_effort,
+                                       max_tokens=route_max_tokens,
+                                       temperature=0.3 if temperature is None else temperature)
         except httpx.HTTPError as exc:
             err = f"⚠️ LLM 调用失败 ({type(exc).__name__})。dashboard 还在，请稍后重试。"
             _persist_turn(chat_id, turn_idx, {"role": "assistant", "content": err}, model=model)

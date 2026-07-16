@@ -3470,18 +3470,73 @@ class NeoMindTelegramBot:
 
         await self._process_and_reply(update, query, reason)
 
+    async def _keep_typing(self, msg) -> None:
+        """Refresh Telegram's native "typing…" indicator every ~4s.
+
+        Telegram auto-expires the indicator after ~5s. dashboard_agent's
+        tool-execution rounds emit no text (only the final round does), so
+        without this refresh the chat looks dead during those gaps even
+        though the live-edited placeholder is also updating.
+        """
+        try:
+            while True:
+                await msg.chat.send_action(ChatAction.TYPING)
+                await asyncio.sleep(4)
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            pass
+
     async def _handle_dashboard_agent(self, msg, query: str) -> None:
-        """Route a natural-language query to the dashboard-watching agent."""
+        """Route a natural-language query to the dashboard-watching agent.
+
+        The agent runs a multi-round tool-calling loop; only its final
+        round produces user-facing text. That round streams token-by-token
+        into a live-edited placeholder (mirrors _ask_llm_stream_normal),
+        and a background task keeps Telegram's typing indicator alive
+        across the earlier tool-execution rounds — so a slow decision-grade
+        query (pro model + high reasoning effort) reads as "thinking...
+        typing..." rather than dead silence followed by one giant dump.
+        """
         await self._react(msg, "👀")
+        live_msg = await msg.reply_text("💭 ...")
+        typing_task = asyncio.ensure_future(self._keep_typing(msg))
+
+        response_text = ""
+        last_edit_time = 0.0
+        EDIT_INTERVAL = 2.5
+
+        async def on_delta(token: str) -> None:
+            nonlocal response_text, last_edit_time
+            response_text += token
+            now = asyncio.get_event_loop().time()
+            if (now - last_edit_time) >= EDIT_INTERVAL and len(response_text) <= 3900:
+                last_edit_time = now
+                display = self._md_to_html(response_text.strip()) or "⚙️ 正在思考..."
+                await self._safe_edit(
+                    live_msg, display + " ▍", max_retries=0,
+                    parse_mode=ParseMode.HTML, disable_web_page_preview=True,
+                )
+
         try:
             from agent.fin_provider import fin_module
             answer = fin_module('dashboard_agent').answer
-            reply = await answer(str(msg.chat_id), query)
+            reply = await answer(str(msg.chat_id), query, on_delta=on_delta)
         except Exception as exc:
             logger.exception("dashboard_agent failed")
             await self._react(msg, "❌")
-            await msg.reply_text(f"⚠️ agent 调用失败: {type(exc).__name__}: {exc}")
+            try:
+                await live_msg.edit_text(f"⚠️ agent 调用失败: {type(exc).__name__}: {exc}")
+            except Exception:
+                await msg.reply_text(f"⚠️ agent 调用失败: {type(exc).__name__}: {exc}")
             return
+        finally:
+            typing_task.cancel()
+            try:
+                await typing_task
+            except asyncio.CancelledError:
+                pass
+
         await self._react(msg, "✅")
         # Render proposals (if any) as a keyboard footer to the message.
         keyboard = None
@@ -3491,7 +3546,25 @@ class NeoMindTelegramBot:
                 rows.append([InlineKeyboardButton(
                     p.label[:60], callback_data=p.encode_callback()[:64])])
             keyboard = InlineKeyboardMarkup(rows)
-        await self._send_long_message(msg, reply.text, reply_markup=keyboard)
+
+        final_html = self._md_to_html(reply.text or "⚙️ (空回复)")
+        if len(final_html) <= self.config.max_message_length:
+            edited_ok = await self._safe_edit(
+                live_msg, final_html, parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True, reply_markup=keyboard,
+            )
+            if not edited_ok:
+                await self._send_long_message(msg, reply.text, reply_markup=keyboard)
+                try:
+                    await live_msg.delete()
+                except Exception:
+                    pass
+        else:
+            await self._send_long_message(msg, reply.text, reply_markup=keyboard)
+            try:
+                await live_msg.delete()
+            except Exception:
+                pass
 
     async def _cb_dashboard_agent(self, update: Update,
                                   context: ContextTypes.DEFAULT_TYPE) -> None:
