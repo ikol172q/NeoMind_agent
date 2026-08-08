@@ -20,7 +20,7 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 - [2026-04-12-llm-judges-dont-work-here.md](2026-04-12-llm-judges-dont-work-here.md) — kimi/glm/deepseek-chat all fail as judges for NeoMind tests; Claude reads dumps directly
 - [2026-04-12-feature-gate-single-fix-site.md](2026-04-12-feature-gate-single-fix-site.md) — auto_search hijack existed in 4 separate code paths; grep for ALL call sites before declaring fixed
 - [2026-04-12-trusting-fixer-reports.md](2026-04-12-trusting-fixer-reports.md) — Verify fixer edits via grep/Read BEFORE running the test
-- [2026-04-12-api-key-leak-in-bash-output.md](2026-04-12-api-key-leak-in-bash-output.md) — Never `echo $API_KEY` or `env | grep API_KEY`; use presence+length pattern
+- [2026-04-12-api-key-leak-in-bash-output.md](2026-04-12-api-key-leak-in-bash-output.md) — Never print env secrets or unredacted HTTP logs; URLs (notably Telegram Bot API paths) can embed full credentials
 - [2026-04-12-docker-recreate-without-env-check.md](2026-04-12-docker-recreate-without-env-check.md) — Before docker recreate, diff live container env vs disk .env to prevent production breakage
 - [2026-04-12-iterm2-batch-close.md](2026-04-12-iterm2-batch-close.md) — Never iterate `app.windows` and call `async_close`; killed Claude Code's own session
 - [2026-04-12-iteration-spiral.md](2026-04-12-iteration-spiral.md) — After 3 failed fix attempts, dispatch a diagnostic agent (not another fix); stop patch-spraying
@@ -69,3 +69,13 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 ## 2026-06-21 — Fin coverage engine: SEC 10-K extraction starvation
 
 - [2026-06-21-sec-edgar-ixbrl-soup-buries-item1.md](2026-06-21-sec-edgar-ixbrl-soup-buries-item1.md) — Modern iXBRL 10-Ks: `<ix:header>`/`<ix:resources>` soup (~60K) buries Item 1 past the slice window; and "Table of Contents**ITEM 1A**" page-header glue breaks `\bitem` anchors → extractor fed garbage/empty, emits 0 **silently**. Fix: decompose `ix:` metadata + drop leading `\b` + `_body_anchors()` TOC filter. Verified AMD/META/NVDA/GOOGL/AAPL no-regression (AMD 0→10 competitors). Assert extractor INPUT is non-trivial, not just "no exception".
+
+## 2026-07-12 — fin 解耦 open-core
+
+- [20260712-verify-surfaces-and-venvs.md](20260712-verify-surfaces-and-venvs.md) — 交付只有 curl+import=假完成；烟测在 fin_venv 全 SKIP 差点当证据（SKIP≠PASS，boot 烟测必须 .venv）；editable 包只装一个 venv → fin_provider 静默回退。完成前三表面真验：8001 重启+browser 真点 / 容器重启+Telethon 真收 / CLI 真 boot。
+- [20260712-reverse-deps-before-delete.md](20260712-reverse-deps-before-delete.md) — 按"内容重复"删 8 个 untracked 模块断了 tracked 代码；删前必 git grep 反向依赖；审计禁止按首 hit 定性整文件；批量改写后全仓残留扫描清零；高风险删除先备份。
+
+## 2026-08-07 — Phase 0 收尾：日志泄露 + 误导性 readiness
+
+- [20260807-dependency-logs-leak-secrets.md](20260807-dependency-logs-leak-secrets.md) — `httpx` INFO 打完整 URL + Telegram token 在 URL path 里 → agent.log 24.8 万行明文（NeoMind 自己一行没记过，查自家代码永远查不到）。修复=降级 httpx + filter 挂 **handler**（挂 logger 对 propagate 的 record 无效）+ 改 msg 必须清 `record.args`。`PIISanitizer.PATTERNS` **顺序敏感**：`ssn` 会吃掉 token 数字段留下后半段。扫描两个假阴性：`grep -I` 跳过 CJK 文件、**docker 命名卷不在 host 路径下**（先 inspect 挂载表）。
+- [20260807-health-ok-while-everything-401.md](20260807-health-ok-while-everything-401.md) — Router `/health` 报 ok 且列 10 个模型，而所有云模型 401 五天：poller 吞掉发现失败并"keeping prior list"。修 readiness 前先查**谁在消费它**——`repair.sh` 用 `curl -sf /health` 决定重启，让 /health 失败会打成重启循环。正解=/health 保持 200 但 body 说 degraded + 独立 /ready 返回 503。且必须用真坏 key 起第二实例验证 degraded 分支真会触发。

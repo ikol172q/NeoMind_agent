@@ -44,6 +44,32 @@ transcript is ever leaked.
 For env propagation debugging, presence + length is enough. You don't
 need the value to verify it's set.
 
+## 2026-08-06 nuance — secrets embedded in HTTP log URLs
+
+Telegram Bot API requests place the bot token in the URL path. Verbose
+`httpx`/`httpcore` logs can therefore persist the complete token even when no
+environment variable is printed.
+
+### WRONG
+
+```bash
+tail -n 500 /data/neomind/agent.log
+docker logs neomind-telegram
+```
+
+Reading or copying these outputs unredacted sends any URL-embedded credential
+into the terminal and session transcript.
+
+### RIGHT
+
+- Configure HTTP logging to redact credentials before persistence; lowering
+  `httpx`/`httpcore` request logging is preferable when full URLs are not needed.
+- Until application-side redaction exists, filter captured logs before they
+  enter tool output. Match the Telegram Bot API URL shape and replace the token
+  segment with `[REDACTED]`; never print the original for comparison.
+- If an unredacted token reaches a transcript, treat it as disclosed and rotate
+  it through BotFather. Removing the later log line does not erase prior copies.
+
 ## Exception
 If you truly need the value (e.g. passing it to a specific subprocess
 that can't read env), write it to a file with `umask 077` first, then
