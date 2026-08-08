@@ -73,20 +73,23 @@ def test_persistence_layer_autocloses_on_context_exit():
     在低 fd 上限下确实会挂"。它现在**失败**了 —— 而这正是对照测试存在的意义:
     前提变了。
 
-    变化的原因: `connect()` 已改为返回 ``_AutoClosingConnection``
-    (``neomind-dashboard`` 私有仓的 ``neomind_dashboard/persistence/__init__.py``),
-    其 ``__exit__`` 在提交/回滚之后**还会 close()**。所以裸 `with connect()` 不再泄漏,
-    500 条连接跑完只剩个位数 fd。
+    变化的原因: `connect()` 已改为返回 ``_AutoClosingConnection``, 其 ``__exit__``
+    在提交/回滚之后**还会 close()**。所以裸 `with connect()` 不再泄漏, 500 条连接
+    跑完只剩个位数 fd。
 
     由此产生两个必须写下来的结论:
 
     1. ``backfill_eod`` 里的 ``closing(connect())`` 现在是**防御性冗余, 不是那个修复本身**。
        留着无害(``closing`` 二次 close 是 no-op), 但别以为删了它就等于把 bug 放回来 ——
-       真正拦着 bug 的是上游那个 factory。
-    2. 该 factory **不在本仓**。NeoMind 侧此前没有任何测试守着这个跨仓依赖:
-       只要 dashboard 那边把 ``factory=_AutoClosingConnection`` 拿掉, 690-ticker 的
-       循环会**静默**退回每天挂在第 ~127 个 ticker, 而本仓 CI 全绿。
-       本条测试就是补这个缺口。
+       真正拦着 bug 的是那个 factory。
+    2. **该 factory 有两份**: 本仓 ``agent/finance/persistence/db.py`` 的 bundled
+       baseline, 和 ``neomind-dashboard`` 私有仓里的满血版。跑起来的是哪一份由
+       ``fin_provider`` 解析决定 —— 装了 dashboard 就是 dashboard 那份, 本仓的
+       baseline 根本不参与。所以**只在本仓改对是不够的**: 只要 active 那一侧把
+       ``factory=_AutoClosingConnection`` 拿掉, 690-ticker 的循环会**静默**退回
+       每天挂在第 ~127 个 ticker, 而本仓单测全绿。
+       本条测试刻意走 ``fin_module('persistence')``, 断言的是**当前 active 的那一份**,
+       这样两边任意一侧回退都会被抓到。
     """
     r = _run_with_fd_limit("""
         from agent.fin_provider import fin_module
