@@ -21,8 +21,20 @@ from typing import Dict, List, Tuple, Any
 class PIISanitizer:
     """Sanitize PII from logs and text."""
 
-    # Compiled regex patterns for each PII type
+    # Compiled regex patterns for each PII type.
+    #
+    # ORDER MATTERS: sanitize() applies these in insertion order, so a broad
+    # pattern placed first can destroy the shape a narrower one needs. The
+    # Telegram token must precede 'ssn', whose \d{3}\d{2}\d{4} matches the
+    # numeric half of "123456789:AAH..." and would leave the secret half
+    # exposed as "[REDACTED_SSN]:AAH...".
     PATTERNS = {
+        # Telegram bot tokens carry no vendor prefix, so 'api_key' below cannot
+        # match them. Found live in 248k log lines on 2026-08-07; see
+        # agent/logging/secret_redaction.py.
+        'telegram_bot_token': re.compile(
+            r'\b\d{6,12}:[A-Za-z0-9_\-]{30,}\b'
+        ),
         'email': re.compile(
             r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b',
             re.IGNORECASE
@@ -63,6 +75,7 @@ class PIISanitizer:
         'credit_card': '[REDACTED_CC]',
         'ssn': '[REDACTED_SSN]',
         'api_key': '[REDACTED_KEY]',
+        'telegram_bot_token': '[REDACTED_TG_TOKEN]',
         'password_in_url': '[REDACTED_PASSWORD]',
         'ipv4': '[REDACTED_IP]',
     }

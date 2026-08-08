@@ -56,6 +56,14 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(message)s",
     datefmt="%H:%M:%S",
 )
+
+# Must run after basicConfig: httpx logs every request line at INFO, and the
+# Telegram polling URL carries the bot token in its path. Without this, each
+# getUpdates poll writes the live token to supervisord's agent.log.
+from agent.logging.secret_redaction import install_secret_redaction  # noqa: E402
+
+install_secret_redaction()
+
 logger = logging.getLogger("neomind.telegram")
 
 
