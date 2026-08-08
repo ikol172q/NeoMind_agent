@@ -80,6 +80,65 @@ def _safe_temperature(model: str, default: float = 0.7) -> float:
         return 1.0
     return default
 
+
+# Text tool-call protocols accepted by the canonical parser. Local DeepSeek
+# models can emit the pipe-delimited variants when native tool calling is
+# disabled, so every Telegram display/detection path must treat them exactly
+# like the standard XML tags.
+_TOOL_CALL_OPEN_PATTERN = r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
+_TOOL_CALL_CLOSE_PATTERN = (
+    r'(?:</tool_(?:call|result|report|re)\s*>'
+    r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)'
+)
+_TOOL_CALL_BLOCK_RE = re.compile(
+    _TOOL_CALL_OPEN_PATTERN + r'.*?' + _TOOL_CALL_CLOSE_PATTERN,
+    re.DOTALL,
+)
+_TOOL_CALL_UNCLOSED_RE = re.compile(
+    _TOOL_CALL_OPEN_PATTERN + r'.*\Z',
+    re.DOTALL,
+)
+_TOOL_CALL_TAG_RE = re.compile(
+    r'(?:<tool_(?:call|result)>'
+    r'|</tool_(?:call|result|report|re)\s*>'
+    r'|<\|tool_call(?:_begin)?\|>'
+    r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)'
+)
+_TOOL_CALL_PARTIAL_SUFFIXES = tuple(sorted({
+    tag[:i]
+    for tag in (
+        '<tool_call>', '<|tool_call|>', '<|tool_call_begin|>',
+        '</tool_call>', '</tool_result>', '<|/tool_call|>',
+        '<|tool_call_end|>', '<|/tool_call_end|>',
+    )
+    for i in range(1, len(tag))
+}, key=len, reverse=True))
+
+
+def _contains_tool_call(text: str) -> bool:
+    """Return whether *text* contains any supported tool-call opener."""
+    return bool(text and re.search(_TOOL_CALL_OPEN_PATTERN, text))
+
+
+def _strip_tool_calls(text: str, streaming: bool = False) -> str:
+    """Remove tool-call payloads, plus partial delimiters while streaming."""
+    if not text:
+        return text
+    cleaned = _TOOL_CALL_BLOCK_RE.sub('', text)
+    # During streaming, never expose an opener whose closing tag has not yet
+    # arrived; the whole remaining suffix is protocol payload.
+    cleaned = _TOOL_CALL_UNCLOSED_RE.sub('', cleaned)
+    cleaned = _TOOL_CALL_TAG_RE.sub('', cleaned)
+    if streaming:
+        # Avoid briefly rendering any non-empty delimiter prefix split across
+        # SSE chunks. Completion-time cleanup intentionally skips this so
+        # ordinary prose ending in e.g. ``<`` remains intact.
+        for suffix in _TOOL_CALL_PARTIAL_SUFFIXES:
+            if cleaned.endswith(suffix):
+                cleaned = cleaned[:-len(suffix)]
+                break
+    return cleaned
+
 try:
     from telegram import Update, Bot, InlineKeyboardButton, InlineKeyboardMarkup
     from telegram.error import RetryAfter
@@ -471,6 +530,7 @@ class NeoMindTelegramBot:
         self._app.add_handler(CommandHandler("start", self._cmd_start))
         self._app.add_handler(CommandHandler("help", self._cmd_help))
         self._app.add_handler(CommandHandler("status", self._cmd_status))
+        self._app.add_handler(CommandHandler("dashboard_check", self._cmd_dashboard_check))
         self._app.add_handler(CommandHandler("mode", self._cmd_mode))
         self._app.add_handler(CommandHandler("think", self._cmd_think))
         self._app.add_handler(CommandHandler("history", self._cmd_history))
@@ -594,6 +654,7 @@ class NeoMindTelegramBot:
             BotCommand("news", "多源新闻搜索"),
             BotCommand("digest", "市场每日摘要"),
             BotCommand("market", "市场概览"),
+            BotCommand("dashboard_check", "跑 dashboard 模块自检 (可加模块名)"),
         ])
 
         await self._app.updater.start_polling(drop_pending_updates=True)
@@ -740,6 +801,7 @@ class NeoMindTelegramBot:
             "<code>/clear</code> — 归档对话 (LLM 重开)\n"
             "<code>/context</code> — token 使用量\n"
             "<code>/status</code> — Bot 状态\n"
+            "<code>/dashboard_check</code> — 跑 dashboard 模块自检 (可加模块名)\n"
             "<code>/admin</code> — 管理面板 (历史/归档/清除/统计)\n"
             "\n"
             "── 🧬 <b>自我进化</b> ──\n"
@@ -751,6 +813,62 @@ class NeoMindTelegramBot:
             "<i>群聊: @我 或 /neo_stock 前缀 | 含 $AAPL 自动触发</i>",
             parse_mode=ParseMode.HTML,
         )
+
+    async def _cmd_dashboard_check(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle /dashboard_check [module] — 触发 dashboard 模块自检, 回传摘要 + 问题模块。
+
+        自检逻辑是 dashboard server 的 source of truth（module_selfcheck）；
+        bot 只是 HTTP 触发它（容器没装 neomind_dashboard, 走 host.docker.internal:8001）。
+        不带参 = 跑全部（含 IBKR 覆盖审计, ~10-20s）；带模块名 = 只跑一个。
+        命名: 在 Telegram agent 语境里叫 dashboard_check（明确是查 dashboard 模块,
+        不是 agent 自检）; dashboard 内部端点/面板仍叫 selfcheck/自检。
+        """
+        if not self._is_command_for_me(update):
+            return
+        import httpx
+        base = os.getenv("NEOMIND_FIN_DASHBOARD_URL",
+                         "http://host.docker.internal:8001").rstrip("/")
+        args = (update.message.text or "").split()
+        module = args[1] if len(args) > 1 else None
+        notice = await update.message.reply_text(
+            "🔬 正在运行模块自检…"
+            + (f"（{module}）" if module else "（全部 · 含 IBKR 审计, 约 10-20s）"),
+            parse_mode=ParseMode.HTML)
+        try:
+            params = {"module": module} if module else None
+            async with httpx.AsyncClient(timeout=httpx.Timeout(90.0)) as c:
+                r = await c.post(f"{base}/api/selfcheck/run", params=params)
+            if r.status_code >= 400:
+                await notice.edit_text(f"❌ 自检失败 {r.status_code}: {r.text[:200]}")
+                return
+            d = r.json()
+        except Exception as exc:
+            logger.exception("selfcheck command failed")
+            await notice.edit_text(
+                f"❌ 自检连不上 dashboard: {type(exc).__name__}: {exc}")
+            return
+        s = d.get("summary", {})
+        results = d.get("results", [])
+        # 单模块传了但没匹配到任何 check → 别误报"0/0 全绿", 明确说未找到。
+        if module and s.get("total", 0) == 0:
+            await notice.edit_text(
+                f"⚠ 未找到模块 <code>{module}</code>。用 <code>/dashboard_check</code> "
+                f"跑全部, 或到 dashboard 系统→自检 查模块名。",
+                parse_mode=ParseMode.HTML)
+            return
+        bad = [x for x in results if x.get("status") in ("fail", "error")]
+        head = "🔴" if bad else "✅"
+        lines = [
+            f"<b>{head} 模块自检</b>  {s.get('pass', 0)}/{s.get('total', 0)} 通过"
+            f" · {s.get('special', 0)} 特殊 · {s.get('fail', 0)} 失败"
+            f" · {s.get('error', 0)} 错误"
+        ]
+        for x in bad[:12]:
+            detail = (x.get("detail") or "")[:80]
+            lines.append(f"🔴 <code>{x.get('module')}</code>: {detail}")
+        if not bad:
+            lines.append("所有在用模块正确性检查绿灯。详见 dashboard 系统→自检。")
+        await notice.edit_text("\n".join(lines), parse_mode=ParseMode.HTML)
 
     async def _cmd_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle /status — one-stop status: model, provider, search, memory."""
@@ -4997,14 +5115,10 @@ class NeoMindTelegramBot:
                     now = asyncio.get_event_loop().time()
                     if ct and (now - last_edit_time) >= EDIT_INTERVAL and len(response_text) <= 3900:
                         last_edit_time = now
-                        # Strip any partial/complete <tool_call> blocks before display
-                        _display_text = re.sub(
-                            r'</?tool_(?:call|result)>',  '', response_text
-                        )
-                        _display_text = re.sub(
-                            r'<tool_call>.*?</tool_(?:call|result)>', '', _display_text, flags=re.DOTALL
-                        )
-                        _display_text = _display_text.strip()
+                        # Strip complete or streaming-partial tool calls before display.
+                        _display_text = _strip_tool_calls(
+                            response_text, streaming=True,
+                        ).strip()
                         if not _display_text:
                             _display_text = "⚙️ 正在思考..."
                         display = self._md_to_html(_display_text)
@@ -5038,11 +5152,8 @@ class NeoMindTelegramBot:
                 await asyncio.sleep(0.3)
 
                 # Final update: edit the live message with complete text
-                # Strip any <tool_call> blocks so raw XML never shows to user
-                _final_text = re.sub(
-                    r'<tool_call>.*?</tool_(?:call|result)>', '', response_text.strip(), flags=re.DOTALL
-                )
-                _final_text = re.sub(r'</?tool_(?:call|result)>', '', _final_text).strip()
+                # Strip any supported tool-call protocol so it never shows to users.
+                _final_text = _strip_tool_calls(response_text).strip()
                 final_html = self._md_to_html(_final_text or "⚙️ 正在执行工具...")
                 if search_footer:
                     final_html += search_footer
@@ -5072,7 +5183,10 @@ class NeoMindTelegramBot:
 
                     # Last resort: if edit failed, send fresh THEN delete old
                     if not edited_ok:
-                        await self._send_long_message(msg, response_text.strip(), html_suffix=search_footer)
+                        await self._send_long_message(
+                            msg, _final_text or "⚙️ 正在执行工具...",
+                            html_suffix=search_footer,
+                        )
                         try:
                             await live_msg.delete()
                         except Exception:
@@ -5113,7 +5227,10 @@ class NeoMindTelegramBot:
                         except Exception as e:
                             logger.warning(f"Chunk[0] edit failed: {e}")
                             # Send everything as new messages THEN delete old
-                            await self._send_long_message(msg, response_text.strip(), html_suffix=search_footer)
+                            await self._send_long_message(
+                                msg, _final_text or "⚙️ 正在执行工具...",
+                                html_suffix=search_footer,
+                            )
                             try:
                                 await live_msg.delete()
                             except Exception:
@@ -5146,11 +5263,8 @@ class NeoMindTelegramBot:
 
         # User opted out of tools — strip any tool_call blocks the LLM emitted
         # anyway and re-render the cleaned text in the live message.
-        if no_tools_requested and response_text and '<tool_call>' in response_text:
-            import re as _re_strip
-            cleaned = _re_strip.sub(
-                r'<tool_call>.*?</tool_(?:call|result)>', '', response_text, flags=_re_strip.DOTALL
-            ).strip()
+        if no_tools_requested and _contains_tool_call(response_text):
+            cleaned = _strip_tool_calls(response_text).strip()
             if not cleaned:
                 cleaned = "（已按你的要求跳过搜索，但模型这次没有生成正文，请重新发送你的问题。）"
             try:
@@ -5167,14 +5281,11 @@ class NeoMindTelegramBot:
             response_text = cleaned
 
         # ── Agentic loop: if response contains tool calls, execute them ──
-        if response_text and '<tool_call>' in response_text and used_provider and not no_tools_requested:
+        if _contains_tool_call(response_text) and used_provider and not no_tools_requested:
             print(f"[agentic] Detected <tool_call> in response ({len(response_text)} chars), starting agentic loop", flush=True)
             # Clean the displayed message: strip the raw <tool_call> block
             # so the user sees only the natural language part
-            import re as _re
-            clean_text = _re.sub(
-                r'<tool_call>.*?</tool_(?:call|result)>', '', response_text, flags=_re.DOTALL
-            ).strip()
+            clean_text = _strip_tool_calls(response_text).strip()
             if clean_text:
                 try:
                     await live_msg.edit_text(
@@ -5189,9 +5300,15 @@ class NeoMindTelegramBot:
                         pass
             else:
                 try:
-                    await live_msg.edit_text("⚙️ 正在执行工具...")
+                    await live_msg.delete()
                 except Exception:
-                    pass
+                    # Deletion can fail after Telegram-side message changes.
+                    # Leave a neutral handoff instead of a permanent spinner,
+                    # and never let placeholder cleanup block tool execution.
+                    try:
+                        await live_msg.edit_text("工具状态见后续消息。")
+                    except Exception:
+                        pass
 
             try:
                 await asyncio.wait_for(
@@ -5231,7 +5348,7 @@ class NeoMindTelegramBot:
             dangling = (
                 has_intent_kw
                 and long_enough
-                and (ends_with_intent or (has_action_verb and '<tool_call>' not in response_text))
+                and (ends_with_intent or (has_action_verb and not _contains_tool_call(response_text)))
             )
             if dangling:
                 print(f"[agentic] Detected dangling intent (no tool_call), nudging LLM", flush=True)
@@ -5263,7 +5380,7 @@ class NeoMindTelegramBot:
                                 body = await nudge_resp.text()
                                 raise Exception(f"Nudge API error {nudge_resp.status}: {body[:200]}")
 
-                    if '<tool_call>' in nudge_text:
+                    if _contains_tool_call(nudge_text):
                         print(f"[agentic] Nudge produced tool_call, executing", flush=True)
                         self._store.add_message(chat_id, "assistant", nudge_text.strip(), chat_type)
                         try:
@@ -5277,7 +5394,7 @@ class NeoMindTelegramBot:
                             await msg.reply_text("⚠️ 工具执行超时（5分钟），已终止")
                     else:
                         # LLM still refused to use tools — send its text response
-                        nudge_clean = nudge_text.strip()
+                        nudge_clean = _strip_tool_calls(nudge_text).strip()
                         if nudge_clean:
                             self._store.add_message(chat_id, "assistant", nudge_clean, chat_type)
                             await self._send_long_message(msg, nudge_clean)
@@ -5415,9 +5532,9 @@ class NeoMindTelegramBot:
 
         # Run agentic loop
         import html as _html
-        import re as _re
         try:
             _tool_status_msg = None  # Reusable status message per tool cycle
+            _tool_status_label = None
             _got_llm_response = False  # Track whether we ever showed a final answer
             _got_tool_error = False    # Track tool errors for diagnostics
 
@@ -5425,6 +5542,7 @@ class NeoMindTelegramBot:
                 if event.type == "tool_start":
                     # Send a live status message — will be edited when result arrives
                     tool_label = _html.escape(event.tool_preview or event.tool_name or "tool")
+                    _tool_status_label = tool_label
                     status_html = f"⏳ <b>{tool_label}</b>  运行中…"
                     try:
                         _tool_status_msg = await msg.reply_text(
@@ -5485,6 +5603,7 @@ class NeoMindTelegramBot:
                             await msg.reply_text(f"{'✅' if event.result_success else '❌'} {event.tool_name}: {preview}"[:4000])
 
                     _tool_status_msg = None  # Reset for next tool cycle
+                    _tool_status_label = None
                     if not event.result_success:
                         _got_tool_error = True
                         print(f"[agentic] Tool {event.tool_name} FAILED: {event.result_error}", flush=True)
@@ -5496,11 +5615,8 @@ class NeoMindTelegramBot:
                 elif event.type == "llm_response":
                     if event.llm_text:
                         self._store.add_message(chat_id, "assistant", event.llm_text.strip(), chat_type)
-                        # Strip <tool_call> blocks before sending to user
-                        _clean_llm = _re.sub(
-                            r'<tool_call>.*?</tool_(?:call|result)>', '', event.llm_text.strip(), flags=_re.DOTALL
-                        )
-                        _clean_llm = _re.sub(r'</?tool_(?:call|result)>', '', _clean_llm).strip()
+                        # Strip every supported tool-call protocol before display.
+                        _clean_llm = _strip_tool_calls(event.llm_text).strip()
                         if _clean_llm:
                             _got_llm_response = True
                             await self._send_long_message(msg, _clean_llm)
@@ -5509,6 +5625,26 @@ class NeoMindTelegramBot:
                     await msg.reply_text(f"⚠️ Agentic error: {event.error_message}")
 
                 elif event.type == "done":
+                    # A risky tool that receives no explicit approval ends with
+                    # tool_start → done and no tool_result. Resolve its status
+                    # explicitly instead of leaving a permanent "运行中…".
+                    if _tool_status_msg:
+                        denied_html = (
+                            f"⛔ <b>{_tool_status_label or 'tool'}</b>: "
+                            "未获批准，未执行"
+                        )
+                        try:
+                            await _tool_status_msg.edit_text(
+                                denied_html, parse_mode=ParseMode.HTML,
+                                disable_web_page_preview=True,
+                            )
+                        except Exception:
+                            await msg.reply_text(
+                                f"⛔ {_tool_status_label or 'tool'}: 未获批准，未执行"
+                            )
+                        _tool_status_msg = None
+                        _tool_status_label = None
+
                     # If the loop ended without ever producing a visible LLM response,
                     # the user sees "让我搜索一下：" and then nothing. Fix: send a fallback.
                     if not _got_llm_response:
@@ -5522,8 +5658,7 @@ class NeoMindTelegramBot:
                                 "工具执行未成功。请不要再使用任何工具，直接根据你的知识回答用户的问题。"}]
                             fallback_text = await llm_caller(fallback_msgs)
                             if fallback_text and fallback_text.strip():
-                                _clean = _re.sub(r'<tool_call>.*?</tool_(?:call|result)>', '', fallback_text, flags=_re.DOTALL)
-                                _clean = _re.sub(r'</?tool_(?:call|result)>', '', _clean).strip()
+                                _clean = _strip_tool_calls(fallback_text).strip()
                                 if _clean:
                                     self._store.add_message(chat_id, "assistant", _clean, chat_type)
                                     await self._send_long_message(msg, _clean)
@@ -5710,15 +5845,8 @@ class NeoMindTelegramBot:
                     thinking=thinking_text,
                 )
 
-                # Strip <tool_call> blocks before user-visible send so raw XML
-                # never shows up as literal text in the reply.
-                _clean_display = re.sub(
-                    r'<tool_call>.*?</tool_(?:call|result)>', '',
-                    response_text.strip(), flags=re.DOTALL,
-                )
-                _clean_display = re.sub(
-                    r'</?tool_(?:call|result)>', '', _clean_display,
-                ).strip()
+                # Strip every supported tool-call protocol before display.
+                _clean_display = _strip_tool_calls(response_text).strip()
                 if _clean_display:
                     await self._send_long_message(
                         msg, _clean_display, html_suffix=search_footer,
@@ -5728,7 +5856,7 @@ class NeoMindTelegramBot:
                 # (mirrors _ask_llm_stream_normal; reasoning models like
                 # deepseek-v4-flash (thinking mode) emit <tool_call> blocks in `content` too,
                 # and without this path fin-mode tools never fire.)
-                if '<tool_call>' in response_text and used_provider:
+                if _contains_tool_call(response_text) and used_provider:
                     print(
                         f"[agentic] Detected <tool_call> in thinking-mode "
                         f"response ({len(response_text)} chars), starting "

@@ -1767,16 +1767,39 @@ class NeoMindInterface:
         Suppresses:
         - Bash code fences: ```bash, ```shell, ```sh, ```console
         - Python code fences: ```python (LLM fallback)
-        - Structured tool calls: <tool_call>...</tool_call>
+        - Structured tool calls using either ``<tool_call>`` or DeepSeek's
+          pipe-delimited ``<|tool_call|>`` protocol tags
         """
 
         _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
-        _TOOL_CALL_OPEN_RE = re.compile(r'<tool_call>\s*')
+        _TOOL_CALL_OPEN_RE = re.compile(
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)\s*'
+        )
         # LLM sometimes hallucinates closing tags: </tool_result>, </tool_report>,
         # or truncated </tool_re, </tool_r, etc. Match all with one regex.
-        _TOOL_CALL_CLOSE_RE = re.compile(r'</tool_(?:call|result|report|re)\s*>')
+        _TOOL_CALL_CLOSE_RE = re.compile(
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)'
+        )
         # Orphan closing tags that may leak without a matching opener
-        _ORPHAN_CLOSE_RE = re.compile(r'\s*</tool_(?:call|result|report|re)\s*>\s*')
+        _ORPHAN_CLOSE_RE = re.compile(
+            r'\s*(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)\s*'
+        )
+        # Retain enough undecided input to recognize the longest protocol tag
+        # when it is split across streaming chunks.
+        _OPEN_TAIL_LEN = max(
+            len('<tool_call>'),
+            len('<|tool_call|>'),
+            len('<|tool_call_begin|>'),
+            len('```console\n'),
+        )
+        _CLOSE_TAIL_LEN = max(
+            len('</tool_report>'),
+            len('<|/tool_call|>'),
+            len('<|tool_call_end|>'),
+            len('<|/tool_call_end|>'),
+        )
 
         def __init__(self):
             self._buf = ""
@@ -1810,10 +1833,9 @@ class NeoMindInterface:
                         # Check all LLM-hallucinated closing tag variants
                         m_close = self._TOOL_CALL_CLOSE_RE.search(self._buf)
                         if not m_close:
-                            # Keep tail for partial match (enough for longest close tag)
-                            max_close_len = 18  # </tool_report> is longest
-                            if len(self._buf) > max_close_len:
-                                self._buf = self._buf[-max_close_len:]
+                            # Keep tail for a closing tag split across chunks.
+                            if len(self._buf) > self._CLOSE_TAIL_LEN:
+                                self._buf = self._buf[-self._CLOSE_TAIL_LEN:]
                             break
                         # Found closing tag — skip past it
                         self._suppressing = False
@@ -1859,9 +1881,9 @@ class NeoMindInterface:
                         continue
 
                     # Keep a small tail in case a tag straddles two chunks
-                    if len(self._buf) > 15:
-                        safe = self._buf[:-15]
-                        self._buf = self._buf[-15:]
+                    if len(self._buf) > self._OPEN_TAIL_LEN:
+                        safe = self._buf[:-self._OPEN_TAIL_LEN]
+                        self._buf = self._buf[-self._OPEN_TAIL_LEN:]
                         output += safe
                     break
 
@@ -1983,33 +2005,6 @@ class NeoMindInterface:
                 self._tool_registry = None
         return self._tool_registry
 
-    def _execute_tool_call(self, tool_call) -> 'ToolResult':
-        """Execute a parsed ToolCall through the registry.
-
-        For structured tool calls (Read, Edit, Grep, etc.), dispatches to
-        the registered tool definition's execute function with validated params.
-        For legacy bash blocks, falls back to Bash tool.
-
-        Returns a ToolResult.
-        """
-        registry = self._get_tool_registry()
-        tool_def = registry.get_tool(tool_call.tool_name)
-
-        if tool_def is None:
-            # Unknown tool — try Bash as fallback for legacy compatibility
-            from agent.tools import ToolResult
-            return ToolResult(False, error=f"Unknown tool: {tool_call.tool_name}")
-
-        # Validate params
-        valid, error = tool_def.validate_params(tool_call.params)
-        if not valid:
-            from agent.tools import ToolResult
-            return ToolResult(False, error=f"Invalid params: {error}")
-
-        # Apply defaults and execute
-        params = tool_def.apply_defaults(tool_call.params)
-        return tool_def.execute(**params)
-
     def _check_permission(self, tool_call, auto_approved: bool) -> tuple:
         """Interactive permission dialog for tool execution.
 
@@ -2028,6 +2023,25 @@ class NeoMindInterface:
         else:
             level = PermissionLevel.EXECUTE
 
+        tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
+        params = tool_call.params if hasattr(tool_call, 'params') else {}
+
+        # Classify dynamic risk before any mode/session shortcut.  In particular,
+        # auto_accept and the per-session "always" choice must not bypass a
+        # CRITICAL command or path.
+        risk_label = ""
+        explanation = ""
+        pm = None
+        try:
+            from agent.services.permission_manager import PermissionManager
+            pm = PermissionManager()
+            risk = pm.classify_risk(tool_name, level.value, params)
+            risk_label = risk.value.upper()
+        except Exception:
+            # If dynamic classification is unavailable, fail closed for every
+            # non-read action rather than letting an auto-approval shortcut run.
+            risk_label = "LOW" if level == PermissionLevel.READ_ONLY else "CRITICAL"
+
         # Plan mode: only READ_ONLY tools run
         if perm_mode == "plan":
             if level == PermissionLevel.READ_ONLY:
@@ -2035,13 +2049,15 @@ class NeoMindInterface:
             self._print("[dim]  \u2298 Blocked (plan mode)[/dim]")
             return False, auto_approved
 
-        # Auto-accept mode or already auto-approved this turn
-        if perm_mode == "auto_accept" or auto_approved:
-            return True, auto_approved if perm_mode != "auto_accept" else True
+        # The explicitly named bypass mode is the sole CRITICAL shortcut.
+        if perm_mode == "bypass":
+            return True, auto_approved
 
-        # Normal mode: READ_ONLY tools auto-approve (no prompt)
+        # READ_ONLY tools and noncritical auto-approved calls need no prompt.
         if level == PermissionLevel.READ_ONLY:
             return True, auto_approved
+        if risk_label != "CRITICAL" and (perm_mode == "auto_accept" or auto_approved):
+            return True, auto_approved if perm_mode != "auto_accept" else True
 
         # Show interactive permission dialog for WRITE/EXECUTE/DESTRUCTIVE tools
         level_colors = {
@@ -2051,20 +2067,11 @@ class NeoMindInterface:
         }
         color = level_colors.get(level, "yellow")
 
-        tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
-        params = tool_call.params if hasattr(tool_call, 'params') else {}
-
-        # Get risk level and explanation from PermissionManager
-        risk_label = ""
-        explanation = ""
-        try:
-            from agent.services.permission_manager import PermissionManager
-            pm = PermissionManager()
-            risk = pm.classify_risk(tool_name, level.value, params)
-            risk_label = risk.value.upper()
-            explanation = pm.explain_permission(tool_name, level.value, params)
-        except Exception:
-            risk_label = level.value.upper()
+        if pm is not None:
+            try:
+                explanation = pm.explain_permission(tool_name, level.value, params)
+            except Exception:
+                pass
 
         # Build permission panel with tool preview
         preview_lines = [f"[bold]{tool_name}[/bold] ({level.value})"]

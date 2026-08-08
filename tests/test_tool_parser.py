@@ -251,6 +251,23 @@ class TestStripToolCall(unittest.TestCase):
         self.assertNotIn("<tool_call>", stripped)
         self.assertIn("Let me read that", stripped)
 
+    def test_strip_deepseek_pipe_variants(self):
+        delimiters = (
+            ('<|tool_call|>', '<|/tool_call|>'),
+            ('<|tool_call_begin|>', '<|tool_call_end|>'),
+            ('<|tool_call_begin|>', '<|/tool_call_end|>'),
+        )
+        payload = '{"tool": "Read", "params": {"path": "secret.txt"}}'
+        for opener, closer in delimiters:
+            with self.subTest(opener=opener, closer=closer):
+                response = f"Before\n{opener}{payload}{closer}\nAfter"
+                tool_call = self.parser.parse(response)
+
+                stripped = self.parser.strip_tool_call(response, tool_call)
+
+                self.assertEqual(stripped, "Before\n\nAfter")
+                self.assertNotIn("secret.txt", stripped)
+
     def test_strip_legacy(self):
         raw = '```bash\nls\n```'
         response = f"Checking:\n\n{raw}"
@@ -349,6 +366,40 @@ class TestContentFilterToolCallSuppression(unittest.TestCase):
         output += f.flush()
         self.assertNotIn("<tool_call>", output)
         self.assertIn("Hi", output)
+
+    def test_plain_tool_call_suppressed_at_every_chunk_boundary(self):
+        text = 'Before\n<tool_call>{"tool": "Read"}</tool_call>\nAfter'
+        for split in range(len(text) + 1):
+            with self.subTest(split=split):
+                f = self._make_filter()
+                output = f.write(text[:split]) + f.write(text[split:]) + f.flush()
+                self.assertNotIn("tool_call", output)
+                self.assertNotIn('"tool"', output)
+                self.assertIn("Before", output)
+                self.assertIn("After", output)
+
+    def test_deepseek_pipe_tool_calls_suppressed_at_every_chunk_boundary(self):
+        delimiters = (
+            ('<|tool_call|>', '<|/tool_call|>'),
+            ('<|tool_call_begin|>', '<|tool_call_end|>'),
+            ('<|tool_call_begin|>', '<|/tool_call_end|>'),
+        )
+        for opener, closer in delimiters:
+            text = f'Before\n{opener}{{"tool": "Read"}}{closer}\nAfter'
+            for split in range(len(text) + 1):
+                with self.subTest(opener=opener, closer=closer, split=split):
+                    f = self._make_filter()
+                    output = f.write(text[:split]) + f.write(text[split:]) + f.flush()
+                    self.assertNotIn("tool_call", output)
+                    self.assertNotIn('"tool"', output)
+                    self.assertIn("Before", output)
+                    self.assertIn("After", output)
+
+    def test_pipe_like_normal_text_passes_through(self):
+        f = self._make_filter()
+        text = "Normal text may mention <|tool_calls|> without invoking a tool."
+        output = f.write(text) + f.flush()
+        self.assertEqual(output, text)
 
     def test_pass_through_normal_text(self):
         f = self._make_filter()

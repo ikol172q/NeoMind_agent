@@ -2081,30 +2081,43 @@ class ToolRegistry:
         if path.startswith('~'):
             path = os.path.expanduser(path)
 
+        # Resolve relative inputs against the registry workspace before handing
+        # them to SafetyManager.  SafetyManager intentionally uses absolute-path
+        # checks; passing it the original relative input made its verdict depend
+        # on the process cwd instead of this registry's working_dir.
+        p = pathlib.Path(path)
+        if not p.is_absolute():
+            p = pathlib.Path(self.working_dir) / p
+        safety_path = os.path.abspath(str(p))
+
         # Run full safety check (includes protected files, path traversal, etc.)
         try:
             from agent.services.safety_service import SafetyManager
             sm = SafetyManager(workspace_root=self.working_dir)
             # Check is_path_safe (covers protected files, system dirs, etc.)
-            ok, reason = sm.is_path_safe(path, operation)
+            ok, reason = sm.is_path_safe(safety_path, operation)
             if not ok:
                 raise ValueError(f"Path security check failed: {reason}")
             # Also check path traversal specifically
-            ok, reason = sm.validate_path_traversal(path, operation)
+            ok, reason = sm.validate_path_traversal(safety_path, operation)
             if not ok:
                 raise ValueError(f"Path security check failed: {reason}")
         except ImportError:
             pass
 
-        p = pathlib.Path(path)
-        if not p.is_absolute():
-            p = pathlib.Path(self.working_dir) / p
         resolved = str(p.resolve())
         workspace_abs = str(pathlib.Path(self.working_dir).resolve())
+        try:
+            in_workspace = os.path.commonpath(
+                [resolved, workspace_abs]
+            ) == workspace_abs
+        except ValueError:
+            # Different drives on Windows cannot share a common path.
+            in_workspace = False
         # Allow workspace paths, /tmp/, and macOS temp dirs (/var/folders/)
         # macOS: /tmp is a symlink to /private/tmp, so include both
         _SAFE_EXTERNAL_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/")
-        if not resolved.startswith(workspace_abs) and not any(
+        if not in_workspace and not any(
             resolved.startswith(prefix) for prefix in _SAFE_EXTERNAL_PREFIXES
         ):
             raise ValueError(f"Path '{path}' resolves outside workspace")

@@ -96,6 +96,7 @@ rag = [
 ]
 dev = [
     "pytest",
+    "pytest-asyncio>=1.2.0",
     "black",
     "isort",
 ]

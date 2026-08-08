@@ -659,10 +659,15 @@ class ToolCallParser:
             return result.strip()
 
         # Fallback: raw didn't match (preprocessing changed the response).
-        # Remove the entire <tool_call>...</tool_call> block from the original.
+        # Remove the entire supported tool-call block from the original. Pipe
+        # delimiters need this path because parse() normalizes them before it
+        # constructs ToolCall.raw, so raw cannot match the original response.
         if not tool_call.is_legacy:
             result = re.sub(
-                r'<tool_call>.*?</tool_(?:call|result)>',
+                r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
+                r'.*?'
+                r'(?:</tool_(?:call|result|report|re)\s*>'
+                r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
                 '',
                 response,
                 count=1,
@@ -670,9 +675,9 @@ class ToolCallParser:
             )
             if result != response:
                 return result.strip()
-            # Also try unclosed <tool_call>
+            # Also try an unclosed standard or pipe-delimited tool call.
             result = re.sub(
-                r'<tool_call>\s*\{.*',
+                r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)\s*\{.*',
                 '',
                 response,
                 count=1,

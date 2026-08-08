@@ -25,6 +25,7 @@ from typing import List, Dict, Any, Optional
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.agentic import AgenticLoop, AgenticEvent, AgenticConfig
+from agent.coding.tool_schema import PermissionLevel
 
 
 # Helper to collect all events from the async generator
@@ -34,6 +35,20 @@ def _collect_events(loop, llm_response, messages, llm_caller):
         events = []
         async for event in loop.run(llm_response, messages, llm_caller):
             events.append(event)
+        return events
+    return asyncio.run(_run())
+
+
+def _collect_events_with_approval(
+    loop, llm_response, messages, llm_caller, approval
+):
+    """Collect events while simulating a frontend permission response."""
+    async def _run():
+        events = []
+        async for event in loop.run(llm_response, messages, llm_caller):
+            events.append(event)
+            if event.type == "tool_start":
+                event.approved = approval
         return events
     return asyncio.run(_run())
 
@@ -163,6 +178,7 @@ class TestAgenticEventDataclass(unittest.TestCase):
             tool_preview="rm -rf /",
         )
         self.assertEqual(event.type, "permission")
+        self.assertIsNone(event.approved)
         # Frontend can set this
         event.approved = False
         self.assertFalse(event.approved)
@@ -257,6 +273,7 @@ class TestAgenticLoopBasicFlow(unittest.TestCase):
 
         # Mock tool definition
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
 
@@ -393,6 +410,7 @@ class TestAgenticLoopIterationLimits(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -402,9 +420,18 @@ class TestAgenticLoopIterationLimits(unittest.TestCase):
         config = AgenticConfig(max_iterations=3)
         loop = AgenticLoop(mock_registry, config)
 
-        # LLM always returns a tool call
+        # Keep returning parseable tool calls, but vary the response so this
+        # test isolates max_iterations from the identical-response breaker.
+        response_count = 0
+
         async def llm_caller(msgs):
-            return '<tool_call>{"tool": "Read", "params": {"path": "/tmp/test.txt"}}</tool_call>'
+            nonlocal response_count
+            response_count += 1
+            return (
+                '<tool_call>{"tool": "Read", "params": '
+                f'{{"path": "/tmp/test-{response_count}.txt"}}'
+                '}</tool_call>'
+            )
 
         events = _collect_events(
             loop,
@@ -434,6 +461,7 @@ class TestAgenticLoopIterationLimits(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -485,7 +513,13 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         loop = AgenticLoop(mock_registry)
 
-        events = _collect_events(loop, '', [], llm_caller=AsyncMock(return_value="Done."),)
+        events = _collect_events_with_approval(
+            loop,
+            '',
+            [],
+            llm_caller=AsyncMock(return_value="Done."),
+            approval=True,
+        )
 
         # Should have tool_start, tool_result (with error), llm_response, done
         result_event = next((e for e in events if e.type == "tool_result"), None)
@@ -507,6 +541,7 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         # validate_params returns False
         mock_tool_def.validate_params.return_value = (False, "Invalid params")
         mock_registry.get_tool.return_value = mock_tool_def
@@ -533,6 +568,7 @@ class TestToolExecutionErrors(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         # Tool execution raises an exception
@@ -551,6 +587,253 @@ class TestToolExecutionErrors(unittest.TestCase):
 
 class TestPermissionFlow(unittest.TestCase):
     """Test permission event flow for destructive tools."""
+
+    def _run_tool(
+        self,
+        permission_level,
+        *,
+        approval=None,
+        auto_approve_reads=True,
+        permission_manager=None,
+    ):
+        """Run one registered tool call and return its definition and events."""
+        from agent.coding.tool_parser import ToolCall
+        from agent.coding.tools import ToolResult
+
+        tool_name = "Read" if permission_level == PermissionLevel.READ_ONLY else "Bash"
+        tool_call = ToolCall(tool_name, {}, "raw")
+        parser = MagicMock()
+        parser.parse.side_effect = [tool_call, None]
+
+        tool_def = MagicMock()
+        tool_def.permission_level = permission_level
+        tool_def.validate_params.return_value = (True, "")
+        tool_def.apply_defaults.return_value = {}
+        tool_def.execute.return_value = ToolResult(True, output="ok")
+
+        registry = MagicMock()
+        registry.get_tool.return_value = tool_def
+        loop = AgenticLoop(
+            registry,
+            AgenticConfig(
+                auto_approve_reads=auto_approve_reads,
+                permission_manager=permission_manager,
+            ),
+        )
+        loop._parser = parser
+
+        collector = (
+            _collect_events
+            if approval is None
+            else lambda *args: _collect_events_with_approval(
+                *args, approval=approval
+            )
+        )
+        with patch(
+            'agent.agentic.agentic_loop._get_user_hook_runner',
+            return_value=None,
+        ):
+            events = collector(
+                loop,
+                '',
+                [],
+                AsyncMock(return_value="Done."),
+            )
+        return tool_def, events
+
+    def test_unanswered_read_requires_auto_approve_config(self):
+        """Only configured READ_ONLY calls may execute without an answer."""
+        for auto_approve_reads, expected_calls in ((True, 1), (False, 0)):
+            with self.subTest(auto_approve_reads=auto_approve_reads):
+                tool_def, _ = self._run_tool(
+                    PermissionLevel.READ_ONLY,
+                    auto_approve_reads=auto_approve_reads,
+                )
+                self.assertEqual(tool_def.execute.call_count, expected_calls)
+
+    def test_unanswered_non_read_tools_do_not_execute(self):
+        """Unanswered risky or unclassified tools fail closed."""
+        for permission_level in (
+            PermissionLevel.WRITE,
+            PermissionLevel.EXECUTE,
+            PermissionLevel.DESTRUCTIVE,
+            None,
+        ):
+            with self.subTest(permission_level=permission_level):
+                tool_def, events = self._run_tool(permission_level)
+                self.assertEqual(tool_def.execute.call_count, 0)
+                self.assertEqual([event.type for event in events], ["tool_start", "done"])
+
+    def test_explicit_approval_controls_execution(self):
+        """Explicit False denies while explicit True keeps interactive behavior."""
+        denied_tool, _ = self._run_tool(
+            PermissionLevel.READ_ONLY,
+            approval=False,
+        )
+        approved_tool, _ = self._run_tool(
+            PermissionLevel.EXECUTE,
+            approval=True,
+        )
+
+        self.assertEqual(denied_tool.execute.call_count, 0)
+        self.assertEqual(approved_tool.execute.call_count, 1)
+
+    def test_permission_manager_deny_prevents_explicitly_approved_execution(self):
+        """PermissionManager DENY remains authoritative after frontend approval."""
+        from agent.services.permission_manager import PermissionDecision
+
+        permission_manager = MagicMock()
+        permission_manager.check_permission.return_value = PermissionDecision.DENY
+        tool_def, events = self._run_tool(
+            PermissionLevel.EXECUTE,
+            approval=True,
+            permission_manager=permission_manager,
+        )
+
+        self.assertEqual(tool_def.execute.call_count, 0)
+        result_event = next(event for event in events if event.type == "tool_result")
+        self.assertFalse(result_event.result_success)
+        self.assertIn("Permission denied", result_event.result_error)
+
+    def test_approval_cannot_be_reused_after_tool_substitution(self):
+        """Changing the displayed tool name after approval blocks execution."""
+        from agent.coding.tool_parser import ToolCall
+        from agent.coding.tools import ToolResult
+
+        parser = MagicMock()
+        parser.parse.side_effect = [
+            ToolCall("Read", {"path": "/tmp/safe.txt"}, "raw"),
+            None,
+        ]
+        tool_def = MagicMock()
+        tool_def.permission_level = PermissionLevel.READ_ONLY
+        tool_def.validate_params.return_value = (True, "")
+        tool_def.apply_defaults.return_value = {"path": "/tmp/safe.txt"}
+        tool_def.execute.return_value = ToolResult(True, output="safe")
+        registry = MagicMock()
+        registry.get_tool.return_value = tool_def
+        loop = AgenticLoop(registry)
+        loop._parser = parser
+
+        async def _run():
+            events = []
+            async for event in loop.run(
+                "", [], AsyncMock(return_value="Done.")
+            ):
+                events.append(event)
+                if event.type == "tool_start":
+                    event.approved = True
+                    event.tool_name = "Write"
+            return events
+
+        with patch(
+            'agent.agentic.agentic_loop._get_user_hook_runner',
+            return_value=None,
+        ):
+            events = asyncio.run(_run())
+
+        tool_def.execute.assert_not_called()
+        self.assertEqual(
+            [event.type for event in events],
+            ["tool_start", "error", "done"],
+        )
+        self.assertIn("changed after approval", events[1].error_message)
+
+    def test_nested_param_mutation_invalidates_approval(self):
+        """Nested event params are isolated and covered by the fingerprint."""
+        from agent.coding.tool_parser import ToolCall
+        from agent.coding.tools import ToolResult
+
+        original_params = {
+            "path": "/tmp/safe.txt",
+            "options": {
+                "filters": [
+                    {"pattern": "safe", "enabled": True},
+                ],
+            },
+        }
+        tool_call = ToolCall("Read", original_params, "raw")
+        parser = MagicMock()
+        parser.parse.side_effect = [tool_call, None]
+        tool_def = MagicMock()
+        tool_def.permission_level = PermissionLevel.READ_ONLY
+        tool_def.validate_params.return_value = (True, "")
+        tool_def.apply_defaults.return_value = original_params
+        tool_def.execute.return_value = ToolResult(True, output="safe")
+        registry = MagicMock()
+        registry.get_tool.return_value = tool_def
+        loop = AgenticLoop(registry)
+        loop._parser = parser
+
+        async def _run():
+            events = []
+            async for event in loop.run(
+                "", [], AsyncMock(return_value="Done.")
+            ):
+                events.append(event)
+                if event.type == "tool_start":
+                    event.approved = True
+                    event.tool_params["options"]["filters"][0]["pattern"] = "unsafe"
+            return events
+
+        with patch(
+            'agent.agentic.agentic_loop._get_user_hook_runner',
+            return_value=None,
+        ):
+            events = asyncio.run(_run())
+
+        tool_def.execute.assert_not_called()
+        self.assertEqual(tool_call.params, original_params)
+        self.assertEqual(
+            [event.type for event in events],
+            ["tool_start", "error", "done"],
+        )
+
+    def test_deepseek_flag_fix_is_shown_and_bound_before_approval(self):
+        """Compatibility normalization must happen before the approval boundary."""
+        from agent.coding.tool_parser import ToolCall
+        from agent.coding.tools import ToolResult
+
+        tool_call = ToolCall("Bash", {"command": "git show --stat46bba32"}, "raw")
+        parser = MagicMock()
+        parser.parse.side_effect = [tool_call, None]
+        tool_def = MagicMock()
+        tool_def.permission_level = PermissionLevel.EXECUTE
+        tool_def.validate_params.return_value = (True, "")
+        tool_def.apply_defaults.side_effect = lambda params: params
+        tool_def.execute.return_value = ToolResult(True, output="ok")
+        registry = MagicMock()
+        registry.get_tool.return_value = tool_def
+        loop = AgenticLoop(registry)
+        loop._parser = parser
+
+        async def _run():
+            events = []
+            async for event in loop.run(
+                "", [], AsyncMock(return_value="Done.")
+            ):
+                events.append(event)
+                if event.type == "tool_start":
+                    self.assertEqual(
+                        event.tool_params,
+                        {"command": "git show --stat 46bba32"},
+                    )
+                    event.approved = True
+            return events
+
+        with patch(
+            'agent.agentic.agentic_loop._get_user_hook_runner',
+            return_value=None,
+        ):
+            events = asyncio.run(_run())
+
+        tool_def.execute.assert_called_once_with(
+            command="git show --stat 46bba32"
+        )
+        self.assertEqual(
+            [event.type for event in events],
+            ["tool_start", "tool_result", "llm_response", "done"],
+        )
 
     @patch('agent.coding.tool_parser.ToolCallParser')
     def test_permission_event_yielded(self, mock_parser_class):
@@ -636,6 +919,7 @@ class TestHooksIntegration(unittest.TestCase):
         # Setup registry
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -674,6 +958,7 @@ class TestHooksIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -711,6 +996,7 @@ class TestHooksIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -754,6 +1040,7 @@ class TestHooksIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -793,6 +1080,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -832,6 +1120,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -869,6 +1158,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -909,6 +1199,7 @@ class TestSkillForgeIntegration(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -1009,6 +1300,7 @@ class TestAgenticLoopEdgeCases(unittest.TestCase):
 
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult
@@ -1044,6 +1336,7 @@ class TestAgenticLoopEdgeCases(unittest.TestCase):
         large_output = "x" * 5000
         mock_registry = MagicMock()
         mock_tool_def = MagicMock()
+        mock_tool_def.permission_level = PermissionLevel.READ_ONLY
         mock_tool_def.validate_params.return_value = (True, "")
         mock_tool_def.apply_defaults.return_value = {"path": "/tmp/test.txt"}
         from agent.coding.tools import ToolResult

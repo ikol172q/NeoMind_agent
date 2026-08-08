@@ -213,6 +213,7 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         _HEADLESS_MAX_ITERATIONS = 10
         try:
             from agent.coding.tool_parser import ToolCallParser
+            from agent.coding.tool_schema import PermissionLevel
             from agent.tools import ToolRegistry
 
             parser = ToolCallParser()
@@ -223,35 +224,53 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
                 if not tool_call:
                     break  # No more tool calls — done
 
-                # Execute the tool
+                # Headless mode has no user available to approve side effects.
+                # Fail closed: only an explicitly READ_ONLY definition may run.
                 tool_def = registry.get_tool(tool_call.tool_name) if registry else None
                 if tool_def is None:
-                    # Unknown tool — strip the tool_call and stop
-                    response = _re.sub(
-                        r'<tool_call>.*?</tool_(?:call|result)>',
-                        '', response, flags=_re.DOTALL,
-                    ).strip()
-                    break
-
-                try:
-                    params = tool_def.apply_defaults(tool_call.params)
-                    result = tool_def.execute(**params)
-                    result_text = str(result) if result else "(no output)"
-                except Exception as exec_err:
-                    result_text = f"Error: {exec_err}"
+                    result_text = (
+                        "Permission denied: unknown tools cannot run in "
+                        "non-interactive headless mode."
+                    )
+                elif getattr(tool_def, "permission_level", None) is not PermissionLevel.READ_ONLY:
+                    result_text = (
+                        "Permission denied: headless mode only allows read-only "
+                        "tools; this tool was not executed."
+                    )
+                else:
+                    try:
+                        params = tool_def.apply_defaults(tool_call.params)
+                        result = tool_def.execute(**params)
+                        result_text = str(result) if result else "(no output)"
+                    except Exception as exec_err:
+                        result_text = f"Error: {exec_err}"
 
                 # Truncate large tool output
                 if len(result_text) > 5000:
                     result_text = result_text[:5000] + "\n... [truncated]"
 
-                # Strip the tool_call block from the response for display
-                clean_response = _re.sub(
-                    r'<tool_call>.*?</tool_(?:call|result)>',
-                    '', response, count=1, flags=_re.DOTALL,
-                ).strip()
+                # Do not persist the raw tool payload in conversation history.
+                clean_response = parser.strip_tool_call(response, tool_call)
 
                 # Feed tool result back to LLM
-                agent.add_to_history("assistant", clean_response)
+                # stream_response() normally persisted the raw assistant reply
+                # already. Replace that exact entry in place; blindly appending
+                # a sanitized duplicate leaves the executable payload earlier
+                # in real history (a side effect mocks do not reproduce).
+                replaced_raw_response = False
+                history = getattr(agent, "conversation_history", None)
+                if isinstance(history, list):
+                    for message in reversed(history):
+                        if (
+                            isinstance(message, dict)
+                            and message.get("role") == "assistant"
+                            and message.get("content") == response
+                        ):
+                            message["content"] = clean_response
+                            replaced_raw_response = True
+                            break
+                if not replaced_raw_response:
+                    agent.add_to_history("assistant", clean_response)
                 agent.add_to_history("user",
                     f"Tool result for {tool_call.tool_name}:\n{result_text}\n\n"
                     "Continue based on the tool results above."
@@ -272,13 +291,27 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         except ImportError:
             pass  # Tool system not available — return raw response
 
-        # Strip any remaining tool_call blocks from final output
+        # Strip any remaining standard or DeepSeek pipe-delimited tool-call
+        # blocks from final output.
         response = _re.sub(
-            r'<tool_call>.*?</tool_(?:call|result)>',
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
+            r'.*?'
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
             '', response, flags=_re.DOTALL,
         ).strip()
-        # Strip orphan closing tags
-        response = _re.sub(r'</tool_(?:call|result)>', '', response).strip()
+        # An incomplete/malformed invocation must not leak when parsing could
+        # not produce a ToolCall.
+        response = _re.sub(
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>).*\Z',
+            '', response, flags=_re.DOTALL,
+        ).strip()
+        # Strip orphan closing tags.
+        response = _re.sub(
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
+            '', response,
+        ).strip()
 
         if not response:
             response = "(no response)"
@@ -293,6 +326,12 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
 
         sys.exit(0)
 
+    except KeyboardInterrupt:
+        if output_format == "json":
+            print(_json.dumps({"error": "Interrupted"}, ensure_ascii=False), file=sys.stderr)
+        else:
+            print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
     except Exception as e:
         if output_format == "json":
             import json as _json

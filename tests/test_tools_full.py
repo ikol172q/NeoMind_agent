@@ -144,17 +144,94 @@ class TestToolRegistryGetTool:
 class TestToolRegistryResolvePath:
     """Test path resolution."""
 
-    def test_resolve_absolute_path(self):
+    def test_resolve_absolute_path(self, tmp_path):
         """Test that absolute paths are resolved as-is."""
-        registry = ToolRegistry(working_dir="/home/user/project")
+        registry = ToolRegistry(working_dir=str(tmp_path))
         resolved = registry._resolve_path("/tmp/file.txt")
-        assert resolved == "/tmp/file.txt"
+        assert resolved in ("/tmp/file.txt", "/private/tmp/file.txt")
 
-    def test_resolve_relative_path(self):
+    def test_resolve_relative_path(self, tmp_path):
         """Test that relative paths are resolved relative to working dir."""
-        registry = ToolRegistry(working_dir="/home/user/project")
+        registry = ToolRegistry(working_dir=str(tmp_path))
         resolved = registry._resolve_path("src/main.py")
-        assert "project/src/main.py" in resolved
+        assert resolved == str(tmp_path / "src" / "main.py")
+
+    def test_resolve_tilde_path(self, tmp_path, monkeypatch):
+        """The normal ~/ form keeps its home-directory expansion semantics."""
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setenv("HOME", str(fake_home))
+
+        registry = ToolRegistry(working_dir=str(fake_home))
+        resolved = registry._resolve_path("~/notes.txt")
+
+        assert resolved == str(fake_home / "notes.txt")
+
+    def test_relative_read_uses_working_dir_when_process_cwd_differs(
+        self, tmp_path, monkeypatch
+    ):
+        """Safety and I/O must resolve a relative path from the registry workspace."""
+        workspace = tmp_path / "workspace"
+        other_cwd = tmp_path / "other-cwd"
+        workspace.mkdir()
+        other_cwd.mkdir()
+        (workspace / "file.txt").write_text("workspace payload\n")
+        monkeypatch.chdir(other_cwd)
+
+        registry = ToolRegistry(working_dir=str(workspace))
+        result = registry.read_file("file.txt")
+
+        assert result.success, result.error
+        assert "workspace payload" in result.output
+        assert registry._resolve_path("file.txt") == str(workspace / "file.txt")
+
+    def test_relative_traversal_remains_blocked_when_process_cwd_differs(
+        self, tmp_path, monkeypatch
+    ):
+        """Workspace-relative resolution must not weaken traversal containment."""
+        workspace = tmp_path / "workspace"
+        other_cwd = tmp_path / "other-cwd"
+        workspace.mkdir()
+        other_cwd.mkdir()
+        monkeypatch.chdir(other_cwd)
+
+        registry = ToolRegistry(working_dir=str(workspace))
+        with pytest.raises(ValueError, match="outside allowed roots|outside workspace"):
+            registry._resolve_path("../outside.txt")
+
+    def test_workspace_name_prefix_is_not_treated_as_containment(
+        self, tmp_path, monkeypatch
+    ):
+        """A sibling such as workspace-copy must not pass a string-prefix check."""
+        workspace = tmp_path / "workspace"
+        sibling = tmp_path / "workspace-copy"
+        workspace.mkdir()
+        sibling.mkdir()
+
+        # Exercise ToolRegistry's own final containment check even when the
+        # optional safety service cannot be imported.
+        monkeypatch.setitem(sys.modules, "agent.services.safety_service", None)
+
+        registry = ToolRegistry(working_dir=str(workspace))
+        with pytest.raises(ValueError, match="outside allowed roots|outside workspace"):
+            registry._resolve_path(str(sibling / "secret.txt"))
+
+    def test_symlink_outside_workspace_remains_blocked(self, tmp_path):
+        """Resolving relative paths first must retain the symlink escape check."""
+        workspace = tmp_path / "workspace"
+        outside = tmp_path / "outside"
+        workspace.mkdir()
+        outside.mkdir()
+        (outside / "secret.txt").write_text("secret\n")
+        link = workspace / "secret-link.txt"
+        try:
+            link.symlink_to(outside / "secret.txt")
+        except (OSError, NotImplementedError):
+            pytest.skip("symlinks are unavailable on this platform")
+
+        registry = ToolRegistry(working_dir=str(workspace))
+        with pytest.raises(ValueError, match="Symlink target outside workspace"):
+            registry._resolve_path("secret-link.txt")
 
 
 class TestToolRegistryBash:

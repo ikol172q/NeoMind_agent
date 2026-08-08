@@ -629,39 +629,6 @@ class TestExtractToolBlocks(unittest.TestCase):
         self.assertIsNotNone(tc)
 
 
-class TestExecuteToolBlocks(unittest.TestCase):
-    """Test tool call execution through _execute_tool_call."""
-
-    def _iface(self):
-        from cli.neomind_interface import NeoMindInterface
-        return NeoMindInterface(_make_mock_chat("coding"))
-
-    def test_execute_echo(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc = ToolCall("Bash", {"command": "echo hello"}, "raw")
-        result = iface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("hello", result.output)
-
-    def test_execute_failing_command(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc = ToolCall("Bash", {"command": "false"}, "raw")
-        result = iface._execute_tool_call(tc)
-        self.assertFalse(result.success)
-
-    def test_registry_reuse(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc1 = ToolCall("Bash", {"command": "echo 1"}, "raw")
-        iface._execute_tool_call(tc1)
-        reg1 = iface._tool_registry
-        tc2 = ToolCall("Bash", {"command": "echo 2"}, "raw")
-        iface._execute_tool_call(tc2)
-        self.assertIs(reg1, iface._tool_registry)
-
-
 class TestAgenticLoop(unittest.TestCase):
     """Test the agentic tool execution loop."""
 

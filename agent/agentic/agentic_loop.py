@@ -31,8 +31,11 @@ No external dependencies — stdlib + project internals only.
 """
 
 import asyncio
+import copy
+import hashlib
 import logging
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Callable, List, Dict, Any, AsyncIterator, Awaitable
 
@@ -113,8 +116,10 @@ class AgenticEvent:
     result_error: Optional[str] = None
     llm_text: Optional[str] = None
     error_message: Optional[str] = None
-    # For permission events — frontend sets this
-    approved: bool = True
+    # For tool_start/permission events — frontend sets this explicitly.
+    # None means the frontend did not answer; run() only auto-approves
+    # registered READ_ONLY tools when configured to do so.
+    approved: Optional[bool] = None
     # The full feedback message added to history
     feedback_message: Optional[str] = None
     # For skill_match events — matched skills list
@@ -232,11 +237,50 @@ class AgenticLoop:
 
     def _get_tool_definition(self, tool_name: str):
         """Look up a ToolDefinition from the registry by name."""
-        if hasattr(self.registry, '_tool_definitions'):
-            return self.registry._tool_definitions.get(tool_name)
+        tool_definitions = getattr(self.registry, '_tool_definitions', None)
+        if isinstance(tool_definitions, dict):
+            return tool_definitions.get(tool_name)
         if hasattr(self.registry, 'get_tool'):
             return self.registry.get_tool(tool_name)
         return None
+
+    @staticmethod
+    def _tool_call_fingerprint(tool_name: str, tool_params: dict) -> str:
+        """Return a stable fingerprint for the exact tool call being approved."""
+        canonical = json.dumps(
+            {"tool_name": tool_name, "tool_params": tool_params},
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _normalize_tool_params_before_approval(tool_name: str, tool_params: dict) -> None:
+        """Apply compatibility fixes before previewing and approving a tool call.
+
+        DeepSeek occasionally joins a long hexadecimal/alphanumeric value to a
+        preceding CLI flag (for example ``--stat46bba32``).  This historical
+        compatibility fix must run before the approval snapshot: changing an
+        invocation after approval would invalidate the security boundary.
+        """
+        for param_name, param_value in tool_params.items():
+            if isinstance(param_value, str) and '--' in param_value:
+                fixed = re.sub(
+                    r'(--[a-zA-Z][-a-zA-Z]*)([0-9a-fA-F]{4,})',
+                    r'\1 \2',
+                    param_value,
+                )
+                if fixed != param_value:
+                    logger.info(
+                        "[agentic] Flag-space fix in %s.%s: %r → %r",
+                        tool_name,
+                        param_name,
+                        param_value,
+                        fixed,
+                    )
+                    tool_params[param_name] = fixed
 
     async def run(
         self,
@@ -380,18 +424,95 @@ class AgenticLoop:
                 yield AgenticEvent(type="done", iteration=iteration)
                 return
 
+            # Snapshot the exact invocation before handing control to a frontend.
+            # The event gets its own deep copy so a renderer/permission adapter
+            # cannot mutate the executable ToolCall through a shared nested dict.
+            try:
+                # Apply provider compatibility normalization before the call is
+                # previewed or fingerprinted. No executable parameter may
+                # change after this approval boundary.
+                self._normalize_tool_params_before_approval(
+                    tool_call.tool_name,
+                    tool_call.params,
+                )
+                approval_fingerprint = self._tool_call_fingerprint(
+                    tool_call.tool_name,
+                    tool_call.params,
+                )
+                event_tool_params = copy.deepcopy(tool_call.params)
+            except (AttributeError, TypeError, ValueError, copy.Error) as exc:
+                logger.warning(
+                    "[agentic] Tool call could not be fingerprinted; blocking execution: %s",
+                    type(exc).__name__,
+                )
+                yield AgenticEvent(
+                    type="error",
+                    iteration=iteration,
+                    error_message="Tool call could not be safely bound to an approval.",
+                )
+                yield AgenticEvent(type="done", iteration=iteration)
+                return
+
             # 2. Yield tool_start (frontend can show preview, ask permission)
             event = AgenticEvent(
                 type="tool_start",
                 iteration=iteration,
                 tool_name=tool_call.tool_name,
-                tool_params=tool_call.params,
+                tool_params=event_tool_params,
                 tool_preview=tool_call.preview(),
             )
             yield event
 
-            # Check if frontend denied permission
-            if not event.approved:
+            # Resolve approval fail-closed. Frontends that explicitly set
+            # True retain the interactive CLI behavior. An unanswered event
+            # may proceed only for a known READ_ONLY tool when configured;
+            # writes, execution, destructive, and unknown levels all stop.
+            approved = event.approved is True
+            if event.approved is None and self.config.auto_approve_reads:
+                from agent.coding.tool_schema import PermissionLevel
+                tool_def = self._get_tool_definition(tool_call.tool_name)
+                approved = (
+                    tool_def is not None
+                    and getattr(tool_def, "permission_level", None)
+                    == PermissionLevel.READ_ONLY
+                )
+
+            if not approved:
+                yield AgenticEvent(type="done", iteration=iteration)
+                return
+
+            # Bind approval to the exact name + nested params that were shown.
+            # Check both the frontend-facing copy and the executable ToolCall;
+            # either changing after yield invalidates the approval fail-closed.
+            try:
+                event_fingerprint = self._tool_call_fingerprint(
+                    event.tool_name,
+                    event.tool_params,
+                )
+                executable_fingerprint = self._tool_call_fingerprint(
+                    tool_call.tool_name,
+                    tool_call.params,
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "[agentic] Approved tool call became non-fingerprintable; "
+                    "blocking execution: %s",
+                    type(exc).__name__,
+                )
+                event_fingerprint = executable_fingerprint = None
+
+            if not (
+                event_fingerprint == approval_fingerprint
+                and executable_fingerprint == approval_fingerprint
+            ):
+                logger.warning(
+                    "[agentic] Tool call changed after approval; blocking execution"
+                )
+                yield AgenticEvent(
+                    type="error",
+                    iteration=iteration,
+                    error_message="Tool call changed after approval; execution blocked.",
+                )
                 yield AgenticEvent(type="done", iteration=iteration)
                 return
 
@@ -837,17 +958,6 @@ class AgenticLoop:
                     return ToolResult(False, error=f"Hook denied: {deny_msg}")
             except Exception as e:
                 logger.debug(f"PreToolUse hook error (non-fatal): {e}")
-
-        # Normalize DeepSeek flag errors: --flag immediately followed by
-        # hex/alphanum (e.g. "--stat46bba32") → insert a space ("--stat 46bba32").
-        # Only applies to string params likely to be shell commands.
-        import re as _re
-        for _pk, _pv in tool_call.params.items():
-            if isinstance(_pv, str) and '--' in _pv:
-                _fixed = _re.sub(r'(--[a-zA-Z][-a-zA-Z]*)([0-9a-fA-F]{4,})', r'\1 \2', _pv)
-                if _fixed != _pv:
-                    logger.info(f"[agentic] Flag-space fix in {_pk}: {_pv!r} → {_fixed!r}")
-                    tool_call.params[_pk] = _fixed
 
         # Apply defaults and execute
         params = tool_def.apply_defaults(tool_call.params)
