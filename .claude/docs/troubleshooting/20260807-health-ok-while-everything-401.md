@@ -87,3 +87,19 @@ curl -s -o /dev/null -w '%{http_code}' localhost:8010/ready   # 期望 503
 ```bash
 kill $(lsof -nP -iTCP:8010 -sTCP:LISTEN -t)
 ```
+
+## 后续：它在 4.5 小时内就复发了
+
+2026-08-07 约 17:00 从 login shell 修好；**21:34:25 又回到只剩 `LLM_ROUTER_API_KEY`**
+（`.env.runtime` mtime 与 router 进程启动时间一致，PID 也换了）。
+说明有东西——xbar 的 repair、开机自启、或别的自动化——在从**非 login shell** 拉起它。
+
+发现方式值得记：这次是 NeoMind 的 pre-commit 跨模式 boot 烟测三模式全部
+`API auth error` 而暴露的，然后 `/health` 直接给出 `status: degraded` + 三家 401
++ `/ready` 503。**换作加 readiness 之前，`/health` 会照常报 `ok` 并列出 10 个陈旧模型，
+这次 boot 失败就会变成一桩悬案。** 这是那次修改第一次真正兑现价值。
+
+**结论：光"记得用 login shell 重启"是不够的，它会一直复发。**
+建议在 `start.sh` 的快照循环后加个断言——一个 provider key 都没抓到就
+**大声失败**，而不是安静地起一个必然 401 的 router。
+（尚未实施：属于 LLM-Router 仓，待批准。）

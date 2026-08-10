@@ -1183,7 +1183,7 @@ This plan does not authorize or require:
 | Phase | Status | Evidence |
 |---|---|---|
 | 0 — baseline + safety containment | Gates passed 2026-08-07 (commit pending) | containment implemented; dual-env automated suites and real headless/iTerm2 flows pass; router env repaired → DeepSeek `alive`, Kimi `42`, local MLX `42` (GLM 429 balance, non-gating); bot token rotated, old token proved dead via `getMe` 401, Telethon smoke 8 PASS / 0 FAIL; log leak contained with 0 token hits post-fix |
-| 1 — runtime contract + ToolExecutor | Pending | — |
+| 1 — runtime contract + ToolExecutor | Substantially done (8133280, 2cac93c) | frozen events + ports + policy + single ToolExecutor; real-registry integration (caught a wrong param-name assumption on write); AST + subprocess import boundary; AgenticLoop dispatch switchable through the executor with the switch asserted from both sides; 66 runtime tests py3.9, 209 incl. regression suites py3.14; cross-mode boot smoke green. Open: AgentSession itself, and moving the loop's read-before-edit / PreToolUse pre-checks into executor guards (Phase 3). |
 | 2 — LLM streaming port | Pending | — |
 | 3 — AgentSession + headless | Pending | — |
 | 4 — Prompt REPL migration | Pending | — |
