@@ -740,6 +740,35 @@ Remaining items — all debt, no open Phase 0 gate:
 
 - **GLM/Z.ai account balance (operator action).** Auth is fixed; completions return 429 code 1113.
   Not a Phase 0 gate — the second-provider requirement is met by Kimi.
+
+- **🔴 The full test suite has never completed — on any interpreter.** This corrects the earlier
+  characterization of "intermittent pytest cleanup warnings, not a hard blocker". Investigated
+  2026-08-09; details and the reproduction method are in
+  `.claude/docs/troubleshooting/20260809-suite-never-finished.md`.
+
+  - **Hang 1 at ~54% — FIXED** (`934c67b`). `tests/test_persistent_bash_full.py` mocked the queue's
+    `get`, but `execute()` first calls `_drain_queue()`, which uses `get_nowait()`. An unconfigured
+    MagicMock never raises `queue.Empty`, so the `while True` spun at 100% CPU. It hung before any
+    assertion, so those five tests never verified anything. Confirmed pre-existing by reproducing
+    at `c93e56e`. Now 40/40 in both venvs, under 4s.
+  - **Hang 2 at ~71% — OPEN.** Different failure mode: 0.1% CPU, blocked in
+    `select_kqueue_control_impl → kevent`, i.e. an asyncio event loop waiting indefinitely — an
+    async test awaiting something that never completes, with no timeout. The specific test is not
+    yet identified; naming it requires a `-v` run (a `-q` run only prints dots), which reaches the
+    hang in roughly half an hour.
+  - **Beyond 71% is unexplored.** Nothing has ever run past that point, so further hangs or
+    failures should be expected rather than assumed absent.
+  - **Consequence for every "N passed" figure in this document and its predecessors:** they are
+    subset results. Treat "the suite is green" as unproven until a run terminates.
+  - Suggested next step when this is picked up: add a per-test timeout (`pytest-timeout`) so a hang
+    fails one test instead of blocking everyone, then work through what it reports.
+
+- **115 leaked heartbeat threads.** `sample` showed 115 of 134 threads named `heartbeat`, from
+  `agent/evolution/scheduler.py:155` → `health_monitor.py:525`. `HeartbeatWriter.stop()` only sets
+  a flag — it never joins, and nothing calls it; `tests/conftest.py` has no cleanup. Each test that
+  instantiates the scheduler leaks one. They sleep rather than spin, so they are not the hang, but
+  each repeatedly mkdirs and writes the same file, which is a plausible source of the original
+  "Too many open files" report.
 - Repeated Python 3.14 runs can emit non-fatal pytest temporary-directory cleanup warnings with
   `Errno 24: Too many open files`; assertions still pass, but the warning is not evidence of
   file-descriptor hygiene and remains open diagnostic debt. Not yet reproduced on a full 3.14 run.
