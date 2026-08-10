@@ -90,6 +90,12 @@ class AgenticConfig:
     compact_fn: Optional[Callable] = None  # async () -> int (tokens freed). Set by frontend.
     token_budget: Optional[Any] = None     # TokenBudget instance for tracking
     permission_manager: Optional[Any] = None  # PermissionManager for enhanced access control
+    # agent.runtime.ToolExecutor. When set, tool dispatch goes through the
+    # runtime's single execution path (session_v1); when None the loop keeps
+    # its legacy inline dispatch. This is the per-surface rollback switch the
+    # plan allows during migration, and Phase 8 removes it — it must not become
+    # a permanent second runtime.
+    tool_executor: Optional[Any] = None
 
 
 @dataclass
@@ -898,6 +904,62 @@ class AgenticLoop:
 
         return results
 
+    async def _execute_via_runtime(self, tool_def, tool_call, params):
+        """Run one call through agent.runtime.ToolExecutor (the session_v1 path).
+
+        Returns a ToolResult so every caller downstream is unchanged. A denial
+        is surfaced as an unsuccessful ToolResult rather than an exception,
+        because the loop feeds the text back to the model — and "blocked by
+        policy" is information the model can act on, unlike a stack trace.
+        """
+        from agent.coding.tools import ToolResult
+        from agent.runtime.permissions import Approval, fingerprint
+
+        working_dir = str(getattr(self.registry, "working_dir", "") or "")
+
+        class _ReplayBroker:
+            """Replays the approval the frontend already granted.
+
+            It answers for exactly one call. Anything the executor asks about
+            that does not match is refused, so a mismatch between what was
+            shown and what is about to run still fails closed here.
+            """
+
+            def __init__(self, approved_fingerprint):
+                self._fp = approved_fingerprint
+
+            async def request(self, **kwargs):
+                return Approval(
+                    request_id=kwargs.get("request_id", ""),
+                    fingerprint=self._fp,
+                )
+
+        try:
+            approved_fp = fingerprint(tool_call.tool_name, params, working_dir)
+        except (TypeError, ValueError):
+            return ToolResult(False, error="Tool call could not be bound to an approval.")
+
+        executor = self.config.tool_executor
+        # The loop's handshake has already authorized this exact call; the
+        # executor re-derives and re-verifies the fingerprint regardless.
+        previous_broker = getattr(executor, "broker", None)
+        executor.broker = _ReplayBroker(approved_fp)
+        try:
+            outcome = await executor.execute(
+                tool_call.tool_name, params, request_id="agentic-loop",
+            )
+        finally:
+            executor.broker = previous_broker
+
+        if outcome.denied:
+            return ToolResult(False, error=f"Blocked: {outcome.denied_reason}")
+        return ToolResult(
+            outcome.success,
+            output=outcome.output,
+            error=outcome.error,
+            metadata=dict(outcome.metadata or {}),
+        )
+
     async def _execute(self, tool_call):
         """Execute a tool call through the registry.
 
@@ -962,9 +1024,22 @@ class AgenticLoop:
         # Apply defaults and execute
         params = tool_def.apply_defaults(tool_call.params)
 
-        # Async-aware execution: if the tool is async, await it directly;
-        # otherwise run it in a thread to avoid blocking the event loop.
-        if asyncio.iscoroutinefunction(tool_def.execute):
+        if self.config.tool_executor is not None:
+            # session_v1: hand execution to the runtime's single executor. The
+            # approval the frontend already gave through the event handshake is
+            # replayed to it as a call-bound Approval, so the executor still
+            # performs its own fingerprint re-check, audit and dispatch — this
+            # is a bridge, not a bypass.
+            #
+            # The pre-checks above (permission manager, read-before-edit,
+            # PreToolUse hook) stay here for now; Phase 3 moves them into the
+            # executor's guards once AgentSession owns the turn. Until then the
+            # ordering is unchanged, which is what keeps CLI/Telegram behaviour
+            # identical across the switch.
+            result = await self._execute_via_runtime(tool_def, tool_call, params)
+        elif asyncio.iscoroutinefunction(tool_def.execute):
+            # legacy: async-aware execution — await async tools directly,
+            # otherwise run in a thread so a slow tool cannot block the loop.
             result = await tool_def.execute(**params)
         else:
             result = await asyncio.to_thread(tool_def.execute, **params)

@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Mapping, Optional
+from typing import Any, Awaitable, Callable, Mapping, Optional, Sequence
 
 from agent.runtime.permissions import (
     Approval,
@@ -69,6 +69,7 @@ class ToolExecutor:
         working_dir: str = "",
         permission_timeout: float = DEFAULT_PERMISSION_TIMEOUT,
         risk_classifier: Optional[Callable[[str, str, Mapping[str, Any]], str]] = None,
+        guards: Optional[Sequence[Callable[..., Any]]] = None,
     ) -> None:
         self.registry = registry
         self.policy = policy or PermissionPolicy()
@@ -77,6 +78,12 @@ class ToolExecutor:
         self.working_dir = working_dir
         self.permission_timeout = permission_timeout
         self._risk_classifier = risk_classifier
+        # Last-mile denials that are not permission policy: read-before-edit,
+        # user PreToolUse hooks, workspace rules. They live here rather than in
+        # the caller so there is one place that decides the order in which a
+        # call can be refused — a guard the caller runs is a guard the next
+        # surface forgets to run.
+        self.guards = list(guards or [])
 
     # ── public API ────────────────────────────────────────────────────────
 
@@ -153,7 +160,36 @@ class ToolExecutor:
             logger.warning("[runtime] tool call changed after approval; blocking %s", tool_name)
             return self._deny(tool_name, effective_params, "call changed after approval")
 
+        # Guards run after approval and immediately before execution, matching
+        # the legacy order: the operator is asked first, then a hook may still
+        # veto. A guard that runs before the prompt would silently drop calls
+        # the user believes they are being consulted about.
+        guard_denial = await self._run_guards(tool_name, effective_params)
+        if guard_denial is not None:
+            return self._deny(tool_name, effective_params, guard_denial, level=level, risk=risk)
+
         return await self._run(tool_def, tool_name, effective_params, level, risk, reason)
+
+    async def _run_guards(self, tool_name: str, params: Mapping[str, Any]) -> Optional[str]:
+        """Return a denial reason, or None to proceed.
+
+        A guard that raises denies. Letting an exception mean "allow" would
+        make a broken hook indistinguishable from an approving one.
+        """
+        for guard in self.guards:
+            try:
+                verdict = guard(tool_name, dict(params))
+                if asyncio.iscoroutine(verdict):
+                    verdict = await verdict
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[runtime] guard %s raised; denying %s",
+                    getattr(guard, "__name__", type(guard).__name__), tool_name,
+                )
+                return f"guard error: {type(exc).__name__}"
+            if verdict:
+                return str(verdict)
+        return None
 
     # ── internals ─────────────────────────────────────────────────────────
 

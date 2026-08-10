@@ -392,3 +392,75 @@ def test_fingerprint_is_order_independent():
 
 def test_fingerprint_includes_working_dir():
     assert fingerprint("Read", {"path": "a"}, "/one") != fingerprint("Read", {"path": "a"}, "/two")
+
+
+# ── pre-execution guards ─────────────────────────────────────────────────
+
+
+def test_guard_can_deny_after_approval():
+    """read-before-edit / PreToolUse hooks live here, not in the caller."""
+    tool = FakeTool("Edit", level="read_only")
+    ex = ToolExecutor(
+        FakeRegistry(tool), PermissionPolicy(),
+        guards=[lambda name, params: "must Read before editing" if name == "Edit" else None],
+    )
+
+    out = asyncio.run(ex.execute("Edit", {"path": "a.txt"}))
+
+    assert out.denied
+    assert tool.calls == [], "a denied guard must not let the tool run"
+    assert "must Read" in out.denied_reason
+
+
+def test_guard_returning_none_allows():
+    tool = FakeTool("Read", level="read_only")
+    ex = ToolExecutor(FakeRegistry(tool), PermissionPolicy(), guards=[lambda n, p: None])
+
+    assert asyncio.run(ex.execute("Read", {"path": "a"})).executed
+
+
+def test_async_guard_is_awaited():
+    async def guard(name, params):
+        await asyncio.sleep(0)
+        return "async veto"
+
+    tool = FakeTool("Read", level="read_only")
+    ex = ToolExecutor(FakeRegistry(tool), PermissionPolicy(), guards=[guard])
+
+    out = asyncio.run(ex.execute("Read", {"path": "a"}))
+    assert out.denied and tool.calls == []
+
+
+def test_guard_that_raises_denies():
+    """A broken hook must not be indistinguishable from an approving one."""
+
+    def broken(name, params):
+        raise RuntimeError("hook binary missing")
+
+    tool = FakeTool("Write", level="write")
+    ex = ToolExecutor(FakeRegistry(tool), PermissionPolicy(auto_accept=True), guards=[broken])
+
+    out = asyncio.run(ex.execute("Write", {"path": "a"}))
+    assert out.denied and tool.calls == []
+
+
+def test_guards_run_after_approval_not_before():
+    """Order is observable: the broker is consulted before any guard runs."""
+    order = []
+
+    class Broker:
+        async def request(self, **kw):
+            order.append("broker")
+            return approve("Write", {"path": "a"})
+
+    def guard(name, params):
+        order.append("guard")
+        return None
+
+    tool = FakeTool("Write", level="write")
+    ex = ToolExecutor(
+        FakeRegistry(tool), interactive_policy(), broker=Broker(), guards=[guard],
+    )
+
+    asyncio.run(ex.execute("Write", {"path": "a"}))
+    assert order == ["broker", "guard"]
