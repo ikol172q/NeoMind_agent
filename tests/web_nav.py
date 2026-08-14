@@ -76,3 +76,18 @@ def goto_tab(page, tab_id: str, *, timeout: int = DEFAULT_TIMEOUT):
     page.wait_for_selector(selector, timeout=timeout)
     page.click(selector)
     return page
+
+
+def goto_legacy(page, *, timeout: int = DEFAULT_TIMEOUT):
+    """Open the legacy dashboard (the old widget grid).
+
+    V11 moved Watchlist / Quote / Heatmap / Earnings / RS / Correlation /
+    Sectors and friends off the Research tab into LegacyTab, on the grounds
+    that they duplicated TradingView/Yahoo/Koyfin without adding value. The
+    tab is deliberately absent from the main nav — App.tsx says so — and is
+    reached through Settings, so widget tests have to go the same way.
+    """
+    goto_tab(page, "settings", timeout=timeout)
+    page.wait_for_selector('[data-testid="open-legacy-dashboard"]', timeout=timeout)
+    page.click('[data-testid="open-legacy-dashboard"]')
+    return page

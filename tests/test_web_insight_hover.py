@@ -12,7 +12,10 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab
 
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
@@ -117,7 +120,7 @@ def test_insight_second_call_is_cache_hit():
 def test_hover_on_watchlist_row_shows_insight_popover(page: Page):
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-row-US-AAPL"]', timeout=10000)
     # Warm the cache so the tooltip renders fast
     urllib.request.urlopen(
@@ -141,7 +144,7 @@ def test_hover_on_watchlist_row_shows_insight_popover(page: Page):
 def test_hover_away_hides_popover(page: Page):
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-row-US-AAPL"]', timeout=10000)
     urllib.request.urlopen(
         BASE_URL + f"api/insight/symbol/AAPL?project_id={PROJECT}", timeout=40
@@ -159,7 +162,7 @@ def test_unknown_symbol_doesnt_crash_the_page(page: Page):
     either show the fallback text or simply not crash the page."""
     _seed("ZZZZZ")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-row-US-ZZZZZ"]', timeout=10000)
     page.locator('[data-testid="insight-target-ZZZZZ"]').first.hover()
     page.wait_for_timeout(1500)

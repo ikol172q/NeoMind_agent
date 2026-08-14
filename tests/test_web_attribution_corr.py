@@ -8,7 +8,10 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab
 
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
@@ -123,7 +126,7 @@ def test_attribution_endpoint_breaks_down_pnl():
 def test_portfolio_widget_shows_attribution_strip(page: Page):
     _place_order("AAPL", 5)
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="portfolio-attribution"]', timeout=30000)
     page.wait_for_selector('[data-testid="attrib-pos-AAPL"]', timeout=30000)
 
@@ -167,7 +170,7 @@ def test_correlation_widget_renders_heatmap(page: Page):
         BASE_URL + f"api/correlation?project_id={PROJECT}&days=90&fresh=1", timeout=60
     ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="correlation-widget"]', timeout=10000)
     # Scroll it into view — analytics band is below the fold
     page.evaluate(
@@ -182,7 +185,7 @@ def test_correlation_window_toggle_changes_request(page: Page):
     _seed_watch("AAPL")
     _seed_watch("MSFT")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="correlation-widget"]', timeout=10000)
     captured: list[str] = []
     page.on("request", lambda r: captured.append(r.url)
