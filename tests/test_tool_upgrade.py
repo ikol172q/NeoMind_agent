@@ -444,7 +444,12 @@ class TestAgentConfigSaveLoad(unittest.TestCase):
         cfg = AgentConfigManager(mode="coding")
         result = cfg.update_value("agent.model", "test-model")
         self.assertTrue(result)
-        self.assertEqual(cfg.model, "test-model")
+        # cfg.model reads provider-state.json since 2026-04-25 (yaml `model:`
+        # was removed so personality switches cannot override the active
+        # model), so the write lands but the property does not follow.
+        # temperature exercises the same agent.-prefixed path end to end.
+        cfg.update_value("agent.temperature", 0.41)
+        self.assertEqual(cfg.temperature, 0.41)
 
     def test_update_value_nested_agent_key(self):
         from agent_config import AgentConfigManager
@@ -514,10 +519,11 @@ class TestAgentConfigSaveLoad(unittest.TestCase):
         result = cfg.get("nonexistent.key", "default_val")
         self.assertEqual(result, "default_val")
 
-    def test_invalid_mode_defaults_to_chat(self):
+    def test_invalid_mode_defaults_to_fin(self):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="invalid_mode")
-        self.assertEqual(cfg.mode, "chat")
+        # agent_config.py normalises an unknown mode to fin, its stated default.
+        self.assertEqual(cfg.mode, "fin")
 
     def test_get_mode_config_invalid_returns_empty(self):
         from agent_config import AgentConfigManager
@@ -882,6 +888,9 @@ class TestSlashCommandCompleterAdditional(unittest.TestCase):
         completer.commands = ["quit", "help", "clear", "debug"]
         completer.mode = "chat"
         completer.help_system = None
+        # __new__ skips __init__, so every attribute get_completions touches has
+        # to be set by hand — _new_registry was added later and left unset.
+        completer._new_registry = None
 
         doc = MagicMock()
         doc.text_before_cursor = "/"
