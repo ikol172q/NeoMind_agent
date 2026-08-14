@@ -167,10 +167,12 @@ class TestAgentConfigManagerInit:
         manager = AgentConfigManager(mode="coding")
         assert manager.mode == "coding"
 
-    def test_init_invalid_mode_defaults_to_chat(self):
+    def test_init_invalid_mode_defaults_to_fin(self):
         from agent_config import AgentConfigManager
         manager = AgentConfigManager(mode="invalid")
-        assert manager.mode == "chat"
+        # agent_config.py pins fin as the default: "Default = fin (the user's
+        # primary use case)".
+        assert manager.mode == "fin"
 
     def test_init_loads_yaml_files(self, tmp_path):
         from agent_config import AgentConfigManager

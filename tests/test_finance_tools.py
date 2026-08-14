@@ -8,7 +8,7 @@ the integration test suite.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 
@@ -249,7 +249,13 @@ async def test_news_search_success():
     # The tool calls search_advanced(), not search() — mocking the wrong
     # method left an un-awaitable MagicMock and the Tavily stage errored out.
     engine.search_advanced = AsyncMock(return_value=mock_result)
-    result = await finance_news_search(engine, "Apple earnings", max_results=5)
+
+    # Force stage 2. finance_news_search tries miniflux first via
+    # fin_provider.fin_module('news_hub'); in a full-suite run that provider is
+    # loaded and the local feed DB answers with real entries, so this test saw
+    # 5 items instead of the mocked 1 and only passed in isolation.
+    with patch("agent.fin_provider.fin_module", side_effect=RuntimeError("no miniflux")):
+        result = await finance_news_search(engine, "Apple earnings", max_results=5)
     assert result["ok"] is True
     assert len(result["items"]) == 1
     assert result["items"][0]["title"] == "Apple beats earnings"
