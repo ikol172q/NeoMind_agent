@@ -19,6 +19,7 @@ import json
 import signal
 import logging
 import sqlite3
+import weakref
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -503,6 +504,26 @@ def watchdog_loop(state: HealthState):
 # ── Heartbeat Writer (for main process to import) ─────────
 
 
+# Live writers, so a shutdown path (or the test harness) can stop threads it
+# did not itself create. WeakSet: being registered must not keep a writer alive.
+_LIVE_WRITERS = weakref.WeakSet()
+
+
+def stop_all_heartbeats(timeout: float = 5.0) -> int:
+    """Stop every live HeartbeatWriter and return how many were running.
+
+    tests/conftest.py calls this after each test. Without it, every test that
+    builds an evolution scheduler parks one more thread for the life of the
+    process — 115 of them were observed in a single suite run.
+    """
+    stopped = 0
+    for writer in list(_LIVE_WRITERS):
+        if writer.is_running():
+            writer.stop(timeout)
+            stopped += 1
+    return stopped
+
+
 class HeartbeatWriter:
     """Daemon thread that writes heartbeat file every 30s.
 
@@ -510,6 +531,8 @@ class HeartbeatWriter:
         from agent.evolution.health_monitor import HeartbeatWriter
         heartbeat = HeartbeatWriter()
         heartbeat.start()
+        ...
+        heartbeat.stop()
     """
 
     def __init__(self, interval: int = 30):
@@ -517,17 +540,47 @@ class HeartbeatWriter:
         self.heartbeat_path = HEARTBEAT_FILE
         self._thread: Optional[threading.Thread] = None
         self._running = False
+        self._stop_event = threading.Event()
+        _LIVE_WRITERS.add(self)
+
+    def is_running(self) -> bool:
+        """True while this writer's thread is alive.
+
+        Reports the thread rather than the ``_running`` flag on purpose: the
+        flag can be cleared without the parked thread having exited yet, and a
+        liveness check that trusted the flag would walk right past the leak.
+        """
+        thread = self._thread
+        return thread is not None and thread.is_alive()
 
     def start(self):
         if self._running:
             return
         self._running = True
+        self._stop_event.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="heartbeat")
         self._thread.start()
         logger.info(f"Heartbeat writer started (interval={self.interval}s)")
 
-    def stop(self):
+    def stop(self, timeout: float = 5.0):
+        """Signal the loop and wait for the thread to actually exit.
+
+        The previous version only flipped ``_running`` and returned. That was
+        doubly ineffective: the loop was parked in ``time.sleep(interval)`` so
+        it stayed alive for up to a full interval, and nothing ever joined it.
+        Combined with the fact that no caller invoked stop() at all, every
+        instance leaked one thread permanently.
+
+        Deliberately has no ``if not self._running: return`` fast path. That
+        guard looks harmless but strands the thread whenever the flag was
+        cleared by some other path while the loop was still parked in wait().
+        Idempotent instead via ``_thread``, which stop() clears.
+        """
         self._running = False
+        self._stop_event.set()
+        thread, self._thread = self._thread, None
+        if thread is not None and thread.is_alive():
+            thread.join(timeout)
 
     def _loop(self):
         while self._running:
@@ -542,7 +595,10 @@ class HeartbeatWriter:
                 )
             except Exception as e:
                 logger.debug(f"Heartbeat write failed: {e}")
-            time.sleep(self.interval)
+            # Event.wait returns the moment stop() sets it, so shutdown is
+            # immediate instead of waiting out the remaining interval.
+            if self._stop_event.wait(self.interval):
+                break
 
     def beat(self):
         """Manual heartbeat — call during long operations to prevent timeout."""

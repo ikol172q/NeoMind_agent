@@ -42,3 +42,25 @@ def _ensure_event_loop():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     yield
+
+
+@pytest.fixture(autouse=True)
+def _stop_leaked_heartbeats():
+    """Join heartbeat threads a test left running.
+
+    Every evolution scheduler lazily builds a ``HeartbeatWriter``; before this
+    fixture nothing ever called ``stop()``, so each such test parked one more
+    daemon thread for the rest of the run (115 were observed in one suite run,
+    all of them re-``mkdir``-ing and rewriting the same file on a 30s timer —
+    the likely source of the "Too many open files" seen during teardown).
+
+    Imported lazily and guarded: a collection-time import failure here would
+    take down every test in the suite, which is exactly the blast radius this
+    fixture exists to reduce.
+    """
+    yield
+    try:
+        from agent.evolution.health_monitor import stop_all_heartbeats
+    except Exception:
+        return
+    stop_all_heartbeats()
