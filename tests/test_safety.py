@@ -143,8 +143,11 @@ class TestPathValidation(unittest.TestCase):
         self.assertFalse(result)
         self.assertIn("outside", message.lower())
 
-        # Absolute path outside root
-        outside_path = os.path.join(os.path.dirname(self.test_dir), "outside.txt")
+        # Absolute path outside root. Deliberately not
+        # dirname(self.test_dir): that is the system temp dir, which
+        # SafetyManager.SAFE_TEMP_DIRS allows on purpose, so the old fixture
+        # was asserting a rejection the design never promised.
+        outside_path = os.path.join(os.path.expanduser("~"), "outside-root-probe.txt")
         result, message = self.safety_manager.is_path_safe(outside_path)
         self.assertFalse(result)
         self.assertIn("outside", message.lower())
@@ -155,13 +158,14 @@ class TestPathValidation(unittest.TestCase):
         system_path = "/etc/passwd"
         result, message = self.safety_manager.is_path_safe(system_path)
         self.assertFalse(result)
-        self.assertIn("outside", message.lower())
+        self.assertIn("system directory", message.lower())
 
         # Windows system directory
         windows_path = "C:\\Windows\\System32\\config"
         result, message = self.safety_manager.is_path_safe(windows_path)
         self.assertFalse(result)
-        self.assertIn("outside", message.lower())
+        # Rejected earlier than the root check, by the backslash rule.
+        self.assertIn("backslash", message.lower())
 
     def test_is_path_safe_with_dangerous_extension(self):
         """Test is_path_safe blocks dangerous file extensions."""
@@ -171,7 +175,7 @@ class TestPathValidation(unittest.TestCase):
             # Dangerous extension
             result, message = self.safety_manager.is_path_safe("malicious.exe")
             self.assertFalse(result)
-            self.assertIn("dangerous", message.lower())
+            self.assertIn("dangerous file extension", message.lower())
 
             # Multiple dangerous extensions
             for ext in [".exe", ".sh", ".bat", ".cmd", ".ps1"]:
@@ -213,7 +217,7 @@ class TestPathValidation(unittest.TestCase):
             # Non-existent file with dangerous extension
             result, message = self.safety_manager.is_path_safe("nonexistent.exe")
             self.assertFalse(result)
-            self.assertIn("dangerous", message.lower())
+            self.assertIn("dangerous file extension", message.lower())
         finally:
             os.chdir(original_cwd)
 
