@@ -192,6 +192,9 @@ class EvolutionScheduler:
                 self.actions_taken.append("Heartbeat writer started")
             except Exception as e:
                 logger.error(f"Heartbeat start failed: {e}")
+                # Surface it in actions too — a caller that only reads the
+                # returned list would otherwise see a clean run.
+                self.actions_taken.append(f"Heartbeat start error: {e}")
 
         # Restore checkpoint
         cp = self._get_checkpoint()
@@ -204,6 +207,9 @@ class EvolutionScheduler:
                     )
             except Exception as e:
                 logger.error(f"Checkpoint restore failed: {e}")
+                # Surface it in actions too — a caller that only reads the
+                # returned list would otherwise see a clean run.
+                self.actions_taken.append(f"Checkpoint restore error: {e}")
 
         # Health check
         if self.auto_evolve:
@@ -216,6 +222,9 @@ class EvolutionScheduler:
                     self.actions_taken.append(msg)
             except Exception as e:
                 logger.error(f"Health check failed: {e}")
+                # Surface it in actions too — a caller that only reads the
+                # returned list would otherwise see a clean run.
+                self.actions_taken.append(f"Health check error: {e}")
                 self.actions_taken.append(f"Health check error: {str(e)[:40]}")
 
         # Daily audit
@@ -465,6 +474,9 @@ class EvolutionScheduler:
                     self.daily_ran_this_session = True
             except Exception as e:
                 logger.error(f"Daily audit failed: {e}")
+                # Surface it in actions too — a caller that only reads the
+                # returned list would otherwise see a clean run.
+                self.actions_taken.append(f"Daily audit error: {e}")
 
         # Learning decay
         learnings = self._get_learnings()
@@ -511,6 +523,9 @@ class EvolutionScheduler:
                     self.weekly_ran_this_session = True
             except Exception as e:
                 logger.error(f"Weekly retro failed: {e}")
+                # Surface it in actions too — a caller that only reads the
+                # returned list would otherwise see a clean run.
+                self.actions_taken.append(f"Weekly retro error: {e}")
 
         # Prompt tuning evaluation
         tuner = self._get_prompt_tuner()
