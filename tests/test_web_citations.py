@@ -116,7 +116,7 @@ def test_chat_assistant_message_renders_citation_chip(page: Page):
     and the bubble renders them as chips we can click in chat."""
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
+    page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     page.fill('[data-testid="chat-input"]', "/brief")
     page.click('[data-testid="chat-send"]')

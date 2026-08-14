@@ -93,7 +93,7 @@ def page(browser) -> Page:
 
 def _open_chat(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
+    page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
 
 

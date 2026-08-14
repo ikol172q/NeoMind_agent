@@ -73,15 +73,19 @@ def test_spa_loads_and_shows_nav(page: Page):
     tabs = page.evaluate(
         """Array.from(document.querySelectorAll('[data-testid^="tab-"]')).map(e => e.textContent.trim())""",
     )
-    assert 'Research' in ' '.join(tabs)
-    assert 'Chat' in ' '.join(tabs)
+    # Only the active tab and any open group render tab-* buttons, and Chat is
+    # a rail now, not a tab — assert the nav exists and the chat rail is up.
+    assert tabs, "no tab-* buttons rendered"
+    assert page.query_selector('[data-testid="chat-input"]') is not None
 
 
-@pytest.mark.parametrize("tab", ["research", "chat", "paper", "audit", "settings"])
+# "paper" was removed and "chat" became an always-mounted rail rather than a
+# tab; these are the ids NAV_GROUPS/SYSTEM_ITEMS actually render today.
+@pytest.mark.parametrize("tab", ["research", "keystone", "core", "audit", "settings"])
 def test_each_tab_renders_some_content(page: Page, tab: str):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="top-nav"]')
-    page.click(f'[data-testid="tab-{tab}"]')
+    goto_tab(page, tab)
     page.wait_for_timeout(1200)
     text = page.evaluate("document.body.innerText").strip()
     assert len(text) > 100, f"tab {tab} body empty"
@@ -89,7 +93,6 @@ def test_each_tab_renders_some_content(page: Page, tab: str):
 
 def test_chat_slash_menu_opens_on_slash(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/")
     page.wait_for_timeout(500)
@@ -104,7 +107,6 @@ def test_chat_slash_menu_opens_on_slash(page: Page):
 
 def test_chat_help_command_local_execution(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
@@ -116,7 +118,6 @@ def test_chat_help_command_local_execution(page: Page):
 
 def test_chat_audit_command_returns_local_entries(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/audit 3")
     page.click('[data-testid="chat-send"]')
@@ -142,8 +143,18 @@ def test_audit_cards_are_not_squashed(page: Page):
     so 70+ entries got crushed to fit the viewport."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_tab(page, "audit")
-    page.wait_for_selector('[data-testid="audit-list"]')
-    page.wait_for_timeout(1500)
+    page.wait_for_selector('[data-testid="audit-list"]', timeout=30000)
+    # Wait for the rows to actually lay out rather than sleeping a fixed 1.5s:
+    # measuring mid-render sampled 13px slivers and looked exactly like the
+    # flex-shrink regression this test guards against. Live DOM settles at 35px.
+    page.wait_for_function(
+        """() => {
+            const l = document.querySelector('[data-testid="audit-list"]')
+            if (!l || !l.children.length) return true   // empty state is fine
+            return l.children[0].getBoundingClientRect().height > 20
+        }""",
+        timeout=30000,
+    )
     heights = page.evaluate(
         """() => {
             const lst = document.querySelector('[data-testid="audit-list"]')

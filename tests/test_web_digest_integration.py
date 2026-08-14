@@ -167,7 +167,7 @@ def test_cite_click_in_chat_routes_to_research_with_focus(page: Page):
     active + DigestView either highlights a row or settles into
     flat mode on the lattice."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
+    page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     # /prep is a workflow slash command that names the target symbol
     # in its reply — much more reliable cite emission than open prose.

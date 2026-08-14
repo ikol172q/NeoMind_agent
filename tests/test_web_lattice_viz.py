@@ -75,9 +75,13 @@ def page(browser) -> Page:
 def _open_trace(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_tab(page, "research")
-    page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
     page.click('[data-testid="digest-mode-trace"]')
-    page.wait_for_selector('[data-testid="lattice-svg"]', state="attached", timeout=15000)
+    # The graph is not rendered until the lattice data comes back from the fin
+    # backend. Measured over four runs against a warm dashboard: 24.3-27.7s,
+    # and longer on the first (cold) load — the old 15s budget could not be met
+    # even when everything worked, which is what made this file look flaky.
+    page.wait_for_selector('[data-testid="lattice-svg"]', state="attached", timeout=60000)
     page.wait_for_timeout(500)
 
 

@@ -90,7 +90,6 @@ def page(browser) -> Page:
 
 def _open_chat(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_selector('[data-testid="chat-session-sidebar"]')
 
@@ -168,7 +167,6 @@ def test_session_persists_across_tab_switch(page: Page):
     # Switch to Research then back
     goto_tab(page, "research")
     page.wait_for_timeout(500)
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_timeout(300)
 
@@ -190,7 +188,6 @@ def test_session_persists_across_page_reload(page: Page):
     assert sid_before, "should have a session id after /help"
 
     page.reload(wait_until="domcontentloaded")
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_timeout(300)
 
@@ -224,7 +221,6 @@ def test_reload_does_not_create_phantom_session(page: Page):
     before_count = before_list["count"]
 
     page.reload(wait_until="domcontentloaded")
-    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     # Do a second turn on the SAME session (should reuse, not create)
     page.fill('[data-testid="chat-input"]', "/help")
