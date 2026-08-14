@@ -66,8 +66,14 @@ class ToolCallParser:
     # When the LLM invents a tool name (e.g. "LS", "List", "Cat"),
     # map it to the closest real tool so the agentic loop can execute it.
     _TOOL_ALIASES = {
-        "LS": "Bash",
-        "ls": "Bash",
+        # "LS" is a registered first-class tool, not a hallucinated name — it
+        # was mapping to Bash, so every LS call the model made got rewritten
+        # into Bash("ls -la <path>") and the real LS tool was unreachable.
+        # Worse, a caller that resolved the LS tool and then passed the
+        # rewritten params got TypeError: _exec_ls() got an unexpected keyword
+        # argument 'command'. The lowercase spelling is a plausible
+        # hallucination, so it now normalises to the canonical tool.
+        "ls": "LS",
         "List": "Bash",
         "list": "Bash",
         "Cat": "Read",

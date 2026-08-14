@@ -669,19 +669,30 @@ class TestToolRegistryGrepRipgrep:
 
     def test_has_ripgrep_available(self):
         """Test ripgrep availability check."""
-        with patch("agent.coding.tools.subprocess.run") as mock_run:
-            mock_run.return_value = MagicMock()
-            result = ToolRegistry._has_ripgrep()
-            assert result is True
+        # _ripgrep_available is a class-level cache, so whatever ran first in
+        # the process decides the answer for everyone. Without this reset the
+        # test passes alone and fails after any suite that already probed rg.
+        ToolRegistry._ripgrep_available = None
+        try:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
+                mock_run.return_value = MagicMock()
+                result = ToolRegistry._has_ripgrep()
+                assert result is True
+        finally:
+            ToolRegistry._ripgrep_available = None
 
     def test_has_ripgrep_not_available(self):
         """Test when ripgrep is not available."""
-        with patch("agent.coding.tools.subprocess.run") as mock_run:
-            mock_run.side_effect = FileNotFoundError()
-            # Reset class cache
+        ToolRegistry._ripgrep_available = None
+        try:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
+                mock_run.side_effect = FileNotFoundError()
+                result = ToolRegistry._has_ripgrep()
+                assert result is False
+        finally:
+            # Leave the cache unset — a stale False here makes every later
+            # grep test take the Python fallback path.
             ToolRegistry._ripgrep_available = None
-            result = ToolRegistry._has_ripgrep()
-            assert result is False
 
     def test_grep_ripgrep_basic_search(self):
         """Test ripgrep basic search."""

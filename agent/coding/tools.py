@@ -1691,7 +1691,9 @@ class ToolRegistry:
         except (TypeError, ValueError):
             limit = 0
 
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        if blocked is not None:
+            return blocked
 
         # Deduplication: if exact same range was already read, return abbreviated
         range_key = (offset, limit)
@@ -1724,7 +1726,11 @@ class ToolRegistry:
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — file writes are disabled. Exit plan mode first.")
         result = self.write_file(path, content)
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        if blocked is not None:
+            # write_file already reported the rejection; return it rather than
+            # re-raising out of the metadata line below.
+            return result if not result.success else blocked
         result.metadata["file_path"] = resolved
         if result.success:
             # Bug #4 fix: phantom Write — write_file reported success but
@@ -1776,7 +1782,10 @@ class ToolRegistry:
         """Execute file edit with metadata and staleness detection."""
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — file edits are disabled. Exit plan mode first.")
-        resolved = self._resolve_path(path, operation='write')
+        try:
+            resolved = self._resolve_path(path, operation='write')
+        except ValueError as e:
+            return ToolResult(False, error=f"Path rejected: {e}")
         if resolved not in self._files_read:
             return ToolResult(False, error=f"Must Read '{path}' before editing. Use the Read tool first to see current content.")
 
