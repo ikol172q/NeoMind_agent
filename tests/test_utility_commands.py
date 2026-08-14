@@ -221,7 +221,10 @@ class TestHandleApplyCommand:
     def test_apply_no_changes(self):
         """Test apply with no pending changes."""
         core = MagicMock()
-        core._code_changes = []
+        # handle_apply_command reads code_analyzer.pending_changes, not
+        # _code_changes — with the old attribute it fell through to
+        # _auto_apply_changes_with_confirmation and got a MagicMock back.
+        core.code_analyzer.pending_changes = []
 
         result = handle_apply_command(core, '')
         assert 'No pending' in result or 'no changes' in result.lower()

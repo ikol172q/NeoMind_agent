@@ -284,9 +284,15 @@ class TestCommandModeGating(unittest.TestCase):
         result = self.interface._handle_local_command("/edit file.py")
         self.assertTrue(result)
 
-    def test_read_blocked_in_chat(self):
+    def test_read_allowed_in_chat(self):
+        # /read is a chat command now — the web-page reader that ships with
+        # /links, /crawl and /webmap. It is no longer gated to coding mode.
+        from agent_config import agent_config
+        self.assertIn("read", agent_config.available_commands)
+        # In this class a truthy result means "intercepted with a rejection".
+        # /read is allowed in chat, so the gate must pass it through.
         result = self.interface._handle_local_command("/read file.py")
-        self.assertTrue(result)
+        self.assertIsNone(result)
 
     def test_git_blocked_in_chat(self):
         result = self.interface._handle_local_command("/git status")
@@ -408,7 +414,7 @@ class TestWelcomeScreen(unittest.TestCase):
         iface.display_welcome()
         output = captured.getvalue()
         self.assertIn("coding mode", output)
-        self.assertIn("Tools:", output)
+        self.assertIn("Tools (", output)   # now "Tools (52): ..."
 
     def test_welcome_fallback(self):
         from cli.neomind_interface import NeoMindInterface
@@ -1105,8 +1111,9 @@ class TestAgenticLoopSpinnerDisplay(unittest.TestCase):
         with patch('sys.stderr', captured_stderr):
             iface._run_agentic_loop()
         stderr_out = captured_stderr.getvalue()
-        # Spinner should have written "Thinking" to stderr
-        self.assertIn("Thinking", stderr_out)
+        # The agentic loop's spinner names the tool it is running ("🔧 Bash(...)"),
+        # unlike _stream_and_render's "Thinking…" spinner.
+        self.assertIn("Bash", stderr_out)
 
     @patch('builtins.input', return_value='y')
     def test_no_verbose_output_to_stdout(self, _):
@@ -1153,7 +1160,7 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
         self.assertEqual(len(filter_installed), 1)
         self.assertIsNotNone(filter_installed[0])
 
-    def test_filter_not_installed_in_chat_mode(self):
+    def test_syntax_highlight_filter_installed_in_chat_mode(self):
         from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("chat")
         chat._content_filter = None  # Explicitly initialize (MagicMock auto-creates)
@@ -1163,9 +1170,15 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
         chat.stream_response = MagicMock(side_effect=mock_stream)
         iface = NeoMindInterface(chat)
         iface._stream_and_render("test prompt")
-        # In chat mode, _content_filter should NOT be set
+        # Chat mode installs the syntax-highlight filter when Pygments is
+        # available; only coding mode gets the code-fence suppressor. The
+        # "no filter at all" case is now the no-Pygments fallback.
         self.assertEqual(len(filter_installed), 1)
-        self.assertIsNone(filter_installed[0])
+        from cli.neomind_interface import PYGMENTS_AVAILABLE, NeoMindInterface
+        if PYGMENTS_AVAILABLE:
+            self.assertIsInstance(filter_installed[0], NeoMindInterface._SyntaxHighlightFilter)
+        else:
+            self.assertIsNone(filter_installed[0])
 
     def test_filter_cleaned_up_after_render(self):
         from cli.neomind_interface import NeoMindInterface
