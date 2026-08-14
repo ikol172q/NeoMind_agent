@@ -2199,6 +2199,24 @@ class ToolRegistry:
 
     # ── Read ─────────────────────────────────────────────────────────────
 
+    def _resolve_path_checked(self, path: str):
+        """Resolve a path, turning a safety rejection into a ToolResult.
+
+        _resolve_path raises ValueError for anything the safety layer blocks.
+        read_file / write_file / edit_file are documented to return a
+        ToolResult, and their callers treat a raise as a crash rather than a
+        tool failure — so a blocked path took the turn down instead of coming
+        back as an error the model could react to and correct. list_dir already
+        degraded gracefully; this makes the other three behave the same.
+
+        Returns (resolved_path, None) on success, or (None, ToolResult) when
+        the path was rejected.
+        """
+        try:
+            return self._resolve_path(path), None
+        except ValueError as e:
+            return None, ToolResult(False, error=f"Path rejected: {e}")
+
     def read_file(self, path: str, offset: int = 0, limit: int = 0, max_chars: int = 30000) -> ToolResult:
         """Read a file with line numbers.
 
@@ -2208,7 +2226,12 @@ class ToolRegistry:
             limit: Max lines to read (0 = all)
             max_chars: Max output characters (default 30K, middle-truncation)
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         if not os.path.exists(resolved):
             return ToolResult(False, error=f"File not found: {path}")
         if os.path.isdir(resolved):
@@ -2275,7 +2298,12 @@ class ToolRegistry:
             path: File path
             content: File content
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         try:
             # Create parent directories if needed
             os.makedirs(os.path.dirname(resolved), exist_ok=True)
@@ -2301,7 +2329,12 @@ class ToolRegistry:
             new_string: Replacement text
             replace_all: If True, replace all occurrences (default: first only)
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         if not os.path.exists(resolved):
             return ToolResult(False, error=f"File not found: {path}")
 
