@@ -11,6 +11,7 @@ Phase: 0 - Infrastructure
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any, List
 from datetime import datetime
+from pathlib import Path
 import threading
 import json
 
@@ -52,7 +53,14 @@ class TokenBudget:
         self.max_tokens = max_tokens
         self._used = 0
         self._reserved = 0
-        self._lock = threading.Lock()
+        # RLock, not Lock: several public methods legitimately call other public
+        # methods while holding the lock — reserve() -> can_proceed(), and
+        # get_stats() -> remaining()/usage_ratio()/should_warn()/should_compact().
+        # With a non-reentrant Lock those two deadlocked unconditionally, on
+        # every call, in every process. Nothing caught it because the only tests
+        # that exercise them live in tests/test_token_budget.py, which had an
+        # IndentationError and so was never collected.
+        self._lock = threading.RLock()
 
         # 使用历史
         self._usage_history: List[TokenUsage] = []

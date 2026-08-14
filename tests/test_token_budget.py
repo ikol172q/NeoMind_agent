@@ -140,7 +140,7 @@ class TestTokenBudget:
         def consume_task():
             try:
                 for _ in range(100):
-                budget.consume(1)
+                    budget.consume(1)
             except Exception as e:
                 errors.append(e)
 
