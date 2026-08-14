@@ -475,12 +475,17 @@ class SelfEditor:
         """Run pytest in subprocess — failure doesn't affect main process."""
         try:
             test_file = self._find_test_for(changed_file)
+            # sys.executable, not "python": modern macOS ships no `python` on
+            # PATH, so the whole self-edit verification step died with
+            # FileNotFoundError and every edit was rolled back as "tests
+            # failed". canary_deploy.py and transaction.py already resolve an
+            # explicit interpreter; these two call sites were the stragglers.
             if test_file:
-                cmd = ["python", "-m", "pytest", "-x", "--tb=short", "-q", test_file]
+                cmd = [sys.executable, "-m", "pytest", "-x", "--tb=short", "-q", test_file]
             else:
                 # No test file — at minimum verify the module imports
                 module = changed_file.replace("/", ".").replace(".py", "")
-                cmd = ["python", "-c",
+                cmd = [sys.executable, "-c",
                        f"import importlib; m = importlib.import_module('{module}'); "
                        f"print(f'Import OK: {{m.__name__}}')"]
 
