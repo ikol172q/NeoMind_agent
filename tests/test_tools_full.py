@@ -17,6 +17,7 @@ File I/O is mocked to avoid actual filesystem operations.
 import os
 import sys
 import pathlib
+import stat
 import subprocess
 from unittest.mock import Mock, MagicMock, patch, call, mock_open
 import tempfile
@@ -109,12 +110,16 @@ class TestToolRegistryInit:
             assert tool_name in registry._tool_definitions
 
     def test_get_all_tools_order(self):
-        """Test that get_all_tools returns tools in correct order."""
+        """Test that get_all_tools returns the core tools first, in order."""
         registry = ToolRegistry()
         tools = registry.get_all_tools()
         tool_names = [t.name for t in tools]
         expected_order = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"]
-        assert tool_names == expected_order
+        # Compare the prefix, not the whole list. The registry has grown well
+        # past these eight (TaskCreate, TaskGet, ... 52 at the time of writing)
+        # and equality froze the total count, which is not what this test is
+        # about — the ordering of the core tools is.
+        assert tool_names[:len(expected_order)] == expected_order
 
 
 class TestToolRegistryGetTool:
@@ -237,7 +242,7 @@ class TestToolRegistryResolvePath:
 class TestToolRegistryBash:
     """Test bash execution wrapper."""
 
-    @patch("agent.tools.subprocess.run")
+    @patch("agent.coding.tools.subprocess.run")
     def test_bash_uses_persistent_bash(self, mock_run):
         """Test that bash tries to use persistent bash session."""
         registry = ToolRegistry()
@@ -253,7 +258,7 @@ class TestToolRegistryBash:
             mock_bash.execute.assert_called_once_with("echo test", timeout=120)
             assert result.success is True
 
-    @patch("agent.tools.subprocess.run")
+    @patch("agent.coding.tools.subprocess.run")
     def test_bash_fallback_on_exception(self, mock_run):
         """Test bash fallback when persistent bash fails."""
         registry = ToolRegistry()
@@ -275,7 +280,7 @@ class TestToolRegistryBash:
         """Test _bash_fallback uses subprocess.run."""
         registry = ToolRegistry(working_dir="/tmp")
 
-        with patch("agent.tools.subprocess.run") as mock_run:
+        with patch("agent.coding.tools.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0,
                 stdout="output",
@@ -292,7 +297,7 @@ class TestToolRegistryBash:
         """Test _bash_fallback handles timeout."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.subprocess.run") as mock_run:
+        with patch("agent.coding.tools.subprocess.run") as mock_run:
             mock_run.side_effect = subprocess.TimeoutExpired("bash", 30)
 
             result = registry._bash_fallback("sleep 100", timeout=30)
@@ -304,7 +309,7 @@ class TestToolRegistryBash:
         """Test _bash_fallback handles exceptions."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.subprocess.run") as mock_run:
+        with patch("agent.coding.tools.subprocess.run") as mock_run:
             mock_run.side_effect = OSError("Command failed")
 
             result = registry._bash_fallback("bad command", timeout=30)
@@ -331,7 +336,7 @@ class TestToolRegistryReadFile:
         """Test reading non-existent file."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=False):
             result = registry.read_file("nonexistent.txt")
 
             assert result.success is False
@@ -341,8 +346,8 @@ class TestToolRegistryReadFile:
         """Test that directories are rejected."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=True):
                 result = registry.read_file("directory")
 
                 assert result.success is False
@@ -352,8 +357,8 @@ class TestToolRegistryReadFile:
         """Test that binary files are rejected."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=False):
                 with patch("builtins.open", mock_open(read_data=b"binary\x00data")):
                     result = registry.read_file("binary.bin")
 
@@ -365,8 +370,8 @@ class TestToolRegistryReadFile:
         content = "line 1\nline 2\nline 3\n"
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=False):
                 with patch("builtins.open", mock_open(read_data=content)):
                     result = registry.read_file("test.txt")
 
@@ -379,8 +384,8 @@ class TestToolRegistryReadFile:
         content = "line 1\nline 2\nline 3\nline 4\n"
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=False):
                 with patch("builtins.open", mock_open(read_data=content)):
                     result = registry.read_file("test.txt", offset=1, limit=2)
 
@@ -394,8 +399,8 @@ class TestToolRegistryReadFile:
         content = "x" * 3000 + "\n" + "y" * 100 + "\n"
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=False):
                 with patch("builtins.open", mock_open(read_data=content)):
                     result = registry.read_file("test.txt")
 
@@ -409,8 +414,8 @@ class TestToolRegistryReadFile:
         content = "x" * 50000 + "\ny" * 50000 + "\nz" * 50000 + "\n"
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
-            with patch("agent.tools.os.path.isdir", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
+            with patch("agent.coding.tools.os.path.isdir", return_value=False):
                 with patch("builtins.open", mock_open(read_data=content)):
                     result = registry.read_file("test.txt", max_chars=30000)
 
@@ -425,8 +430,8 @@ class TestToolRegistryWriteFile:
         """Test creating a new file."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.makedirs"):
-            with patch("agent.tools.os.path.exists", return_value=False):
+        with patch("agent.coding.tools.os.makedirs"):
+            with patch("agent.coding.tools.os.path.exists", return_value=False):
                 with patch("builtins.open", mock_open()):
                     result = registry.write_file("new.txt", "content")
 
@@ -438,8 +443,8 @@ class TestToolRegistryWriteFile:
         """Test overwriting existing file."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.makedirs"):
-            with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.makedirs"):
+            with patch("agent.coding.tools.os.path.exists", return_value=True):
                 with patch("builtins.open", mock_open()):
                     result = registry.write_file("existing.txt", "new content")
 
@@ -450,20 +455,24 @@ class TestToolRegistryWriteFile:
         """Test that parent directories are created."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.makedirs") as mock_makedirs:
-            with patch("agent.tools.os.path.exists", return_value=False):
+        with patch("agent.coding.tools.os.makedirs") as mock_makedirs:
+            with patch("agent.coding.tools.os.path.exists", return_value=False):
                 with patch("builtins.open", mock_open()):
                     result = registry.write_file("dir/subdir/file.txt", "content")
 
                     assert result.success is True
-                    mock_makedirs.assert_called_once()
+                    # Assert the call we care about rather than the total count:
+                    # _resolve_path also makedirs the workspace root, so
+                    # assert_called_once() fails on an unrelated second call.
+                    expected = os.path.join(registry.working_dir, "dir", "subdir")
+                    mock_makedirs.assert_any_call(expected, exist_ok=True)
 
     def test_write_file_multiline_content(self):
         """Test writing multiline content."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.makedirs"):
-            with patch("agent.tools.os.path.exists", return_value=False):
+        with patch("agent.coding.tools.os.makedirs"):
+            with patch("agent.coding.tools.os.path.exists", return_value=False):
                 with patch("builtins.open", mock_open()):
                     result = registry.write_file("test.txt", "line1\nline2\nline3\n")
 
@@ -474,9 +483,21 @@ class TestToolRegistryWriteFile:
         """Test handling write exceptions."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.makedirs"):
-            with patch("agent.tools.os.path.exists", return_value=False):
-                with patch("builtins.open", side_effect=IOError("Permission denied")):
+        # Fail only the target file's open. A blanket builtins.open failure also
+        # hits SafetyService._ensure_audit_log, which _resolve_path builds
+        # *before* write_file's try block — so the OSError escaped as an error
+        # rather than being reported as a failed ToolResult, and the test was
+        # asserting nothing about write_file at all.
+        real_open = open
+
+        def fail_only_target(file, *args, **kwargs):
+            if str(file).endswith("test.txt"):
+                raise IOError("Permission denied")
+            return real_open(file, *args, **kwargs)
+
+        with patch("agent.coding.tools.os.makedirs"):
+            with patch("agent.coding.tools.os.path.exists", return_value=False):
+                with patch("builtins.open", side_effect=fail_only_target):
                     result = registry.write_file("test.txt", "content")
 
                     assert result.success is False
@@ -490,7 +511,7 @@ class TestToolRegistryEditFile:
         """Test editing non-existent file."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=False):
+        with patch("agent.coding.tools.os.path.exists", return_value=False):
             result = registry.edit_file("nonexistent.txt", "old", "new")
 
             assert result.success is False
@@ -500,7 +521,7 @@ class TestToolRegistryEditFile:
         """Test editing when old_string is not found."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
             with patch("builtins.open", mock_open(read_data="content")):
                 result = registry.edit_file("test.txt", "notfound", "new")
 
@@ -511,7 +532,7 @@ class TestToolRegistryEditFile:
         """Test replacing first occurrence with unique context."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
             m = mock_open(read_data="old unique old")
             with patch("builtins.open", m):
                 result = registry.edit_file("test.txt", "old unique", "new unique")
@@ -525,7 +546,7 @@ class TestToolRegistryEditFile:
         """Test error when multiple occurrences found without replace_all."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
             with patch("builtins.open", mock_open(read_data="old old old")):
                 result = registry.edit_file("test.txt", "old", "new", replace_all=False)
 
@@ -536,7 +557,7 @@ class TestToolRegistryEditFile:
         """Test replace_all flag."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
             m = mock_open(read_data="old old old")
             with patch("builtins.open", m):
                 result = registry.edit_file("test.txt", "old", "new", replace_all=True)
@@ -550,7 +571,7 @@ class TestToolRegistryEditFile:
         """Test handling edit exceptions."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.os.path.exists", return_value=True):
+        with patch("agent.coding.tools.os.path.exists", return_value=True):
             with patch("builtins.open", side_effect=IOError("Failed")):
                 result = registry.edit_file("test.txt", "old", "new")
 
@@ -565,7 +586,7 @@ class TestToolRegistryGlobFiles:
         """Test glob with no matches."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.pathlib.Path.glob", return_value=[]):
+        with patch("agent.coding.tools.pathlib.Path.glob", return_value=[]):
             result = registry.glob_files("**/*.nonexistent")
 
             assert result.success is True
@@ -580,7 +601,7 @@ class TestToolRegistryGlobFiles:
         mock_file.relative_to.return_value = pathlib.Path("src/main.py")
         mock_file.stat.return_value.st_mtime = 1000
 
-        with patch("agent.tools.pathlib.Path.glob", return_value=[mock_file]):
+        with patch("agent.coding.tools.pathlib.Path.glob", return_value=[mock_file]):
             result = registry.glob_files("**/*.py")
 
             assert result.success is True
@@ -602,7 +623,7 @@ class TestToolRegistryGlobFiles:
         bad_file.parts = (".git", "config")
         bad_file.relative_to.return_value = pathlib.Path(".git/config")
 
-        with patch("agent.tools.pathlib.Path.glob", return_value=[good_file, bad_file]):
+        with patch("agent.coding.tools.pathlib.Path.glob", return_value=[good_file, bad_file]):
             result = registry.glob_files("**/*")
 
             assert result.success is True
@@ -624,7 +645,7 @@ class TestToolRegistryGlobFiles:
         file2.relative_to.return_value = pathlib.Path("older.py")
         file2.stat.return_value.st_mtime = 1000
 
-        with patch("agent.tools.pathlib.Path.glob", return_value=[file2, file1]):
+        with patch("agent.coding.tools.pathlib.Path.glob", return_value=[file2, file1]):
             result = registry.glob_files("**/*.py")
 
             assert result.success is True
@@ -636,7 +657,7 @@ class TestToolRegistryGlobFiles:
         """Test glob exception handling."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.pathlib.Path.glob", side_effect=OSError("Failed")):
+        with patch("agent.coding.tools.pathlib.Path.glob", side_effect=OSError("Failed")):
             result = registry.glob_files("**/*.py")
 
             assert result.success is False
@@ -648,14 +669,14 @@ class TestToolRegistryGrepRipgrep:
 
     def test_has_ripgrep_available(self):
         """Test ripgrep availability check."""
-        with patch("agent.tools.subprocess.run") as mock_run:
+        with patch("agent.coding.tools.subprocess.run") as mock_run:
             mock_run.return_value = MagicMock()
             result = ToolRegistry._has_ripgrep()
             assert result is True
 
     def test_has_ripgrep_not_available(self):
         """Test when ripgrep is not available."""
-        with patch("agent.tools.subprocess.run") as mock_run:
+        with patch("agent.coding.tools.subprocess.run") as mock_run:
             mock_run.side_effect = FileNotFoundError()
             # Reset class cache
             ToolRegistry._ripgrep_available = None
@@ -667,7 +688,7 @@ class TestToolRegistryGrepRipgrep:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=True):
-            with patch("agent.tools.subprocess.run") as mock_run:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=0,
                     stdout="file.py:1: match line\nfile.py:2: another match\n",
@@ -684,7 +705,7 @@ class TestToolRegistryGrepRipgrep:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=True):
-            with patch("agent.tools.subprocess.run") as mock_run:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=1,
                     stdout="",
@@ -701,7 +722,7 @@ class TestToolRegistryGrepRipgrep:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=True):
-            with patch("agent.tools.subprocess.run") as mock_run:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
                 mock_run.return_value = MagicMock(
                     returncode=2,
                     stdout="",
@@ -718,7 +739,7 @@ class TestToolRegistryGrepRipgrep:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=True):
-            with patch("agent.tools.subprocess.run") as mock_run:
+            with patch("agent.coding.tools.subprocess.run") as mock_run:
                 mock_run.side_effect = subprocess.TimeoutExpired("rg", 30)
 
                 result = registry.grep_files("test")
@@ -735,7 +756,7 @@ class TestToolRegistryGrepPython:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=False):
-            with patch("agent.tools.pathlib.Path.glob") as mock_glob:
+            with patch("agent.coding.tools.pathlib.Path.glob") as mock_glob:
                 mock_file = MagicMock()
                 mock_file.is_file.return_value = True
                 mock_file.parts = ("test.py",)
@@ -764,7 +785,7 @@ class TestToolRegistryGrepPython:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=False):
-            with patch("agent.tools.pathlib.Path.glob") as mock_glob:
+            with patch("agent.coding.tools.pathlib.Path.glob") as mock_glob:
                 mock_file = MagicMock()
                 mock_file.is_file.return_value = True
                 mock_file.parts = ("test.py",)
@@ -782,7 +803,7 @@ class TestToolRegistryGrepPython:
         registry = ToolRegistry()
 
         with patch.object(ToolRegistry, "_has_ripgrep", return_value=False):
-            with patch("agent.tools.pathlib.Path.glob") as mock_glob:
+            with patch("agent.coding.tools.pathlib.Path.glob") as mock_glob:
                 mock_file = MagicMock()
                 mock_file.is_file.return_value = True
                 mock_file.parts = ("binary.bin",)
@@ -804,7 +825,7 @@ class TestToolRegistryListDir:
         """Test listing non-existent directory."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.pathlib.Path.exists", return_value=False):
+        with patch("agent.coding.tools.pathlib.Path.exists", return_value=False):
             result = registry.list_dir("/nonexistent")
 
             assert result.success is False
@@ -814,12 +835,37 @@ class TestToolRegistryListDir:
         """Test listing a file instead of directory."""
         registry = ToolRegistry()
 
-        with patch("agent.tools.pathlib.Path.exists", return_value=True):
-            with patch("agent.tools.pathlib.Path.is_dir", return_value=False):
+        with patch("agent.coding.tools.pathlib.Path.exists", return_value=True):
+            with patch("agent.coding.tools.pathlib.Path.is_dir", return_value=False):
                 result = registry.list_dir("file.txt")
 
                 assert result.success is False
                 assert "not a directory" in result.error.lower()
+
+    @staticmethod
+    def _mock_entry(name, *, is_dir=False, size=0):
+        """Build an entry mock matching what list_dir actually calls.
+
+        list_dir sorts on is_dir(), branches on is_symlink(), and takes BOTH the
+        entry type and its size from lstat() — the type via
+        stat.S_ISDIR(st.st_mode). A bare MagicMock returns a Mock for st_mode,
+        which makes S_ISDIR raise "TypeError: an integer is required"; list_dir
+        only catches OSError there, so the whole call failed with
+        "LS failed: an integer is required".
+
+        The tests used to configure entry.stat().st_size, but the DR05 symlink
+        fix moved the code to lstat(), and nothing re-pointed the mocks. Same
+        family as the mocked `get` whose code called `get_nowait`: the mock
+        stopped matching the API and the test stopped testing anything.
+        """
+        entry = MagicMock()
+        entry.name = name
+        entry.is_dir.return_value = is_dir
+        entry.is_symlink.return_value = False
+        mode = (stat.S_IFDIR if is_dir else stat.S_IFREG) | 0o755
+        # (st_mode, st_ino, st_dev, st_nlink, st_uid, st_gid, st_size, atime, mtime, ctime)
+        entry.lstat.return_value = os.stat_result((mode, 0, 0, 1, 0, 0, size, 0, 0, 0))
+        return entry
 
     def test_list_dir_basic(self):
         """Test basic directory listing."""
@@ -828,15 +874,9 @@ class TestToolRegistryListDir:
         mock_dir = MagicMock()
         mock_dir.exists.return_value = True
         mock_dir.is_dir.return_value = True
+        mock_dir.iterdir.return_value = [self._mock_entry("test.py", size=1024)]
 
-        mock_file = MagicMock()
-        mock_file.name = "test.py"
-        mock_file.is_dir.return_value = False
-        mock_file.stat.return_value.st_size = 1024
-
-        mock_dir.iterdir.return_value = [mock_file]
-
-        with patch("agent.tools.pathlib.Path", return_value=mock_dir):
+        with patch("agent.coding.tools.pathlib.Path", return_value=mock_dir):
             result = registry.list_dir("/tmp")
 
             assert result.success is True
@@ -850,19 +890,12 @@ class TestToolRegistryListDir:
         mock_dir = MagicMock()
         mock_dir.exists.return_value = True
         mock_dir.is_dir.return_value = True
+        mock_dir.iterdir.return_value = [
+            self._mock_entry("file.py", size=100),
+            self._mock_entry("subdir", is_dir=True),
+        ]
 
-        mock_subdir = MagicMock()
-        mock_subdir.name = "subdir"
-        mock_subdir.is_dir.return_value = True
-
-        mock_file = MagicMock()
-        mock_file.name = "file.py"
-        mock_file.is_dir.return_value = False
-        mock_file.stat.return_value.st_size = 100
-
-        mock_dir.iterdir.return_value = [mock_file, mock_subdir]
-
-        with patch("agent.tools.pathlib.Path", return_value=mock_dir):
+        with patch("agent.coding.tools.pathlib.Path", return_value=mock_dir):
             result = registry.list_dir("/tmp")
 
             assert result.success is True
@@ -890,7 +923,7 @@ class TestToolRegistryListDir:
 
         mock_dir.iterdir.return_value = [mock_git, mock_venv]
 
-        with patch("agent.tools.pathlib.Path", return_value=mock_dir):
+        with patch("agent.coding.tools.pathlib.Path", return_value=mock_dir):
             result = registry.list_dir("/tmp")
 
             assert ".git" not in result.output
@@ -905,24 +938,13 @@ class TestToolRegistryListDir:
         mock_dir.is_dir.return_value = True
 
         # Test different file sizes
-        small_file = MagicMock()
-        small_file.name = "small.txt"
-        small_file.is_dir.return_value = False
-        small_file.stat.return_value.st_size = 100  # 100 bytes
+        mock_dir.iterdir.return_value = [
+            self._mock_entry("small.txt", size=100),               # 100 bytes
+            self._mock_entry("medium.bin", size=1024 * 100),       # 100 KB
+            self._mock_entry("large.iso", size=1024 * 1024 * 10),  # 10 MB
+        ]
 
-        med_file = MagicMock()
-        med_file.name = "medium.bin"
-        med_file.is_dir.return_value = False
-        med_file.stat.return_value.st_size = 1024 * 100  # 100 KB
-
-        large_file = MagicMock()
-        large_file.name = "large.iso"
-        large_file.is_dir.return_value = False
-        large_file.stat.return_value.st_size = 1024 * 1024 * 10  # 10 MB
-
-        mock_dir.iterdir.return_value = [small_file, med_file, large_file]
-
-        with patch("agent.tools.pathlib.Path", return_value=mock_dir):
+        with patch("agent.coding.tools.pathlib.Path", return_value=mock_dir):
             result = registry.list_dir("/tmp")
 
             assert "100B" in result.output
