@@ -14,6 +14,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.core import NeoMindAgent
 
+
+# NOTE: these handlers were refactored into thin shims — NeoMindAgent.handle_X
+# now delegates to a module-level function in agent/services/*_commands.py, and
+# the real work (and the helpers it calls) lives there. Patching the method on
+# the agent object no longer intercepts anything, so the targets below are the
+# module functions that actually run.
+
 class TestCommandHandlers(unittest.TestCase):
     """Test command handlers with mocked dependencies."""
 
@@ -71,7 +78,7 @@ class TestCommandHandlers(unittest.TestCase):
 
     def test_handle_write_command_interactive(self):
         """Test /write --interactive reads content interactively."""
-        with patch.object(self.agent, '_read_interactive_content', return_value="interactive content"):
+        with patch("agent.services.file_ops_commands._read_interactive_content", return_value="interactive content"):
             result = self.agent.handle_write_command("--interactive test.txt")
             # Should call write_file_safe with interactive content
             self.agent.code_analyzer.write_file_safe.assert_called_once_with("test.txt", "interactive content")
@@ -81,11 +88,11 @@ class TestCommandHandlers(unittest.TestCase):
     def test_handle_read_command_local_file(self):
         """Test /read command with local file."""
         # Mock _is_likely_file_path to return True
-        with patch.object(self.agent, '_is_likely_file_path', return_value=True):
-            with patch.object(self.agent, '_handle_file_read') as mock_handle:
+        with patch("agent.services.file_ops_commands._is_likely_file_path", return_value=True):
+            with patch("agent.services.file_ops_commands._handle_file_read") as mock_handle:
                 mock_handle.return_value = "FILE CONTENT"
                 result = self.agent.handle_read_command("test.txt")
-                mock_handle.assert_called_once_with("test.txt", False)
+                mock_handle.assert_called_once_with(self.agent, "test.txt", False)
                 self.assertEqual(result, "FILE CONTENT")
 
     def test_handle_edit_command_basic(self):
@@ -155,7 +162,7 @@ class TestCommandHandlers(unittest.TestCase):
 
     def test_handle_code_command_apply(self):
         """Test /code apply command."""
-        with patch.object(self.agent, '_code_apply_changes') as mock_apply:
+        with patch("agent.services.code_commands._code_apply_changes") as mock_apply:
             mock_apply.return_value = "Changes applied"
             result = self.agent.handle_code_command("apply")
             mock_apply.assert_called_once()
@@ -348,18 +355,26 @@ class TestCommandHandlers(unittest.TestCase):
 
     def test_handle_apply_command_basic(self):
         """Test /apply command."""
-        with patch.object(self.agent, '_code_apply_changes') as mock_apply:
-            mock_apply.return_value = "Changes applied"
+        # handle_apply_command no longer routes through
+        # code_commands._code_apply_changes; without "force" it delegates to
+        # the agent's own _auto_apply_changes_with_confirmation.
+        self.agent.code_analyzer.pending_changes = [object()]
+        with patch.object(
+            self.agent, "_auto_apply_changes_with_confirmation",
+            return_value="Changes applied",
+        ) as mock_apply:
             result = self.agent.handle_apply_command("")
             mock_apply.assert_called_once()
             self.assertEqual(result, "Changes applied")
 
     def test_handle_apply_command_force(self):
         """Test /apply force."""
-        with patch.object(self.agent, '_code_apply_changes_confirm') as mock_confirm:
-            mock_confirm.return_value = "Applied"
-            result = self.agent.handle_apply_command("force")
-            mock_confirm.assert_called_once_with(force=True)
+        # "force" skips confirmation and applies straight through the analyzer.
+        self.agent.code_analyzer.pending_changes = [object()]
+        self.agent.code_analyzer.apply_all_changes.return_value = ["one"]
+        result = self.agent.handle_apply_command("force")
+        self.agent.code_analyzer.apply_all_changes.assert_called_once()
+        self.assertIn("Applied 1 changes", result)
 
     def test_handle_fix_command(self):
         """Test /fix command."""
@@ -524,7 +539,7 @@ class TestCommandHandlers(unittest.TestCase):
 
         # Test invalid mode
         result = self.agent.handle_mode_command("invalid")
-        self.assertEqual(result, "Invalid mode. Use 'chat', 'coding', 'status', or 'help'.")
+        self.assertEqual(result, "Invalid mode. Use 'chat', 'coding', 'fin', 'status', or 'help'.")
 
         # Test help
         result = self.agent.handle_mode_command("help")
@@ -917,14 +932,14 @@ class TestCommandHandlers(unittest.TestCase):
 
             # Test rg failure (fallback to _grep_fallback)
             mock_result.returncode = 1
-            with patch.object(self.agent, '_grep_fallback') as mock_fallback:
+            with patch("agent.services.utility_commands._grep_fallback") as mock_fallback:
                 mock_fallback.return_value = "Fallback results"
                 result = self.agent.handle_grep_command("pattern")
                 mock_fallback.assert_called_once_with("pattern", ".")
 
             # Test subprocess error (fallback)
             mock_run.side_effect = subprocess.SubprocessError
-            with patch.object(self.agent, '_grep_fallback') as mock_fallback:
+            with patch("agent.services.utility_commands._grep_fallback") as mock_fallback:
                 mock_fallback.return_value = "Fallback"
                 result = self.agent.handle_grep_command("pattern")
                 mock_fallback.assert_called_once_with("pattern", ".")
@@ -1120,10 +1135,10 @@ class TestCommandHandlers(unittest.TestCase):
 
     def test_handle_exit_command(self):
         """Test /exit command."""
-        with patch.object(self.agent, 'handle_quit_command') as mock_quit:
+        with patch("agent.services.utility_commands.handle_quit_command") as mock_quit:
             mock_quit.return_value = "Mock quit message"
             result = self.agent.handle_exit_command("")
-            mock_quit.assert_called_once_with("")
+            mock_quit.assert_called_once_with(self.agent, "")
             self.assertEqual(result, "Mock quit message")
 
     def test_handle_search(self):
