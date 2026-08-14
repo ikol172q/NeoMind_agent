@@ -31,6 +31,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -87,8 +89,8 @@ def page(browser) -> Page:
 
 
 def _open_chat(page: Page):
-    page.goto(BASE_URL, wait_until="networkidle", timeout=15000)
-    page.click('[data-testid="tab-chat"]')
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_selector('[data-testid="chat-session-sidebar"]')
 
@@ -164,9 +166,9 @@ def test_session_persists_across_tab_switch(page: Page):
     assert len(sid_before) >= 4
 
     # Switch to Research then back
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_timeout(500)
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_timeout(300)
 
@@ -187,8 +189,8 @@ def test_session_persists_across_page_reload(page: Page):
     sid_before = page.text_content('[data-testid="chat-session-id"]') or ""
     assert sid_before, "should have a session id after /help"
 
-    page.reload(wait_until="networkidle")
-    page.click('[data-testid="tab-chat"]')
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.wait_for_timeout(300)
 
@@ -221,8 +223,8 @@ def test_reload_does_not_create_phantom_session(page: Page):
     )
     before_count = before_list["count"]
 
-    page.reload(wait_until="networkidle")
-    page.click('[data-testid="tab-chat"]')
+    page.reload(wait_until="domcontentloaded")
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     # Do a second turn on the SAME session (should reuse, not create)
     page.fill('[data-testid="chat-input"]', "/help")

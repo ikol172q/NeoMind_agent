@@ -13,6 +13,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -88,8 +90,7 @@ def page(browser) -> Page:
 
 def test_brief_citation_chip_renders_and_is_clickable(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
 
     # Wait until at least one citation chip renders inside the brief.
@@ -115,8 +116,7 @@ def test_chat_assistant_message_renders_citation_chip(page: Page):
     and the bubble renders them as chips we can click in chat."""
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-chat"]')
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     page.fill('[data-testid="chat-input"]', "/brief")
     page.click('[data-testid="chat-send"]')

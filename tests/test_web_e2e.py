@@ -21,6 +21,8 @@ import urllib.request
 import pytest
 from playwright.sync_api import sync_playwright, Page
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -87,7 +89,7 @@ def test_each_tab_renders_some_content(page: Page, tab: str):
 
 def test_chat_slash_menu_opens_on_slash(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/")
     page.wait_for_timeout(500)
@@ -102,7 +104,7 @@ def test_chat_slash_menu_opens_on_slash(page: Page):
 
 def test_chat_help_command_local_execution(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
@@ -114,7 +116,7 @@ def test_chat_help_command_local_execution(page: Page):
 
 def test_chat_audit_command_returns_local_entries(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/audit 3")
     page.click('[data-testid="chat-send"]')
@@ -126,7 +128,7 @@ def test_chat_audit_command_returns_local_entries(page: Page):
 
 def test_audit_tab_lists_entries(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-audit"]')
+    goto_tab(page, "audit")
     page.wait_for_selector('[data-testid="audit-list"]')
     page.wait_for_timeout(1500)
     # Assert either entries rendered or empty-state rendered
@@ -139,7 +141,7 @@ def test_audit_cards_are_not_squashed(page: Page):
     because they were flex items in a flex-col with no shrink-0,
     so 70+ entries got crushed to fit the viewport."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-audit"]')
+    goto_tab(page, "audit")
     page.wait_for_selector('[data-testid="audit-list"]')
     page.wait_for_timeout(1500)
     heights = page.evaluate(
@@ -164,8 +166,7 @@ def test_research_tab_is_vertically_scrollable(page: Page):
     is overflow-hidden, so the user had no way to see them. The
     tab must own its own scroll container."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-scroll"]', timeout=5000)
     info = page.evaluate(
         """() => {
@@ -198,8 +199,7 @@ def test_research_news_visible_in_hero_row(page: Page):
     the fold and the user couldn't find 'what's happening in the
     market'. It must render inside the initial viewport."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="news-tabs"]', timeout=8000)
     box = page.evaluate(
         """() => {

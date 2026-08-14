@@ -16,6 +16,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -91,8 +93,7 @@ def page(browser) -> Page:
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="earnings-widget"]', timeout=10000)
 
 

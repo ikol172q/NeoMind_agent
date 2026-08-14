@@ -11,6 +11,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -88,8 +90,7 @@ def test_brief_second_call_hits_cache_and_returns_same_text():
 
 def test_brief_widget_renders_three_labelled_lines(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
     # Wait for all three labelled lines to render
     for label in ("market", "book", "next"):
@@ -100,8 +101,7 @@ def test_brief_widget_is_top_of_research_tab(page: Page):
     """The narrative hero must sit above everything else — that's
     the design intent (agent read first, widgets below as evidence)."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
     tops = page.evaluate(
         """() => {
@@ -126,8 +126,7 @@ def test_brief_widget_is_top_of_research_tab(page: Page):
 
 def test_brief_ask_more_jumps_to_chat_with_project_context(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="brief-ask-more"]', timeout=10000)
     page.click('[data-testid="brief-ask-more"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)

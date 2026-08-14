@@ -14,6 +14,8 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -73,7 +75,7 @@ def page(browser) -> Page:
 
 def test_watchlist_empty_hint_names_each_feature(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-empty-hint"]', timeout=10000)
     txt = page.evaluate(
         "document.querySelector('[data-testid=\"watchlist-empty-hint\"]').innerText"
@@ -86,7 +88,7 @@ def test_watchlist_empty_hint_names_each_feature(page: Page):
 
 def test_portfolio_empty_hint_routes_to_paper(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="portfolio-empty-hint"]', timeout=10000)
     txt = page.evaluate(
         "document.querySelector('[data-testid=\"portfolio-empty-hint\"]').innerText"
@@ -98,7 +100,7 @@ def test_portfolio_empty_hint_routes_to_paper(page: Page):
 
 def test_brief_shows_quickstart_on_fresh_install(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="brief-quickstart"]', timeout=10000)
     txt = page.evaluate(
         "document.querySelector('[data-testid=\"brief-quickstart\"]').innerText"
@@ -120,7 +122,7 @@ def test_quickstart_hides_when_watchlist_has_entries(page: Page):
     urllib.request.urlopen(req, timeout=5).read()
 
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
     # Wait for at least one of the Market / Book / Next lines to render
     page.wait_for_selector(

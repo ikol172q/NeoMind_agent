@@ -16,6 +16,8 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -93,8 +95,7 @@ def _seed_watch(symbol: str):
 def test_ask_agent_surfaces_context_chip(page: Page):
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)
@@ -107,8 +108,7 @@ def test_ask_agent_surfaces_context_chip(page: Page):
 def test_context_clear_button_drops_the_chip(page: Page):
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)
@@ -122,8 +122,7 @@ def test_send_includes_context_symbol_query_param(page: Page):
     — otherwise the chip is lying about enriching the next send."""
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
@@ -145,8 +144,7 @@ def test_audit_request_contains_dashboard_state_block(page: Page):
     server-side injector built."""
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)

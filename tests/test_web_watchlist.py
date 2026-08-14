@@ -23,6 +23,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -87,8 +89,7 @@ def _open_research(page: Page):
     # on intervals, so the network is never truly idle. DOM ready is
     # sufficient; we then wait for the specific selector we need.
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-widget"]', timeout=8000)
 
 
@@ -101,8 +102,7 @@ def test_add_entry_appears_and_persists_across_reload(page: Page):
 
     # Reload and make sure it's still there
     page.reload(wait_until="domcontentloaded")
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="watchlist-row-US-AAPL"]', timeout=5000)
 
 

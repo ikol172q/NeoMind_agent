@@ -6,6 +6,8 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -47,8 +49,7 @@ def page(browser) -> Page:
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="fund-explorer-widget"]', timeout=10000)
     # Scroll the fund widget into view (it's in the detail band, below the fold)
     page.evaluate("""() => {

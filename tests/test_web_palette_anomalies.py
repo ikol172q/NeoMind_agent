@@ -8,6 +8,8 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -163,8 +165,7 @@ def test_anomaly_chip_renders_on_brief_and_is_clickable(page: Page):
         BASE_URL + f"api/anomalies?project_id={PROJECT}", timeout=60
     ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
     page.wait_for_function(
         """() => {

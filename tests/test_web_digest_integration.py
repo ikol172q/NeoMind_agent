@@ -16,6 +16,8 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab
+
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
 
@@ -95,8 +97,7 @@ def page(browser) -> Page:
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_tab(page, "research")
     page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
 
 
@@ -166,8 +167,7 @@ def test_cite_click_in_chat_routes_to_research_with_focus(page: Page):
     active + DigestView either highlights a row or settles into
     flat mode on the lattice."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-chat"]')
-    page.click('[data-testid="tab-chat"]')
+    page.wait_for_selector(\'[data-testid="chat-input"]\')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     # /prep is a workflow slash command that names the target symbol
     # in its reply — much more reliable cite emission than open prose.
