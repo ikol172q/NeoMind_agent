@@ -10,6 +10,31 @@ import pytest
 # Vault-specific tests in test_vault_*.py use their own tmp_path fixtures.
 os.environ["NEOMIND_DISABLE_VAULT"] = "1"
 
+# Import the agent package before any test module runs, so every `agent.<sub>`
+# submodule is bound as an attribute of the parent package.
+#
+# Why: mock.patch("agent.coding.tool_parser.ToolCallParser") resolves the target
+# with getattr(agent, "coding"), falling back to __import__("agent.coding") and
+# retrying. When some earlier test has already put "agent.coding" in sys.modules
+# without the parent attribute being set, that __import__ is a no-op and the
+# retry fails too:
+#
+#   AttributeError: module 'agent' has no attribute 'coding'
+#
+# The suite hit that in 36+ tests across test_agentic_loop_canonical.py,
+# test_formatter.py and test_task_manager.py — all of which pass in isolation
+# and only fail after tests/llm/test_conversation_scenarios.py has run. A
+# single early package import makes the order irrelevant. Verified as the
+# minimal difference: a plugin doing nothing but `import agent` at configure
+# time was enough to turn those failures green.
+import agent  # noqa: E402,F401  (import for its binding side effect)
+import agent.coding  # noqa: E402,F401
+import agent.command_executor  # noqa: E402,F401
+import agent.formatter  # noqa: E402,F401
+import agent.help_system  # noqa: E402,F401
+import agent.task_manager  # noqa: E402,F401
+import agent.tools  # noqa: E402,F401
+
 
 @pytest.fixture(autouse=True)
 def _ensure_event_loop():
