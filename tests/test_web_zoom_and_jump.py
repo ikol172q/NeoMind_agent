@@ -64,9 +64,25 @@ def page(browser) -> Page:
 def _open_trace(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_tab(page, "research")
-    page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
     page.click('[data-testid="digest-mode-trace"]')
-    page.wait_for_selector('[data-testid="lattice-svg"]', state="attached", timeout=15000)
+    # Wait for trace mode to resolve to one of its two outcomes, then decide.
+    # Reading digest-body immediately after the click races the render.
+    # Measured 24.3-27.7s for the graph on a warm dashboard, so 15s could not
+    # be met even when healthy; and with an empty lattice the panel shows its
+    # onboarding copy ("the lattice needs real data to distil") and
+    # lattice-svg never mounts at all — no error, just nothing to draw.
+    page.wait_for_function(
+        """() => {
+            if (document.querySelector('[data-testid="lattice-svg"]')) return true
+            const b = document.querySelector('[data-testid="digest-body"]')
+            return !!b && b.innerText.includes('needs real data')
+        }""",
+        timeout=60000,
+    )
+    if not page.query_selector('[data-testid="lattice-svg"]'):
+        pytest.skip("lattice has no distilled data on this dashboard — seed it to run this test")
+
     page.wait_for_timeout(600)
 
 
