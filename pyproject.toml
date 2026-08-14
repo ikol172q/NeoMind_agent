@@ -97,6 +97,7 @@ rag = [
 dev = [
     "pytest",
     "pytest-asyncio>=1.2.0",
+    "pytest-timeout",
     "black",
     "isort",
 ]
@@ -111,6 +112,17 @@ include-package-data = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "tests/llm"]
+# A hung test must fail alone, not take the suite with it. Twice now a single
+# test blocked every run forever (a mocked queue that never raised Empty, then
+# a StopIteration that could not be set on a Future), and each time the whole
+# suite was unrunnable until someone chased it down by hand — every "N passed"
+# recorded before that was a subset result.
+# 300s is deliberately generous: tests/llm makes real API calls, so the budget
+# has to clear a slow provider round-trip while still catching an infinite wait.
+# Method is `signal` (not `thread`): SIGALRM interrupts the blocked test and
+# lets the run continue, whereas the thread method kills the whole process.
+timeout = 300
+timeout_method = "signal"
 markers = [
     "llm: tests requiring real LLM API calls (always run if API key available)",
     "lattice_fast: spec + formulas + endpoint coherence (pure Python, <10s, pre-commit)",

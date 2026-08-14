@@ -15,7 +15,13 @@ import time
 # Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agent.search import (
+# These live in search_legacy, not in the newer agent.search package: the
+# multi-source UniversalSearchEngine replaced them there, but agent/core.py
+# still imports OptimizedDuckDuckGoSearch from search_legacy as its fallback,
+# so this file keeps testing the code that is actually still reachable.
+# Importing from agent.search raised ImportError at collection time, so none of
+# these tests had ever run.
+from agent.search_legacy import (
     OptimizedDuckDuckGoSearch, DuckDuckGoSearch,
     clean_search_results, extract_main_content
 )
