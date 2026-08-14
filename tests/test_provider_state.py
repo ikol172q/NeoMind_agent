@@ -53,13 +53,35 @@ _now_iso = _mod._now_iso
 class TestProviderStateBase(unittest.TestCase):
     """Base class with temp directory setup/teardown."""
 
+    # Every provider key the chain builder reads. Blanked for the duration of
+    # each test so the developer's real shell environment cannot join the
+    # chain: with @patch.dict(..., clear=False) a real MOONSHOT_API_KEY from
+    # ~/.zshrc silently appended a fourth provider, which both broke the
+    # ordering assertions and printed the live key into pytest's failure
+    # output. Tests opt in to a provider by setting it explicitly.
+    _PROVIDER_KEY_VARS = (
+        "LITELLM_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "ZAI_API_KEY",
+        "MOONSHOT_API_KEY",
+    )
+
     def setUp(self):
         self.tmp_dir = tempfile.mkdtemp(prefix="neomind_test_")
         self.state_dir = os.path.join(self.tmp_dir, ".neomind")
         os.makedirs(self.state_dir, exist_ok=True)
         self.state_file = os.path.join(self.state_dir, "provider-state.json")
 
+        self._saved_env = {k: os.environ.get(k) for k in self._PROVIDER_KEY_VARS}
+        for k in self._PROVIDER_KEY_VARS:
+            os.environ[k] = ""
+
     def tearDown(self):
+        for k, v in self._saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
 
     def _make_mgr(self, **env_overrides) -> ProviderStateManager:
