@@ -104,9 +104,13 @@ class TestBrowserDaemonBasics:
 
         assert daemon.is_running is False
         daemon._running = True
-        assert daemon.is_running is False  # Still False because _browser is None
+        # Still False: the flag alone is not enough, a live context is required.
+        assert daemon.is_running is False
 
-        daemon._browser = Mock()
+        # _context, not _browser — launch_persistent_context returns a context
+        # and _browser is never assigned, which is what used to pin is_running
+        # to False forever and break the get_browser() singleton.
+        daemon._context = Mock()
         assert daemon.is_running is True
 
     def test_data_dir_configuration(self):
@@ -131,7 +135,7 @@ class TestBrowserDaemonStartStop:
             await daemon.start()
 
     @patch('agent.browser.daemon.HAS_PLAYWRIGHT', True)
-    @patch('playwright.async_api.async_playwright')
+    @patch('agent.browser.daemon.async_playwright')
     async def test_start_creates_context(self, mock_playwright):
         from agent.browser.daemon import BrowserDaemon
 
@@ -145,7 +149,10 @@ class TestBrowserDaemonStartStop:
         mock_context.new_page = AsyncMock(return_value=mock_page)
         mock_pw.stop = AsyncMock()
 
-        mock_playwright.return_value.__aenter__.return_value = mock_pw
+        # The daemon does `await async_playwright().start()`, not `async with`,
+        # and resolves the name from its own module — patching
+        # playwright.async_api and __aenter__ intercepted neither.
+        mock_playwright.return_value.start = AsyncMock(return_value=mock_pw)
 
         daemon = BrowserDaemon()
         await daemon.start()
@@ -155,7 +162,7 @@ class TestBrowserDaemonStartStop:
         assert len(daemon._tabs) == 1
 
     @patch('agent.browser.daemon.HAS_PLAYWRIGHT', True)
-    @patch('playwright.async_api.async_playwright')
+    @patch('agent.browser.daemon.async_playwright')
     async def test_start_idempotent(self, mock_playwright):
         from agent.browser.daemon import BrowserDaemon
 
@@ -167,7 +174,10 @@ class TestBrowserDaemonStartStop:
         mock_context.pages = [mock_page]
         mock_pw.stop = AsyncMock()
 
-        mock_playwright.return_value.__aenter__.return_value = mock_pw
+        # The daemon does `await async_playwright().start()`, not `async with`,
+        # and resolves the name from its own module — patching
+        # playwright.async_api and __aenter__ intercepted neither.
+        mock_playwright.return_value.start = AsyncMock(return_value=mock_pw)
 
         daemon = BrowserDaemon()
         await daemon.start()
@@ -177,7 +187,7 @@ class TestBrowserDaemonStartStop:
         assert mock_pw.chromium.launch_persistent_context.call_count == 1
 
     @patch('agent.browser.daemon.HAS_PLAYWRIGHT', True)
-    @patch('playwright.async_api.async_playwright')
+    @patch('agent.browser.daemon.async_playwright')
     async def test_stop_closes_context(self, mock_playwright):
         from agent.browser.daemon import BrowserDaemon
 
@@ -190,7 +200,10 @@ class TestBrowserDaemonStartStop:
         mock_context.close = AsyncMock()
         mock_pw.stop = AsyncMock()
 
-        mock_playwright.return_value.__aenter__.return_value = mock_pw
+        # The daemon does `await async_playwright().start()`, not `async with`,
+        # and resolves the name from its own module — patching
+        # playwright.async_api and __aenter__ intercepted neither.
+        mock_playwright.return_value.start = AsyncMock(return_value=mock_pw)
 
         daemon = BrowserDaemon()
         await daemon.start()
@@ -696,7 +709,7 @@ class TestBrowserSingleton:
 
     @pytest.mark.asyncio
     @patch('agent.browser.daemon.HAS_PLAYWRIGHT', True)
-    @patch('playwright.async_api.async_playwright')
+    @patch('agent.browser.daemon.async_playwright')
     async def test_get_browser_singleton(self, mock_playwright):
         from agent.browser.daemon import get_browser
 
@@ -708,7 +721,10 @@ class TestBrowserSingleton:
         mock_context.pages = [mock_page]
         mock_pw.stop = AsyncMock()
 
-        mock_playwright.return_value.__aenter__.return_value = mock_pw
+        # The daemon does `await async_playwright().start()`, not `async with`,
+        # and resolves the name from its own module — patching
+        # playwright.async_api and __aenter__ intercepted neither.
+        mock_playwright.return_value.start = AsyncMock(return_value=mock_pw)
 
         browser1 = await get_browser()
         browser2 = await get_browser()

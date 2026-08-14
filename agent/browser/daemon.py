@@ -109,7 +109,12 @@ class BrowserDaemon:
 
     @property
     def is_running(self) -> bool:
-        return self._running and self._browser is not None
+        # _context, not _browser. start() uses launch_persistent_context, which
+        # returns a BrowserContext and never a Browser, so _browser was only
+        # ever the None it was declared as — is_running was permanently False.
+        # get_browser() keys its singleton off this, so every call decided the
+        # daemon was dead and launched another Chromium.
+        return self._running and self._context is not None
 
     async def start(self):
         """Launch Chromium with persistent context."""
