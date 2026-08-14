@@ -60,13 +60,15 @@ class TestToolCallParserStructured(unittest.TestCase):
         self.assertTrue(tc.params["case_insensitive"])
 
     def test_missing_params_key(self):
-        """Missing params defaults to empty dict. LS is aliased to Bash."""
+        """Missing params defaults to an empty dict, and LS stays LS."""
         response = '<tool_call>\n{"tool": "LS"}\n</tool_call>'
         tc = self.parser.parse(response)
         self.assertIsNotNone(tc)
-        # LS is aliased to Bash with a default "ls -la ." command
-        self.assertEqual(tc.tool_name, "Bash")
-        self.assertIn("command", tc.params)
+        # LS is a registered first-class tool. It used to be aliased to Bash,
+        # which made the real LS unreachable and handed _exec_ls a "command"
+        # kwarg it does not accept.
+        self.assertEqual(tc.tool_name, "LS")
+        self.assertEqual(tc.params, {})
 
     def test_malformed_json(self):
         response = '<tool_call>\n{not valid json}\n</tool_call>'

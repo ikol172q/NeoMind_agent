@@ -488,8 +488,13 @@ class TestHackerNewsEdgeCases:
         assert story.descendants == 0
 
     def test_story_very_old_age(self):
-        """Test age calculation for very old story."""
-        ancient_time = 0  # Unix epoch
+        """Test age calculation for a genuinely old story."""
+        # Not 0: that is the "no timestamp" sentinel (the dataclass default and
+        # fetch_story's data.get("time", 0) fallback), and age_hours reports 0
+        # for it on purpose — see test_age_hours_no_timestamp. Use a real old
+        # timestamp instead: HN launched in 2007.
+        import time as _time
+        ancient_time = int(_time.time()) - 10 * 365 * 24 * 3600
         story = HNStory(id=1, title="Ancient", time=ancient_time)
         age = story.age_hours
         # Should be huge number of hours
