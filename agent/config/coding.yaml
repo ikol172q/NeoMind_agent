@@ -113,7 +113,6 @@ commands:
 - help
 - clear
 - think
-- status
 - debug
 - models
 - switch

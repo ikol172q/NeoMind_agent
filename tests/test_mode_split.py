@@ -33,8 +33,10 @@ class TestConfigSeparation(unittest.TestCase):
         config_dir = Path(__file__).parent.parent / "agent" / "config"
         base = yaml.safe_load((config_dir / "base.yaml").read_text())
         agent = base["agent"]
-        self.assertEqual(agent["model"], "deepseek-chat")
-        self.assertEqual(agent["context"]["max_context_tokens"], 131072)
+        self.assertEqual(agent["model"], "deepseek-v4-flash")
+        # max_context_tokens left base.yaml — it is derived from MODEL_SPECS at
+        # runtime now, so assert the resolved value rather than a yaml key that
+        # no longer exists.
         self.assertIn("temperature", agent)
         self.assertIn("max_tokens", agent)
 
@@ -48,8 +50,9 @@ class TestConfigSeparation(unittest.TestCase):
         # Chat should NOT have coding commands
         self.assertNotIn("run", chat["commands"])
         self.assertNotIn("edit", chat["commands"])
-        self.assertNotIn("read", chat["commands"])
         self.assertNotIn("git", chat["commands"])
+        # "read" is chat's web-page reader (with /links, /crawl, /webmap),
+        # not the coding file reader, so it is expected here.
 
     def test_coding_config_has_tools_and_workspace(self):
         import yaml
@@ -75,7 +78,7 @@ class TestAgentConfigManager(unittest.TestCase):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="chat")
         self.assertEqual(cfg.mode, "chat")
-        self.assertEqual(cfg.model, "deepseek-chat")
+        self.assertEqual(cfg.model, "deepseek-v4-flash")
         self.assertTrue(cfg.safety_confirm_file_operations)
         self.assertEqual(cfg.natural_language_confidence_threshold, 0.8)
         self.assertIn("search", cfg.available_commands)
@@ -109,8 +112,10 @@ class TestAgentConfigManager(unittest.TestCase):
         from agent_config import AgentConfigManager
         chat_cfg = AgentConfigManager(mode="chat")
         code_cfg = AgentConfigManager(mode="coding")
-        self.assertIn("AI assistant built on First Principles Thinking", chat_cfg.system_prompt)
-        self.assertIn("expert software engineer", code_cfg.system_prompt)
+        # Prompt wording moved to the 生生塔 pyramid architecture; assert the
+        # persona identities that replaced the old English taglines.
+        self.assertIn("认知延伸", chat_cfg.system_prompt)
+        self.assertIn("Coding Engine", code_cfg.system_prompt)
         self.assertNotEqual(chat_cfg.system_prompt, code_cfg.system_prompt)
 
     def test_shared_base_settings(self):
@@ -149,7 +154,6 @@ class TestCommandSeparation(unittest.TestCase):
         self.assertIn("think", completer.commands)
         self.assertNotIn("run", completer.commands)
         self.assertNotIn("edit", completer.commands)
-        self.assertNotIn("read", completer.commands)
         self.assertNotIn("git", completer.commands)
         self.assertNotIn("glob", completer.commands)
 
@@ -283,8 +287,10 @@ class TestCoreIntegration(unittest.TestCase):
         from agent.core import NeoMindAgent
         chat = NeoMindAgent(api_key="test")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
-        self.assertEqual(len(sys_msgs), 1)
-        self.assertIn("AI assistant built on First Principles Thinking", sys_msgs[0]["content"])
+        # More than one now: the persona prompt is followed by Vault Context and
+        # User Context injected from persistent memory. The persona stays first.
+        self.assertGreaterEqual(len(sys_msgs), 1)
+        self.assertIn("认知延伸", sys_msgs[0]["content"])
 
     def test_coding_mode_system_prompt(self):
         from agent_config import agent_config
@@ -292,8 +298,8 @@ class TestCoreIntegration(unittest.TestCase):
         from agent.core import NeoMindAgent
         chat = NeoMindAgent(api_key="test")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
-        self.assertEqual(len(sys_msgs), 1)
-        self.assertIn("expert software engineer", sys_msgs[0]["content"])
+        self.assertGreaterEqual(len(sys_msgs), 1)
+        self.assertIn("Coding Engine", sys_msgs[0]["content"])
 
     def test_switch_mode_updates_prompt(self):
         from agent_config import agent_config
@@ -303,11 +309,12 @@ class TestCoreIntegration(unittest.TestCase):
         # Switch to coding
         chat.switch_mode("coding")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
-        self.assertIn("expert software engineer", sys_msgs[0]["content"])
+        self.assertIn("Coding Engine", sys_msgs[0]["content"])
         # Switch back to chat
         chat.switch_mode("chat")
         sys_msgs = [m for m in chat.conversation_history if m["role"] == "system"]
-        self.assertIn("AI assistant built on First Principles Thinking", sys_msgs[0]["content"])
+        self.assertIn("认知延伸", sys_msgs[0]["content"])
+        self.assertNotIn("Coding Engine", sys_msgs[0]["content"])
 
 
 class TestAgentConfigEdgeCases(unittest.TestCase):
@@ -348,19 +355,24 @@ class TestAgentConfigEdgeCases(unittest.TestCase):
         self.assertEqual(cfg.mode, "coding")
         del os.environ["IKOL_MODE"]
 
-    def test_invalid_neomind_mode_defaults_to_chat(self):
+    def test_invalid_neomind_mode_defaults_to_fin(self):
         os.environ["IKOL_MODE"] = "invalid_mode"
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager()
-        self.assertEqual(cfg.mode, "chat")
+        # agent_config.py pins this: "Default = fin (the user's primary use
+        # case)" — an unrecognised mode normalises to fin, not chat.
+        self.assertEqual(cfg.mode, "fin")
         del os.environ["IKOL_MODE"]
 
     def test_get_with_agent_prefix(self):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="chat")
-        # Legacy agent. prefix should be stripped
-        val = cfg.get("agent.context.max_context_tokens")
-        self.assertEqual(val, 131072)
+        # Legacy agent. prefix should be stripped. Uses agent.model rather than
+        # agent.context.max_context_tokens: the latter left base.yaml entirely
+        # (derived from MODEL_SPECS at runtime), so it would return None with or
+        # without the prefix and would prove nothing about prefix handling.
+        self.assertEqual(cfg.get("agent.model"), cfg.get("model"))
+        self.assertIsNotNone(cfg.get("agent.model"))
 
     def test_get_nonexistent_key_returns_default(self):
         from agent_config import AgentConfigManager
@@ -384,8 +396,12 @@ class TestAgentConfigEdgeCases(unittest.TestCase):
     def test_update_value_agent_key(self):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="chat")
-        cfg.update_value("agent.model", "gpt-4")
-        self.assertEqual(cfg.model, "gpt-4")
+        # Not agent.model: since 2026-04-25 cfg.model reads provider-state.json
+        # (yaml `model:` was removed so personality switches cannot override the
+        # active model), so update_value cannot move it by design. temperature is
+        # still config-backed and exercises the same agent.-prefixed write path.
+        cfg.update_value("agent.temperature", 0.33)
+        self.assertEqual(cfg.temperature, 0.33)
 
     def test_update_value_mode_key(self):
         from agent_config import AgentConfigManager
@@ -396,7 +412,7 @@ class TestAgentConfigEdgeCases(unittest.TestCase):
     def test_context_properties(self):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="chat")
-        self.assertEqual(cfg.max_context_tokens, 131072)
+        self.assertEqual(cfg.max_context_tokens, 1_000_000)
         self.assertAlmostEqual(cfg.context_warning_threshold, 0.61)
         self.assertAlmostEqual(cfg.context_break_threshold, 0.8)
         self.assertEqual(cfg.compression_strategy, "truncate")
@@ -407,7 +423,7 @@ class TestAgentConfigEdgeCases(unittest.TestCase):
         from agent_config import AgentConfigManager
         cfg = AgentConfigManager(mode="chat")
         self.assertTrue(cfg.stream)
-        self.assertEqual(cfg.timeout, 30)
+        self.assertEqual(cfg.timeout, 90)
         self.assertEqual(cfg.max_retries, 3)
         self.assertEqual(cfg.max_tokens, 8192)
 

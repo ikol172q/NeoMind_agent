@@ -98,11 +98,57 @@ def highlight_code_blocks_in_text(text: str) -> str:
 # Slash Command Completer
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _registry_descriptions() -> dict:
+    """Command descriptions read straight from the command registry.
+
+    ALL_DESCRIPTIONS below used to be a second, hand-maintained copy of the
+    same information, so every command added to the registry since it was
+    written had no description here — 34 of them across chat/coding/fin, which
+    is what test_all_descriptions_covers_all_commands catches. Reading the
+    registry keeps the two from drifting apart again.
+
+    Guarded: the completer must still work if the registry cannot be built.
+    """
+    try:
+        from agent.cli_command_system import create_default_registry
+
+        registry = create_default_registry()
+        commands = getattr(registry, "commands", None) or getattr(registry, "_commands", {})
+        return {
+            name: getattr(cmd, "description", "") or ""
+            for name, cmd in commands.items()
+        }
+    except Exception:
+        return {}
+
+
+# Commands that live outside the registry and so have to be named here.
+# Sourced from their own docstrings, not invented:
+#   speckit.*  — agent/coding/speckit/__init__.py module docstring
+#   links/crawl/webmap — the _shared_handle_*_command docstrings in
+#                        agent/services/shared_commands.py
+_EXTRA_DESCRIPTIONS = {
+    "links": "Extract links from a URL",
+    "crawl": "Crawl a website starting from a URL",
+    "webmap": "Generate a site map from a URL",
+    "speckit.constitution": "Scaffold project constitution",
+    "speckit.specify": "Create feature specification",
+    "speckit.clarify": "Resolve [NEEDS CLARIFICATION] markers",
+    "speckit.plan": "Generate implementation plan",
+    "speckit.tasks": "Break plan into tasks",
+    "speckit.analyze": "Cross-artifact consistency check",
+    "speckit.implement": "Execute implementation",
+    "speckit.checklist": "Generate quality checklist",
+    "speckit.status": "Show spec-kit state",
+}
+
+
 class SlashCommandCompleter(Completer):
     """Mode-aware slash command completer with descriptions."""
 
-    # All known command descriptions (superset)
-    ALL_DESCRIPTIONS = {
+    # All known command descriptions (superset). Hand-written entries below win
+    # over the registry so curated wording is preserved; see _build_descriptions.
+    _CURATED_DESCRIPTIONS = {
         # Shared
         "help": "Show available commands",
         "clear": "Clear conversation history",
@@ -184,6 +230,15 @@ class SlashCommandCompleter(Completer):
         "watchlist": "Manage tracked assets watchlist",
         "risk": "Assess portfolio risk (VaR, Sharpe, position sizing)",
         "calendar": "View upcoming financial events and earnings",
+    }
+
+    # Registry first, then the out-of-registry extras, then the curated text —
+    # so a command always has *some* description and the hand-written wording
+    # still wins where it exists.
+    ALL_DESCRIPTIONS = {
+        **_registry_descriptions(),
+        **_EXTRA_DESCRIPTIONS,
+        **_CURATED_DESCRIPTIONS,
     }
 
     def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None, command_registry=None):
