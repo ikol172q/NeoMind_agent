@@ -151,14 +151,21 @@ class TokenBucketLimiter:
     def __init__(self, rate: float = 1.0, per: float = 1.5):
         self.rate = rate
         self.per = per
-        self.tokens = rate
+        # Capacity has to hold at least one whole token. acquire() costs 1.0,
+        # so when the ceiling was `rate` any sub-1 rate — `rate=0.1, per=1.0`,
+        # a perfectly ordinary "one call per ten seconds" — could never reach
+        # the threshold and acquire() spun in its wait loop forever, taking the
+        # caller with it. Refill still happens at `rate / per`; only the ceiling
+        # changes, so every rate >= 1.0 behaves exactly as before.
+        self.capacity = max(rate, 1.0)
+        self.tokens = self.capacity
         self.last_refill = time.time()
 
     async def acquire(self):
         while True:
             now = time.time()
             elapsed = now - self.last_refill
-            self.tokens = min(self.rate, self.tokens + elapsed * (self.rate / self.per))
+            self.tokens = min(self.capacity, self.tokens + elapsed * (self.rate / self.per))
             self.last_refill = now
             if self.tokens >= 1.0:
                 self.tokens -= 1.0
