@@ -150,7 +150,10 @@ class TestCoreInitialization(unittest.TestCase):
         agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Should have system message in conversation history
-        self.assertEqual(len(agent.conversation_history), 1)
+        # More than one now: the persona prompt is followed by memory context
+        # injected as additional system messages. The persona stays first.
+        self.assertGreaterEqual(len(agent.conversation_history), 1)
+        self.assertEqual(agent.conversation_history[0]["role"], "system")
         self.assertEqual(agent.conversation_history[0]["role"], "system")
         self.assertEqual(agent.conversation_history[0]["content"], "You are a helpful assistant.")
 
@@ -174,7 +177,10 @@ class TestCoreInitialization(unittest.TestCase):
         agent = NeoMindAgent(api_key=self.test_api_key)
 
         # Should have coding mode system prompt in conversation history
-        self.assertEqual(len(agent.conversation_history), 1)
+        # More than one now: the persona prompt is followed by memory context
+        # injected as additional system messages. The persona stays first.
+        self.assertGreaterEqual(len(agent.conversation_history), 1)
+        self.assertEqual(agent.conversation_history[0]["role"], "system")
         self.assertEqual(agent.conversation_history[0]["role"], "system")
         self.assertIn("expert software engineer", agent.conversation_history[0]["content"])
         # Should have coding mode properties

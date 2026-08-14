@@ -35,7 +35,7 @@ class TestAgentConfigManagerBasics(unittest.TestCase):
         # Create base.yaml
         self.base_config = {
             "agent": {
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "temperature": 0.7,
                 "max_tokens": 8192,
                 "debug": False,
@@ -158,7 +158,7 @@ class TestAgentConfigManagerBasics(unittest.TestCase):
 
             # Test with "agent." prefix (should be stripped)
             model_with_prefix = config_manager.get("agent.model")
-            self.assertEqual(model_with_prefix, "deepseek-chat")
+            self.assertEqual(model_with_prefix, "deepseek-v4-flash")
 
     def test_property_accessors(self):
         """Test property accessors return correct values."""
@@ -170,7 +170,7 @@ class TestAgentConfigManagerBasics(unittest.TestCase):
             config_manager = AgentConfigManager(mode="chat")
 
             # Test properties
-            self.assertEqual(config_manager.model, "deepseek-chat")
+            self.assertEqual(config_manager.model, "deepseek-v4-flash")
             self.assertEqual(config_manager.temperature, 0.7)
             self.assertEqual(config_manager.max_tokens, 8192)
             self.assertFalse(config_manager.debug)
@@ -199,7 +199,7 @@ class TestAgentConfigManagerBasics(unittest.TestCase):
             config_manager = AgentConfigManager(mode="chat")
 
             # Test default values
-            self.assertEqual(config_manager.model, "deepseek-chat")
+            self.assertEqual(config_manager.model, "deepseek-v4-flash")
             self.assertEqual(config_manager.temperature, 0.7)
             self.assertEqual(config_manager.max_tokens, 8192)
             self.assertFalse(config_manager.debug)
@@ -221,7 +221,7 @@ class TestEnvironmentOverrides(unittest.TestCase):
         # Create base.yaml
         self.base_config = {
             "agent": {
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "temperature": 0.7,
                 "max_tokens": 8192,
                 "debug": False,
@@ -327,7 +327,7 @@ class TestConfigUpdates(unittest.TestCase):
         # Create base.yaml
         self.base_config = {
             "agent": {
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "temperature": 0.7,
                 "max_tokens": 8192
             }
@@ -501,7 +501,7 @@ class TestModeSpecificProperties(unittest.TestCase):
         # Create base.yaml with agent settings
         self.base_config = {
             "agent": {
-                "model": "deepseek-chat",
+                "model": "deepseek-v4-flash",
                 "temperature": 0.7,
                 "max_tokens": 8192,
                 "debug": False,

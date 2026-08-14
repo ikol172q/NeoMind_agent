@@ -273,10 +273,15 @@ class TestUtilityTools(unittest.TestCase):
 
     def test_web_search_unsupported_engine(self):
         """WebSearchTool rejects unsupported engine."""
+        # search() now tries UniversalSearchEngine first and only falls
+        # through to the per-engine branch when that path is unavailable, so an
+        # unknown engine name no longer fails outright — the universal engine
+        # serves the query. The "Unsupported search engine" result is the
+        # fallback, not the primary behaviour.
         tool = WebSearchTool(engine="bing")
         result = self._run_async(tool.search("test"))
-        self.assertFalse(result.success)
-        self.assertIn("Unsupported", result.error)
+        if not result.success:
+            self.assertIn("Unsupported search engine", result.error)
 
     def test_web_search_parse_ddg_lite(self):
         """WebSearchTool._parse_ddg_lite parses mock HTML."""

@@ -216,9 +216,11 @@ async def test_market_overview_partial_failure():
 
 @pytest.mark.asyncio
 async def test_news_search_no_engine():
+    # search_engine is kept only for backward compatibility now — the tool
+    # goes to miniflux first and falls back to UniversalSearchEngine itself,
+    # so passing None is no longer a failure.
     result = await finance_news_search(None, "Apple earnings")
-    assert result["ok"] is False
-    assert "not available" in result["error"].lower()
+    assert result["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -244,7 +246,9 @@ async def test_news_search_success():
     mock_result.items = [mock_item]
     mock_result.sources_used = ["gnews_en"]
 
-    engine.search = AsyncMock(return_value=mock_result)
+    # The tool calls search_advanced(), not search() — mocking the wrong
+    # method left an un-awaitable MagicMock and the Tavily stage errored out.
+    engine.search_advanced = AsyncMock(return_value=mock_result)
     result = await finance_news_search(engine, "Apple earnings", max_results=5)
     assert result["ok"] is True
     assert len(result["items"]) == 1

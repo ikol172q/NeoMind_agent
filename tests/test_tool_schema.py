@@ -347,8 +347,11 @@ class TestToolRegistrySchemas(unittest.TestCase):
 
     def test_all_tools_registered(self):
         reg = self._make_registry()
-        expected = {"Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"}
-        self.assertEqual(set(reg._tool_definitions.keys()), expected)
+        # Subset, not equality: the registry has grown well past these eight
+        # (TaskCreate, TaskGet, ... 52 at the time of writing) and equality
+        # froze the total count, which is not what this test is about.
+        core = {"Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"}
+        self.assertTrue(core.issubset(set(reg._tool_definitions.keys())))
 
     def test_get_tool_exact(self):
         reg = self._make_registry()
@@ -370,7 +373,10 @@ class TestToolRegistrySchemas(unittest.TestCase):
         reg = self._make_registry()
         tools = reg.get_all_tools()
         names = [t.name for t in tools]
-        self.assertEqual(names, ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"])
+        # Prefix, not the whole list — the ordering of the core tools is the
+        # contract here, not how many tools exist in total.
+        core = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", "LS", "SelfEditor"]
+        self.assertEqual(names[:len(core)], core)
 
     def test_bash_tool_is_execute(self):
         reg = self._make_registry()
