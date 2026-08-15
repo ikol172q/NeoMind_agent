@@ -226,6 +226,11 @@ def test_spec_mmr_lambda_in_reasonable_range():
 # ── Judge baseline regression (LLM, nightly) ──────────
 
 @pytest.mark.lattice_drift
+# This one runs a live L3 judge pass; measured past the suite-wide 300s budget.
+# pyproject describes the lattice_drift marker as nightly, so it is meant to be
+# heavy — give it room rather than letting it die on the default timeout.
+# Exclude it from routine runs with: -m "not lattice_drift"
+@pytest.mark.timeout(1800)
 @pytest.mark.skipif(
     not (Path(__file__).parent / "qa_archive" / "results"
          / "2026-04-21_lattice_l3_judge" / "run3_variance.json").exists(),
