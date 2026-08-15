@@ -282,7 +282,15 @@ def test_trace_endpoint_theme_includes_llm_prompt_if_live():
     # prompt text must be non-empty.
     assert trace["kind"] in ("llm_call", "cache_hit")
     if trace["kind"] == "llm_call":
-        assert trace["model"] == "deepseek-chat"
+        # Model default moved to deepseek-v4-flash.
+        assert trace["model"] == "deepseek-v4-flash"
         assert len(trace["user_prompt"]) > 100
-        assert trace["validator"]["passed"] in (True, False)
+        # The validator only appears when the LLM call actually returned. On
+        # the exception path themes.py records error + fallback_reason=
+        # "llm_exception" and never runs validation, so a trace carrying an
+        # error legitimately has no validator key.
+        if trace.get("error"):
+            assert trace["fallback_reason"] == "llm_exception"
+        else:
+            assert trace["validator"]["passed"] in (True, False)
         assert trace["final_source"] in ("llm", "template_fallback")
