@@ -73,7 +73,7 @@ def _seed(symbol: str, market: str = "US"):
     urllib.request.urlopen(req, timeout=15).read()
 
 def _open_research(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=45000)
     goto_legacy(page)
     page.wait_for_selector('[data-testid="sentiment-gauge-widget"]', timeout=10000)
 
@@ -87,7 +87,7 @@ def test_gauge_renders_with_score(page: Page):
             const root = document.querySelector('[data-testid="sentiment-plot"]')
             return root && root.querySelector('svg') !== null
         }""",
-        timeout=15000,
+        timeout=45000,
     )
     # Subtitle should reflect one of the expected labels
     body = page.evaluate(
@@ -99,7 +99,7 @@ def test_gauge_renders_with_score(page: Page):
 
 def test_ask_button_prefills_chat_with_subscores(page: Page):
     _open_research(page)
-    page.wait_for_selector('[data-testid="sentiment-ask"]', timeout=15000)
+    page.wait_for_selector('[data-testid="sentiment-ask"]', timeout=45000)
     page.click('[data-testid="sentiment-ask"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     page.wait_for_function(

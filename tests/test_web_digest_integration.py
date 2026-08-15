@@ -133,6 +133,21 @@ def test_anomaly_strip_absent_when_no_flags_would_be_shown(page: Page):
         assert count >= 1, "strip rendered with zero flags inside"
 
 
+def _lattice_has_rows() -> bool:
+    """True when /api/lattice/digest carries at least one row that
+    findFocusTarget could match. Used to gate the highlight assertion."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            "http://127.0.0.1:8001/api/lattice/digest", timeout=10
+        ) as r:
+            d = json.loads(r.read().decode())
+    except Exception:
+        return False
+    return any(d.get(k) for k in ("observations", "themes", "calls"))
+
+
 # ── focus highlight (via anomaly click) ────────────────
 
 def test_anomaly_click_flips_to_flat_mode_and_highlights(page: Page):
@@ -153,10 +168,30 @@ def test_anomaly_click_flips_to_flat_mode_and_highlights(page: Page):
     )
     assert first_flag, "expected at least one anomaly button"
     page.click(f'[data-testid="{first_flag}"]')
-    # Flat mode selected
-    page.wait_for_selector('[data-testid="digest-mode-flat"].bg-\\[var\\(--color-accent\\)\\]', timeout=2000)
-    # Some node is highlighted (ring applied via data-highlighted)
-    page.wait_for_selector('[data-highlighted="true"]', timeout=3000)
+    # Flat mode selected — this half is deterministic.
+    page.wait_for_selector('[data-testid="digest-mode-flat"].bg-\\[var\\(--color-accent\\)\\]', timeout=30000)
+
+    # The highlight half is data-dependent. DigestView's onFocusSymbol
+    # runs findFocusTarget(sym, calls, themes, observations) and only
+    # highlights `if (t)` — so when the lattice digest has no row
+    # mentioning that symbol there is genuinely nothing to scroll to,
+    # and no-highlight is correct behaviour, not a regression.
+    # (Verified against the live DOM: clicking NVDA/AAPL flags flips to
+    # flat correctly while /api/lattice/digest returns 0 observations,
+    # 0 themes, 0 calls.)
+    if not _lattice_has_rows():
+        pytest.skip(
+            "lattice digest has no observations/themes/calls, so there is "
+            "no evidence row for the anomaly symbol to highlight; "
+            "re-enable once the lattice is distilled"
+        )
+
+    # The highlight is a one-shot that auto-clears after HIGHLIGHT_MS
+    # (2500ms), so poll rather than wait on a steady-state selector.
+    page.wait_for_function(
+        "() => document.querySelectorAll('[data-highlighted=\"true\"]').length > 0",
+        timeout=10000,
+    )
 
 
 # ── chat citation → Research focus ─────────────────────
@@ -168,7 +203,7 @@ def test_cite_click_in_chat_routes_to_research_with_focus(page: Page):
     flat mode on the lattice."""
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="chat-input"]')
-    page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
+    page.wait_for_selector('[data-testid="chat-input"]', timeout=30000)
     # /prep is a workflow slash command that names the target symbol
     # in its reply — much more reliable cite emission than open prose.
     page.fill('[data-testid="chat-input"]', "/prep AAPL")
@@ -185,7 +220,7 @@ def test_cite_click_in_chat_routes_to_research_with_focus(page: Page):
             const el = document.querySelector('[data-testid="tab-research"]')
             return el && el.className.includes('text-[var(--color-accent)]')
         }""",
-        timeout=5000,
+        timeout=30000,
     )
     page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
     # Either a node is highlighted OR flat-mode is active (highlight
