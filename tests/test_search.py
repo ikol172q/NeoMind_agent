@@ -316,269 +316,224 @@ class TestSearchCaching(unittest.TestCase):
         # Just verify it doesn't crash
 
 
-@unittest.skip("Incomplete implementation")
 class TestSearchExecution(unittest.TestCase):
-    """Test search execution functionality."""
+    """OptimizedDuckDuckGoSearch — the legacy fallback agent/core.py keeps.
+
+    This class carried @unittest.skip("Incomplete implementation"). The
+    tests behind it drove an API that never shipped: search_sync(query,
+    max_results) returning a list of dicts via a module-level
+    agent.search.ddg. What exists is an async search() returning
+    (ok, formatted_text), fed by _fetch_html and _parse_fast. Rewritten
+    against that, since this is the path taken whenever
+    UniversalSearchEngine fails.
+    """
 
     def setUp(self):
-        """Set up test environment."""
         self.searcher = OptimizedDuckDuckGoSearch()
 
-    def test_search_sync_mocked(self):
-        """Test synchronous search with mocked HTTP requests."""
-        query = "test query"
-        mock_results = [
-            {"title": "Test Result 1", "url": "http://example.com/1", "snippet": "Snippet 1"},
-            {"title": "Test Result 2", "url": "http://example.com/2", "snippet": "Snippet 2"}
-        ]
+    def test_should_search_on_trigger_keyword(self):
+        self.assertTrue(self.searcher.should_search("what is the latest news"))
 
-        # Mock duckduckgo_search
-        with patch('agent.search.ddg') as mock_ddg:
-            mock_ddg.return_value = mock_results
+    def test_should_search_on_time_sensitive_pattern(self):
+        self.assertTrue(self.searcher.should_search("stock price of AAPL"))
 
-            # Execute search
-            results = self.searcher.search_sync(query)
+    def test_should_not_search_for_a_timeless_question(self):
+        self.assertFalse(self.searcher.should_search("explain recursion to me"))
 
-            # Should return results
-            self.assertEqual(results, mock_results)
+    def test_custom_triggers_replace_the_default_keywords(self):
+        """Only the keyword set is swappable — time_patterns always apply.
 
-            # Should have been called with query
-            mock_ddg.assert_called_once_with(query, max_results=5)
+        Passing triggers={"bananas"} drops "news" as a keyword, but
+        should_search still matches the built-in r"latest.*news" pattern,
+        so a custom set narrows keywords without disabling the
+        time-sensitivity heuristics.
+        """
+        searcher = OptimizedDuckDuckGoSearch(triggers={"bananas"})
+        self.assertTrue(searcher.should_search("about bananas"))
+        self.assertFalse(searcher.should_search("a news article"),
+                         "'news' is no longer a trigger keyword")
+        self.assertTrue(searcher.should_search("the latest news"),
+                        "time_patterns are not affected by custom triggers")
 
-    def test_search_sync_with_custom_max_results(self):
-        """Test synchronous search with custom max_results."""
-        query = "test query"
+    def test_cached_result_round_trips(self):
+        self.searcher.cache_result("q", ["a", "b"])
+        self.assertEqual(self.searcher.get_cached_result("q"), ["a", "b"])
 
-        with patch('agent.search.ddg') as mock_ddg:
-            mock_ddg.return_value = []
+    def test_cache_miss_returns_none(self):
+        self.assertIsNone(self.searcher.get_cached_result("never asked"))
 
-            # Search with custom max_results
-            self.searcher.search_sync(query, max_results=10)
+    def test_expired_entry_is_dropped_on_read(self):
+        self.searcher.cache_result("q", ["a"])
+        self.searcher.cache["q"]["timestamp"] -= self.searcher.cache_expiration + 1
+        self.assertIsNone(self.searcher.get_cached_result("q"))
+        self.assertNotIn("q", self.searcher.cache, "read should evict, not just hide")
 
-            # Should use custom max_results
-            mock_ddg.assert_called_once_with(query, max_results=10)
+    def test_clear_expired_cache_keeps_fresh_entries(self):
+        self.searcher.cache_result("old", ["x"])
+        self.searcher.cache_result("new", ["y"])
+        self.searcher.cache["old"]["timestamp"] -= self.searcher.cache_expiration + 1
+        self.searcher.clear_expired_cache()
+        self.assertNotIn("old", self.searcher.cache)
+        self.assertIn("new", self.searcher.cache)
 
-    def test_search_sync_http_error(self):
-        """Test synchronous search handles HTTP errors."""
-        query = "error query"
+    def test_parse_fast_extracts_snippets(self):
+        html = (
+            '<html><body>'
+            '<a class="snippet">This snippet is comfortably longer than the thirty char floor.</a>'
+            '</body></html>'
+        )
+        results = self.searcher._parse_fast(html)
+        self.assertTrue(results)
+        self.assertIn("thirty char floor", results[0])
 
-        with patch('agent.search.ddg') as mock_ddg:
-            mock_ddg.side_effect = Exception("HTTP Error")
+    def test_parse_fast_drops_short_text(self):
+        html = '<html><body><a class="snippet">too short</a></body></html>'
+        self.assertEqual(self.searcher._parse_fast(html), [])
 
-            # Should handle error gracefully
-            results = self.searcher.search_sync(query)
+    def test_parse_fast_deduplicates(self):
+        one = "The very same snippet text repeated twice over here."
+        html = f'<html><body><a class="snippet">{one}</a><a class="snippet">{one}</a></body></html>'
+        self.assertEqual(len(self.searcher._parse_fast(html)), 1)
 
-            # Should return empty list on error
-            self.assertEqual(results, [])
+    def test_parse_fast_caps_at_five(self):
+        items = "".join(
+            f'<a class="snippet">Snippet number {i} padded out past the thirty char floor.</a>'
+            for i in range(12)
+        )
+        self.assertLessEqual(len(self.searcher._parse_fast(f"<html><body>{items}</body></html>")), 5)
 
-    @patch('asyncio.get_event_loop')
-    def test_search_async_mocked(self, mock_get_event_loop):
-        """Test asynchronous search with mocked HTTP requests."""
-        query = "async query"
-        mock_results = [
-            {"title": "Async Result", "url": "http://example.com", "snippet": "Async snippet"}
-        ]
+    def test_parse_fast_survives_garbage(self):
+        self.assertEqual(self.searcher._parse_fast("<<<not html"), [])
 
-        # Mock aiohttp requests
-        with patch('aiohttp.ClientSession') as mock_session_class:
-            mock_session = AsyncMock()
-            mock_response = AsyncMock()
-            mock_response.json = AsyncMock(return_value={
-                "results": mock_results
-            })
-            mock_response.status = 200
-            mock_session.get = AsyncMock(return_value=mock_response)
-            mock_session_class.return_value.__aenter__.return_value = mock_session
+    def test_search_reports_results(self):
+        html = '<html><body><a class="snippet">A result long enough to clear the floor.</a></body></html>'
+        with patch.object(self.searcher, "_fetch_html", new=AsyncMock(return_value=html)):
+            ok, text = asyncio.run(self.searcher.search("q"))
+        self.assertTrue(ok)
+        self.assertIn("Found 1 results", text)
 
-            # Mock event loop
-            mock_loop = Mock()
-            mock_loop.run_until_complete = Mock(side_effect=lambda coro: coro)
-            mock_get_event_loop.return_value = mock_loop
+    def test_search_reports_no_results(self):
+        with patch.object(self.searcher, "_fetch_html", new=AsyncMock(return_value="<html></html>")):
+            ok, text = asyncio.run(self.searcher.search("q"))
+        self.assertFalse(ok)
+        self.assertEqual(text, "No results found")
 
-            # Execute async search
-            results = self.searcher.search_async(query)
+    def test_search_turns_a_fetch_error_into_a_failed_tuple(self):
+        """Never raises into the caller — core.py treats this as a fallback."""
+        with patch.object(self.searcher, "_fetch_html", new=AsyncMock(side_effect=RuntimeError("boom"))):
+            ok, text = asyncio.run(self.searcher.search("q"))
+        self.assertFalse(ok)
+        self.assertIn("boom", text)
 
-            # Should return results
-            self.assertEqual(results, mock_results)
-
-    def test_search_async_fallback_to_sync(self):
-        """Test async search falls back to sync on error."""
-        query = "fallback query"
-        mock_results = [{"title": "Fallback Result"}]
-
-        # Mock aiohttp to raise error
-        with patch('aiohttp.ClientSession', side_effect=Exception("Async error")):
-            with patch.object(self.searcher, 'search_sync', return_value=mock_results) as mock_sync:
-                # Execute async search (should fall back to sync)
-                results = self.searcher.search_async(query)
-
-                # Should have called sync search as fallback
-                mock_sync.assert_called_once_with(query)
-                # Should return sync results
-                self.assertEqual(results, mock_results)
-
-    def test_search_with_caching(self):
-        """Test search uses caching."""
-        query = "cached search"
-        mock_results = [{"title": "Cached Result"}]
-
-        # Mock the search to return results
-        with patch.object(self.searcher, 'search_sync', return_value=mock_results) as mock_search:
-            # First search
-            results1 = self.searcher.search(query)
-
-            # Should call search_sync
-            mock_search.assert_called_once_with(query)
-            self.assertEqual(results1, mock_results)
-
-            # Reset mock
-            mock_search.reset_mock()
-
-            # Second search (should use cache)
-            results2 = self.searcher.search(query)
-
-            # Should NOT call search_sync again (cached)
-            mock_search.assert_not_called()
-            # Should return cached results
-            self.assertEqual(results2, mock_results)
-
-    def test_search_cache_miss(self):
-        """Test search when cache miss occurs."""
-        query = "uncached search"
-        mock_results = [{"title": "Uncached Result"}]
-
-        # Mock search_sync
-        with patch.object(self.searcher, 'search_sync', return_value=mock_results) as mock_search:
-            # Search with cache miss
-            results = self.searcher.search(query)
-
-            # Should call search_sync
-            mock_search.assert_called_once_with(query)
-            self.assertEqual(results, mock_results)
-
-            # Should be cached now
-            self.assertIn(query, self.searcher.cache)
+    def test_search_reports_a_timeout_as_such(self):
+        with patch.object(self.searcher, "_fetch_html", new=AsyncMock(side_effect=asyncio.TimeoutError)):
+            ok, text = asyncio.run(self.searcher.search("q"))
+        self.assertFalse(ok)
+        self.assertEqual(text, "Search timeout")
 
 
-@unittest.skip("Incomplete implementation")
 class TestDuckDuckGoSearchClass(unittest.TestCase):
-    """Test DuckDuckGoSearch class (synchronous fallback)."""
+    """DuckDuckGoSearch — the synchronous fallback."""
 
-    def test_duckduckgo_search_initialization(self):
-        """Test DuckDuckGoSearch initialization."""
-        searcher = DuckDuckGoSearch()
+    def setUp(self):
+        self.searcher = DuckDuckGoSearch()
+        self.searcher.min_interval = 0  # the real sleep is not what's under test
 
-        # Should have same interface
-        self.assertIsInstance(searcher.triggers, set)
-        self.assertIn("today", searcher.triggers)
+    def _response(self, html: str):
+        resp = MagicMock()
+        resp.text = html
+        resp.raise_for_status = MagicMock()
+        return resp
 
-    def test_duckduckgo_search_method(self):
-        """Test DuckDuckGoSearch.search method."""
-        searcher = DuckDuckGoSearch()
-        query = "test query"
-        mock_results = [{"title": "Test Result"}]
+    def test_search_formats_found_snippets(self):
+        html = (
+            '<html><body>'
+            '<a class="result__snippet">A snippet with enough characters to survive.</a>'
+            '</body></html>'
+        )
+        with patch("agent.services.search_legacy.requests.post", return_value=self._response(html)):
+            ok, text = self.searcher.search("python")
+        self.assertTrue(ok)
+        self.assertIn("python", text)
+        self.assertIn("enough characters", text)
 
-        with patch('agent.search.ddg', return_value=mock_results) as mock_ddg:
-            results = searcher.search(query)
+    def test_search_honours_max_results(self):
+        items = "".join(
+            f'<a class="result__snippet">Snippet {i} with enough characters to survive.</a>'
+            for i in range(6)
+        )
+        with patch("agent.services.search_legacy.requests.post",
+                   return_value=self._response(f"<html><body>{items}</body></html>")):
+            ok, text = self.searcher.search("q", max_results=2)
+        self.assertTrue(ok)
+        self.assertEqual(text.count("Snippet"), 2)
 
-            # Should call ddg function
-            mock_ddg.assert_called_once_with(query, max_results=5)
-            self.assertEqual(results, mock_results)
+    def test_search_reports_empty_results(self):
+        with patch("agent.services.search_legacy.requests.post",
+                   return_value=self._response("<html><body></body></html>")):
+            ok, text = self.searcher.search("q")
+        self.assertFalse(ok)
+        self.assertEqual(text, "No results found.")
 
-    def test_duckduckgo_should_search(self):
-        """Test DuckDuckGoSearch.should_search method."""
-        searcher = DuckDuckGoSearch()
-
-        # Should have same trigger detection as OptimizedDuckDuckGoSearch
-        self.assertTrue(searcher.should_search("today's news"))
-        self.assertFalse(searcher.should_search("how to code"))
+    def test_search_returns_a_tuple_on_network_error(self):
+        with patch("agent.services.search_legacy.requests.post", side_effect=OSError("no route")):
+            ok, text = self.searcher.search("q")
+        self.assertFalse(ok)
+        self.assertIn("Search failed", text)
 
 
-@unittest.skip("Incomplete implementation")
 class TestSearchResultProcessing(unittest.TestCase):
-    """Test search result processing functions."""
+    """clean_search_results / extract_main_content.
 
-    def test_clean_search_results(self):
-        """Test cleaning and formatting search results."""
-        raw_results = [
+    Both are exported but have no production caller, so these pin what
+    they do rather than what their names suggest — see the note on
+    extract_main_content below.
+    """
+
+    def test_clean_search_results_strips_and_drops_empties(self):
+        cleaned = clean_search_results([
             {"title": "  Title with extra spaces  ", "url": "http://example.com", "snippet": "Snippet here."},
-            {"title": "Another Title", "url": "https://example.org", "snippet": "Another snippet."},
-            {"title": "", "url": "", "snippet": ""},  # Empty result
-            {"title": "Valid", "url": "http://test.com", "snippet": None}  # None snippet
-        ]
+            {"title": "", "url": "", "snippet": ""},
+            {"title": "Valid", "url": "http://test.com", "snippet": None},
+        ])
+        self.assertEqual(len(cleaned), 2)
+        self.assertEqual(cleaned[0]["title"], "Title with extra spaces")
+        self.assertEqual(cleaned[1]["snippet"], "", "None snippet should become empty string")
 
-        cleaned = clean_search_results(raw_results)
-
-        # Should clean and format
-        self.assertEqual(len(cleaned), 3)  # Empty result filtered out
-
-        # Check first result
-        self.assertEqual(cleaned[0]["title"], "Title with extra spaces")  # Stripped
-        self.assertEqual(cleaned[0]["url"], "http://example.com")
-        self.assertEqual(cleaned[0]["snippet"], "Snippet here.")
-
-        # Check second result
-        self.assertEqual(cleaned[1]["title"], "Another Title")
-        self.assertEqual(cleaned[1]["url"], "https://example.org")
-        self.assertEqual(cleaned[1]["snippet"], "Another snippet.")
-
-        # Check third result (with None snippet)
-        self.assertEqual(cleaned[2]["title"], "Valid")
-        self.assertEqual(cleaned[2]["url"], "http://test.com")
-        self.assertEqual(cleaned[2]["snippet"], "")  # None converted to empty string
-
-    def test_clean_search_results_empty(self):
-        """Test cleaning empty search results."""
+    def test_clean_search_results_handles_empty_and_none(self):
         self.assertEqual(clean_search_results([]), [])
         self.assertEqual(clean_search_results(None), [])
 
-    def test_extract_main_content(self):
-        """Test extracting main content from HTML."""
-        html_content = """
+    def test_extract_main_content_removes_script_and_style_only(self):
+        """Despite the name, boilerplate is not stripped.
+
+        The implementation decomposes script and style and then dumps all
+        remaining text, so nav and footer come through. The skipped test
+        asserted they were removed; nothing calls this function, so the
+        contract to record is the real one — changing it would be a new
+        feature, not a fix.
+        """
+        html = """
         <html>
-            <head><title>Test Page</title></head>
+            <head><title>Test Page</title><style>.a{}</style></head>
             <body>
+                <script>var x = 1;</script>
                 <nav>Navigation</nav>
-                <main>
-                    <h1>Main Heading</h1>
-                    <p>Main content paragraph.</p>
-                </main>
+                <main><h1>Main Heading</h1><p>Main content paragraph.</p></main>
                 <footer>Footer content</footer>
             </body>
         </html>
         """
+        text = extract_main_content(html)
+        self.assertIn("Main content paragraph.", text)
+        self.assertNotIn("var x = 1", text)
+        self.assertNotIn(".a{}", text)
+        self.assertIn("Navigation", text)      # known gap, asserted so it is visible
+        self.assertIn("Footer content", text)  # ditto
 
-        # Test with BeautifulSoup available
-        try:
-            from bs4 import BeautifulSoup
-            content = extract_main_content(html_content)
-            self.assertIsInstance(content, str)
-            self.assertIn("Main Heading", content)
-            self.assertIn("Main content paragraph", content)
-            # Should exclude navigation and footer
-            self.assertNotIn("Navigation", content)
-            self.assertNotIn("Footer content", content)
-        except ImportError:
-            # BeautifulSoup not available, function should return original or empty
-            pass
-
-    def test_extract_main_content_no_bs4(self):
-        """Test extract_main_content when BeautifulSoup is not available."""
-        html_content = "<html><body>Test content</body></html>"
-
-        # Mock BeautifulSoup import to fail
-        with patch('agent.search.BeautifulSoup', None):
-            content = extract_main_content(html_content)
-
-            # Should return empty string or simple extraction
-            # Implementation may vary
-            self.assertIsInstance(content, str)
-
-    def test_extract_main_content_empty(self):
-        """Test extract_main_content with empty input."""
+    def test_extract_main_content_handles_empty_input(self):
         self.assertEqual(extract_main_content(""), "")
         self.assertEqual(extract_main_content(None), "")
-
 
 class TestIntegrationWithAgent(unittest.TestCase):
     """Test search integration with agent."""
