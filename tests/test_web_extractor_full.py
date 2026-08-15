@@ -24,6 +24,24 @@ except ImportError:
     HAS_HTML2TEXT = False
 
 
+
+
+def _silence_other_strategies(extractor):
+    """Patch every strategy except _try_fallback to return None.
+
+    extract() runs the whole chain (trafilatura -> readability ->
+    beautifulsoup -> playwright -> fallback) and keeps the best-scoring
+    result, so patching only _try_fallback leaves the earlier strategies
+    making real network calls — these tests were hitting example.com and
+    asserting against the live page.
+    """
+    from unittest.mock import patch
+    return [
+        patch.object(extractor, name, return_value=None)
+        for name in ("_try_trafilatura", "_try_readability",
+                     "_try_beautifulsoup", "_try_playwright")
+    ]
+
 class TestExtractedLink:
     """Test ExtractedLink dataclass."""
 
@@ -153,6 +171,8 @@ class TestWebExtractorExtract:
         from agent.web.extractor import WebExtractor
         extractor = WebExtractor()
 
+        for _cm in _silence_other_strategies(extractor):
+            _cm.start()
         with patch.object(extractor, '_try_fallback') as mock_fallback:
             mock_fallback.return_value = Mock(ok=True, content="test", strategy="fallback")
             extractor.extract("example.com")
@@ -181,6 +201,8 @@ class TestWebExtractorExtract:
         cache = URLCache()
         extractor = WebExtractor(cache=cache)
 
+        for _cm in _silence_other_strategies(extractor):
+            _cm.start()
         with patch.object(extractor, '_try_fallback') as mock_fallback:
             mock_fallback.return_value = Mock(ok=True, content="new content")
             extractor.extract("https://example.com")
@@ -193,6 +215,8 @@ class TestWebExtractorExtract:
 
         extractor = WebExtractor()
 
+        for _cm in _silence_other_strategies(extractor):
+            _cm.start()
         with patch.object(extractor, '_try_fallback') as mock_fallback:
             mock_fallback.return_value = None
             result = extractor.extract("https://example.com")
@@ -209,6 +233,8 @@ class TestWebExtractorExtract:
         with patch.object(extractor, '_try_trafilatura') as mock_traf:
             with patch.object(extractor, '_try_readability') as mock_read:
                 with patch.object(extractor, '_try_beautifulsoup') as mock_bs:
+                    for _cm in _silence_other_strategies(extractor):
+                        _cm.start()
                     with patch.object(extractor, '_try_fallback') as mock_fall:
                         # First strategy succeeds
                         mock_traf.return_value = Mock(ok=True, content="traf content", strategy="trafilatura")
@@ -227,6 +253,8 @@ class TestWebExtractorExtract:
 
         extractor = WebExtractor()
 
+        for _cm in _silence_other_strategies(extractor):
+            _cm.start()
         with patch.object(extractor, '_try_fallback') as mock_fall:
             with patch.object(extractor, '_try_beautifulsoup') as mock_bs:
                 # Fallback returns low score
@@ -404,12 +432,16 @@ class TestTrafilaturaStrategy:
             with patch('agent.web.extractor.trafilatura.extract') as mock_extract:
                 with patch('agent.web.extractor.trafilatura.extract_metadata') as mock_meta:
                     mock_fetch.return_value = "html content"
-                    mock_extract.return_value = "Extracted text"
+                    # _try_trafilatura drops anything under 50 characters
+                    # ("if not text or len(text.strip()) < 50: return None"),
+                    # so the old 14-char fixture always came back as None.
+                    extracted = "Extracted text " * 5
+                    mock_extract.return_value = extracted
                     mock_meta.return_value = Mock(title="Page Title")
 
                     result = extractor._try_trafilatura("https://example.com", 20000, True)
 
-                    assert result.content == "Extracted text"
+                    assert result.content.strip() == extracted.strip()
                     assert result.title == "Page Title"
 
     def test_try_trafilatura_fetch_fails(self):
