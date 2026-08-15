@@ -4,6 +4,7 @@ Comprehensive unit tests for agent/search/reranker.py
 Tests RRF merge and semantic reranking.
 """
 
+import numbers
 import pytest
 from unittest.mock import MagicMock, patch
 from agent.search.reranker import RRFMerger, FlashReranker, CohereReranker
@@ -330,7 +331,9 @@ class TestRerankerIntegration:
 
             if reranked and hasattr(reranked[0], 'rerank_score') and reranked[0].rerank_score:
                 # If reranking happened, score might be different
-                assert isinstance(reranked[0].rrf_score, float)
+                # Scores come back as numpy scalars, which are not
+                # instances of the builtin float.
+                assert isinstance(reranked[0].rrf_score, numbers.Real)
 
     def test_multiple_sources_rrf_ranking(self):
         """Test RRF ranking with multiple real-world sources."""

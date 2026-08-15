@@ -89,6 +89,10 @@ def bot(tmp_path):
     b._bot_id = 123
     b._last_response_time = {}
     b._last_compact_notice = None
+    # __new__ skips __init__, so every attribute the handlers touch has to be
+    # set by hand — these were added to the bot later and left unset here.
+    b._web_extractor = None
+    b._web_cache = None
 
     # Use temp ChatStore
     from agent.finance.chat_store import ChatStore
