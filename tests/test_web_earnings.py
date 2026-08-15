@@ -109,7 +109,10 @@ def test_earnings_empty_state_when_no_us_watchlist(page: Page):
             const t = el.innerText.toLowerCase()
             return t.includes('empty') || t.includes('add us symbols')
         }""",
-        timeout=10000,
+        # Measured: the widget sits on "loading…" and resolves to the
+        # empty copy somewhere between 5s and 15s, so a 10s budget was
+        # landing on the boundary.
+        timeout=45000,
     )
 
 
