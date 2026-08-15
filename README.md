@@ -117,6 +117,39 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 
 ## Architecture
 
+> ### ⚠️ Architecture in migration — frontend contract extraction (started 2026-08-06)
+>
+> **The diagrams below describe the architecture as it is today, which is the one being dismantled.**
+> Read them as the starting point, not the target.
+>
+> NeoMind has no separable frontend. `cli/neomind_interface.py` is at once the terminal rendering,
+> the wiring between the agent and that terminal, and the owner of 21 slash-command branches — so a
+> second frontend (a TUI, an editor client, anything) cannot exist without duplicating agent
+> behaviour. The migration extracts one **internal Python frontend contract**: an `AgentSession`
+> that owns each session and hands frontends *snapshots and events* instead of mutable agent
+> internals, with a single authoritative `ToolExecutor` behind which validation, capability
+> filtering, permission policy, approval matching and audit all live.
+>
+> Dependency direction after the migration: the runtime must not import a frontend. That is enforced
+> by a test (`tests/runtime/test_import_boundary.py`), not by convention.
+>
+> **Where it stands**
+>
+> | Phase | State |
+> |---|---|
+> | 0 — baseline + safety containment | done (2026-08-07) |
+> | 1 — runtime contract + `ToolExecutor` | substantially done — `agent/runtime/` (events, ports, permissions, tool_executor) with 66 passing runtime tests |
+> | 2 — LLM streaming port | **next** |
+> | 3–6 — `AgentSession`, headless, REPL, Telegram, commands/config, fleet | pending |
+> | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
+>
+> `plans/2026-08-06_frontend-contract-cli-tui-decoupling-plan.md` is authoritative — §11 is the
+> live tracker, and no phase may be marked complete on code review, mocks or skipped tests alone.
+> The plan also records why two candidate harnesses (`badlogic/pi-mono` and DeepSeek Harness) were
+> examined at source in the D7 addendum: pi independently arrived at the same dependency direction,
+> and DeepSeek Harness ships an Agent Client Protocol server, which makes ACP a concrete option to
+> weigh at Phase 7 once the event set is frozen.
+
 ### System Overview
 
 ```mermaid

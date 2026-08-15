@@ -1,12 +1,16 @@
 # NeoMind Frontend Contract + CLI/TUI Decoupling Plan
 
 **Date:** 2026-08-06  
-**Status:** PHASE 0 GATES PASSED (2026-08-07) — containment implemented, real-provider smokes green
-(DeepSeek primary, Kimi second-provider switch, local MLX), bot token rotated and re-verified by a
-real Telethon run. The provider gate had been blocked not by invalid or expired credentials but by
-missing environment injection; see the 2026-08-07 record in §5. Phase 1 may begin. Open items are
-debt, not gates: file-descriptor diagnostics, the Python 3.14 collection gap, the GLM account
-balance, and an uncommitted working tree.  
+**Status:** PHASE 1 SUBSTANTIALLY DONE (2026-08-15) — **Phase 2 is the next step.** §11 is the
+authoritative tracker; read it before this header. Phase 0 gates passed 2026-08-07 (containment
+implemented, real-provider smokes green across DeepSeek / Kimi / local MLX, bot token rotated and
+re-verified by a real Telethon run; the provider gate had been blocked by missing environment
+injection rather than bad credentials — see the 2026-08-07 record in §5). Phase 1 landed frozen
+events, ports, policy and a single `ToolExecutor` in commits 8133280 and 2cac93c; 66 runtime tests
+pass on py3.9. Two Phase 1 items are deliberately carried into Phase 3: `AgentSession` itself, and
+moving the loop's read-before-edit / PreToolUse pre-checks into executor guards. Open items are
+debt, not gates: file-descriptor diagnostics, the Python 3.14 collection gap, and the GLM account
+balance.  
 **Audit state:** every baseline source claim in §2 was read against source (not README summaries) on
 2026-08-06, and both test baselines in §2.8 were reproduced before implementation. Phase 0's current
 state and evidence are recorded in §5. Line numbers are accompanied by symbol names because line
@@ -387,6 +391,51 @@ until the contract is proven.
 
 The first frontend contract is an internal Python API. ACP/MCP-style remote protocols, plugin
 markets, and cross-process event transport are separate future decisions.
+
+#### D7 addendum — candidate harnesses examined 2026-08-15 (D7 unchanged)
+
+The operator asked whether **pi** (`badlogic/pi-mono`) and the **DeepSeek Harness**
+(`deepseek-ai/dsh`) could serve as references or as direct candidates. Both were read at source in a
+fresh clone rather than from their READMEs. Findings, and why they do not move D7 yet:
+
+**pi — 10 packages, 1402 files.** Its internal dependency graph is the target shape §4.1 describes,
+independently arrived at:
+
+```text
+protocol → (nothing)      tui → (nothing)      telemetry → (nothing)
+ai       → telemetry      agent → ai, telemetry          ← core knows no UI
+coding-agent → agent, ai, client, protocol, tui          ← the only composition root
+```
+
+`tui` depends on nothing and `agent` depends on no UI; exactly one package knows both. NeoMind's
+missing piece is that composition root — `cli/neomind_interface.py` is simultaneously the wiring,
+the rendering, and the owner of 21 command branches (measured 2026-08-15; 7 delegate to `agent.*`
+in 6–7 lines, ~9 are genuine UI concerns, 5 are agent capabilities reachable only from the CLI, and
+`/evidence` alone is 162 lines — five times the next largest).
+
+pi's protocol is bespoke: a 4-byte big-endian length prefix over CBOR, nine commands (`list`,
+`create`, `attach`, `detach`, `prompt`, `steer`, `abort`, `set_model`, `set_thinking`) and seven
+error codes. `attach`/`detach`/`list` imply multi-client access to a running session, and `steer`
+is mid-generation intervention; NeoMind has neither today.
+
+**DeepSeek Harness — 49 packages.** Its `@deepseek-ai/dsh-acp` package is described in its own
+`package.json` as an "Automation-only Agent Client Protocol server for driving DeepSeek Harness
+agents over JSON-RPC stdio" and depends on `@agentclientprotocol/sdk`. So DSH speaks **ACP**, the
+open standard, rather than a private protocol. ACP has an official Python SDK
+(`pip install agent-client-protocol`, Pydantic models + async base classes + JSON-RPC transport),
+so the Python side of that route needs no hand-written codec.
+
+**Why D7 still stands.** Both are TypeScript, so "adopt directly" necessarily means a cross-process
+boundary — which is what D7 defers, not what it forbids. More decisively, an ACP or pi-protocol
+server is an *adapter over an event stream*, and the event stream is what Phases 2–3 create. There
+is nothing to map until `LLMPort` emits real incremental chunks and `AgentSession` owns turns. Doing
+the protocol first would mean designing a wire format against internals that are still moving.
+
+**What this changes.** Nothing in the phase order. It does two things: it confirms §4.1's dependency
+direction against a working system rather than an argument, and it makes ACP the specific candidate
+to weigh at Phase 7 — the choice there is no longer "Textual TUI vs nothing" but "Textual TUI, or an
+ACP server that any conforming client can drive, or both". Revisit at Phase 7 with the event set
+frozen, and judge it then on whether the event set maps cleanly onto ACP's session model.
 
 ### D8 — One temporary rollback switch is allowed
 
@@ -1190,7 +1239,7 @@ This plan does not authorize or require:
 | 5 — Telegram migration | Pending | — |
 | 6A — commands/config/store boundaries | Pending | — |
 | 6B — fleet turn/lifecycle boundaries | Pending | — |
-| 7 — Textual TUI | Pending | — |
+| 7 — Textual TUI | Pending | candidate set widened 2026-08-15: Textual TUI, an ACP server (official Python SDK; DeepSeek Harness ships one), or both — see the D7 addendum |
 | 8 — compatibility retirement | Pending | — |
 
 No phase may be marked complete based only on code review, imports, mocks, curl, or skipped tests.
