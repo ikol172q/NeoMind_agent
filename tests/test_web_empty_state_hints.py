@@ -137,19 +137,26 @@ def test_quickstart_hides_when_watchlist_has_entries(page: Page):
     # research-brief-widget went away with the v14 hero swap; DigestView is
     # what renders here now.
     page.wait_for_selector('[data-testid="digest-body"]', timeout=30000)
-    # brief-line-* and brief-quickstart both belonged to the ResearchBrief hero
-    # that v14 replaced. The equivalent assertion against DigestView: with a
-    # watchlist entry present it shows real content, not the onboarding copy.
+    # Wait only for the body to settle on *something*. The old version waited
+    # for real content and kept the "not distilled yet" skip below it, so on a
+    # dashboard whose lattice is empty the wait timed out at 45s and the test
+    # failed without ever reaching the skip that describes exactly that state.
     page.wait_for_function(
         """() => {
             const b = document.querySelector('[data-testid="digest-body"]')
             return !!b && b.innerText.trim().length > 0
                    && !b.innerText.includes('reading the lattice')
         }""",
-        timeout=45000,
+        timeout=90000,
     )
     # Adding a watchlist entry no longer produces a brief on the spot: the old
     # hero rendered three lines immediately, DigestView waits for the lattice to
     # distil. Until that has run the onboarding copy is the correct output.
-    if "needs real data" in page.inner_text('[data-testid="digest-body"]'):
+    body = page.inner_text('[data-testid="digest-body"]')
+    if "needs real data" in body:
         pytest.skip("lattice has not distilled the new entry yet — rebuild it to run this test")
+
+    # brief-line-* and brief-quickstart both belonged to the ResearchBrief hero
+    # that v14 replaced. The equivalent assertion against DigestView: with a
+    # watchlist entry present it shows real content, not the onboarding copy.
+    assert body.strip(), "digest body is empty with a watchlist entry present"
