@@ -98,6 +98,14 @@ dev = [
     "pytest",
     "pytest-asyncio>=1.2.0",
     "pytest-timeout",
+    # Both are import-time requirements of the test suite, not optional extras:
+    # without playwright 24 web test files fail collection and without
+    # hypothesis one more does. They were installed by hand in .venv and never
+    # declared, so .venv passed while the py3.14 venv reported 25 collection
+    # errors — a "dual-environment" claim that only ever held in one of them.
+    # A fresh `pip install -e ".[dev]"` must be able to collect the suite.
+    "playwright",
+    "hypothesis",
     "black",
     "isort",
 ]

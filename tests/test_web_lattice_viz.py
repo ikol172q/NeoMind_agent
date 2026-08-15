@@ -318,7 +318,16 @@ def test_click_membership_edge_shows_exact_computation_from_graph(page, graph):
     assert membership, "need at least one membership edge to test"
     e = membership[0]
     sel = f'[data-edge-source="{e["source"]}"][data-edge-target="{e["target"]}"]'
-    page.locator(sel).click(force=True)
+    # dispatch_event, not click(force=True). Edges are SVG paths that
+    # overlap heavily near a shared endpoint, and force=True only skips
+    # the actionability wait — the event is still delivered to whatever
+    # sits topmost at that coordinate. Here it consistently landed on
+    # obs_anomaly_near_52w_with_earnings_001 -> theme_near_highs instead
+    # of the intended -> subtheme_event_risk, and the panel then showed
+    # that edge's 1/2 against the intended edge's 1/3. The "zero drift"
+    # this test guards was never actually violated; it was comparing two
+    # different edges. dispatch_event goes straight to the element.
+    page.locator(sel).dispatch_event("click")
     page.wait_for_selector('[data-testid="trace-edge-computation-membership"]',
                            state="attached", timeout=5000)
     d = e["computation"]["detail"]
