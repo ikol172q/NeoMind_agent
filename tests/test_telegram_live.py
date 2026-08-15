@@ -354,7 +354,10 @@ class TestEvidenceCommand:
 
 class TestUnknownCommand:
     def test_typo_suggestion(self, bot):
-        update = make_update("/model chat")
+        # "/model" is a real command now and is the suggestion *target*, not a
+        # key — sending it falls through to the LLM. "/modes" is the typo the
+        # handler actually maps to "/mode".
+        update = make_update("/modes chat")
         asyncio.run(bot._handle_unknown_command(update, make_context()))
         reply = get_reply_text(update)
         assert "/mode" in reply
