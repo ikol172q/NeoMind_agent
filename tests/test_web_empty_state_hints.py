@@ -74,7 +74,7 @@ def page(browser) -> Page:
 
 
 def test_watchlist_empty_hint_names_each_feature(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     goto_legacy(page)
     # The hint only renders when the watchlist is actually empty, and the
     # widgets themselves moved to LegacyTab in V11. A dashboard with entries
@@ -91,7 +91,7 @@ def test_watchlist_empty_hint_names_each_feature(page: Page):
 
 
 def test_portfolio_empty_hint_routes_to_paper(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     goto_legacy(page)
     if not page.query_selector('[data-testid="portfolio-empty-hint"]'):
         pytest.skip("portfolio is not empty on this dashboard — clear it to run this test")
@@ -104,7 +104,7 @@ def test_portfolio_empty_hint_routes_to_paper(page: Page):
 
 
 def test_brief_shows_quickstart_on_fresh_install(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     goto_tab(page, "research")
     # v14 swapped the ResearchBrief hero for DigestView, taking brief-quickstart
     # with it. The fresh-install guidance now lives in DigestView's own empty
@@ -132,7 +132,7 @@ def test_quickstart_hides_when_watchlist_has_entries(page: Page):
     )
     urllib.request.urlopen(req, timeout=5).read()
 
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     goto_tab(page, "research")
     # research-brief-widget went away with the v14 hero swap; DigestView is
     # what renders here now.

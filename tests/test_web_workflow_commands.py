@@ -92,14 +92,14 @@ def page(browser) -> Page:
 
 
 def _open_chat(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     page.wait_for_selector('[data-testid="chat-input"]')
-    page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
+    page.wait_for_selector('[data-testid="chat-input"]', timeout=30000)
 
 
 def _type_and_wait_for_request(page: Page, text: str, url_predicate):
     page.fill('[data-testid="chat-input"]', text)
-    with page.expect_request(url_predicate, timeout=20000) as req_info:
+    with page.expect_request(url_predicate, timeout=60000) as req_info:
         page.click('[data-testid="chat-send"]')
     return req_info.value
 
@@ -117,7 +117,12 @@ def _latest_stream_request_audit():
 
 
 
-def _wait_for_reply(page, needle, timeout=30000):
+# 90s, not 30s: the agent answers a slash command in ~14s on an idle
+# dashboard, but the full suite drives the same backend from many
+# browsers at once and every test in this file waits on a streamed
+# reply. A rotating subset of them timed out in four consecutive
+# full runs while the file passed alone every time.
+def _wait_for_reply(page, needle, timeout=90000):
     """Wait until the chat transcript contains `needle`.
 
     Replies stream in; a fixed wait_for_timeout samples a pane holding only
@@ -158,7 +163,7 @@ def test_brief_system_prompt_has_project_snapshot(page: Page):
     # needs the upstream to actually answer.
     if not page.query_selector('[data-testid^="audit-link-"]'):
         try:
-            page.wait_for_selector('[data-testid^="audit-link-"]', timeout=30000)
+            page.wait_for_selector('[data-testid^="audit-link-"]', timeout=90000)
         except Exception:
             pytest.skip("reply produced no audit link — upstream did not answer")
     sys_prompt = _latest_stream_request_audit()
@@ -183,7 +188,7 @@ def test_prep_requires_symbol(page: Page):
             const t = m.innerText
             return t.includes('用法') || t.includes('AAPL')
         }""",
-        timeout=30000,
+        timeout=90000,
     )
     msgs_text = page.evaluate(
         "document.querySelector('[data-testid=\"chat-messages\"]').innerText"
@@ -210,7 +215,7 @@ def test_prep_system_prompt_has_symbol_snapshot(page: Page):
     # needs the upstream to actually answer.
     if not page.query_selector('[data-testid^="audit-link-"]'):
         try:
-            page.wait_for_selector('[data-testid^="audit-link-"]', timeout=30000)
+            page.wait_for_selector('[data-testid^="audit-link-"]', timeout=90000)
         except Exception:
             pytest.skip("reply produced no audit link — upstream did not answer")
     sys_prompt = _latest_stream_request_audit()

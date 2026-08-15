@@ -98,7 +98,7 @@ def _open_research(page: Page):
     # Don't wait for networkidle — the watchlist + quote widgets poll
     # on intervals, so the network is never truly idle. DOM ready is
     # sufficient; we then wait for the specific selector we need.
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
     goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-widget"]', timeout=30000)
 
