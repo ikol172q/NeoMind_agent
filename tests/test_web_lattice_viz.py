@@ -47,16 +47,73 @@ def _fetch_graph() -> dict:
         return json.loads(r.read())
 
 
+def _graph_identity(g: dict):
+    """Node and edge ids, not counts.
+
+    /graph exposes no dep_hash, and counts are too weak a fingerprint:
+    a recompute that swaps obs_near_52w_low_002 for _003 leaves every
+    count identical while changing what the page draws, which is
+    exactly the mismatch that read as "phantom edge in DOM".
+    """
+    return (
+        frozenset(n["id"] for n in g.get("nodes") or []),
+        frozenset((e["source"], e["target"]) for e in g.get("edges") or []),
+    )
+
+
+def _stable_graph(attempts: int = 3):
+    """A graph snapshot two consecutive fetches agree on, or None."""
+    prev = _fetch_graph()
+    for _ in range(attempts):
+        cur = _fetch_graph()
+        if _graph_identity(prev) == _graph_identity(cur):
+            return cur
+        prev = cur
+    return None
+
+
 @pytest.fixture(scope="module")
-def graph():
+def graph_initial():
     if not _backend_up():
         pytest.skip(f"backend not reachable at {BASE_URL}")
     return _fetch_graph()
 
 
+@pytest.fixture
+def graph(page):
+    """The graph payload **the page itself received**.
+
+    Comparing the DOM against a separately-fetched graph is a race no
+    amount of bracketing closes: the module-scoped version was read once
+    at module start, a per-test re-read still lands at a different
+    instant than the SPA's own fetch, and even requiring two consecutive
+    identical reads is too weak — a recompute that swaps
+    obs_near_52w_low_002 for _003 leaves every count identical while
+    changing what gets drawn. Each variant surfaced the same way: a
+    "phantom edge in DOM" that was simply an edge from a newer graph.
+
+    So take the answer off the wire. This returns a dict seeded from a
+    stable fetch (for tests that never enter trace mode) which
+    _open_trace then overwrites in place with the exact body the browser
+    got, leaving the window at zero. The mutable-holder shape is what
+    keeps all 16 tests' signatures untouched.
+    """
+    if not _backend_up():
+        pytest.skip(f"backend not reachable at {BASE_URL}")
+    seed = _stable_graph()
+    if seed is None:
+        pytest.skip(
+            "the lattice graph changed on every consecutive read; "
+            "re-run when the scheduler is quieter"
+        )
+    holder = dict(seed)
+    page._graph_holder = holder
+    return holder
+
+
 @pytest.fixture(scope="module")
-def browser(graph):
-    if not graph.get("nodes"):
+def browser(graph_initial):
+    if not graph_initial.get("nodes"):
         pytest.skip("graph empty")
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
@@ -64,10 +121,23 @@ def browser(graph):
         b.close()
 
 
+def _capture_graph(page):
+    """Record the body of the SPA's own /api/lattice/graph fetch."""
+    def _on_response(resp):
+        if "/api/lattice/graph" not in resp.url:
+            return
+        try:
+            page._captured_graph = resp.json()
+        except Exception:
+            pass
+    page.on("response", _on_response)
+
+
 @pytest.fixture
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    _capture_graph(page)
     yield page
     ctx.close()
 
@@ -95,6 +165,15 @@ def _open_trace(page: Page):
         pytest.skip("lattice has no distilled data on this dashboard — seed it to run this test")
 
     page.wait_for_timeout(500)
+
+    # Swap in the payload the browser actually rendered from, so the
+    # assertions below compare the DOM against its own source rather
+    # than against a second, later read of a moving lattice.
+    captured = getattr(page, "_captured_graph", None)
+    holder = getattr(page, "_graph_holder", None)
+    if captured and holder is not None:
+        holder.clear()
+        holder.update(captured)
 
 
 # ── DOM zero-ghost invariants ──────────────────────────

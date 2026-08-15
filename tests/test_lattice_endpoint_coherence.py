@@ -44,17 +44,43 @@ def _skip_if_no_backend():
         pytest.skip(f"backend not reachable at {BASE_URL}")
 
 
+def _dep_hash(calls: dict) -> str | None:
+    return (calls.get("run_meta") or {}).get("dep_hash")
+
+
 @pytest.fixture(scope="module")
 def payloads():
-    """Fetch all four endpoints once per module run. /graph builds
-    off /calls, so calling them in sequence lets the 60s router
-    cache serve /graph cheaply."""
-    return {
-        "observations": _fetch(f"api/lattice/observations?project_id={PROJECT}"),
-        "themes":       _fetch(f"api/lattice/themes?project_id={PROJECT}"),
-        "calls":        _fetch(f"api/lattice/calls?project_id={PROJECT}"),
-        "graph":        _fetch(f"api/lattice/graph?project_id={PROJECT}"),
-    }
+    """Fetch all four endpoints from one consistent lattice state.
+
+    /graph builds off /calls, and the original version leaned on the
+    60s router cache to keep the two in step. That holds when the
+    machine is idle and the four calls take a second; it does not hold
+    during a full suite run, where each fetch can take tens of seconds,
+    the cache lapses mid-batch, and /graph gets recomputed from newer
+    data than /calls. Every coherence assertion then fails at once
+    against a batch that was never a single state — five tests that
+    pass alone every time and failed together in two long runs.
+
+    So bracket the batch with calls.run_meta.dep_hash and re-fetch if
+    the lattice moved underneath it. A real serialisation bug survives
+    a re-fetch; a race does not.
+    """
+    for _ in range(3):
+        before = _fetch(f"api/lattice/calls?project_id={PROJECT}")
+        payload = {
+            "observations": _fetch(f"api/lattice/observations?project_id={PROJECT}"),
+            "themes":       _fetch(f"api/lattice/themes?project_id={PROJECT}"),
+            "calls":        before,
+            "graph":        _fetch(f"api/lattice/graph?project_id={PROJECT}"),
+        }
+        after = _fetch(f"api/lattice/calls?project_id={PROJECT}")
+        if _dep_hash(before) is not None and _dep_hash(before) == _dep_hash(after):
+            return payload
+    pytest.skip(
+        "the lattice recomputed during every attempt to read all four "
+        "endpoints, so no batch describes one state; re-run when the "
+        "scheduler is quieter"
+    )
 
 
 # ── Observation-set agreement ──────────────────────────
