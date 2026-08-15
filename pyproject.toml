@@ -28,6 +28,11 @@ dependencies = [
     "openai>=1.0.0",
     "python-dotenv>=1.0.0",
     "requests>=2.31.0",
+    # imported by agent/llm_url_guard.py, integration/telegram_bot.py,
+    # finance/cockpit.py, data_sources/sec_edgar.py and the runtime's
+    # OpenAI-compatible stream adapter, but declared nowhere until now —
+    # a clean install would have failed at import, not at install.
+    "httpx>=0.27",
     "PyYAML>=6.0",
     "prompt_toolkit>=3.0.0",
     "rich>=13.0.0",

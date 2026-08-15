@@ -1,7 +1,7 @@
 # NeoMind Frontend Contract + CLI/TUI Decoupling Plan
 
 **Date:** 2026-08-06  
-**Status:** PHASE 1 SUBSTANTIALLY DONE (2026-08-15) — **Phase 2 is the next step.** §11 is the
+**Status:** PHASE 2 SUBSTANTIALLY DONE (2026-08-15) — **Phase 3 is the next step.** §11 is the
 authoritative tracker; read it before this header. Phase 0 gates passed 2026-08-07 (containment
 implemented, real-provider smokes green across DeepSeek / Kimi / local MLX, bot token rotated and
 re-verified by a real Telethon run; the provider gate had been blocked by missing environment
@@ -1233,7 +1233,7 @@ This plan does not authorize or require:
 |---|---|---|
 | 0 — baseline + safety containment | Gates passed 2026-08-07 (commit pending) | containment implemented; dual-env automated suites and real headless/iTerm2 flows pass; router env repaired → DeepSeek `alive`, Kimi `42`, local MLX `42` (GLM 429 balance, non-gating); bot token rotated, old token proved dead via `getMe` 401, Telethon smoke 8 PASS / 0 FAIL; log leak contained with 0 token hits post-fix |
 | 1 — runtime contract + ToolExecutor | Substantially done (8133280, 2cac93c) | frozen events + ports + policy + single ToolExecutor; real-registry integration (caught a wrong param-name assumption on write); AST + subprocess import boundary; AgenticLoop dispatch switchable through the executor with the switch asserted from both sides; 66 runtime tests py3.9, 209 incl. regression suites py3.14; cross-mode boot smoke green. Open: AgentSession itself, and moving the loop's read-before-edit / PreToolUse pre-checks into executor guards (Phase 3). |
-| 2 — LLM streaming port | Pending | — |
+| 2 — LLM streaming port | Substantially done (2026-08-15) | `agent/runtime/llm_stream.py` (frozen chunks + typed retryable errors), `agent/runtime/providers/openai_sse.py` (httpx async, pure `parse_sse_frame`), `agent/runtime/usage_accounting.py`; 118 runtime tests. Gates: fixtures replay to an identical ordered trace twice; a real DeepSeek call yields 7 text + 5 thinking chunks, usage (96/13/109) and finish_reason (proved to hit the network — a bogus key fails it with the provider's own 401); a second provider fixture runs through the same parser unchanged; early exit + `aclose()` closes the response; stdout and stderr are empty across a full stream; real provider usage drives the real `/cost` to `Tokens: 86 in / 18 out` and `$1.3700` on a priced fixture. Open: the loop still runs on `code_commands.stream_response()` — cutting it over, the legacy renderer adapter and double-history-write prevention move with `AgentSession` in Phase 3; "one terminal event" is a session-layer assertion and is deferred with it. |
 | 3 — AgentSession + headless | Pending | — |
 | 4 — Prompt REPL migration | Pending | — |
 | 5 — Telegram migration | Pending | — |

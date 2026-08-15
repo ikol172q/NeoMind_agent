@@ -139,8 +139,9 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > |---|---|
 > | 0 — baseline + safety containment | done (2026-08-07) |
 > | 1 — runtime contract + `ToolExecutor` | substantially done — `agent/runtime/` (events, ports, permissions, tool_executor) with 66 passing runtime tests |
-> | 2 — LLM streaming port | **next** |
-> | 3–6 — `AgentSession`, headless, REPL, Telegram, commands/config, fleet | pending |
+> | 2 — LLM streaming port | substantially done — `agent/runtime/llm_stream.py` + `providers/openai_sse.py`, verified against a real DeepSeek stream |
+> | 3 — `AgentSession` + headless | **next** |
+> | 4–6 — REPL, Telegram, commands/config, fleet | pending |
 > | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
 >
 > `plans/2026-08-06_frontend-contract-cli-tui-decoupling-plan.md` is authoritative — §11 is the

@@ -11,6 +11,7 @@ on the runtime. Nothing here may reference a concrete frontend or provider.
 from __future__ import annotations
 
 from typing import (
+    TYPE_CHECKING,
     Any,
     AsyncIterator,
     Dict,
@@ -20,6 +21,9 @@ from typing import (
     Protocol,
     runtime_checkable,
 )
+
+if TYPE_CHECKING:  # import-only: ports must not pull adapters in at runtime
+    from agent.runtime.llm_stream import StreamChunk
 
 
 @runtime_checkable
@@ -68,14 +72,24 @@ class LLMPort(Protocol):
     Yields incremental chunks. A port that returns the finished string and
     emits it as a single delta is not streaming — that is what QueryEngine did,
     and it is why nothing built on it could render progressively.
+
+    Phase 2 narrowed the yield type from ``Dict[str, Any]`` to the frozen
+    chunk classes in ``agent.runtime.llm_stream``. The dict version was a
+    placeholder written before any adapter existed; a bag of keys pushes the
+    "which shape is this" question onto every consumer, which is the same
+    class of drift the ToolRegistryPort docstring describes. Nothing
+    implemented the old signature, so nothing had to change with it.
+
+    Failures are raised as ``LLMStreamError`` subclasses rather than yielded,
+    so a consumer cannot accidentally treat an error as content.
     """
 
-    async def stream(
+    def stream(
         self,
         messages: List[Dict[str, Any]],
         model: str,
         **kwargs: Any,
-    ) -> AsyncIterator[Dict[str, Any]]: ...
+    ) -> AsyncIterator["StreamChunk"]: ...
 
 
 @runtime_checkable

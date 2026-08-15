@@ -1,0 +1,11 @@
+: keep-alive
+data: {"id":"c1","choices":[{"index":0,"delta":{"role":"assistant","content":""}}]}
+
+data: {"id":"c1","choices":[{"index":0,"delta":{"reasoning_content":"The user asks for "}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{"reasoning_content":"two plus two."}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{"content":"<｜end▁of▁thinking｜>"}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Four."}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{"content":"\n\n"}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{"content":"Ask me another."}}]}
+data: {"id":"c1","choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18,"prompt_cache_hit_tokens":8}}
+data: [DONE]
