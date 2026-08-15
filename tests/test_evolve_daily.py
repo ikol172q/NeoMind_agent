@@ -40,7 +40,62 @@ LOW = [
 ]
 
 
+# Everything _patch_common overwrites, so it can be put back. These are
+# module-level attributes on shared modules: leaving them replaced made
+# fin_outcome.backfill return {"ok", "n_scored"} for the rest of the session,
+# and tests/test_fin_outcome.py then died on KeyError: 'n_failed'. Same for
+# fin_rollout.build_seeds and tests/test_fin_rollout.py.
+_PATCH_TARGETS = (
+    (lambda: J, "ensure_schema"),
+    (lambda: J, "connect"),
+    (lambda: J, "dao"),
+    (lambda: fin_evolve, "PROPOSALS_ROOT"),
+    (lambda: fin_evolve, "SYSTEM_MD"),
+    (lambda: fin_evolve, "_iter_episodes"),
+    (lambda: fin_rollout, "run_rollouts"),
+    (lambda: fin_rollout, "build_seeds"),
+    (lambda: fin_outcome, "backfill"),
+)
+
+_ORIGINALS: dict = {}
+
+
+def _save_originals():
+    if _ORIGINALS:
+        return
+    for get_mod, name in _PATCH_TARGETS:
+        mod = get_mod()
+        _ORIGINALS[(mod.__name__, name)] = getattr(mod, name, _MISSING)
+
+
+class _MISSING:
+    pass
+
+
+def _restore_originals():
+    for get_mod, name in _PATCH_TARGETS:
+        mod = get_mod()
+        original = _ORIGINALS.get((mod.__name__, name), _MISSING)
+        if original is _MISSING:
+            if hasattr(mod, name):
+                delattr(mod, name)
+        else:
+            setattr(mod, name, original)
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _restore_patched_modules():
+    """Undo _patch_common's module surgery after every test in this file."""
+    _save_originals()
+    yield
+    _restore_originals()
+
+
 def _patch_common(tmp):
+    _save_originals()
     # Mock the persistence layer so no real DB is touched.
     J.ensure_schema = lambda: None
     J.connect = lambda: _FakeConn()
