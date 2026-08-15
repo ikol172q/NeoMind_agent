@@ -89,3 +89,72 @@ def _stop_leaked_heartbeats():
     except Exception:
         return
     stop_all_heartbeats()
+
+
+# ── shared live-dashboard state ────────────────────────
+
+_DASH = "http://127.0.0.1:8001/"
+_DASH_PROJECT = "fin-core"
+
+
+def _watchlist_entries():
+    """Current watchlist, or None when the dashboard isn't answering."""
+    import json
+    import urllib.request
+    try:
+        with urllib.request.urlopen(
+            _DASH + f"api/watchlist?project_id={_DASH_PROJECT}", timeout=5
+        ) as r:
+            return json.loads(r.read()).get("entries", []) or []
+    except Exception:
+        return None
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _restore_dashboard_watchlist():
+    """Put back watchlist entries a module wiped off the shared dashboard.
+
+    Thirteen web/lattice test modules empty the whole watchlist in their
+    setup — legitimately, since they test empty states or want a known
+    starting point — but none of them put it back. Whichever module ran
+    next then saw a dashboard with nothing to distil: the lattice fell to
+    its "needs real data" copy, so the 16 lattice_viz tests skipped as
+    undistilled and a rotating handful of others failed outright. Which
+    ones got hit depended only on collection order, which is why the
+    full-run failures reshuffled every run while each file passed alone.
+
+    Restoring is additive on purpose — it re-POSTs entries that went
+    missing and never deletes. A cleanup fixture that removes things is
+    one more polluter, and the whole point here is to stop being one.
+
+    No-ops when the dashboard isn't running, so the non-web suite is
+    unaffected beyond one cheap request per module.
+    """
+    before = _watchlist_entries()
+    yield
+    if before is None:
+        return
+    after = _watchlist_entries()
+    if after is None:
+        return
+    have = {(e.get("symbol"), e.get("market")) for e in after}
+    import json
+    import urllib.request
+    for e in before:
+        key = (e.get("symbol"), e.get("market"))
+        if key in have:
+            continue
+        try:
+            req = urllib.request.Request(
+                _DASH + f"api/watchlist?project_id={_DASH_PROJECT}",
+                data=json.dumps({
+                    "symbol": e.get("symbol"),
+                    "market": e.get("market", "US"),
+                    "note": e.get("note", "") or "",
+                }).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            urllib.request.urlopen(req, timeout=5).read()
+        except Exception:
+            pass
