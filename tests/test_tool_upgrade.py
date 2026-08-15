@@ -20,7 +20,10 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Set a dummy API key for tests
-os.environ["DEEPSEEK_API_KEY"] = "test-key-for-tests"
+# setdefault, not assignment: this runs at import time, so a plain
+# assignment clobbers the real key for every test collected after
+# this module and silently 401s anything that makes a live call.
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-key-for-tests")
 
 
 # ─── Step 1: Tool→LLM Integration ───────────────────────────────────────────
