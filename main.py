@@ -159,8 +159,13 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
     import json as _json
     import re as _re
 
-    # Suppress all status/debug output in headless mode
+    # Suppress all status/debug output in headless mode.
+    # logging.disable() is process-global and was never undone, so anything
+    # that called headless_main and kept running — a long-lived host, or the
+    # test suite — had every logger silently dead from then on. Restore the
+    # previous level on the way out.
     import logging
+    _prev_logging_disable = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
 
     try:
@@ -339,6 +344,8 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         else:
             print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        logging.disable(_prev_logging_disable)
 
 
 def main():
