@@ -16,7 +16,10 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+# V11 moved the widget grid (Watchlist, News, ...) off Research into
+# LegacyTab, reachable only through Settings. These tests drive those
+# widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab
 
 BASE_URL = "http://127.0.0.1:8001/"
 PROJECT = "fin-core"
@@ -95,7 +98,7 @@ def _seed_watch(symbol: str):
 def test_ask_agent_surfaces_context_chip(page: Page):
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)
@@ -108,7 +111,7 @@ def test_ask_agent_surfaces_context_chip(page: Page):
 def test_context_clear_button_drops_the_chip(page: Page):
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)
@@ -122,7 +125,7 @@ def test_send_includes_context_symbol_query_param(page: Page):
     — otherwise the chip is lying about enriching the next send."""
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
@@ -144,7 +147,7 @@ def test_audit_request_contains_dashboard_state_block(page: Page):
     server-side injector built."""
     _seed_watch("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    goto_tab(page, "research")
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-ask-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-ask-US-AAPL"]')
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)
