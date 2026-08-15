@@ -1,6 +1,7 @@
 """End-to-end validation for the multi-symbol comparison chart."""
 from __future__ import annotations
 
+import json
 import urllib.request
 
 import pytest
@@ -12,6 +13,7 @@ from playwright.sync_api import Page, sync_playwright
 from tests.web_nav import goto_legacy, goto_tab
 
 BASE_URL = "http://127.0.0.1:8001/"
+PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -50,6 +52,23 @@ def page(browser) -> Page:
     ctx.close()
 
 
+
+def _seed(symbol: str, market: str = "US"):
+    """Put a symbol on the watchlist.
+
+    This file used to rely on whatever the dashboard already held. Ten other
+    web test files call _clear_watchlist / _reset_watchlist_and_paper, so in a
+    full-suite run the list is often empty by the time these run — they passed
+    alone and failed in the suite. Seed what we need instead.
+    """
+    req = urllib.request.Request(
+        BASE_URL + f"api/watchlist?project_id={PROJECT}",
+        data=json.dumps({"symbol": symbol, "market": market, "note": ""}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=15).read()
+
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_legacy(page)
@@ -57,6 +76,8 @@ def _open_research(page: Page):
 
 
 def test_initial_symbols_render_plot(page: Page):
+    _seed('AAPL')
+    _seed('MSFT')
     _open_research(page)
     # Default seeded with AAPL + MSFT — wait for plotly SVG
     page.wait_for_function(
