@@ -22,14 +22,28 @@ from agent_config import agent_config
 class TestCoreInitialization(unittest.TestCase):
     """Test NeoMindAgent initialization and basic properties."""
 
+    # _resolve_provider takes the LLM-router branch whenever both of these are
+    # set, returning http://127.0.0.1:8000/v1/... instead of the direct
+    # DeepSeek endpoint. Something earlier in a full-suite run loads them from
+    # .env, so these tests passed alone and failed in the suite. Blank them.
+    _ROUTER_VARS = ("LLM_ROUTER_BASE_URL", "LLM_ROUTER_API_KEY")
+
     def setUp(self):
         """Set up test environment."""
         self.test_api_key = "test_api_key_12345"
+        self._saved_router_env = {k: os.environ.get(k) for k in self._ROUTER_VARS}
+        for k in self._ROUTER_VARS:
+            os.environ.pop(k, None)
         # Mock agent_config to control behavior
         self.agent_config_patcher = patch('agent.core.agent_config')
         self.mock_agent_config = self.agent_config_patcher.start()
 
     def tearDown(self):
+        for _k, _v in getattr(self, "_saved_router_env", {}).items():
+            if _v is None:
+                os.environ.pop(_k, None)
+            else:
+                os.environ[_k] = _v
         """Clean up after tests."""
         self.agent_config_patcher.stop()
 
