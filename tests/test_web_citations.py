@@ -91,21 +91,15 @@ def page(browser) -> Page:
 def test_brief_citation_chip_renders_and_is_clickable(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_tab(page, "research")
-    page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
+    # The cite-* chips went away with the ResearchBrief hero — no citation
+    # testid exists anywhere now. DigestView's anomaly chips carry the same
+    # interaction (click a chip, land in chat with the context populated), so
+    # that is what this asserts.
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
+    if not page.query_selector('[data-testid^="digest-anomaly-ask-"]'):
+        pytest.skip("no anomaly chips on this dashboard — needs distilled lattice data")
 
-    # Wait until at least one citation chip renders inside the brief.
-    # Model can emit either sector:X or a bare TICKER — either works.
-    page.wait_for_function(
-        """() => {
-            const b = document.querySelector('[data-testid="research-brief-widget"]')
-            if (!b) return false
-            return !!b.querySelector('[data-testid^="cite-"]')
-        }""",
-        timeout=45000,
-    )
-
-    # Click the first chip → jump to chat with context chip populated
-    chip = page.locator('[data-testid="research-brief-widget"] [data-testid^="cite-"]').first
+    chip = page.locator('[data-testid^="digest-anomaly-ask-"]').first
     chip.click()
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     page.wait_for_selector('[data-testid="chat-context-chip"]', timeout=5000)

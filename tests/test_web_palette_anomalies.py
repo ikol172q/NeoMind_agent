@@ -166,10 +166,14 @@ def test_anomaly_chip_renders_on_brief_and_is_clickable(page: Page):
     ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     goto_tab(page, "research")
-    page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
+    # The anomaly chips moved from the ResearchBrief hero into DigestView's
+    # anomaly strip when v14 swapped the two.
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
+    if not page.query_selector('[data-testid="digest-anomaly-strip"]'):
+        pytest.skip("no anomaly strip on this dashboard — needs distilled lattice data")
     page.wait_for_function(
         """() => {
-            const box = document.querySelector('[data-testid="anomaly-flags"]')
+            const box = document.querySelector('[data-testid="digest-anomaly-strip"]')
             return box && box.querySelectorAll('[data-testid^="anomaly-flag-"]').length > 0
         }""",
         timeout=60000,
