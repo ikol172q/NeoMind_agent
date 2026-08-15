@@ -2384,7 +2384,28 @@ class ToolRegistry:
             pattern: Glob pattern (e.g. "**/*.py", "src/**/*.ts")
             path: Base directory (default: working dir)
         """
-        base = pathlib.Path(path or self.working_dir)
+        # Both the base and the pattern could leave the workspace: `path` is
+        # caller-supplied, and pathlib follows ../ inside a pattern happily.
+        # test_glob_cannot_escape_workspace documented this as a known gap and
+        # skipped itself; glob_files("../*") really did return every file
+        # beside the workspace. Names alone are a leak even with read_file
+        # sandboxed — they carry usernames, project names and layout.
+        if path:
+            base_str, blocked = self._resolve_path_checked(path)
+            if blocked is not None:
+                return blocked
+            base = pathlib.Path(base_str)
+        else:
+            base = pathlib.Path(self.working_dir)
+
+        # realpath both sides: resolves ../ and refuses to be fooled by a
+        # symlink pointing out of the tree, the same way is_path_safe does.
+        root = os.path.realpath(self.working_dir)
+
+        def _inside(p: pathlib.Path) -> bool:
+            rp = os.path.realpath(str(p))
+            return rp == root or rp.startswith(root + os.sep)
+
         try:
             matches = list(base.glob(pattern))
             # Filter out common exclusions
@@ -2392,8 +2413,11 @@ class ToolRegistry:
             filtered = []
             for m in matches:
                 parts = m.parts
-                if not any(ex in parts for ex in excludes):
-                    filtered.append(m)
+                if any(ex in parts for ex in excludes):
+                    continue
+                if not _inside(m):
+                    continue
+                filtered.append(m)
 
             if not filtered:
                 return ToolResult(True, output=f"No files matching '{pattern}'")
@@ -2404,7 +2428,23 @@ class ToolRegistry:
             except OSError:
                 filtered.sort()  # Fallback to alphabetical
 
-            rel_paths = [str(m.relative_to(base)) for m in filtered]
+            # Report relative to the workspace root: after the containment
+            # filter a match need not sit under `base` (a pattern can climb
+            # and descend again), and relative_to would raise on those.
+            # Report relative to `base` when that reads naturally, and fall
+            # back to the workspace root otherwise. Everything here survived
+            # the containment filter, so a ../-prefixed answer would be both
+            # misleading and indistinguishable from a real escape — which is
+            # exactly what the security test keys on.
+            rel_paths = []
+            for m in filtered:
+                try:
+                    rel = str(m.relative_to(base))
+                except ValueError:
+                    rel = os.path.relpath(str(m), root)
+                if rel == ".." or rel.startswith(".." + os.sep):
+                    rel = os.path.relpath(os.path.realpath(str(m)), root)
+                rel_paths.append(rel)
             output = f"# {len(rel_paths)} files matching '{pattern}'\n" + "\n".join(rel_paths)
             return ToolResult(True, output=output)
         except Exception as e:
