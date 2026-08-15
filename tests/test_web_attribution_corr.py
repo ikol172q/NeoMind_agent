@@ -138,7 +138,13 @@ def test_correlation_endpoint_returns_matrix():
     _seed_watch("AAPL")
     _seed_watch("MSFT")
     with urllib.request.urlopen(
-        BASE_URL + f"api/correlation?project_id={PROJECT}&days=60", timeout=60
+        # fresh=1 because this test just changed the watchlist. /api/correlation
+        # caches for an hour under a key of project_id:days only — the symbol
+        # set is not part of it — so without this the seeded AAPL+MSFT is
+        # answered with whatever matrix was computed up to an hour earlier,
+        # which is how this asserted {'AAPL'} == {'AAPL', 'MSFT'}. The other
+        # two correlation tests in this file already pass it.
+        BASE_URL + f"api/correlation?project_id={PROJECT}&days=60&fresh=1", timeout=60
     ) as r:
         d = json.loads(r.read())
     assert set(d["symbols"]) == {"AAPL", "MSFT"}
