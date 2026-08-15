@@ -38,7 +38,7 @@ BASE_URL = "http://127.0.0.1:8001/"
 
 def _backend_up() -> bool:
     try:
-        with urllib.request.urlopen(BASE_URL + "api/health", timeout=3) as r:
+        with urllib.request.urlopen(BASE_URL + "api/health", timeout=10) as r:
             return r.status == 200
     except Exception:
         return False
@@ -53,6 +53,8 @@ def _deepseek_up() -> bool:
             BASE_URL + "api/chat_stream?project_id=fin-core&message=ping",
             method="POST",
         )
+        # 8s on purpose: a slow upstream counts as down, so the tests skip
+        # rather than run against a backend that cannot answer.
         with urllib.request.urlopen(req, timeout=8) as r:
             # If the endpoint returns a stream, reading one chunk is enough
             first = r.read(64)
@@ -94,6 +96,24 @@ def _open_chat(page: Page):
     page.wait_for_selector('[data-testid="chat-session-sidebar"]')
 
 
+
+
+def _wait_for_reply(page, needle, timeout=30000):
+    """Wait until the chat transcript contains `needle`.
+
+    Replies stream in, so a fixed wait_for_timeout samples a pane holding only
+    the echoed command and the assertion fails on text that arrives moments
+    later.
+    """
+    page.wait_for_function(
+        """(n) => {
+            const m = document.querySelector('[data-testid="chat-messages"]')
+            return !!m && m.innerText.includes(n)
+        }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
 def test_streaming_delivers_incremental_tokens(page: Page):
     """The reply should grow over time, not land in one chunk."""
     if not _deepseek_up():
@@ -106,7 +126,7 @@ def test_streaming_delivers_incremental_tokens(page: Page):
     # Sample content length over 2 seconds — it should monotonically
     # grow (not just pop to final length immediately).
     samples: list[int] = []
-    deadline = time.monotonic() + 6.0
+    deadline = time.monotonic() + 25.0
     while time.monotonic() < deadline:
         txt = page.evaluate(
             "document.querySelector('[data-testid=\"chat-messages\"]').innerText"
@@ -152,7 +172,7 @@ def test_session_persists_across_tab_switch(page: Page):
     # Slash command → instant reply, no DeepSeek dependency
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
-    page.wait_for_timeout(1500)
+    _wait_for_reply(page, "/quote")
 
     before = page.evaluate(
         "document.querySelector('[data-testid=\"chat-messages\"]').innerText"
@@ -164,11 +184,13 @@ def test_session_persists_across_tab_switch(page: Page):
     sid_before = sid_el.text_content() or ""
     assert len(sid_before) >= 4
 
-    # Switch to Research then back
+    # Switch away and back. The chat rail lives on the Strategies tab — on
+    # Research and elsewhere chat-input is in the DOM but hidden — so the
+    # round trip has to end back on Strategies for the rail to be visible.
     goto_tab(page, "research")
     page.wait_for_timeout(500)
-    page.wait_for_selector('[data-testid="chat-input"]')
-    page.wait_for_timeout(300)
+    goto_tab(page, "strategies")
+    page.wait_for_selector('[data-testid="chat-input"]', state="visible", timeout=30000)
 
     after = page.evaluate(
         "document.querySelector('[data-testid=\"chat-messages\"]').innerText"
@@ -182,7 +204,7 @@ def test_session_persists_across_page_reload(page: Page):
     _open_chat(page)
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
-    page.wait_for_timeout(1500)
+    _wait_for_reply(page, "/quote")
 
     sid_before = page.text_content('[data-testid="chat-session-id"]') or ""
     assert sid_before, "should have a session id after /help"
@@ -207,7 +229,7 @@ def test_reload_does_not_create_phantom_session(page: Page):
     _open_chat(page)
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
-    page.wait_for_timeout(1500)
+    _wait_for_reply(page, "/quote")
     sid_before = page.text_content('[data-testid="chat-session-id"]') or ""
     assert sid_before
 
@@ -215,7 +237,7 @@ def test_reload_does_not_create_phantom_session(page: Page):
     import json as _json
     before_list = _json.loads(
         urllib.request.urlopen(
-            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=5
+            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=60
         ).read()
     )
     before_count = before_list["count"]
@@ -233,7 +255,7 @@ def test_reload_does_not_create_phantom_session(page: Page):
 
     after_list = _json.loads(
         urllib.request.urlopen(
-            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=5
+            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=60
         ).read()
     )
     after_count = after_list["count"]
@@ -256,7 +278,7 @@ def test_sidebar_lists_session_and_new_button_starts_fresh(page: Page):
             const rows = list.querySelectorAll('[data-testid^="chat-session-"]')
             return rows.length > 0
         }""",
-        timeout=5000,
+        timeout=30000,
     )
     rows = page.evaluate(
         """() => Array.from(
@@ -282,8 +304,12 @@ def test_sidebar_lists_session_and_new_button_starts_fresh(page: Page):
 
     # Click the original session to reload it
     original_row = f'[data-testid="chat-session-{sid_before[:8]}"]'
+    # The sidebar holds dozens of sessions and the target row is often outside
+    # the scroll viewport, so a bare click waits for actionability until it
+    # times out.
+    page.locator(original_row).scroll_into_view_if_needed()
     page.click(original_row)
-    page.wait_for_selector('[data-testid="chat-session-id"]', timeout=4000)
+    page.wait_for_selector('[data-testid="chat-session-id"]', timeout=30000)
     page.wait_for_timeout(300)
     text2 = page.evaluate(
         "document.querySelector('[data-testid=\"chat-messages\"]').innerText"

@@ -67,6 +67,21 @@ def _ignore(msg: str) -> bool:
     return any(k in s for k in ("502", "network_error", "timeout"))
 
 
+# Chat replies stream in; a fixed wait_for_timeout samples a half-rendered
+# pane. These helpers wait for the text to actually arrive.
+
+
+def _wait_for_reply(page, needle, timeout=30000):
+    """Wait until the chat transcript contains `needle`."""
+    page.wait_for_function(
+        """(n) => {
+            const m = document.querySelector('[data-testid="chat-messages"]')
+            return !!m && m.innerText.includes(n)
+        }""",
+        arg=needle,
+        timeout=timeout,
+    )
+
 def test_spa_loads_and_shows_nav(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
     page.wait_for_selector('[data-testid="top-nav"]', timeout=8000)
@@ -110,7 +125,7 @@ def test_chat_help_command_local_execution(page: Page):
     page.wait_for_selector('[data-testid="chat-input"]')
     page.fill('[data-testid="chat-input"]', "/help")
     page.click('[data-testid="chat-send"]')
-    page.wait_for_timeout(2000)
+    _wait_for_reply(page, "/quote")
     msgs_text = page.evaluate("document.querySelector('[data-testid=\"chat-messages\"]').innerText")
     assert "/quote" in msgs_text, "help reply should list commands"
     assert "/audit" in msgs_text
