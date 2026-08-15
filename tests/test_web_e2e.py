@@ -21,7 +21,7 @@ import urllib.request
 import pytest
 from playwright.sync_api import sync_playwright, Page
 
-from tests.web_nav import goto_legacy, goto_tab
+from tests.web_nav import goto_legacy, goto_tab, pin_project
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -48,6 +48,7 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1400, "height": 1000})
     page = ctx.new_page()
+    pin_project(page)
     # Collect console errors / page errors; assert at end-of-test
     page.errors = []  # type: ignore[attr-defined]
     page.on("pageerror", lambda e: page.errors.append(str(e)))  # type: ignore[attr-defined]

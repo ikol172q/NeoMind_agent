@@ -16,10 +16,10 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -91,6 +91,7 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
@@ -105,7 +106,7 @@ def _open_research(page: Page):
 
 def test_anomaly_strip_renders_when_flags_exist(page: Page):
     if not _anomalies_available():
-        pytest.skip("no anomaly flags in current fin-core state")
+        pytest.skip("no anomaly flags in the current fixture-project state")
     _open_research(page)
     page.wait_for_selector('[data-testid="digest-anomaly-strip"]', timeout=10000)
     count = page.evaluate(
@@ -146,7 +147,7 @@ def _lattice_rows_mentioning(symbol: str) -> bool:
     import urllib.request
     try:
         with urllib.request.urlopen(
-            "http://127.0.0.1:8001/api/lattice/calls?project_id=fin-core",
+            f"http://127.0.0.1:8001/api/lattice/calls?project_id={PROJECT}",
             # 45s, not 10s: this endpoint recomputes and has been
             # measured timing out past 10s, and a timeout here lands in
             # the except below as "no rows" — a false skip rather than a

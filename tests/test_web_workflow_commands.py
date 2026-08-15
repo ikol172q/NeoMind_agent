@@ -13,9 +13,10 @@ from urllib.parse import urlencode
 
 import pytest
 from playwright.sync_api import Page, sync_playwright
+from tests.fixture_project import PROJECT
+from tests.web_nav import pin_project
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -29,7 +30,7 @@ def _backend_up() -> bool:
 def _deepseek_up() -> bool:
     try:
         req = urllib.request.Request(
-            BASE_URL + "api/chat_stream?project_id=fin-core&message=ping",
+            BASE_URL + f"api/chat_stream?project_id={PROJECT}&message=ping",
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -85,6 +86,7 @@ def page(browser) -> Page:
     _reset_paper()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist()
@@ -113,8 +115,6 @@ def _latest_stream_request_audit():
         if (e.get("endpoint") or "") == "/api/chat_stream":
             return e["payload"]["messages"][0]["content"]
     return None
-
-
 
 
 # 90s, not 30s: the agent answers a slash command in ~14s on an idle

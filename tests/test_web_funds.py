@@ -9,7 +9,7 @@ from playwright.sync_api import Page, sync_playwright
 # V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
 # Correlation, Sectors...) off Research into LegacyTab, reachable only
 # through Settings. These tests exercise those widgets, so they follow.
-from tests.web_nav import goto_legacy, goto_tab
+from tests.web_nav import goto_legacy, goto_tab, pin_project
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -46,6 +46,7 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 

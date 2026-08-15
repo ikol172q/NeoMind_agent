@@ -8,10 +8,10 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -88,6 +88,7 @@ def page(browser) -> Page:
     _clear_watchlist_and_paper()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist_and_paper()

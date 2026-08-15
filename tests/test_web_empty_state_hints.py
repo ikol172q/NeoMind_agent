@@ -14,10 +14,10 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_legacy, goto_tab
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _reset():
@@ -69,6 +69,7 @@ def page(browser) -> Page:
     _reset()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 

@@ -11,7 +11,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -27,7 +28,7 @@ def _backend_up() -> bool:
 def _brief_ok() -> bool:
     try:
         with urllib.request.urlopen(
-            BASE_URL + "api/research_brief?project_id=fin-core", timeout=45
+            BASE_URL + f"api/research_brief?project_id={PROJECT}", timeout=45
         ) as r:
             data = json.loads(r.read())
             return bool((data.get("text") or "").strip())
@@ -51,13 +52,14 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
 def test_brief_endpoint_returns_three_labelled_lines():
     with urllib.request.urlopen(
-        BASE_URL + "api/research_brief?project_id=fin-core", timeout=45
+        BASE_URL + f"api/research_brief?project_id={PROJECT}", timeout=45
     ) as r:
         data = json.loads(r.read())
     text = data.get("text", "")
@@ -75,12 +77,12 @@ def test_brief_second_call_hits_cache_and_returns_same_text():
     the frontend doesn't expect)."""
     import time
     with urllib.request.urlopen(
-        BASE_URL + "api/research_brief?project_id=fin-core", timeout=45
+        BASE_URL + f"api/research_brief?project_id={PROJECT}", timeout=45
     ) as r:
         first = json.loads(r.read())
     t0 = time.time()
     with urllib.request.urlopen(
-        BASE_URL + "api/research_brief?project_id=fin-core", timeout=10
+        BASE_URL + f"api/research_brief?project_id={PROJECT}", timeout=10
     ) as r:
         second = json.loads(r.read())
     elapsed = time.time() - t0

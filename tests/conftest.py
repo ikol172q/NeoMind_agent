@@ -94,7 +94,7 @@ def _stop_leaked_heartbeats():
 # ── shared live-dashboard state ────────────────────────
 
 _DASH = "http://127.0.0.1:8001/"
-_DASH_PROJECT = "fin-core"
+from tests.fixture_project import PROJECT as _DASH_PROJECT
 
 
 def _watchlist_entries():
@@ -158,3 +158,48 @@ def _restore_dashboard_watchlist():
             urllib.request.urlopen(req, timeout=5).read()
         except Exception:
             pass
+
+
+# Baseline the fixture project holds at the start of a session. Small on
+# purpose: enough for the widgets to have something to draw and for the
+# lattice to distil, not so much that a test has to fight it. Tests that
+# need an empty watchlist clear it themselves; tests that need positions
+# place their own orders.
+_FIXTURE_BASELINE = (("AAPL", "US"), ("MSFT", "US"), ("NVDA", "US"))
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _seed_fixture_project():
+    """Give the fixture project a known starting point.
+
+    The per-module restore fixture below only puts back what was there
+    when that module started, so with nothing establishing a baseline the
+    project drifts to whatever the last module left — which is the
+    determinism this whole fixture-project move was for.
+
+    Refuses to touch fin-core. Pointing NEOMIND_TEST_PROJECT at a real
+    project is a deliberate act, but seeding one is not something to do
+    by accident.
+    """
+    if _DASH_PROJECT == "fin-core":
+        yield
+        return
+    if _watchlist_entries() is None:      # dashboard not running
+        yield
+        return
+    import json
+    import urllib.request
+    have = {(e.get("symbol"), e.get("market")) for e in (_watchlist_entries() or [])}
+    for sym, market in _FIXTURE_BASELINE:
+        if (sym, market) in have:
+            continue
+        try:
+            urllib.request.urlopen(urllib.request.Request(
+                _DASH + f"api/watchlist?project_id={_DASH_PROJECT}",
+                data=json.dumps({"symbol": sym, "market": market, "note": ""}).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            ), timeout=10).read()
+        except Exception:
+            pass
+    yield

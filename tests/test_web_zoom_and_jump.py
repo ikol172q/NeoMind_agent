@@ -17,7 +17,8 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
-from tests.web_nav import goto_tab
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 
 BASE_URL = "http://127.0.0.1:8001/"
@@ -38,7 +39,7 @@ def graph():
     if not _backend_up():
         pytest.skip(f"backend not reachable at {BASE_URL}")
     with urllib.request.urlopen(
-        BASE_URL + "api/lattice/graph?project_id=fin-core", timeout=300,
+        BASE_URL + f"api/lattice/graph?project_id={PROJECT}", timeout=300,
     ) as r:
         return json.loads(r.read())
 
@@ -57,6 +58,7 @@ def browser(graph):
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 

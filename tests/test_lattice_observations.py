@@ -19,9 +19,9 @@ from pathlib import Path
 from urllib.parse import urlencode
 
 import pytest
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 # ── Unit tests (no backend) ─────────────────────────────

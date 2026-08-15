@@ -31,7 +31,8 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, expect, sync_playwright
 
-from tests.web_nav import goto_tab
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -50,7 +51,7 @@ def _deepseek_up() -> bool:
     200-with-SSE header is enough."""
     try:
         req = urllib.request.Request(
-            BASE_URL + "api/chat_stream?project_id=fin-core&message=ping",
+            BASE_URL + f"api/chat_stream?project_id={PROJECT}&message=ping",
             method="POST",
         )
         # 8s on purpose: a slow upstream counts as down, so the tests skip
@@ -79,6 +80,7 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1400, "height": 1000})
     page = ctx.new_page()
+    pin_project(page)
     errors: list[str] = []
     page.on("pageerror", lambda e: errors.append(f"pageerror: {e}"))
     page.on(
@@ -237,7 +239,7 @@ def test_reload_does_not_create_phantom_session(page: Page):
     import json as _json
     before_list = _json.loads(
         urllib.request.urlopen(
-            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=60
+            BASE_URL + f"api/chat_sessions?project_id={PROJECT}&limit=500", timeout=60
         ).read()
     )
     before_count = before_list["count"]
@@ -255,7 +257,7 @@ def test_reload_does_not_create_phantom_session(page: Page):
 
     after_list = _json.loads(
         urllib.request.urlopen(
-            BASE_URL + "api/chat_sessions?project_id=fin-core&limit=500", timeout=60
+            BASE_URL + f"api/chat_sessions?project_id={PROJECT}&limit=500", timeout=60
         ).read()
     )
     after_count = after_list["count"]

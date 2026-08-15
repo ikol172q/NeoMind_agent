@@ -22,10 +22,10 @@ from playwright.sync_api import Page, sync_playwright
 # V11 moved the widget grid (Watchlist, News, ...) off Research into
 # LegacyTab, reachable only through Settings. These tests drive those
 # widgets, so they follow.
-from tests.web_nav import goto_legacy, goto_tab
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -39,7 +39,7 @@ def _backend_up() -> bool:
 def _deepseek_up() -> bool:
     try:
         req = urllib.request.Request(
-            BASE_URL + "api/chat_stream?project_id=fin-core&message=ping",
+            BASE_URL + f"api/chat_stream?project_id={PROJECT}&message=ping",
             method="POST",
         )
         with urllib.request.urlopen(req, timeout=8) as r:
@@ -83,6 +83,7 @@ def page(browser) -> Page:
     _clear_watchlist()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist()

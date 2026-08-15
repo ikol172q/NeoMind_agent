@@ -91,3 +91,24 @@ def goto_legacy(page, *, timeout: int = DEFAULT_TIMEOUT):
     page.wait_for_selector('[data-testid="open-legacy-dashboard"]', timeout=timeout)
     page.click('[data-testid="open-legacy-dashboard"]')
     return page
+
+
+def pin_project(page, project: str | None = None):
+    """Point the SPA at the fixture project before it boots.
+
+    App.tsx resolves its project as
+    ``localStorage.getItem('neomind.project') ?? 'fin-core'``, so seeding
+    a different project over REST is not enough on its own: the browser
+    keeps reading fin-core and the test asserts against data it never
+    wrote. Every browser-driven test needs this alongside the REST-side
+    PROJECT constant, or the two halves disagree.
+
+    add_init_script runs before page scripts on every navigation, so it
+    has to be installed on the fresh page, not after the first goto.
+    """
+    from tests.fixture_project import PROJECT
+    pid = project or PROJECT
+    page.add_init_script(
+        f"try {{ localStorage.setItem('neomind.project', {pid!r}) }} catch (e) {{}}"
+    )
+    return page

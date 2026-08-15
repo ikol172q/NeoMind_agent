@@ -17,10 +17,10 @@ import json
 import urllib.request
 
 import pytest
+from tests.fixture_project import PROJECT
 
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 pytestmark = pytest.mark.lattice_slow
 
