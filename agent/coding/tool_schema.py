@@ -244,18 +244,26 @@ class ToolDefinition:
         "body": "content",
     }
 
-    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    def normalize_params(
+        self, params: Dict[str, Any], *, in_place: bool = False
+    ) -> Dict[str, Any]:
         """Rewrite known parameter synonyms onto this tool's own names.
 
         Only renames a synonym when the tool actually declares the target and
         the caller did not already supply it, so a tool that genuinely has both
         (Grep has `pattern` and `path`) is never rewritten out from under
         itself.
+
+        `in_place` exists because `validate_params()` strips unknown keys by
+        mutating the caller's dict — TestValidateParamsMutation asserts exactly
+        that. Normalising into a copy there silently detached the mutation from
+        the caller and broke ten tests, so validation normalises in place and
+        everyone else gets a copy.
         """
         if not params:
-            return dict(params or {})
+            return params if in_place else dict(params or {})
         own = {p.name for p in self.parameters}
-        result = dict(params)
+        result = params if in_place else dict(params)
         for alias, target in self.PARAM_ALIASES.items():
             if alias in result and target in own and target not in result:
                 result[target] = result.pop(alias)
@@ -276,7 +284,7 @@ class ToolDefinition:
         Returns:
             (True, "") on success, (False, error_message) on failure
         """
-        params = self.normalize_params(params)
+        self.normalize_params(params, in_place=True)
 
         # Silently strip unknown parameters instead of erroring.
         # LLMs sometimes hallucinate extra params (e.g. "reason") —
