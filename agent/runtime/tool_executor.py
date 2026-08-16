@@ -271,6 +271,12 @@ class ToolExecutor:
                     risk=risk,
                     explanation=explanation,
                     allowed_scopes=allowed_scopes,
+                    # The dialog renders what is being approved. A broker that
+                    # only gets a rendered preview cannot show the actual
+                    # arguments, and the REPL's existing panel is built from
+                    # them — approving a call you cannot see is the failure
+                    # this whole layer exists to prevent.
+                    params=dict(params),
                 ),
                 timeout=self.permission_timeout,
             )

@@ -2451,8 +2451,233 @@ class NeoMindInterface:
             f"[dim](leader replying…)[/dim]"
         )
 
+    # ── Phase 4: session-backed turn ──────────────────────────────────────
+
+    class _HistoryStore:
+        """Writes the session's messages straight into the agent's history.
+
+        The REPL's other machinery — /history, /transcript, /compact, token
+        accounting — all read `chat.conversation_history`, so that list stays
+        authoritative. The session is the only writer during a turn; it just
+        writes through here instead of keeping a second copy that would drift
+        the moment /compact rewrote one of them.
+        """
+
+        def __init__(self, chat):
+            self.chat = chat
+
+        def append(self, session_id, message):
+            entry = {k: v for k, v in dict(message).items() if not k.startswith("_")}
+            self.chat.conversation_history.append(entry)
+
+        def load(self, session_id):
+            return list(self.chat.conversation_history)
+
+    def _build_turn_session(self):
+        """A fresh AgentSession seeded from the agent's current history.
+
+        Per turn rather than per session, deliberately. A long-lived session
+        would hold its own copy of the conversation, and /compact, /clear and
+        resume all rewrite the agent's list underneath it — the two would
+        disagree silently and the model would be prompted with a history the
+        user could no longer see.
+        """
+        import os as _os
+
+        from agent.coding.tool_parser import ToolCallParser
+        from agent.runtime.permissions import CapabilitySnapshot, PermissionPolicy
+        from agent.runtime.providers.openai_sse import OpenAICompatibleStream
+        from agent.runtime.session import AgentSession
+        from agent.runtime.tool_executor import ToolExecutor
+        from agent.tools import ToolRegistry
+
+        provider = self.chat._resolve_provider()
+        llm = OpenAICompatibleStream(
+            provider["base_url"],
+            provider["api_key"] or self.chat.api_key,
+            timeout=180.0,
+        )
+
+        registry = ToolRegistry(working_dir=_os.getcwd())
+        # Interactive: every registered tool is offered, and the executor asks
+        # before anything that needs asking. That is the difference from
+        # headless, which starts from an explicit read-only allowlist because
+        # there is nobody to answer.
+        # interactive=True is not decoration. PermissionPolicy defaults it to
+        # False, and with it False every ASK collapses straight to DENY —
+        # "execute requires confirmation; no interactive broker" — so a real
+        # terminal session could not run Bash at all even though a broker was
+        # attached. auto_accept has to be threaded through the same way, or
+        # NEOMIND_AUTO_ACCEPT stops working the moment the REPL moves onto
+        # this path. Read from agent_config so there is one source of truth
+        # about permission mode rather than a second copy here.
+        perm_mode = agent_config.permission_mode
+        executor = ToolExecutor(
+            registry=registry,
+            policy=PermissionPolicy(
+                capabilities=CapabilitySnapshot.unrestricted(),
+                interactive=True,
+                auto_accept=(perm_mode == "auto_accept"),
+            ),
+            broker=self._session_permission_broker(),
+            working_dir=_os.getcwd(),
+        )
+
+        llm_kwargs = {}
+        if getattr(self.chat, "thinking_enabled", False) and provider.get("name") == "deepseek":
+            llm_kwargs["thinking"] = {"type": "enabled"}
+
+        max_rounds = getattr(self.chat, "_cli_max_turns", None) or self._AGENTIC_HARD_LIMIT
+
+        return AgentSession(
+            llm=llm,
+            executor=executor,
+            model=self.chat.model,
+            mode=self.chat.mode,
+            history=list(self.chat.conversation_history),
+            store=self._HistoryStore(self.chat),
+            tool_parser=ToolCallParser(),
+            max_tool_rounds=max_rounds,
+            llm_kwargs=llm_kwargs,
+        )
+
+    def _session_permission_broker(self):
+        """Bridge the executor's permission question to the REPL's prompt.
+
+        Reuses `_check_permission` rather than drawing a second dialog, so the
+        panel, the risk wording and the [y]es/[n]o/[a]lways keys stay exactly
+        as they are today.
+
+        `_check_permission(tool_call, auto_approved) -> (approved,
+        new_auto_approved)` — it wants an object with `.tool_name` and
+        `.params`, not the executor's keyword arguments, and the second half of
+        its return value is how "[a]lways" persists for the rest of the
+        session. Dropping it would make "always" mean "once".
+
+        The prompt blocks on stdin, so it runs in an executor thread; calling
+        it directly would freeze the event loop the stream is running on.
+        """
+        interface = self
+
+        class _Call:
+            __slots__ = ("tool_name", "params")
+
+            def __init__(self, tool_name, params):
+                self.tool_name = tool_name
+                self.params = params
+
+        class _Broker:
+            def __init__(self):
+                self.auto_approved = False
+
+            async def request(self, request_id, tool_name, preview, risk,
+                              explanation, allowed_scopes, params=None, **_ignored):
+                import asyncio as _asyncio
+                import os as _os
+
+                from agent.runtime.permissions import Approval, Scope, fingerprint
+
+                call = _Call(tool_name, dict(params or {}))
+
+                def _ask():
+                    return interface._check_permission(call, self.auto_approved)
+
+                approved, new_auto = await _asyncio.get_event_loop().run_in_executor(
+                    None, _ask
+                )
+                self.auto_approved = new_auto
+                if not approved:
+                    return None
+
+                # An Approval, not a Decision. The executor rejects anything
+                # else outright — "a bare True is not an approval: it names no
+                # call, so it cannot be bound to one" — and returning a
+                # Decision silently denied every tool in the session path.
+                #
+                # The fingerprint has to be derived from the same params the
+                # executor is about to run, which is why the broker contract
+                # carries them: it re-derives it after approval and refuses a
+                # mismatch, so an approval cannot be replayed onto a different
+                # call.
+                return Approval(
+                    request_id=request_id,
+                    fingerprint=fingerprint(tool_name, dict(params or {}), _os.getcwd()),
+                    scope=Scope.ONCE,
+                )
+
+        return _Broker()
+
+    def _stream_and_render_session(self, prompt: str):
+        """The session-backed replacement for _stream_and_render().
+
+        Behind NEOMIND_REPL=session_v1 until the real-terminal gate has run —
+        this is the surface people use every day, and a green test suite is
+        not the same as a turn that still looks right.
+        """
+        import asyncio as _asyncio
+
+        from cli.session_renderer import SessionRenderer
+
+        self._interrupt = False
+        if self._fleet_session is not None:
+            self._print_fleet_stream_header()
+
+        stop = self._start_spinner("Thinking…")
+
+        if self.chat.mode == "coding":
+            content_filter = self._CodeFenceFilter()
+        elif PYGMENTS_AVAILABLE:
+            content_filter = self._SyntaxHighlightFilter()
+        else:
+            content_filter = None
+
+        renderer = SessionRenderer(
+            write=lambda text: (sys.stdout.write(text), sys.stdout.flush()),
+            write_markup=self._print,
+            stop_spinner=stop.set,
+            content_filter=content_filter,
+        )
+
+        session = self._build_turn_session()
+        try:
+            outcome = _asyncio.run(renderer.render(session.run_turn(prompt)))
+        except KeyboardInterrupt:
+            self._print("\n[dim][Interrupted][/dim]")
+            outcome = None
+        finally:
+            stop.set()
+
+        self._warn_on_context_usage()
+        return outcome
+
+    def _warn_on_context_usage(self):
+        """Unchanged from the legacy path — extracted so both can call it."""
+        try:
+            if hasattr(self.chat, 'context_manager') and self.chat.context_manager:
+                tokens = self.chat.context_manager.count_conversation_tokens()
+                from agent.constants.models import get_active_max_context as _gmax
+                max_ctx = getattr(self.chat, 'max_context', 0) or _gmax()
+                usage = tokens / max_ctx if max_ctx > 0 else 0
+                if usage > 0.95:
+                    self._print(f"\n[red]⚠ Context {usage:.0%} full! Auto-compacting...[/red]")
+                    self.chat.handle_command("/compact", "")
+                elif usage > 0.85:
+                    self._print(f"\n[yellow]⚠ Context {usage:.0%} full. Run /compact to free space.[/yellow]")
+        except Exception:
+            pass
+
     def _stream_and_render(self, prompt: str):
-        """Send prompt to agent core's stream_response with spinner UX."""
+        """Send prompt to agent core's stream_response with spinner UX.
+
+        Phase 4 rollback switch (D8). `NEOMIND_REPL=session_v1` routes the turn
+        through AgentSession instead, so the REPL stops owning the LLM call and
+        the tool loop. It is opt-in until the real-terminal gate has run in
+        coding and fin — this is the surface people use every day, and the plan
+        is explicit that a green suite does not make a phase done.
+        """
+        if os.environ.get("NEOMIND_REPL", "").strip() == "session_v1":
+            return self._stream_and_render_session(prompt)
+
         self._interrupt = False
 
         # Phase 5.12 task #65: preserve fleet visibility during leader

@@ -308,10 +308,18 @@ class AgentSession:
         emitted: List[RuntimeEvent] = []
 
         async def on_permission_requested(**kw):
-            """Executor asks; the session turns that into an event and waits.
+            """Record that a decision is pending. Notification, not the ask.
 
-            The future is stored before the event is yielded so an answer that
-            arrives immediately cannot be dropped.
+            The executor treats this as a notification — "a renderer failure
+            is not consent" — and asks its broker separately. An earlier
+            version blocked here on a future that only `resolve_permission()`
+            could complete, so with a broker attached nothing ever resolved it,
+            the executor caught the failure and denied every call: "[runtime]
+            permission notification failed; denying".
+
+            A surface with no broker answers through `resolve_permission()`
+            instead; the future is registered here either way so that path
+            still works.
             """
             request_id = kw.get("request_id", "")
             loop = asyncio.get_event_loop()
@@ -319,13 +327,7 @@ class AgentSession:
             self._pending_permissions[request_id] = future
             request_id_holder["request_id"] = request_id
             request_id_holder["event"] = kw
-            try:
-                return await asyncio.wait_for(future, timeout=self.permission_timeout)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                self._pending_permissions.pop(request_id, None)
-                raise
-            finally:
-                self._pending_permissions.pop(request_id, None)
+            return None
 
         yield _ev(ToolStarted, call_id=call_id, tool_name=tool_name)
 

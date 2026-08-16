@@ -109,3 +109,63 @@ class TestToolCallDelimiterVariants:
         assert "DSML" not in stripped
         assert '"tool"' not in stripped
         assert "参数名用错了" in stripped, "the model's prose should remain"
+
+
+class TestDsmlInvokeShape:
+    """DeepSeek's other DSML spelling, found only by using the REPL.
+
+    After the JSON-shaped `<｜｜DSML｜｜tool_call>` variant was fixed, a real
+    session produced the Anthropic-shaped one instead — `tool_calls` holding
+    `invoke name="X"` with `parameter` children — and the payload was printed
+    to the user all over again. One spelling fixed is not the format fixed.
+    """
+
+    RAW = (
+        "好的，我来执行:\n"
+        "<｜｜DSML｜｜tool_calls>\n"
+        '<｜｜DSML｜｜invoke name="Bash">\n'
+        '<｜｜DSML｜｜parameter name="command" string="true">echo PERMISSION_PATH_OK</｜｜DSML｜｜parameter>\n'
+        '<｜｜DSML｜｜parameter name="description" string="true">Echo test</｜｜DSML｜｜parameter>\n'
+        "</｜｜DSML｜｜invoke>\n"
+        "</｜｜DSML｜｜tool_calls>\n"
+        "之后我会汇报结果。"
+    )
+
+    def test_it_parses_into_a_tool_call(self):
+        call = ToolCallParser().parse(self.RAW)
+        assert call is not None, "the invoke shape was treated as prose"
+        assert call.tool_name == "Bash"
+        assert call.params["command"] == "echo PERMISSION_PATH_OK"
+
+    def test_every_parameter_is_captured(self):
+        call = ToolCallParser().parse(self.RAW)
+        assert call.params["description"] == "Echo test"
+
+    def test_the_payload_is_removed_from_display_text(self):
+        parser = ToolCallParser()
+        call = parser.parse(self.RAW)
+        shown = parser.strip_tool_call(self.RAW, call)
+        assert "DSML" not in shown
+        assert "invoke" not in shown
+        assert "echo PERMISSION_PATH_OK" not in shown
+
+    def test_the_prose_around_it_survives(self):
+        """ToolCall.raw scoped to the whole response deleted the model's own
+        words along with the payload, leaving an apparently empty turn."""
+        parser = ToolCallParser()
+        call = parser.parse(self.RAW)
+        shown = parser.strip_tool_call(self.RAW, call)
+        assert "好的，我来执行" in shown
+        assert "之后我会汇报结果" in shown
+
+    def test_the_json_shape_still_works(self):
+        call = ToolCallParser().parse(
+            '<｜｜DSML｜｜tool_call>{"tool":"Read","params":{"path":"a"}}</｜｜DSML｜｜tool_call>'
+        )
+        assert call.tool_name == "Read" and call.params["path"] == "a"
+
+    def test_the_standard_shape_still_works(self):
+        call = ToolCallParser().parse(
+            '<tool_call>{"tool":"Read","params":{"path":"b"}}</tool_call>'
+        )
+        assert call.tool_name == "Read" and call.params["path"] == "b"

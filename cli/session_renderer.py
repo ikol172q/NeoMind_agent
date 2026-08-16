@@ -97,7 +97,13 @@ class SessionRenderer:
         f = self.content_filter
         if f is None:
             return text
-        for attr in ("filter", "process"):
+        # `write` first: that is this codebase's convention.
+        # `_CodeFenceFilter` and `_SyntaxHighlightFilter` are stateful stream
+        # filters — stream_response() calls filter.write(chunk) and prints what
+        # comes back. Checking only for `filter`/`process`/`__call__`, as the
+        # first version did, meant the REPL's actual filters were skipped
+        # entirely and code fences would have streamed through raw.
+        for attr in ("write", "filter", "process"):
             method = getattr(f, attr, None)
             if callable(method):
                 try:
@@ -112,6 +118,30 @@ class SessionRenderer:
             except Exception:
                 return text
         return text
+
+    def _flush_filter(self) -> None:
+        """Release whatever the filter is still holding.
+
+        `_CodeFenceFilter` and `_SyntaxHighlightFilter` buffer, because a fence
+        marker can straddle a chunk boundary — write("SESSION_PATH_OK")
+        returns "" and the text comes back on a later call. Without a flush at
+        the end of the stream the tail is simply lost, and for an answer
+        shorter than the buffer that means the whole answer: a real
+        session_v1 turn printed "Thought for 0.5s" and then the prompt again,
+        with the model's reply nowhere on screen.
+        """
+        f = self.content_filter
+        if f is None:
+            return
+        flush = getattr(f, "flush", None)
+        if not callable(flush):
+            return
+        try:
+            remaining = flush()
+        except Exception:
+            return
+        if remaining:
+            self.write(str(remaining))
 
     # ── the loop ──────────────────────────────────────────────────────────
 
@@ -165,6 +195,7 @@ class SessionRenderer:
 
             if isinstance(event, TurnFinished):
                 saw_terminal = True
+                self._flush_filter()
                 self.stop_spinner()
                 outcome.response = event.response
                 outcome.usage = dict(event.usage)
@@ -173,6 +204,7 @@ class SessionRenderer:
 
             if isinstance(event, TurnFailed):
                 saw_terminal = True
+                self._flush_filter()
                 self.stop_spinner()
                 outcome.ok = False
                 outcome.error_code = event.error_code
@@ -185,6 +217,7 @@ class SessionRenderer:
                 continue
 
         if not saw_terminal:
+            self._flush_filter()
             # The session contracts to emit one terminal event. Saying nothing
             # here would leave the REPL showing a finished-looking turn that
             # never finished.

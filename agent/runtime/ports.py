@@ -57,6 +57,7 @@ class PermissionBroker(Protocol):
         risk: str,
         explanation: str,
         allowed_scopes: tuple,
+        params: Optional[Mapping[str, Any]] = None,
     ) -> Any: ...
 
 

@@ -87,6 +87,63 @@ def normalize_tool_call_delimiters(text: str) -> str:
     return _OPEN_DELIM_RE.sub('<tool_call>', text)
 
 
+
+#: DeepSeek also emits the Anthropic-shaped call: `tool_calls` (plural) holding
+#: `invoke name="X"` with `parameter name="y"` children, all wearing the same
+#: fullwidth DSML bars. Observed live *after* the JSON-shaped variant was
+#: fixed — the first fix covered one spelling and the model simply used the
+#: other, and the payload was printed to the user again.
+_DSML_INVOKE_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*invoke\s+name\s*=\s*"([^"]+)"\s*>'
+    r'(.*?)'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*invoke\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_DSML_PARAM_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\s+name\s*=\s*"([^"]+)"'
+    r'[^>]*>'
+    r'(.*?)'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: The wrapper around one or more invokes. Removed wholesale from display text.
+_DSML_CALLS_BLOCK_RE = re.compile(
+    rf'<?\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*tool_calls\s*{_TOOL_BAR}*\s*>'
+    r'.*?'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*tool_calls\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_dsml_invoke(text: str):
+    """First `invoke`-shaped call, as (tool_name, params, raw_block) or None.
+
+    The raw block is the matched text and not the whole response: ToolCall.raw
+    is what `strip_tool_call()` removes first, so passing the entire response
+    deleted the model's prose along with the payload — the user saw an empty
+    turn instead of "好的，我来执行:".
+    """
+    block = _DSML_CALLS_BLOCK_RE.search(text)
+    scope = block.group(0) if block else text
+    match = _DSML_INVOKE_RE.search(scope)
+    if not match:
+        return None
+    tool_name = match.group(1).strip()
+    params = {}
+    for name, value in _DSML_PARAM_RE.findall(match.group(2)):
+        params[name.strip()] = value.strip()
+    return tool_name, params, (block.group(0) if block else match.group(0))
+
+
+def strip_dsml_invoke(text: str) -> str:
+    """Remove the whole tool_calls block, or a bare invoke if unwrapped."""
+    cleaned = _DSML_CALLS_BLOCK_RE.sub('', text)
+    if cleaned == text:
+        cleaned = _DSML_INVOKE_RE.sub('', text)
+    return cleaned
+
 class ToolCallParser:
     """Parse tool calls from LLM responses.
 
@@ -222,6 +279,15 @@ class ToolCallParser:
             '</tool_call>',
             response,
         )
+
+        # The invoke/parameter shape is checked before the delimiter rewrite:
+        # normalising `<｜｜DSML｜｜tool_calls>` into `<tool_call>` would leave
+        # the XML body behind a tag that promises JSON, and the JSON parsers
+        # below would find nothing and hand the payload back as prose.
+        _invoke = parse_dsml_invoke(response)
+        if _invoke:
+            _name, _params, _raw = _invoke
+            return ToolCall(tool_name=_name, params=_params, raw=_raw)
 
         response = normalize_tool_call_delimiters(response)
 
@@ -708,6 +774,12 @@ class ToolCallParser:
         # delimiters need this path because parse() normalizes them before it
         # constructs ToolCall.raw, so raw cannot match the original response.
         if not tool_call.is_legacy:
+            # invoke-shaped calls first, for the same reason parse() tries
+            # them first — the delimiter rewrite does not understand their body.
+            _stripped = strip_dsml_invoke(response)
+            if _stripped != response:
+                return _stripped.strip()
+
             # Normalize first, so every delimiter spelling the parser accepts
             # is also one this can remove. Only the delimiters change; the
             # prose around them is untouched, and the block is deleted whole.
