@@ -142,6 +142,130 @@ def test_main():
         sys.exit(1)
 
 
+#: What a run with no human present may do. An explicit list, not a filter
+#: over `permission_level`, because that field is wrong for several tools:
+#: TeamDelete ("Delete an existing team"), TeamCreate, SendMessage ("Send a
+#: message to another agent or user"), TodoWrite, TaskCreate and TaskStop all
+#: declare READ_ONLY today. Deriving "safe unattended" from that declaration
+#: means deriving safety from a mislabelling, so headless names what it wants
+#: instead. Also excluded, though harmless in themselves: AskUser (there is
+#: nobody to ask), Sleep (can stall a CI run), Brief and Enter/ExitPlanMode
+#: (mutate session state), and Skill (invokes arbitrary registered skills,
+#: which may write).
+HEADLESS_READ_ONLY_TOOLS = (
+    "CronList",
+    "CtxInspect",
+    "GitDiff",
+    "GitLog",
+    "GitStatus",
+    "Glob",
+    "Grep",
+    "LS",
+    "ListMcpResources",
+    "Read",
+    "ReadMcpResource",
+    "SyntheticOutput",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "ToolSearch",
+    "VerifyPlanExecution",
+    "WebFetch",
+    "WebSearch",
+)
+
+
+def _headless_allowed_tools(registry):
+    """Intersect the allowlist with what is registered and still READ_ONLY.
+
+    Both halves matter. The allowlist keeps a mislabelled side-effecting tool
+    out even if it is registered; re-checking the level keeps a tool out if its
+    declaration is ever tightened, so the list cannot silently re-widen.
+    """
+    from agent.coding.tool_schema import PermissionLevel
+
+    out = []
+    for name in HEADLESS_READ_ONLY_TOOLS:
+        tool = registry.get_tool(name)
+        if tool is None:
+            continue
+        if getattr(tool, "permission_level", None) is not PermissionLevel.READ_ONLY:
+            continue
+        out.append(name)
+    return out
+
+
+def _build_headless_session(agent, *, tool_parser=None):
+    """Compose an `AgentSession` for a non-interactive run.
+
+    The wiring lives here rather than in `agent/runtime/` on purpose: the
+    runtime must not know which provider or which registry a surface picked,
+    and `tests/runtime/test_import_boundary.py` enforces that. This function is
+    the composition root for `-p`.
+
+    Safety comes from the capability snapshot, not from remembering to check.
+    The snapshot lists only tools whose definition declares READ_ONLY, so the
+    executor refuses everything else before a permission question is ever
+    asked — there is no human here to answer one.
+    """
+    from agent.coding.tool_schema import PermissionLevel
+    from agent.runtime.permissions import CapabilitySnapshot, PermissionPolicy
+    from agent.runtime.providers.openai_sse import OpenAICompatibleStream
+    from agent.runtime.session import AgentSession
+    from agent.runtime.tool_executor import ToolExecutor
+    from agent.tools import ToolRegistry
+
+    provider = agent._resolve_provider()
+    llm = OpenAICompatibleStream(
+        provider["base_url"],
+        provider["api_key"] or agent.api_key,
+        timeout=90.0,
+    )
+
+    registry = ToolRegistry(working_dir=os.getcwd())
+    allowed = _headless_allowed_tools(registry)
+    executor = ToolExecutor(
+        registry=registry,
+        policy=PermissionPolicy(capabilities=CapabilitySnapshot.only(*allowed)),
+        working_dir=os.getcwd(),
+    )
+
+    if tool_parser is None:
+        from agent.coding.tool_parser import ToolCallParser
+
+        tool_parser = ToolCallParser()
+
+    llm_kwargs = {}
+    if getattr(agent, "thinking_enabled", False) and provider.get("name") == "deepseek":
+        llm_kwargs["thinking"] = {"type": "enabled"}
+
+    return AgentSession(
+        llm=llm,
+        executor=executor,
+        model=agent.model,
+        mode=getattr(agent, "mode", "chat"),
+        history=list(getattr(agent, "conversation_history", []) or []),
+        tool_parser=tool_parser,
+        llm_kwargs=llm_kwargs,
+    )
+
+
+def _headless_session_v1(agent, prompt: str, output_format: str) -> int:
+    """The `session_v1` path: one session, one event stream, no local loop."""
+    import asyncio
+
+    from agent.runtime.headless import consume, render
+
+    session = _build_headless_session(agent)
+    result = asyncio.run(consume(session.run_turn(prompt)))
+    text = render(result, output_format)
+    if result.ok:
+        print(text)
+        return 0
+    print(text, file=sys.stderr)
+    return 1
+
+
 def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
                   system_prompt: str = None):
     """Run a single prompt in headless (non-interactive) mode.
@@ -197,6 +321,15 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
 
         # In headless mode: auto-accept reads, deny writes
         agent.verbose_mode = False
+
+        # ── D8 rollback switch: legacy | session_v1 ──────────────────
+        # session_v1 runs the turn through AgentSession, so there is one
+        # authorization path instead of two. The legacy branch below is the
+        # hand-rolled parse/execute/continue loop it replaces, kept only until
+        # the Phase 3 real-surface gates have run in anger; it is not a second
+        # runtime to maintain. Set NEOMIND_HEADLESS=legacy to fall back.
+        if os.environ.get("NEOMIND_HEADLESS", "session_v1").strip() != "legacy":
+            sys.exit(_headless_session_v1(agent, prompt, output_format))
 
         # Suppress streaming output (thinking, status, etc.) during execution
         # by redirecting stdout to devnull, then restoring for final output

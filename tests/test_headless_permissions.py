@@ -12,6 +12,27 @@ import main
 from agent.coding.tool_schema import PermissionLevel
 
 
+@pytest.fixture(autouse=True)
+def _pin_to_legacy_headless(monkeypatch):
+    """These describe the legacy headless loop, so run them against it.
+
+    Every test in this file replaces `agent.core` with a Mock and asserts on
+    `stream_response.call_count`. That is the legacy implementation's shape:
+    the session_v1 path drives `AgentSession` and never calls
+    `stream_response`, so the stubs simply do not apply and every assertion
+    here would be measuring nothing.
+
+    The equivalent guarantees for session_v1 are covered where they can be
+    observed for real — tool denial, exit codes, stream separation and SIGINT
+    in tests/runtime/test_headless_subprocess.py, and history/terminal-event
+    behaviour in tests/runtime/test_session.py. This pin goes away with the
+    legacy branch itself.
+    """
+    monkeypatch.setenv("NEOMIND_HEADLESS", "legacy")
+
+
+
+
 _MISSING = object()
 
 
