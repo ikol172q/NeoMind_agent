@@ -1350,20 +1350,43 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     except Exception:
                         pass
 
+        # Vocabulary that only exists inside the system prompt. A line
+        # mentioning any of it is the model reasoning about its own
+        # instructions, which means nothing to the reader and quietly
+        # publishes how the agent is built. Observed live in the spinner:
+        # "No procedures needed really — no claims, no URLs, no current state
+        # dependencies", and "为了匹配该 persona 用 Bash".
+        _FRAMEWORK_WORDS = (
+            "persona", "system prompt", "procedure", "no claims", "framework",
+            "instruction", "guardrail", "policy", "we need answer",
+            "the user asks", "user wants", "comply", "i should", "let me think",
+            "框架", "人设", "系统提示", "指令", "护栏",
+        )
+
         def _summarize_thinking(text, max_len=100):
-            """Extract a brief summary from thinking content for spinner display."""
-            # Take the last meaningful sentence/phrase
+            """One short line describing what the model is doing, or nothing.
+
+            A blacklist is not a security boundary and is not claimed to be
+            one — reasoning is the model's own prose and can say anything.
+            It is a display filter: it drops the lines that were observed
+            leaking, and returns "" rather than a bad summary when nothing
+            clean is left, because no summary reads better than a confusing
+            one.
+            """
             lines = text.strip().split('\n')
             for line in reversed(lines):
                 line = line.strip()
-                if len(line) > 5:
-                    if len(line) > max_len:
-                        # Try to cut at a word boundary
-                        cut = line[:max_len].rfind(' ')
-                        if cut > max_len // 2:
-                            return line[:cut] + "…"
-                        return line[:max_len - 1] + "…"
-                    return line
+                if len(line) <= 5:
+                    continue
+                lowered = line.lower()
+                if any(word in lowered for word in _FRAMEWORK_WORDS):
+                    continue
+                if len(line) > max_len:
+                    cut = line[:max_len].rfind(' ')
+                    if cut > max_len // 2:
+                        return line[:cut] + "…"
+                    return line[:max_len - 1] + "…"
+                return line
             return ""
 
         def _update_thinking_spinner(reasoning_so_far):
@@ -1447,17 +1470,18 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                             _thinking_already_displayed = True
                                             # Show condensed thinking summary
                                             elapsed = time.time() - thinking_start_time
-                                            summary = _summarize_thinking(reasoning_content)
+                                            # Duration only. The summary is
+                                            # useful while the spinner runs —
+                                            # it shows the turn is alive — but
+                                            # in the scrollback it is a
+                                            # permanent line of the model
+                                            # talking to itself, and it was
+                                            # where the framework vocabulary
+                                            # ended up being read.
                                             if COLORS_ENABLED:
-                                                if summary:
-                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s — {summary}{COLOR_RESET}")
-                                                else:
-                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
+                                                print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
                                             else:
-                                                if summary:
-                                                    print(f"Thought for {elapsed:.1f}s — {summary}")
-                                                else:
-                                                    print(f"Thought for {elapsed:.1f}s")
+                                                print(f"Thought for {elapsed:.1f}s")
                                         else:
                                             _notify_first_token()
                                         is_final_response_active = True

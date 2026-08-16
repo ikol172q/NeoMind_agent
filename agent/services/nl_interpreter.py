@@ -94,6 +94,16 @@ class NaturalLanguageInterpreter:
                 (r"continue plan (\w+)$", "/execute {match}", 0.8),
                 (r"next step for plan (\w+)$", "/execute {match}", 0.8),
             ],
+            # Mode switching had no rules at all, in either language, so
+            # "换成 coding" reached the model as prose and it answered, quite
+            # correctly, that it cannot change its own mode. Only the three
+            # real modes are matched — a free `(\w+)` capture would turn
+            # "switch to whatever" into an invalid /mode call.
+            # Built from MODE_ALIASES rather than repeating its keys, because
+            # the first version listed them separately and immediately drifted:
+            # 对话 was in the alias table and not in the pattern, so
+            # "进入对话模式" went unrecognised while 聊天 worked.
+            'mode': _mode_patterns(),
             'switch': [
                 (r"switch model to (.+)$", "/switch {match}", 0.9),
                 (r"use model (.+)$", "/switch {match}", 0.9),
@@ -284,11 +294,30 @@ class NaturalLanguageInterpreter:
             return best_cmd, best_confidence
         return None, 0.0
 
+    #: Mode names as a Chinese speaker writes them, mapped to the ids /mode
+    #: accepts. Without this, "进入编程模式" produced `/mode 编程`, which is not a
+    #: mode and fails — recognising the phrase but emitting an invalid command
+    #: is worse than not recognising it, because the user sees a usage error
+    #: instead of their own words going unheard.
+    MODE_ALIASES = {
+        "聊天": "chat",
+        "对话": "chat",
+        "编程": "coding",
+        "代码": "coding",
+        "写码": "coding",
+        "金融": "fin",
+        "理财": "fin",
+        "投资": "fin",
+    }
+
     def _format_command(self, command_template: str, groups: tuple) -> str:
         """Format command template with matched groups."""
         if '{match}' in command_template and groups:
+            captured = groups[0].strip()
+            if command_template.startswith('/mode'):
+                captured = self.MODE_ALIASES.get(captured, captured)
             # Replace {match} with first group
-            cmd = command_template.replace('{match}', groups[0].strip())
+            cmd = command_template.replace('{match}', captured)
             # If there's a {content} placeholder and second group exists
             if '{content}' in cmd and len(groups) > 1:
                 cmd = cmd.replace('{content}', groups[1].strip())
@@ -317,6 +346,47 @@ class NaturalLanguageInterpreter:
                    'switch', 'model', 'use', 'change', 'set',
                    'summarize', 'translate', 'reason', 'debug', 'explain', 'refactor', 'grep',
                    'brief', 'summary', 'solve', 'bugs', 'errors', 'improve', 'clean', 'locate',
-                   'history', 'think', 'quit', 'exit', 'reset', 'toggle', 'enable', 'disable', 'bye']
+                   'history', 'think', 'quit', 'exit', 'reset', 'toggle', 'enable', 'disable', 'bye',
+                   'mode',
+                   ]
         pattern = r'\b(' + '|'.join(keywords) + r')\b'
-        return re.search(pattern, lower_text) is not None
+        if re.search(pattern, lower_text):
+            return True
+
+        # The gate above is English-only, so every Chinese phrasing failed it
+        # before a single pattern was tried — the interpreter has never fired
+        # for Chinese input at all, not just for mode switching. \b is also
+        # useless against CJK, which has no word boundaries, so these match as
+        # plain substrings.
+        #
+        # Deliberately narrow: the verbs that introduce a command, not a
+        # general "contains Chinese" test, which would hand ordinary
+        # conversation to the pattern table.
+        cjk_keywords = (
+            '切换', '切到', '换成', '进入', '模式',
+            '搜索', '查找', '打开', '读取', '运行', '执行',
+            '帮助', '退出', '清空', '历史',
+        )
+        return any(word in text for word in cjk_keywords)
+
+
+#: The three real modes plus every Chinese name for them. Kept next to the
+#: alias table so a name added to one is visible in the other.
+def _mode_names():
+    from_aliases = list(NaturalLanguageInterpreter.MODE_ALIASES.keys())
+    return ["chat", "coding", "fin", *from_aliases]
+
+
+def _mode_patterns():
+    names = "|".join(_mode_names())
+    return [
+        (rf"(?:switch|change|go) to ({names})(?: mode)?$", "/mode {match}", 0.9),
+        (rf"(?:enter|use) ({names}) mode$", "/mode {match}", 0.9),
+        (rf"(?:switch|change) mode to ({names})$", "/mode {match}", 0.9),
+        (rf"^({names}) mode$", "/mode {match}", 0.8),
+        # Chinese. The interpreter had no Chinese rules anywhere, which is why
+        # every Chinese phrasing fell through to the model untouched.
+        (rf"^(?:切换?到?|换成?|进入)\s*({names})(?:\s*模式)?$", "/mode {match}", 0.9),
+        (rf"^(?:切换?|换)\s*({names})\s*模式$", "/mode {match}", 0.9),
+        (rf"^(?:切换?|换)\s*模式\s*(?:到|为|成)\s*({names})$", "/mode {match}", 0.9),
+    ]

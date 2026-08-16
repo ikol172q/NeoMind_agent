@@ -64,6 +64,18 @@ TURNS = [
         "List exactly three build tools, one per line, numbered 1. 2. 3., nothing else.",
         90,
     ),
+    (
+        # Last on purpose: it changes the session's mode, and the scenarios
+        # above need coding mode to have tools at all. Putting it first left
+        # the rest running in chat with no tool loop and three empty dumps.
+        #
+        # "换成 coding" used to reach the model as prose and be answered with
+        # "I cannot switch modes myself" — Chinese never reached the
+        # interpreter at all, because its gate required an English keyword.
+        "nl_mode_switch_cn",
+        "换成 chat",
+        60,
+    ),
 ]
 
 
