@@ -83,32 +83,64 @@ def _settled_tail(screen: str, n: int = 50) -> str:
     return "\n".join(lines[-n:])
 
 
+def _looks_idle(screen: str) -> bool:
+    """True when the last thing on screen is an empty input prompt.
+
+    Content-stability alone is not enough: the model pauses between tool
+    rounds, and a 3-second quiet window inside a pause reads as "finished".
+    The first version declared two of three turns done early, so the next
+    input arrived while the previous turn was still thinking. Requiring the
+    tail to be a bare prompt is what distinguishes a pause from an ending.
+    """
+    lines = [
+        ln.rstrip() for ln in screen.splitlines()
+        if ln.strip()
+        and not (set(ln) & _SPINNER)
+        and not any(w in ln for w in _PROGRESS_WORDS)
+    ]
+    if not lines:
+        return False
+    # The status bar is the last line; the prompt sits just above it.
+    for ln in reversed(lines[-3:]):
+        if ln.strip() in (">", "> ") or ln.rstrip().endswith(">"):
+            return True
+    return False
+
+
 async def wait_for_response(tester, max_wait: float) -> bool:
     """Wait for the turn to actually finish.
 
     `wait_for_prompt()` alone is not enough: the prompt from the *previous*
     turn is still on screen when the next input is sent, so it returns
-    immediately and the recording captures nothing. This waits for the screen
-    to change first, then for it to stop changing.
+    immediately and the recording captures nothing.
     """
+    loop = asyncio.get_event_loop()
     before = _settled_tail(await tester.capture(lines=500))
-    deadline = asyncio.get_event_loop().time() + max_wait
+    deadline = loop.time() + max_wait
     changed = False
-    stable_since = None
+    idle_tail = None
+    idle_since = None
 
-    while asyncio.get_event_loop().time() < deadline:
+    while loop.time() < deadline:
         await asyncio.sleep(0.3)
-        tail = _settled_tail(await tester.capture(lines=500))
+        screen = await tester.capture(lines=500)
+        tail = _settled_tail(screen)
+
         if not changed:
             if tail != before:
                 changed = True
-                stable_since = None
             continue
-        if stable_since is None or tail != stable_since[0]:
-            stable_since = (tail, asyncio.get_event_loop().time())
+
+        if not _looks_idle(screen):
+            idle_tail, idle_since = None, None
             continue
-        if asyncio.get_event_loop().time() - stable_since[1] >= 3.0:
+
+        if idle_tail != tail:
+            idle_tail, idle_since = tail, loop.time()
+            continue
+        if loop.time() - idle_since >= 3.0:
             return True
+
     return changed
 
 
