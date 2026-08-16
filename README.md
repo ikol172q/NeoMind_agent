@@ -140,9 +140,10 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 0 — baseline + safety containment | done (2026-08-07) |
 > | 1 — runtime contract + `ToolExecutor` | substantially done — `agent/runtime/` (events, ports, permissions, tool_executor) with 66 passing runtime tests |
 > | 2 — LLM streaming port | substantially done — `agent/runtime/llm_stream.py` + `providers/openai_sse.py`, verified against a real DeepSeek stream |
-> | 3 — `AgentSession` + headless | substantially done — `neomind -p` runs through `AgentSession`; 11 real subprocess gate tests |
-> | 4 — Prompt REPL migration | **next** |
-> | 5–6 — Telegram, commands/config, fleet | pending |
+> | 3 — `AgentSession` + headless | done — `neomind -p` runs through `AgentSession` |
+> | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
+> | 5 — Telegram migration | **next** |
+> | 6 — commands/config boundaries, fleet | pending |
 > | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
 >
 > `plans/2026-08-06_frontend-contract-cli-tui-decoupling-plan.md` is authoritative — §11 is the
