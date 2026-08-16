@@ -218,6 +218,49 @@ class ToolDefinition:
             return f"Searching web for '{params.get('query', '?')}'"
         return self.name
 
+    #: Names other tool vocabularies use for the same parameter. Models are
+    #: trained on several tool schemas and reach for the wrong spelling
+    #: constantly — a coding session was observed losing a full round trip to
+    #: `Read(file_path=...)` answered with "Missing required parameter: 'path'",
+    #: then a retry, for every single file read. Accepting the synonym costs
+    #: nothing and breaks no existing caller, whereas renaming the parameter
+    #: would break every caller that already says `path`.
+    #:
+    #: Applied in `normalize_params()`, which both `validate_params()` and
+    #: `apply_defaults()` call, so a consumer cannot pick up one and miss the
+    #: other — that split is exactly what let the tool-call delimiter fix work
+    #: in the parser while the display path still leaked the payload.
+    PARAM_ALIASES = {
+        "file_path": "path",
+        "filepath": "path",
+        "filename": "path",
+        "file": "path",
+        "dir": "path",
+        "directory": "path",
+        "cmd": "command",
+        "query": "pattern",
+        "regex": "pattern",
+        "text": "content",
+        "body": "content",
+    }
+
+    def normalize_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Rewrite known parameter synonyms onto this tool's own names.
+
+        Only renames a synonym when the tool actually declares the target and
+        the caller did not already supply it, so a tool that genuinely has both
+        (Grep has `pattern` and `path`) is never rewritten out from under
+        itself.
+        """
+        if not params:
+            return dict(params or {})
+        own = {p.name for p in self.parameters}
+        result = dict(params)
+        for alias, target in self.PARAM_ALIASES.items():
+            if alias in result and target in own and target not in result:
+                result[target] = result.pop(alias)
+        return result
+
     def validate_params(self, params: Dict[str, Any]) -> Tuple[bool, str]:
         """Validate parameters against the tool's schema.
 
@@ -233,6 +276,8 @@ class ToolDefinition:
         Returns:
             (True, "") on success, (False, error_message) on failure
         """
+        params = self.normalize_params(params)
+
         # Silently strip unknown parameters instead of erroring.
         # LLMs sometimes hallucinate extra params (e.g. "reason") —
         # rejecting them wastes a round-trip. Just ignore them.
@@ -286,7 +331,7 @@ class ToolDefinition:
 
         Returns a new dict with defaults applied (does not modify input).
         """
-        result = dict(params)
+        result = self.normalize_params(params)
         for p in self.parameters:
             if p.name not in result and not p.required and p.default is not None:
                 result[p.name] = p.default
