@@ -337,6 +337,34 @@ class ConversationManager:
 # NeoMindInterface
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+def _tp_open_pattern() -> str:
+    from agent.coding.tool_parser import _OPEN_DELIM_RE
+    return _OPEN_DELIM_RE.pattern
+
+
+def _tp_close_pattern() -> str:
+    from agent.coding.tool_parser import _CLOSE_DELIM_RE
+    return _CLOSE_DELIM_RE.pattern
+
+
+#: This family requires a real marker — the DSML word, or a fullwidth U+FF5C
+#: bar — before it will suppress anything. Matching a bare `<|tool_calls|>`
+#: swallowed prose that merely mentions the tag, which
+#: test_pipe_like_normal_text_passes_through has asserted since before this
+#: work: eating a user's sentence is worse than letting one payload through,
+#: and every payload observed in the wild carried the marker.
+_DSML_MARK = r'(?:\uff5c+\s*(?:DSML)?\s*\uff5c*|\|*\s*DSML\s*\|*)'
+
+
+def _tp_dsml_open(tag: str) -> str:
+    return rf'<\s*{_DSML_MARK}\s*{tag}\b[^>]*>'
+
+
+def _tp_dsml_close(tag: str) -> str:
+    return rf'<\s*/\s*{_DSML_MARK}\s*{tag}\s*>' 
+
+
 class NeoMindInterface:
     """NeoMind terminal chat interface."""
 
@@ -1827,14 +1855,41 @@ class NeoMindInterface:
         """
 
         _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
+        # A fourth copy of the delimiter list lived here, knowing only the
+        # ASCII spellings — so DeepSeek's fullwidth `<｜｜DSML｜｜tool_calls>`
+        # and its `invoke` form streamed to the screen in fragments
+        # ("</｜｜DSML｜｜tool_ca" … "lls>") while parse() and strip_tool_call()
+        # handled them fine. Built from the parser's own patterns instead, so
+        # a spelling the parser learns is a spelling this suppresses.
         _TOOL_CALL_OPEN_RE = re.compile(
-            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)\s*'
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>'
+            + r'|' + _tp_open_pattern()
+            + r')\s*'
         )
+
+        #: The XML-shaped family is tracked separately because it nests:
+        #: `invoke` sits inside `tool_calls`, so accepting `</invoke>` as the
+        #: end of the block released suppression early and left the outer
+        #: `</｜｜DSML｜｜tool_calls>` on screen.
+        #: `invoke` nests inside `tool_calls`, so the tag that opened the block
+        #: is the only one allowed to close it. Accepting either — as the first
+        #: version did — let `</invoke>` end the outer block and leave
+        #: `</｜｜DSML｜｜tool_calls>` on screen.
+        _DSML_OPENERS = (
+            ("tool_calls", re.compile(_tp_dsml_open("tool_calls"), re.IGNORECASE)),
+            ("invoke", re.compile(_tp_dsml_open("invoke"), re.IGNORECASE)),
+        )
+        _DSML_CLOSERS = {
+            "tool_calls": re.compile(_tp_dsml_close("tool_calls"), re.IGNORECASE),
+            "invoke": re.compile(_tp_dsml_close("invoke"), re.IGNORECASE),
+        }
         # LLM sometimes hallucinates closing tags: </tool_result>, </tool_report>,
         # or truncated </tool_re, </tool_r, etc. Match all with one regex.
         _TOOL_CALL_CLOSE_RE = re.compile(
             r'(?:</tool_(?:call|result|report|re)\s*>'
-            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>'
+            + r'|' + _tp_close_pattern()
+            + r')'
         )
         # Orphan closing tags that may leak without a matching opener
         _ORPHAN_CLOSE_RE = re.compile(
@@ -1849,17 +1904,26 @@ class NeoMindInterface:
             len('<|tool_call_begin|>'),
             len('```console\n'),
         )
+        # Sized for the longest closing tag, since a shorter retention cuts a
+        # tag that straddles two chunks in half and prints the remainder. This
+        # was 18, computed before the DSML forms existed; `</｜｜DSML｜｜tool_calls>`
+        # is 21, so three characters survived as "lls>" on screen after an
+        # otherwise correctly suppressed block.
         _CLOSE_TAIL_LEN = max(
             len('</tool_report>'),
             len('<|/tool_call|>'),
             len('<|tool_call_end|>'),
             len('<|/tool_call_end|>'),
+            len('</｜｜DSML｜｜tool_calls>'),
+            len('</｜｜DSML｜｜tool_call>'),
+            len('</｜｜DSML｜｜invoke>'),
         )
 
         def __init__(self):
             self._buf = ""
             self._suppressing = False
-            self._suppress_type = None  # "fence" or "tool_call"
+            self._suppress_type = None  # "fence" | "tool_call" | "dsml_block"
+            self._dsml_tag = "tool_calls"
             self._after_tool_result = False
 
         def write(self, text: str) -> str:
@@ -1880,6 +1944,21 @@ class NeoMindInterface:
                         self._suppressing = False
                         self._suppress_type = None
                         rest = self._buf[idx + 3:]
+                        if rest.startswith('\n'):
+                            rest = rest[1:]
+                        self._buf = rest
+                        continue
+                    elif self._suppress_type == "dsml_block":
+                        m_close = self._DSML_CLOSERS[
+                            getattr(self, "_dsml_tag", "tool_calls")
+                        ].search(self._buf)
+                        if not m_close:
+                            if len(self._buf) > self._CLOSE_TAIL_LEN:
+                                self._buf = self._buf[-self._CLOSE_TAIL_LEN:]
+                            break
+                        self._suppressing = False
+                        self._suppress_type = None
+                        rest = self._buf[m_close.end():]
                         if rest.startswith('\n'):
                             rest = rest[1:]
                         self._buf = rest
@@ -1919,6 +1998,13 @@ class NeoMindInterface:
                         match, match_type = m_tc, "tool_call"
                     elif m_fence:
                         match, match_type = m_fence, "fence"
+
+                    for _tag, _open_re in self._DSML_OPENERS:
+                        m_dsml = _open_re.search(self._buf)
+                        if m_dsml and (match is None or m_dsml.start() < match.start()):
+                            match, match_type = m_dsml, "dsml_block"
+                            self._dsml_tag = _tag
+                            break
 
                     if match:
                         # Strip trailing newlines before the suppressed block
@@ -2607,6 +2693,27 @@ class NeoMindInterface:
 
         return _Broker()
 
+    def _interpret_as_command(self, text: str):
+        """Map prose onto a slash command, or None.
+
+        Mirrors what stream_response() does before calling the provider: the
+        same interpreter, the same confidence threshold, and the same silence
+        when nothing is confident enough.
+        """
+        if text.startswith("/"):
+            return None
+        interpreter = getattr(self.chat, "interpreter", None)
+        if not interpreter or not getattr(self.chat, "natural_language_enabled", False):
+            return None
+        try:
+            command, confidence = interpreter.interpret(text, self.chat.mode)
+        except Exception:
+            return None
+        if not command:
+            return None
+        threshold = getattr(interpreter, "confidence_threshold", 0.8)
+        return command if confidence >= threshold else None
+
     def _stream_and_render_session(self, prompt: str):
         """The session-backed replacement for _stream_and_render().
 
@@ -2617,6 +2724,19 @@ class NeoMindInterface:
         import asyncio as _asyncio
 
         from cli.session_renderer import SessionRenderer
+
+        # Natural-language command interpretation lives inside
+        # stream_response(), which this path does not call — so on session_v1
+        # "换成 fin" reached the model as prose and it replied "已切换到 fin
+        # 模式" while the status bar still read coding. It claimed to have done
+        # something it has no way to do.
+        #
+        # Interpreted here instead, and dispatched as the command it maps to,
+        # using the same interpreter and threshold rather than a second copy.
+        interpreted = self._interpret_as_command(prompt)
+        if interpreted:
+            self._handle_local_command(interpreted)
+            return None
 
         self._interrupt = False
         if self._fleet_session is not None:

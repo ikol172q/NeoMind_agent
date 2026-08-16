@@ -169,3 +169,96 @@ class TestDsmlInvokeShape:
             '<tool_call>{"tool":"Read","params":{"path":"b"}}</tool_call>'
         )
         assert call.tool_name == "Read" and call.params["path"] == "b"
+
+
+class TestStreamingSuppressionOfDsmlBlocks:
+    """The display filter carried a fourth copy of the delimiter list.
+
+    parse() and strip_tool_call() were taught DeepSeek's fullwidth spellings;
+    `_CodeFenceFilter`, which decides what reaches the screen *while* tokens
+    arrive, was not. So a tool call was executed correctly and its payload
+    still streamed out in fragments — "</｜｜DSML｜｜tool_ca" … "lls>".
+    """
+
+    @staticmethod
+    def _run(chunks):
+        import sys
+
+        sys.argv = ["x"]
+        from cli.neomind_interface import NeoMindInterface
+
+        f = NeoMindInterface._CodeFenceFilter()
+        return "".join(f.write(c) or "" for c in chunks) + (f.flush() or "")
+
+    def test_a_streamed_dsml_block_never_reaches_the_screen(self):
+        shown = self._run([
+            "好的:\n",
+            '<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name="bash">\n',
+            '<｜｜DSML｜｜parameter string="command">date +%Y</｜｜DSML｜｜parameter>\n',
+            "</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>\n",
+            "之后汇报。",
+        ])
+        assert "DSML" not in shown and "invoke" not in shown
+        assert shown == "好的:之后汇报。"
+
+    def test_the_closing_tag_of_the_outer_block_is_not_left_behind(self):
+        """invoke nests inside tool_calls. Accepting either as the closer let
+        `</invoke>` end the block early and printed `</｜｜DSML｜｜tool_calls>`."""
+        shown = self._run([
+            '<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name="b">x</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>',
+            "tail",
+        ])
+        assert shown == "tail"
+
+    def test_a_bare_invoke_without_a_wrapper_is_still_suppressed(self):
+        shown = self._run(['A\n', '<｜｜DSML｜｜invoke name="b">x</｜｜DSML｜｜invoke>\n', "B"])
+        assert shown == "AB"
+
+    def test_ordinary_text_with_angle_brackets_is_untouched(self):
+        text = "Hello world. a < b and c > d"
+        assert self._run([text]) == text
+
+    def test_a_block_split_across_every_character_boundary_is_suppressed(self):
+        """The retained tail must be at least as long as the longest closer.
+
+        It was 18, computed before the DSML forms existed;
+        `</｜｜DSML｜｜tool_calls>` is 21, so a tag straddling two chunks was cut
+        and three characters reached the screen as "lls>".
+        """
+        raw = (
+            "好的:<｜｜DSML｜｜tool_calls><｜｜DSML｜｜invoke name=\"b\">"
+            '<｜｜DSML｜｜parameter string="command">date</｜｜DSML｜｜parameter>'
+            "</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>之后汇报。"
+        )
+        shown = self._run(list(raw))          # one character per chunk
+        assert shown == "好的:之后汇报。", shown
+
+    def test_bash_fences_are_still_suppressed(self):
+        assert self._run(["see:\n", "```bash\nls -la\n```\n", "done"]) == "see:done"
+
+
+class TestDsmlParameterAttributeVariants:
+    """`<｜｜DSML｜｜parameter string="command">` — the name in a different
+    attribute, and no `name` at all. The strict pattern captured nothing, so
+    the call ran as `bash()` and was rejected for a missing parameter."""
+
+    @staticmethod
+    def _call(param_tag):
+        return ToolCallParser().parse(
+            "<｜｜DSML｜｜tool_calls>"
+            '<｜｜DSML｜｜invoke name="bash">'
+            f"{param_tag}date +%Y</｜｜DSML｜｜parameter>"
+            "</｜｜DSML｜｜invoke></｜｜DSML｜｜tool_calls>"
+        )
+
+    def test_name_attribute(self):
+        call = self._call('<｜｜DSML｜｜parameter name="command" string="true">')
+        assert call.params == {"command": "date +%Y"}
+
+    def test_name_carried_in_another_attribute(self):
+        call = self._call('<｜｜DSML｜｜parameter string="command">')
+        assert call.params == {"command": "date +%Y"}
+
+    def test_type_words_are_not_mistaken_for_the_name(self):
+        call = self._call('<｜｜DSML｜｜parameter string="true" name="command">')
+        assert call.params == {"command": "date +%Y"}

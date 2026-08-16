@@ -100,13 +100,34 @@ _DSML_INVOKE_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+#: The attribute list is captured whole rather than assuming `name="…"` comes
+#: first, or at all. Observed live: `<｜｜DSML｜｜parameter string="command">`,
+#: with the parameter's name in the `string` attribute and no `name` attribute —
+#: the strict pattern captured nothing, the call ran as `bash()` and the
+#: executor rejected it with "Missing required parameter: 'command'".
 _DSML_PARAM_RE = re.compile(
-    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\s+name\s*=\s*"([^"]+)"'
-    r'[^>]*>'
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\b([^>]*)>'
     r'(.*?)'
     rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\s*>',
     re.IGNORECASE | re.DOTALL,
 )
+
+_ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+
+#: Attribute values that describe the parameter rather than name it.
+_ATTR_NOISE = frozenset({"true", "false", "string", "number", "boolean", "json"})
+
+
+def _param_name_from_attrs(attrs: str):
+    """The parameter's name, however the model chose to spell the attributes."""
+    pairs = _ATTR_RE.findall(attrs or "")
+    for key, value in pairs:
+        if key.lower() == "name":
+            return value.strip()
+    for _key, value in pairs:
+        if value.strip().lower() not in _ATTR_NOISE:
+            return value.strip()
+    return None
 
 #: The wrapper around one or more invokes. Removed wholesale from display text.
 _DSML_CALLS_BLOCK_RE = re.compile(
@@ -132,8 +153,10 @@ def parse_dsml_invoke(text: str):
         return None
     tool_name = match.group(1).strip()
     params = {}
-    for name, value in _DSML_PARAM_RE.findall(match.group(2)):
-        params[name.strip()] = value.strip()
+    for attrs, value in _DSML_PARAM_RE.findall(match.group(2)):
+        name = _param_name_from_attrs(attrs)
+        if name:
+            params[name] = value.strip()
     return tool_name, params, (block.group(0) if block else match.group(0))
 
 
