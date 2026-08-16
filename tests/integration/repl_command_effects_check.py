@@ -93,7 +93,16 @@ async def main() -> int:
         (DUMP_DIR / "after_switch.txt").write_text(screen, encoding="utf-8")
         captured["after_switch"] = str(DUMP_DIR / "after_switch.txt")
 
-        # 3. The sentinel must not be visible anywhere — if the effect were
+        # 3. Session-scoped config: /permissions must still work, and the
+        #    custom system prompt / mode must survive the fork.
+        tester.start_recording()
+        await tester.send("/permissions plan")
+        await poll(tester, 6)
+        screen = tester.stop_recording()
+        (DUMP_DIR / "permissions.txt").write_text(screen, encoding="utf-8")
+        captured["permissions"] = str(DUMP_DIR / "permissions.txt")
+
+        # 4. The sentinel must not be visible anywhere — if the effect were
         #    ignored, the old code path would print the raw text instead.
         tester.start_recording()
         await tester.send("/exit")
@@ -113,13 +122,16 @@ async def main() -> int:
         after = Evidence("after_switch", read(captured["after_switch"]))
         after.witness("MODE_EFFECT_OK").absent("__MODE_SWITCH__", "__EXIT__")
 
+        perms = Evidence("permissions", read(captured["permissions"]))
+        perms.witness("/permissions plan").contains("plan")
+
         exited = Evidence("exit", read(captured["exit"]))
         exited.witness("/exit").contains("Goodbye").absent("__EXIT__")
     except AssertionError as failure:
         print(f"\n  !! {type(failure).__name__}: {failure}")
         return 1
 
-    report = collect([mode, after, exited])
+    report = collect([mode, after, perms, exited])
     (DUMP_DIR / "index.json").write_text(
         json.dumps({"dumps": captured, "evidence": report}, indent=2),
         encoding="utf-8",

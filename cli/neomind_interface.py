@@ -51,7 +51,7 @@ except ImportError:
 
 from agent.core import NeoMindAgent
 from agent.help_system import HelpSystem
-from agent_config import agent_config
+from agent_config import agent_config, bind_session_config
 
 # --- pygments imports (code block syntax highlighting) ---
 try:
@@ -2932,6 +2932,18 @@ class NeoMindInterface:
 
     # ── Main loop ─────────────────────────────────────────────────────────
     def run(self):
+        # This session's configuration is its own from here on. The mechanism
+        # already existed for fleet workers; interactive surfaces never bound
+        # anything, so `/permissions auto` wrote to the process-wide default
+        # and a second session — the whole point of extracting a frontend
+        # contract — would silently inherit it.
+        #
+        # Bound here rather than in __init__ because main.py configures the
+        # process (mode, custom system prompt) before calling run(), and the
+        # fork has to happen after that or the session starts from a
+        # configuration nobody chose.
+        self._config_token = bind_session_config()
+
         self.display_welcome()
 
         if not PROMPT_TOOLKIT_AVAILABLE:
