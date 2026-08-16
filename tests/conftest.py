@@ -36,6 +36,53 @@ import agent.task_manager  # noqa: E402,F401
 import agent.tools  # noqa: E402,F401
 
 
+@pytest.fixture(autouse=True, scope="session")
+def _never_write_the_real_audit_log(tmp_path_factory):
+    """Point the investment audit root at a temp dir for the whole run.
+
+    `agent_audit` writes to `~/Desktop/Investment/_audit/YYYY-MM-DD.jsonl`,
+    which is a production record of every LLM call the user's finance stack
+    makes. It already honours `NEOMIND_INVESTMENT_ROOT` — the docstring even
+    says "(tests)" — but nothing set it, so any test reaching a real audit
+    call appended to the real trail. Two did: a fleet worker test wrote eight
+    fabricated rows including an injected transport failure, indistinguishable
+    after the fact from genuine turns.
+
+    Session-scoped and autouse, because "remember to mock the audit in this
+    file" is the kind of rule that holds until someone adds a file.
+    """
+    root = tmp_path_factory.mktemp("investment-root")
+    previous = os.environ.get("NEOMIND_INVESTMENT_ROOT")
+    os.environ["NEOMIND_INVESTMENT_ROOT"] = str(root)
+    # The logger caches its path resolution in a module-level singleton.
+    try:
+        from agent.services import agent_audit
+
+        agent_audit._default = None
+    except Exception:
+        pass
+    yield
+    if previous is None:
+        os.environ.pop("NEOMIND_INVESTMENT_ROOT", None)
+    else:
+        os.environ["NEOMIND_INVESTMENT_ROOT"] = previous
+
+
+@pytest.fixture(autouse=True)
+def _fleet_stays_on_the_injectable_path(monkeypatch):
+    """Keep `NEOMIND_FLEET` at legacy unless a test opts in.
+
+    Existing fleet tests mock `worker_turn._default_llm_call`. When the default
+    flipped to the session path, `_resolve_llm_call()` stopped returning that
+    function, so those mocks were silently bypassed and the tests began making
+    real provider calls — the switch changed what the suite was testing without
+    failing anything. Tests that want the session path set the variable
+    themselves; `tests/test_fleet_session_path_e2e.py` does.
+    """
+    if "NEOMIND_FLEET" not in os.environ:
+        monkeypatch.setenv("NEOMIND_FLEET", "legacy")
+
+
 @pytest.fixture(autouse=True)
 def _ensure_event_loop():
     """Guarantee a usable asyncio event loop exists for every test.

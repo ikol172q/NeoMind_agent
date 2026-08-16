@@ -182,7 +182,11 @@ async def _default_llm_call(
 def _session_path_enabled() -> bool:
     import os
 
-    return os.getenv("NEOMIND_FLEET", "").strip().lower() == "session"
+    # Default flipped to the session path 2026-08-16, after a real fleet run
+    # on coding-smoke and an end-to-end suite covering fin signal parsing,
+    # the analysis write, leader notification and failure handling.
+    # `NEOMIND_FLEET=legacy` restores the direct `requests.post`.
+    return os.getenv("NEOMIND_FLEET", "session").strip().lower() == "session"
 
 
 def _resolve_llm_call() -> LlmCallable:

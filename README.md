@@ -144,13 +144,13 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
 > | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
 > | 6A — commands/config/store boundaries | **done — one registry defines every command (the 279-line duplicate chain is gone), a session's config is its own, one conversation-store owner per session** |
-> | 6B — fleet turn/lifecycle boundaries | pending |
-> | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
+> | 6B — fleet turn/lifecycle boundaries | **done — fleet worker turns run on `AgentSession` (same ToolExecutor and permission policy as every surface), and the fleet's asyncio loop moved out of the frontend into `fleet/driver.py`** |
+> | 7 — be drivable by an existing harness (pi / DeepSeek Harness) | **next** — own-TUI deferred by decision 2026-08-16: the marginal value of building one is questionable when existing clients cover it |
 >
 > **Rollback switches.** Each migrated surface keeps one, read per turn rather than cached at
 > import, so reverting is a restart and never a rebuild: `NEOMIND_REPL=legacy` for the terminal,
 > `NEOMIND_TELEGRAM=session|legacy` for the bot (also declared in `docker-compose.yml`),
-> `NEOMIND_HEADLESS` for `-p`.
+> `NEOMIND_HEADLESS` for `-p`, `NEOMIND_FLEET=session|legacy` for fleet worker turns.
 >
 > **What Telegram gains by moving.** The bot is a remote surface: in a group chat the person talking
 > to it is not necessarily the person who owns the machine it runs on, and the container has the

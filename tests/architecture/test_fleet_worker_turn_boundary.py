@@ -188,3 +188,80 @@ def test_detector_rejects_pipe_delimited_runtime_protocol_tag():
         filename="pipe-protocol",
     )
     assert "contains runtime tool-call protocol tags" in violations
+
+
+# ── Lifting the freeze (Phase 6B task 2) ──────────────────────────────────
+#
+# The freeze above says `worker_turn.py` executes no tools. That was
+# containment, not a design: an unmigrated surface growing tools would be a
+# second permission path opened after the audit concluded, so the cheapest
+# safe answer was "none at all".
+#
+# It stays — `worker_turn` is persona dispatch and should not execute anything
+# itself. What changes is that fleet is no longer barred from tools outright:
+# `fleet/worker_session.py` runs the turn through `AgentSession`, so a worker
+# that requests one meets the same `ToolExecutor` and policy as every other
+# surface. These assert that this is the *only* way it can, because a freeze
+# replaced by nothing is a freeze lifted for no reason.
+
+WORKER_SESSION = Path(__file__).resolve().parents[2] / "fleet" / "worker_session.py"
+
+
+def _session_source() -> str:
+    return WORKER_SESSION.read_text(encoding="utf-8")
+
+
+def test_fleet_executes_tools_only_through_the_shared_executor():
+    """No registry dispatch of its own, and no agentic loop."""
+    source = _session_source()
+    violations = []
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            if node.func.attr in REGISTRY_DISPATCH_METHODS:
+                receiver = _attribute_name(node.func.value)
+                # `executor.execute` is the shared path and is what this file
+                # exists to reach; anything else dispatching is a second one.
+                if receiver not in ("self.executor", "executor"):
+                    violations.append(f"line {node.lineno}: {receiver}.{node.func.attr}")
+    assert not violations, violations
+    assert "AgenticLoop" not in source
+
+
+def test_the_fleet_policy_cannot_ask():
+    """A scheduled worker has nobody to answer a permission prompt, so ASK has
+    to resolve to DENY. `PermissionPolicy` defaults `interactive` to False, but
+    defaults are not guarantees — the REPL had to pass it explicitly and got
+    the opposite behaviour when it forgot."""
+    source = _session_source()
+    assert "interactive=False" in source
+    assert "auto_accept=False" in source
+
+
+def test_the_fleet_capability_snapshot_is_an_allowlist():
+    """Not `unrestricted()`, and not "everything registered that says
+    READ_ONLY" — a mislabelled tool would walk straight in."""
+    source = _session_source()
+    assert "CapabilitySnapshot.only(" in source
+    assert "unrestricted" not in source
+
+
+def test_fleet_tools_exclude_the_filesystem_and_the_shell():
+    """Checked against the live list rather than the source text, so renaming
+    the constant cannot quietly widen it."""
+    from fleet.worker_session import FLEET_READ_ONLY_TOOLS
+
+    for name in ("Read", "Write", "Edit", "Bash", "Glob", "Grep", "LS", "AskUser"):
+        assert name not in FLEET_READ_ONLY_TOOLS, name
+
+
+def test_worker_turn_delegates_rather_than_reaching_for_a_provider():
+    """The migrated default must not construct its own HTTP call. The legacy
+    one still may — it is the rollback — but it is no longer what a fresh
+    worker turn resolves to."""
+    import inspect
+
+    from fleet.worker_turn import _resolve_llm_call
+
+    source = inspect.getsource(_resolve_llm_call)
+    assert "worker_session" in source
+    assert "requests" not in source

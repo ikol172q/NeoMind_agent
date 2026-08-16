@@ -1020,9 +1020,34 @@ Done gate:
 - Existing fin/coding/chat worker results, artifacts, fail-fast behavior, and leader notifications
   pass a real fleet run after a cold process boot.
 
-### Phase 7 — Build the lightweight Python Textual TUI
+### Phase 7 — Be drivable by an existing harness (revised 2026-08-16)
 
-**Purpose:** add the richer interface only after it is a pure consumer.
+**Purpose:** stop at the boundary. Let someone else's client be the interface.
+
+**Decision (operator, 2026-08-16).** Building NeoMind's own Textual TUI is *deferred, possibly
+indefinitely*: "自己的 TUI 带来的边际效益其实有待商榷 — 除非我有非常特殊的需求且市面上没有能满足的,
+否则为啥要继续自建 TUI 呢". The want is to switch freely between **pi** and the **DeepSeek Harness**
+as the front end, with an own-TUI only if a need appears that neither covers.
+
+That is the same buy-vs-build rule applied everywhere else here, and it changes what this phase
+builds: not an interface, but the **adapter that makes NeoMind a server those clients can drive**.
+Everything Phases 1–6B produced — frozen events, `AgentSession`, one `ToolExecutor`, session-scoped
+config, typed command effects, a fleet that owns its own loop — is exactly the substrate such an
+adapter needs, which is why D7 deferred it until now.
+
+**Open question to settle first, by reading source rather than assuming:** DSH's `dsh-acp` speaks
+**ACP** (open standard, JSON-RPC over stdio, official Python SDK). pi's protocol as surveyed on
+2026-08-15 was **bespoke** — 4-byte big-endian length prefix over CBOR, nine commands. If that is
+still true, one ACP server does not give "switch freely between pi and DSH"; it gives DSH plus every
+other ACP client, and pi needs a second adapter. Check whether pi has since gained ACP support
+before committing to either shape.
+
+**Original scope, retained only as the fallback if no client fits:** conversation transcript with
+incremental text; persistent input composer; model/mode/status bar; collapsible thinking/tool
+panels; permission modal driven by `PermissionRequested`; cancellation and keyboard navigation;
+session/history picker; optional fleet pane.
+
+**Purpose (original):** add the richer interface only after it is a pure consumer.
 
 Initial scope:
 
@@ -1256,7 +1281,17 @@ This plan does not authorize or require:
 **Task 5 — boundary tests.** `tests/test_surface_boundaries.py`: no second command chain, every declared UI command has its method, registration never overrides an existing command, a missing registry is reported not worked around, no control signal travels in `CommandResult.text` anywhere in the tree, the REPL binds its own config, both store adapters satisfy the port with one writer, and the Phase 5/6A modules import no frontend (parsed, not grepped — the renderer's own docstring contains the words "does not import telegram", which a text search cannot tell from an import).
 
 **Real terminal, 30 assertions across 13 observations**, each with a witness: mode switch redraws, a turn answers in the new mode, `/permissions plan` sets it, six commands that lost their legacy copy still work (`/history`, `/skills`, `/config`, `/evidence`, `/freeze`, `/expand`), bare `/permissions` toggles, `/debug dump` prints the log again, and `/run` in chat mode says it is coding-only. The mode-gate probe was initially run from *coding* mode, where `/run` is available — it proved nothing and was re-run from chat. |
-| 6B — fleet turn/lifecycle boundaries | Pending | — |
+| 6B — fleet turn/lifecycle boundaries | Done (2026-08-16) | **Task 2 — the worker turn.** `worker_turn.py` reached the provider itself, which made fleet the last surface with its own turn implementation and the reason `test_fleet_worker_turn_boundary.py` froze it as LLM-only. It migrates at one seam: `worker_turn` already injects its LLM call as `(model, system_prompt, user_prompt) -> str` and all three persona handlers use it, so replacing the default moved fin, coding and chat at once with no change to persona logic. A fleet worker is the least supervised surface there is — unattended, scheduled, nobody to answer a prompt — so `fleet/worker_session.py` gives it the strictest policy: `interactive=False` and an allowlist ∩ still-READ_ONLY that excludes Read/Glob/Grep/Bash outright. The audit trail is preserved exactly, including recording a failed turn as an error before raising, which is what lets `execute_task` report `status=failed` without propagating.
+
+**Task 1 — the lifecycle.** `NeoMindInterface` carried the fleet's asyncio loop and daemon thread as *class* attributes. A persistent loop is genuinely necessary (a synchronous REPL using `run_until_complete()` only turns the loop during each call, so workers freeze between inputs and cross-call task references fail with "future belongs to a different loop") but on the class it meant every interface in a process shared one — the same shape Phase 6A moved out of the config — and any second frontend would have had to rebuild it. `fleet/driver.py` owns it now, one per interface, and gains what class attributes could not have: `shutdown()` so a TUI opening and closing a fleet pane does not leak a thread per open, restart-after-shutdown, and a timeout, since a frontend blocked forever on a fleet call looks like a hung terminal with nothing on screen to explain it. Found en route: `concurrent.futures.Future.result` raises its *own* TimeoutError, a different class from `asyncio.TimeoutError` on 3.9, so catching only the latter let it escape bare.
+
+**Tasks 3 and 4 — behaviour preserved, asserted end to end.** `tests/test_fleet_session_path_e2e.py` runs the fleet with only the *provider* faked: launcher, task queue, persona routing, AgentSession, ToolExecutor, signal parsing, the analysis write and the leader mailbox are all real. Covers fin signal → `write_analysis` → queue completion, one provider call per task, the persona system prompt reaching the model, the leader's XML `task_notification`, a coding task, and a provider failure. Plus a guard that the legacy default is never called, because a suite that silently tests the old path is the failure this phase already hit once.
+
+**Freeze lifted, not deleted.** The old assertion (worker_turn executes no tools) stays — it is persona dispatch and should not execute anything itself. Four new ones say fleet may now use tools *only* through the shared path: no registry dispatch of its own, `interactive=False` and `auto_accept=False` present explicitly rather than by default, `CapabilitySnapshot.only(...)` rather than `unrestricted()`, and the live allowlist checked for filesystem/shell names so renaming the constant cannot widen it.
+
+**Two defects found by doing it.** The launcher called `complete_task()` unconditionally while `complete_task` hardcoded `status='completed'` — so a failed worker turn was recorded in the queue as completed with the error text where the summary belongs, and anything asking the queue "did this work?" got the wrong answer, while the leader notification built two lines later correctly said failed. Pre-existing; fixed by threading the status the launcher already had. And flipping the default **silently broke every test that mocks `_default_llm_call`**: `_resolve_llm_call()` stopped returning it, so those mocks were bypassed and the tests began making real provider calls and writing the user's production audit log. Two conftest guards now: `NEOMIND_INVESTMENT_ROOT` points at a temp dir for the whole session (the mechanism existed, with "(tests)" in its docstring, and nothing used it), and `NEOMIND_FLEET` defaults to legacy unless a test opts in.
+
+Default flipped to `session` after a real fleet run on coding-smoke with no env var set, verified by audit marker rather than by the answer: `fleet.worker.session_llm_call` present, `fleet.worker._default_llm_call` absent. `NEOMIND_FLEET=legacy` reverts. |
 | 7 — Textual TUI | Pending | candidate set widened 2026-08-15: Textual TUI, an ACP server (official Python SDK; DeepSeek Harness ships one), or both — see the D7 addendum |
 | 8 — compatibility retirement | Pending | — |
 
