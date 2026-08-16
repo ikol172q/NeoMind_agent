@@ -231,7 +231,16 @@ def _seed_fixture_project():
 
 _TIER_PATHS = {
     "llm": ("tests/llm/", "test_integration_live", "test_simulation_llm"),
-    "proc": ("test_headless_subprocess", "cross_mode_boot_smoke", "test_fleet_"),
+    # Named per file rather than by a `test_fleet_` prefix. The prefix caught
+    # every fleet test, including pure ones that spawn nothing — measured:
+    # only these two actually launch processes. A pure test held back reads as
+    # a pass and is not one.
+    "proc": (
+        "test_headless_subprocess",
+        "cross_mode_boot_smoke",
+        "test_fleet_fin_end_to_end",
+        "test_fleet_launcher",
+    ),
     "slow": ("repl_fidelity_check", "repl_session_path_check", "repl_phase4_gate"),
 }
 
@@ -282,12 +291,81 @@ def pytest_collection_modifyitems(config, items):
     config._neomind_held = held
 
 
+#: Directories whose contents are the system under test. Editing one of these
+#: while the suite runs makes the results describe a program that no longer
+#: exists, and the failures it produces point at the wrong place: a module
+#: imported before the edit keeps its old line numbers, so `inspect.getsource`
+#: hands a test a *different function's* body and blames it for the mismatch.
+#: That happened here, and the response was to resolve not to do it again —
+#: which lasted one message. Hence a check rather than a resolution.
+_SOURCE_ROOTS = ("agent", "cli", "fleet")
+_SOURCE_FILES = ("main.py", "agent_config.py")
+
+
+def _source_fingerprint():
+    """(path → (mtime, size)) for every source file, cheaply."""
+    import pathlib
+
+    repo = pathlib.Path(__file__).resolve().parents[1]
+    seen = {}
+    for root in _SOURCE_ROOTS:
+        base = repo / root
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*.py"):
+            if "__pycache__" in path.parts or ".venv" in path.parts:
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            seen[str(path)] = (stat.st_mtime_ns, stat.st_size)
+    for name in _SOURCE_FILES:
+        path = repo / name
+        if path.exists():
+            stat = path.stat()
+            seen[str(path)] = (stat.st_mtime_ns, stat.st_size)
+    return seen
+
+
+#: Taken at import, not in `pytest_sessionstart`. A conftest in a subdirectory
+#: is loaded during collection, which happens *after* that hook fires — so the
+#: hook never ran and the check silently did nothing. Module import is the
+#: earliest moment this file can observe anything, and it is early enough:
+#: collection is the start of the run.
+_SOURCE_AT_START = _source_fingerprint()
+
+
 def pytest_terminal_summary(terminalreporter, exitstatus, config):
     held = getattr(config, "_neomind_held", None)
-    if not held or not any(held.values()):
+    if held and any(held.values()):
+        total = sum(held.values())
+        parts = ", ".join(f"{n} {t}" for t, n in held.items() if n)
+        terminalreporter.write_sep(
+            "-", f"{total} tests held back ({parts}) — NEOMIND_TESTS=all to run them"
+        )
+
+    before = _SOURCE_AT_START
+    if not before:
         return
-    total = sum(held.values())
-    parts = ", ".join(f"{n} {t}" for t, n in held.items() if n)
-    terminalreporter.write_sep(
-        "-", f"{total} tests held back ({parts}) — NEOMIND_TESTS=all to run them"
+    after = _source_fingerprint()
+    changed = sorted(
+        path for path, sig in after.items() if before.get(path) != sig
+    ) + sorted(path for path in before if path not in after)
+    if not changed:
+        return
+
+    import pathlib
+
+    repo = str(pathlib.Path(__file__).resolve().parents[1]) + "/"
+    terminalreporter.write_sep("!", "SOURCE CHANGED DURING THIS RUN", red=True)
+    terminalreporter.write_line(
+        f"  {len(changed)} file(s) were edited while the suite was running. "
+        f"These results describe a mixture of two versions and any failure "
+        f"below may belong to neither. Re-run before trusting it.",
+        red=True,
     )
+    for path in changed[:10]:
+        terminalreporter.write_line(f"    {path.replace(repo, '')}", red=True)
+    if len(changed) > 10:
+        terminalreporter.write_line(f"    … and {len(changed) - 10} more", red=True)
