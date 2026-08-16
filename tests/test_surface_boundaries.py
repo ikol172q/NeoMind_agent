@@ -235,3 +235,58 @@ class TestImportDirection:
             elif isinstance(node, ast.Import):
                 imported |= {a.name.split(".")[0] for a in node.names}
         assert "telegram" not in imported
+
+
+class TestFleetLifecycleIsNotOwnedByTheUI:
+    """Phase 6B task 1. The interface used to carry the fleet's asyncio loop
+    and daemon thread as *class* attributes, so every interface in a process
+    shared one — and any second frontend would have had to rebuild the whole
+    mechanism to run a fleet at all."""
+
+    def test_the_interface_holds_no_class_level_loop(self):
+        from cli.neomind_interface import NeoMindInterface
+
+        for attr in ("_fleet_bg_loop", "_fleet_bg_thread"):
+            assert not hasattr(NeoMindInterface, attr), (
+                f"{attr} is class state; two sessions would share it"
+            )
+
+    def test_the_interface_delegates_to_the_driver(self):
+        import inspect
+
+        from cli.neomind_interface import NeoMindInterface
+
+        source = inspect.getsource(NeoMindInterface._fleet_async_run)
+        assert "_fleet_driver()" in source
+        assert "new_event_loop" not in source, (
+            "loop construction belongs to the driver, not the frontend"
+        )
+
+    def test_each_interface_gets_its_own_driver(self):
+        from unittest import mock
+
+        from cli.neomind_interface import NeoMindInterface
+
+        a = NeoMindInterface.__new__(NeoMindInterface)
+        b = NeoMindInterface.__new__(NeoMindInterface)
+        with mock.patch("fleet.driver.FleetDriver.__init__", return_value=None):
+            assert a._fleet_driver() is not b._fleet_driver()
+
+    def test_fleet_does_not_import_the_frontend(self):
+        import ast
+        import pathlib
+
+        repo = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        for path in (repo / "fleet").glob("*.py"):
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+            for node in ast.walk(tree):
+                names = []
+                if isinstance(node, ast.ImportFrom) and node.module:
+                    names = [node.module]
+                elif isinstance(node, ast.Import):
+                    names = [a.name for a in node.names]
+                for name in names:
+                    if name.split(".")[0] in {"cli", "rich", "prompt_toolkit"}:
+                        offenders.append(f"{path.name}: {name}")
+        assert offenders == [], offenders

@@ -117,7 +117,15 @@ class Evidence:
         return self
 
     def absent(self, *needles: str) -> "Evidence":
-        """The assertion that is worthless without a witness."""
+        """The assertion that is worthless without a witness.
+
+        One caveat when the body came from a terminal recorder: it accumulates
+        every line that was ever on screen during the window, so the scrollback
+        of *earlier* steps is part of this capture. Asserting the absence of a
+        phrase some previous step legitimately printed will fail, and the
+        failure will look like the step under test. Keep the needles to strings
+        that can mean nothing but "this step broke".
+        """
         self._require_witness("absent()")
         found = [n for n in needles if n and n in self.body]
         if found:

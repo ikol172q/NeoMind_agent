@@ -148,6 +148,19 @@ async def main() -> int:
         (DUMP_DIR / "cmd_mode_gate.txt").write_text(screen, encoding="utf-8")
         captured["cmd_mode_gate"] = str(DUMP_DIR / "cmd_mode_gate.txt")
 
+        # 5c. Phase 6B task 1: the fleet's asyncio loop moved out of this
+        #     class into `fleet.driver.FleetDriver`. /fleet start is the only
+        #     thing that exercises it, and a broken driver looks like a hung
+        #     terminal rather than an error.
+        tester.start_recording()
+        await tester.send("/fleet status")
+        await poll(tester, 6)
+        await tester.send("/fleet start coding-smoke")
+        await poll(tester, 20)
+        screen = tester.stop_recording()
+        (DUMP_DIR / "cmd_fleet.txt").write_text(screen, encoding="utf-8")
+        captured["cmd_fleet"] = str(DUMP_DIR / "cmd_fleet.txt")
+
         # 6. The sentinel must not be visible anywhere — if the effect were
         #    ignored, the old code path would print the raw text instead.
         tester.start_recording()
@@ -190,6 +203,16 @@ async def main() -> int:
         gate = Evidence("mode_gate", read(captured["cmd_mode_gate"]))
         gate.witness("/run echo hi").contains("not available in").absent("Traceback")
         probes.append(gate)
+
+        fleet = Evidence("fleet", read(captured["cmd_fleet"]))
+        # `absent` on a phrase an *earlier* probe printed will fail: the
+        # recorder accumulates every line that was ever on screen, so the
+        # scrollback of previous turns is part of this capture. Only strings
+        # that can mean nothing but "this step broke" belong here.
+        fleet.witness("/fleet start coding-smoke").contains(
+            "started with"
+        ).absent("Traceback", "Command failed")
+        probes.append(fleet)
 
         exited = Evidence("exit", read(captured["exit"]))
         exited.witness("/exit").contains("Goodbye").absent("__EXIT__")

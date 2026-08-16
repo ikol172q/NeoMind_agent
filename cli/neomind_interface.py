@@ -704,60 +704,31 @@ class NeoMindInterface:
     # "future belongs to a different loop" errors (caught by Phase 5.10
     # iTerm2 live smoke 2026-04-12). Using a dedicated thread + persistent
     # loop fixes both problems in one move.
-    _fleet_bg_loop = None  # type: ignore
-    _fleet_bg_thread = None  # type: ignore
+    #: The loop a fleet runs on now belongs to `fleet.driver.FleetDriver`,
+    #: one per interface. It used to be two class attributes here, which meant
+    #: every interface in the process shared one loop and one thread — the same
+    #: shape as the process-wide config Phase 6A moved into the session, and a
+    #: mechanism any second frontend would have had to rebuild.
+
+    def _fleet_driver(self):
+        """This session's fleet driver, created on first use."""
+        driver = getattr(self, "_fleet_driver_obj", None)
+        if driver is None:
+            from fleet.driver import FleetDriver
+
+            driver = FleetDriver()
+            self._fleet_driver_obj = driver
+        return driver
 
     def _fleet_async_run(self, coro):
-        """Run an async coroutine on the dedicated background loop.
+        """Run a fleet coroutine and return its result.
 
-        Submits the coroutine via asyncio.run_coroutine_threadsafe and
-        blocks the CLI thread until it completes (or raises). Short
-        operations (start, stop, submit, status) complete in
-        milliseconds. Long operations should not be run through this
-        helper — the fleet's own background workers run on the same
-        loop and make progress independently of the CLI thread.
+        Blocks this thread. Short operations (start, stop, submit, status)
+        complete in milliseconds; the fleet's own workers keep running on the
+        same loop and make progress independently of the CLI thread, which is
+        why the loop is persistent rather than created per call.
         """
-        import asyncio
-        import threading
-        import time
-
-        # Lazy-create the background loop + thread on first call
-        cls = type(self)
-        if cls._fleet_bg_loop is None:
-            loop_ready = threading.Event()
-
-            def _run_loop():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                cls._fleet_bg_loop = loop
-                loop_ready.set()
-                try:
-                    loop.run_forever()
-                finally:
-                    # Cancel any remaining tasks on teardown
-                    try:
-                        pending = asyncio.all_tasks(loop)
-                        for t in pending:
-                            t.cancel()
-                        if pending:
-                            loop.run_until_complete(
-                                asyncio.gather(*pending, return_exceptions=True)
-                            )
-                    except Exception:
-                        pass
-                    loop.close()
-
-            cls._fleet_bg_thread = threading.Thread(
-                target=_run_loop, name="neomind-fleet-loop", daemon=True,
-            )
-            cls._fleet_bg_thread.start()
-            loop_ready.wait(timeout=5.0)
-            if cls._fleet_bg_loop is None:
-                raise RuntimeError("fleet background loop failed to start")
-
-        # Submit the coroutine to the background loop and wait for it
-        future = asyncio.run_coroutine_threadsafe(coro, cls._fleet_bg_loop)
-        return future.result()
+        return self._fleet_driver().submit(coro)
 
     def _print_fleet_focus_banner(self) -> None:
         """Print a focus-change banner plus the last N turns of the
