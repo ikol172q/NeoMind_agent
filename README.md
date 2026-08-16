@@ -143,7 +143,8 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 3 — `AgentSession` + headless | done — `neomind -p` runs through `AgentSession` |
 > | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
 > | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
-> | 6 — commands/config boundaries, fleet | pending |
+> | 6A — commands/config/store boundaries | **done — one registry defines every command (the 279-line duplicate chain is gone), a session's config is its own, one conversation-store owner per session** |
+> | 6B — fleet turn/lifecycle boundaries | pending |
 > | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
 >
 > **Rollback switches.** Each migrated surface keeps one, read per turn rather than cached at

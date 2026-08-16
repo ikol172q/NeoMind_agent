@@ -377,11 +377,19 @@ class NeoMindInterface:
         self._interrupt = False
         self._auto_approved = False  # Persists "always allow" across turns
 
-        # ── Phase 1: Claude Code CLI integration ────────────────────
-        # Use the new command system alongside legacy _handle_local_command.
-        # New system takes priority; if it returns None, falls through to legacy.
+        # ── One command registry (Phase 6A task 2) ──────────────────
+        # The registry is the only place that defines what commands exist.
+        # The terminal's own commands are declared into it here, so
+        # autocomplete, /help and the mode-availability check all read one
+        # list. It is `NeoMindAgent`'s per-instance registry, so these
+        # declarations are scoped to this session and never reach Telegram's.
         self._new_command_dispatcher = getattr(chat, '_command_dispatcher', None)
         self._new_command_registry = getattr(chat, '_command_registry', None)
+        from cli.ui_commands import register_ui_commands
+
+        self._ui_command_names = register_ui_commands(
+            self, self._new_command_registry
+        )
 
         # ── Phase 5: Fleet multi-agent monitor (2026-04-12) ─────────
         # In-session FleetSession wrapper; None when no fleet active.
@@ -1204,6 +1212,55 @@ class NeoMindInterface:
             )
 
     # ── Command handling ──────────────────────────────────────────────────
+    #: Commands that work in every mode regardless of the personality's list.
+    #: `fleet` is here because a multi-agent monitor is not a property of the
+    #: personality you happen to be in.
+    _MODE_AGNOSTIC_COMMANDS = frozenset({
+        "quit", "exit", "help", "mode", "config", "skills", "careful",
+        "freeze", "unfreeze", "guard", "sprint", "evidence", "fleet",
+    })
+
+    def _mode_gate_message(self, user_input: str) -> Optional[str]:
+        """Why this command is unavailable here, or None if it is available."""
+        if not user_input.lstrip().startswith("/"):
+            return None
+        cmd = user_input.lstrip().split(maxsplit=1)[0][1:].lower()
+        if not cmd or cmd in self._MODE_AGNOSTIC_COMMANDS:
+            return None
+        allowed = agent_config.available_commands
+        if not allowed or cmd in allowed:
+            return None
+        # Declared by the frontend or the registry → available regardless of
+        # the personality's command list, which predates both.
+        registry = getattr(self, "_new_command_registry", None)
+        if registry is not None and registry.find(cmd) is not None:
+            return None
+
+        hint = {
+            "chat": "[dim]Hint: start with --mode coding for file and code operations[/dim]",
+            "fin": "[dim]Hint: use /stock, /crypto, /news, /compute for finance tools[/dim]",
+        }.get(self.chat.mode, "")
+        message = (
+            f"[yellow]/{cmd}[/yellow] is not available in "
+            f"[bold]{self.chat.mode}[/bold] mode"
+        )
+        return f"{message}\n{hint}" if hint else message
+
+    def _command_dispatch_failed(self, user_input: str, exc: Exception) -> Optional[bool]:
+        """A dispatcher that raised is a fault to report, not a verdict.
+
+        This used to set `result = None`, which means "not a command" — so a
+        crash inside `/permissions` handed the literal text `/permissions` to
+        the model as though the user had typed prose. The user saw a chat
+        reply about permissions and no indication anything had failed. Prose
+        is still passed through, because a bare `/` in a sentence should not
+        become an error.
+        """
+        if not user_input.lstrip().startswith("/"):
+            return None
+        self._print(f"[red]Command failed:[/red] {exc}")
+        return True
+
     def _handle_local_command(self, user_input: str) -> Optional[bool]:
         """Handle commands that this interface owns. Returns:
         - False  → quit
@@ -1214,6 +1271,15 @@ class NeoMindInterface:
         Falls through to legacy handler if the new system doesn't handle it.
         """
         from agent.cli_command_system import ExitRequested, ModeSwitchRequested
+
+        # Mode gating, which used to live in the removed legacy chain. Without
+        # it a personality command typed in the wrong mode falls through to the
+        # model as prose, and the user gets a chat reply about `/run` instead
+        # of being told it is a coding-mode command.
+        gated = self._mode_gate_message(user_input)
+        if gated:
+            self._print(gated)
+            return True
 
         # ── Try new command system first (Claude Code pattern) ──────
         if self._new_command_dispatcher:
@@ -1236,10 +1302,10 @@ class NeoMindInterface:
                             agent=self.chat,
                         )
                     )
-                except Exception:
-                    result = None
-            except Exception:
-                result = None
+                except Exception as exc:
+                    return self._command_dispatch_failed(user_input, exc)
+            except Exception as exc:
+                return self._command_dispatch_failed(user_input, exc)
 
             if result is not None:
                 # Fall through to legacy handler for "Unknown command" —
@@ -1286,287 +1352,90 @@ class NeoMindInterface:
                     self._print(result.text)
                 return True
 
-        # ── Legacy command handling (fallback) ──────────────────────
-        parts = user_input.split(maxsplit=1)
-        cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
-        args = parts[1].strip() if len(parts) > 1 else ""
-
-        # /fleet is always available regardless of mode — multi-agent
-        # monitor is a mode-agnostic capability.
-        if cmd == "fleet":
-            return self._handle_fleet_command(args)
-
-        # Check if command is allowed in current mode
-        allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "fleet"):
-            self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
-            if self.chat.mode == "chat":
-                self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
-            elif self.chat.mode == "fin":
-                self._print("[dim]Hint: use /stock, /crypto, /news, /compute for finance tools[/dim]")
-            return True
-
-        if cmd in ("quit", "exit"):
-            self._print("[dim]Goodbye![/dim]")
-            return False
-
-        if cmd == "mode":
-            if not args:
-                self._print(f"Current mode: [bold]{self.chat.mode}[/bold]")
-                self._print("[dim]Usage: /mode chat | /mode coding | /mode fin[/dim]")
-                return True
-            target = args.lower().strip()
-            if target == self.chat.mode:
-                self._print(f"Already in [bold]{target}[/bold] mode")
-                return True
-            ok = self.chat.switch_mode(target)
-            if ok:
-                # Update completer for new mode's commands
-                if hasattr(self, '_completer') and self._completer:
-                    self._completer.set_mode(target)
-                # Re-display welcome for new mode
-                self.display_welcome()
-            return True
-
-        if cmd == "config":
-            parts = args.split(maxsplit=2) if args else []
-            if not parts or parts[0] == "show":
-                # Show current config
-                self._print(f"[bold]Mode:[/bold] {agent_config.mode}")
-                self._print(f"[bold]Model:[/bold] {agent_config.model}")
-                self._print(f"[bold]Temperature:[/bold] {agent_config.temperature}")
-                self._print(f"[bold]Max tokens:[/bold] {agent_config.max_tokens}")
-                self._print(f"[bold]Stream:[/bold] {agent_config.stream}")
-                self._print(f"[bold]Search:[/bold] {agent_config.search_enabled}")
-                self._print(f"[bold]Think:[/bold] {self.chat.thinking_enabled}")
-                self._print("[dim]Usage: /config set <key> <value>[/dim]")
-                self._print("[dim]  Keys: temperature, max_tokens, stream, search_enabled[/dim]")
-                self._print("[dim]  /config save — save current config to YAML[/dim]")
-            elif parts[0] == "set" and len(parts) >= 3:
-                key, val_str = parts[1], parts[2]
-                # Parse value
-                if val_str.lower() in ("true", "on", "yes"):
-                    val = True
-                elif val_str.lower() in ("false", "off", "no"):
-                    val = False
-                else:
-                    try:
-                        val = float(val_str) if "." in val_str else int(val_str)
-                    except ValueError:
-                        val = val_str
-                agent_config.set_runtime(key, val)
-                self._print(f"[green]✓[/green] {key} = {val}")
-            elif parts[0] == "save":
-                filepath = agent_config.save_config()
-                self._print(f"[green]✓[/green] Config saved to {filepath}")
-            else:
-                self._print("[yellow]Usage:[/yellow] /config show | /config set <key> <value> | /config save")
-            return True
-
-        if cmd == "clear":
-            self.chat.clear_history()
-            self._print("[green]✓[/green] Conversation cleared")
-            return True
-
-        if cmd == "think":
-            if args.lower() in ("on", "1", "true", "yes"):
-                self.chat.thinking_enabled = True
-            elif args.lower() in ("off", "0", "false", "no"):
-                self.chat.thinking_enabled = False
-            else:
-                # No argument or unrecognized → toggle
-                self.chat.thinking_enabled = not self.chat.thinking_enabled
-            status = "[green]ON[/green]" if self.chat.thinking_enabled else "[red]OFF[/red]"
-            self._print(f"Thinking mode: {status}")
-            return True
-
-        if cmd == "debug":
-            if args == "dump":
-                # Show buffered debug messages from recent requests
-                if self.chat.status_buffer:
-                    self._print("[dim]── Debug log ──[/dim]")
-                    for entry in self.chat.status_buffer[-30:]:
-                        lvl = entry.get("level", "info")
-                        msg = entry["message"]
-                        self._print(f"[dim]  [{lvl}] {msg}[/dim]")
-                    self._print(f"[dim]── {len(self.chat.status_buffer)} entries total ──[/dim]")
-                else:
-                    self._print("[dim]No debug messages yet[/dim]")
-            elif args == "clear":
-                self.chat.status_buffer = []
-                self._print("[green]✓[/green] Debug log cleared")
-            else:
-                # Toggle verbose mode
-                self.chat.verbose_mode = not self.chat.verbose_mode
-                if self.chat.verbose_mode:
-                    self._print("[yellow]Debug mode: on[/yellow] — all status messages will be shown")
-                else:
-                    self._print("[yellow]Debug mode: off[/yellow] — clean output")
-            return True
-
-        if cmd == "history":
-            for i, msg in enumerate(self.chat.conversation_history, 1):
-                role = msg["role"].capitalize()
-                preview = msg["content"][:120].replace("\n", " ")
-                if len(msg["content"]) > 120:
-                    preview += "…"
-                self._print(f"  {i}. [{role}] {preview}")
-            return True
-
-        if cmd == "save":
-            try:
-                fp = self.conv_mgr.save(self.chat, args or None)
-                self._print(f"[green]✓[/green] Saved → {fp}")
-            except Exception as e:
-                self._print(f"[red]✗[/red] Save failed: {e}")
-            return True
-
-        if cmd == "load":
-            if not args:
-                convs = self.conv_mgr.list_all()
-                if convs:
-                    self._print("[bold]Saved conversations:[/bold]")
-                    for c in convs[:20]:
-                        self._print(f"  • {c}")
-                else:
-                    self._print("[dim]No saved conversations[/dim]")
-            else:
-                data = self.conv_mgr.load(args)
-                if data:
-                    self.chat.conversation_history = data.get("history", [])
-                    self._print(f"[green]✓[/green] Loaded: {args}")
-                else:
-                    self._print(f"[red]✗[/red] Not found: {args}")
-            return True
-
-        if cmd == "help" and not args:
-            mode_label = self.chat.mode
-            self._print(f"[bold]Commands ({mode_label} mode):[/bold]")
-            allowed = agent_config.available_commands
-            for c in sorted(allowed):
-                desc = SlashCommandCompleter.ALL_DESCRIPTIONS.get(c, "")
-                self._print(f"  /{c:<14} {desc}")
-            return True
-
-        if cmd == "transcript":
-            self._show_transcript(args)
-            return True
-
-        if cmd == "expand":
-            self._show_expand(args)
-            return True
-
-        if cmd == "permissions":
-            current = agent_config.permission_mode
-            if not args:
-                # Toggle between normal and auto_accept
-                new_mode = "auto_accept" if current == "normal" else "normal"
-                agent_config.permission_mode = new_mode
-            elif args in ("normal", "auto_accept", "auto", "plan"):
-                new_mode = "auto_accept" if args == "auto" else args
-                agent_config.permission_mode = new_mode
-            else:
-                self._print(f"[yellow]Usage:[/yellow] /permissions [normal|auto|plan]")
-                self._print(f"  [dim]Current: {current}[/dim]")
-                return True
-            mode_display = {
-                "normal": "[cyan]normal[/cyan] — ask before each command",
-                "auto_accept": "[green]auto_accept[/green] — run all commands automatically",
-                "plan": "[yellow]plan[/yellow] — read-only, no execution",
-            }
-            self._print(f"Permissions: {mode_display[agent_config.permission_mode]}")
-            return True
-
-        # ── Skill System ──────────────────────────────────────────
-        if cmd == "skills":
-            from agent.skills import get_skill_loader
-            loader = get_skill_loader()
-            if args:
-                skill = loader.get(args)
-                if skill:
-                    self._print(f"[bold]{skill.name}[/bold] — {skill.description}")
-                    self._print(f"[dim]Modes: {', '.join(skill.modes)} | v{skill.version}[/dim]")
-                    self._print(f"\n{skill.body[:500]}")
-                else:
-                    self._print(f"[yellow]Skill not found: {args}[/yellow]")
-            else:
-                self._print(loader.format_skill_list(mode=self.chat.mode))
-            return True
-
-        # ── Safety Guards ────────────────────────────────────────
-        if cmd == "careful":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            guard.enable_careful()
-            self._print("[green]✓[/green] Careful mode: [bold]ON[/bold] — will warn before destructive ops")
-            return True
-
-        if cmd == "freeze":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            directory = args or os.getcwd()
-            guard.enable_freeze(directory)
-            self._print(f"[cyan]🧊[/cyan] Freeze: edits restricted to [bold]{directory}[/bold]")
-            return True
-
-        if cmd == "unfreeze":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            guard.disable_freeze()
-            self._print("[green]✓[/green] Freeze removed — edits unrestricted")
-            return True
-
-        if cmd == "guard":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            directory = args or os.getcwd()
-            guard.enable_guard(directory)
-            self._print(f"[green]✓[/green] Guard mode: careful + freeze to [bold]{directory}[/bold]")
-            return True
-
-        # ── Sprint ───────────────────────────────────────────────
-        if cmd == "sprint":
-            from agent.workflow.sprint import SprintManager
-            mgr = SprintManager()
-            if args.startswith("new "):
-                goal = args[4:].strip()
-                sprint = mgr.create(goal, mode=self.chat.mode)
-                self._print(f"[green]✓[/green] Sprint created: {sprint.id}")
-                self._print(mgr.format_status(sprint.id))
-            elif args == "status":
-                for sid, s in mgr._active_sprints.items():
-                    self._print(mgr.format_status(sid))
-            elif args == "next":
-                for sid in list(mgr._active_sprints.keys()):
-                    phase = mgr.advance(sid)
-                    if phase:
-                        self._print(f"[green]▶️[/green] Now: {phase.name}")
-                    else:
-                        self._print("[green]✓[/green] Sprint completed!")
-                    break
-            elif args == "skip":
-                for sid in list(mgr._active_sprints.keys()):
-                    phase = mgr.skip_phase(sid)
-                    if phase:
-                        self._print(f"[yellow]⏭️[/yellow] Skipped → {phase.name}")
-                    break
-            else:
-                self._print("Usage: /sprint new <goal> | /sprint status | /sprint next | /sprint skip")
-            return True
-
-        # ── Evidence Trail ───────────────────────────────────────
-        if cmd == "evidence":
-            from agent.workflow.evidence import get_evidence_trail
-            trail = get_evidence_trail()
-            if args == "stats":
-                stats = trail.get_stats()
-                self._print(f"Evidence: {stats.get('total', 0)} entries, {stats.get('log_size_kb', 0)} KB")
-            else:
-                self._print(trail.format_recent(10))
+        # One registry defines the commands. There is no second chain.
+        #
+        # There used to be: 21 `if cmd == ...` branches here, of which 14 were
+        # already shadowed — the dispatcher above answers and returns, so those
+        # bodies could not run, while still looking like the place to edit
+        # `/clear`. They were only reachable when the registry failed to build,
+        # and silently serving a *different* implementation of a command is
+        # worse than saying the registry is broken. The remaining seven are
+        # genuinely frontend-owned and are now declared in the same registry by
+        # `cli/ui_commands.py`.
+        if self._new_command_dispatcher is None:
+            self._print(
+                "[red]Command registry unavailable[/red] — slash commands are "
+                "disabled for this session. Start with [bold]/debug[/bold] logs "
+                "to see why it failed to build."
+            )
             return True
 
         # Not a local command
         return None
+
+    # ── Frontend-owned commands ──────────────────────────────────────────
+    #
+    # Declared in the one registry by `cli/ui_commands.py` and executed here.
+    # They draw, they read interface state, and they mean nothing to a chat
+    # surface — but "what commands exist" still has to have a single answer,
+    # or autocomplete, /help and the mode-availability check each learn a
+    # different list.
+
+    def _ui_cmd_freeze(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        guard = get_guard()
+        directory = args or os.getcwd()
+        guard.enable_freeze(directory)
+        self._print(f"[cyan]🧊[/cyan] Freeze: edits restricted to [bold]{directory}[/bold]")
+
+    def _ui_cmd_unfreeze(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        get_guard().disable_freeze()
+        self._print("[green]✓[/green] Freeze removed — edits unrestricted")
+
+    def _ui_cmd_guard(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        guard = get_guard()
+        directory = args or os.getcwd()
+        guard.enable_guard(directory)
+        self._print(f"[green]✓[/green] Guard mode: careful + freeze to [bold]{directory}[/bold]")
+
+    def _ui_cmd_sprint(self, args: str) -> None:
+        from agent.workflow.sprint import SprintManager
+        mgr = SprintManager()
+        if args.startswith("new "):
+            goal = args[4:].strip()
+            sprint = mgr.create(goal, mode=self.chat.mode)
+            self._print(f"[green]✓[/green] Sprint created: {sprint.id}")
+            self._print(mgr.format_status(sprint.id))
+        elif args == "status":
+            for sid, s in mgr._active_sprints.items():
+                self._print(mgr.format_status(sid))
+        elif args == "next":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.advance(sid)
+                if phase:
+                    self._print(f"[green]▶️[/green] Now: {phase.name}")
+                else:
+                    self._print("[green]✓[/green] Sprint completed!")
+                break
+        elif args == "skip":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.skip_phase(sid)
+                if phase:
+                    self._print(f"[yellow]⏭️[/yellow] Skipped → {phase.name}")
+                break
+        else:
+            self._print("Usage: /sprint new <goal> | /sprint status | /sprint next | /sprint skip")
+
+    def _ui_cmd_evidence(self, args: str) -> None:
+        from agent.workflow.evidence import get_evidence_trail
+        trail = get_evidence_trail()
+        if args == "stats":
+            stats = trail.get_stats()
+            self._print(f"Evidence: {stats.get('total', 0)} entries, {stats.get('log_size_kb', 0)} KB")
+        else:
+            self._print(trail.format_recent(10))
 
     # ── Fact extraction for /compact ──────────────────────────────────────
     @staticmethod

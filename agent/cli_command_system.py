@@ -926,10 +926,42 @@ def _build_builtin_commands() -> List[Command]:
     def _cmd_debug(args: str, agent=None, **kw) -> CommandResult:
         """Toggle debug mode."""
         from agent_config import agent_config
-        current = agent_config.get("debug", False)
-        agent_config.set_runtime("debug", not current)
-        status = "ON" if not current else "OFF"
-        return CommandResult(text=f"Debug mode: {status}")
+
+        # The frontend had a second `/debug` with `dump` and `clear`
+        # subcommands that toggled its own verbose flag. Because the registry
+        # answers first and returns, that copy became unreachable and the two
+        # subcommands quietly stopped existing — nothing reported it, since the
+        # only tests covering them were aimed at the unreachable copy. This is
+        # the union of both.
+        arg = (args or "").strip().lower()
+        buffer = list(getattr(agent, "status_buffer", None) or []) if agent else []
+
+        if arg == "dump":
+            if not buffer:
+                return CommandResult(text="No debug messages yet")
+            lines = ["── Debug log ──"]
+            for entry in buffer[-30:]:
+                lines.append(f"  [{entry.get('level', 'info')}] {entry.get('message', '')}")
+            lines.append(f"── {len(buffer)} entries total ──")
+            return CommandResult(text="\n".join(lines))
+
+        if arg == "clear":
+            if agent is not None and hasattr(agent, "status_buffer"):
+                agent.status_buffer = []
+            return CommandResult(text="✓ Debug log cleared")
+
+        # Toggle. Driven by the agent's own flag when there is one, because
+        # that is the value the user sees reflected in the output.
+        if agent is not None and hasattr(agent, "verbose_mode"):
+            new_state = not bool(agent.verbose_mode)
+            agent.verbose_mode = new_state
+        else:
+            new_state = not agent_config.get("debug", False)
+        agent_config.set_runtime("debug", new_state)
+        return CommandResult(
+            text=("Debug mode: ON — all status messages will be shown"
+                  if new_state else "Debug mode: OFF — clean output")
+        )
 
     def _cmd_careful(args: str, agent=None, **kw) -> CommandResult:
         """Toggle careful/safety guard mode.
@@ -1017,9 +1049,19 @@ def _build_builtin_commands() -> List[Command]:
             return CommandResult(
                 text=f"Usage: /permissions [normal|auto|plan]"
             )
+        # No argument toggles between normal and auto_accept. The frontend's
+        # own copy of this command did that; this one only reported, and
+        # because the registry answers first the toggle has quietly not worked
+        # for some time — the only thing still describing it was a test aimed
+        # at the unreachable copy.
         mode = getattr(agent_config, "permission_mode", None) or \
                agent_config.get("permissions.mode", "normal")
-        return CommandResult(text=f"Permission mode: {mode}")
+        new_mode = "normal" if mode == "auto_accept" else "auto_accept"
+        try:
+            agent_config.permission_mode = new_mode
+        except Exception as e:
+            return CommandResult(text=f"Permission mode: {mode} (toggle failed: {e})")
+        return CommandResult(text=f"Permission mode: {new_mode}")
 
     def _cmd_version(args: str, agent=None, **kw) -> CommandResult:
         """Show version."""

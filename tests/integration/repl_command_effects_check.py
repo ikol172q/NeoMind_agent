@@ -102,7 +102,53 @@ async def main() -> int:
         (DUMP_DIR / "permissions.txt").write_text(screen, encoding="utf-8")
         captured["permissions"] = str(DUMP_DIR / "permissions.txt")
 
-        # 4. The sentinel must not be visible anywhere — if the effect were
+        # 4. Phase 6A task 2: the 279-line legacy chain is gone. These must
+        #    still work — three that were shadowed by the registry and are now
+        #    only defined there, and three the frontend owns and re-declared.
+        for name, probe in (
+            ("history", "/history"),
+            ("skills", "/skills"),
+            ("config", "/config"),
+            ("evidence", "/evidence"),
+            ("freeze", "/freeze"),
+            ("expand", "/expand"),
+        ):
+            tester.start_recording()
+            await tester.send(probe)
+            await poll(tester, 5)
+            screen = tester.stop_recording()
+            (DUMP_DIR / f"cmd_{name}.txt").write_text(screen, encoding="utf-8")
+            captured[f"cmd_{name}"] = str(DUMP_DIR / f"cmd_{name}.txt")
+
+        # 5. Behaviour restored by the consolidation. These were lost when the
+        #    registry began answering first and its copy did less than the
+        #    frontend's; nothing reported it because the only tests covering
+        #    them drove the unreachable copy.
+        for name, probe in (
+            ("perm_toggle", "/permissions"),
+            ("debug_dump", "/debug dump"),
+        ):
+            tester.start_recording()
+            await tester.send(probe)
+            await poll(tester, 5)
+            screen = tester.stop_recording()
+            (DUMP_DIR / f"cmd_{name}.txt").write_text(screen, encoding="utf-8")
+            captured[f"cmd_{name}"] = str(DUMP_DIR / f"cmd_{name}.txt")
+
+        # 5b. The mode gate only means anything in a mode where the command
+        #     is unavailable. Probing /run from coding — where it *is*
+        #     available — would have proved nothing, which is what the first
+        #     version of this probe did.
+        tester.start_recording()
+        await tester.send("/mode chat")
+        await poll(tester, 6)
+        await tester.send("/run echo hi")
+        await poll(tester, 6)
+        screen = tester.stop_recording()
+        (DUMP_DIR / "cmd_mode_gate.txt").write_text(screen, encoding="utf-8")
+        captured["cmd_mode_gate"] = str(DUMP_DIR / "cmd_mode_gate.txt")
+
+        # 6. The sentinel must not be visible anywhere — if the effect were
         #    ignored, the old code path would print the raw text instead.
         tester.start_recording()
         await tester.send("/exit")
@@ -125,13 +171,33 @@ async def main() -> int:
         perms = Evidence("permissions", read(captured["permissions"]))
         perms.witness("/permissions plan").contains("plan")
 
+        # Each command must produce something and must not report itself
+        # unknown — "Unknown command" is what a lost declaration looks like.
+        probes = []
+        for name in ("history", "skills", "config", "evidence", "freeze", "expand"):
+            ev = Evidence(f"cmd_{name}", read(captured[f"cmd_{name}"]))
+            ev.witness(f"/{name}").absent("Unknown command", "not available", "Traceback")
+            probes.append(ev)
+
+        toggle = Evidence("perm_toggle", read(captured["cmd_perm_toggle"]))
+        toggle.witness("/permissions").contains("Permission mode:")
+        probes.append(toggle)
+
+        dump = Evidence("debug_dump", read(captured["cmd_debug_dump"]))
+        dump.witness("/debug dump").absent("Unknown command", "Traceback")
+        probes.append(dump)
+
+        gate = Evidence("mode_gate", read(captured["cmd_mode_gate"]))
+        gate.witness("/run echo hi").contains("not available in").absent("Traceback")
+        probes.append(gate)
+
         exited = Evidence("exit", read(captured["exit"]))
         exited.witness("/exit").contains("Goodbye").absent("__EXIT__")
     except AssertionError as failure:
         print(f"\n  !! {type(failure).__name__}: {failure}")
         return 1
 
-    report = collect([mode, after, perms, exited])
+    report = collect([mode, after, perms, *probes, exited])
     (DUMP_DIR / "index.json").write_text(
         json.dumps({"dumps": captured, "evidence": report}, indent=2),
         encoding="utf-8",

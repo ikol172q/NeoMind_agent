@@ -28,6 +28,20 @@ os.environ.setdefault("DEEPSEEK_API_KEY", "test-key-for-tests")
 
 def _make_mock_chat(mode="chat"):
     chat = MagicMock()
+    # A real command registry and dispatcher, because that is what production
+    # has. These used to be MagicMocks, so `dispatch()` returned a mock that
+    # blew up on await, the interface swallowed it, and every command test
+    # below silently exercised the 21-branch legacy fallback instead of the
+    # command system. When that fallback was removed the tests failed — not
+    # because behaviour changed, but because they had been aimed at the dead
+    # copy the whole time.
+    from agent.cli_command_system import CommandDispatcher, create_default_registry
+
+    registry = create_default_registry()
+    chat._command_registry = registry
+    chat._command_dispatcher = CommandDispatcher(
+        registry, context={"registry": registry, "config": None},
+    )
     chat.model = "deepseek-v4-flash"
     chat.mode = mode
     chat.thinking_enabled = False
@@ -261,12 +275,18 @@ class TestNeoMindInterfaceCommands(unittest.TestCase):
         result = self.interface._handle_local_command("/search python docs")
         self.assertIsNone(result)
 
-    def test_non_slash_handled_gracefully(self):
-        """Non-slash text should not crash if accidentally passed."""
-        # In practice, the main loop checks startswith("/") before calling
-        # _handle_local_command, so this path shouldn't occur. Just verify no crash.
+    def test_non_slash_text_is_passed_through_to_the_agent(self):
+        """None means "not a local command" — the contract the method
+        documents.
+
+        This used to assert the opposite, because the removed legacy chain
+        split prose on whitespace, derived an empty command name, and found it
+        missing from the mode's command list — so "hello world" was announced
+        as an unavailable command. The test pinned that accident. Prose
+        belongs to the model.
+        """
         result = self.interface._handle_local_command("hello world")
-        self.assertIsNotNone(result)  # handled (mode gating catches it)
+        self.assertIsNone(result)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
