@@ -142,7 +142,7 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 2 — LLM streaming port | substantially done — `agent/runtime/llm_stream.py` + `providers/openai_sse.py`, verified against a real DeepSeek stream |
 > | 3 — `AgentSession` + headless | done — `neomind -p` runs through `AgentSession` |
 > | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
-> | 5 — Telegram migration | **in progress — the session path is built and wired behind `NEOMIND_TELEGRAM=session`; the default is still the legacy loop until a real Telethon round-trip signs it off** |
+> | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
 > | 6 — commands/config boundaries, fleet | pending |
 > | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
 >
