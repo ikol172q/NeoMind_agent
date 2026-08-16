@@ -50,6 +50,43 @@ class ToolCall:
             return f"{self.tool_name}({key_param})"
 
 
+#: Either bar DeepSeek spells its delimiters with: ASCII U+007C and fullwidth
+#: U+FF5C. Both appear in the wild, sometimes in the same session.
+_TOOL_BAR = r'[|\uff5c]'
+
+#: One place that knows every spelling of the delimiters. parse() and
+#: strip_tool_call() both go through it, because when they each carried their
+#: own list they drifted: parse learned the fullwidth `<｜｜DSML｜｜tool_call>`
+#: form while strip did not, so a call was executed *and* its raw JSON payload
+#: was still printed to the user as prose.
+_TOOL_WORD = rf'tool[_\u2581]?call'
+
+#: A closing delimiter is one that either carries a slash or says "end". The
+#: first version made the slash optional in one branch, which matched the
+#: *opening* `<｜tool_call｜>` and rewrote it as a close — the call then parsed
+#: as nothing at all. Requiring one of the two is what keeps them apart.
+_CLOSE_DELIM_RE = re.compile(
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}'
+    rf'(?:[_\u2581](?:end|stop))?\s*{_TOOL_BAR}*\s*>'
+    rf'|<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*/\s*{_TOOL_WORD}\s*{_TOOL_BAR}*\s*>'
+    rf'|<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}[_\u2581](?:end|stop)'
+    rf'\s*{_TOOL_BAR}*\s*>',
+    re.IGNORECASE,
+)
+
+_OPEN_DELIM_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}'
+    rf'(?:[_\u2581](?:begin|start))?\s*{_TOOL_BAR}*\s*>',
+    re.IGNORECASE,
+)
+
+
+def normalize_tool_call_delimiters(text: str) -> str:
+    """Rewrite every known delimiter spelling to plain <tool_call> tags."""
+    text = _CLOSE_DELIM_RE.sub('</tool_call>', text)
+    return _OPEN_DELIM_RE.sub('<tool_call>', text)
+
+
 class ToolCallParser:
     """Parse tool calls from LLM responses.
 
@@ -185,6 +222,8 @@ class ToolCallParser:
             '</tool_call>',
             response,
         )
+
+        response = normalize_tool_call_delimiters(response)
 
         # Pre-process: normalize doubled/nested <tool_call> tags
         # LLMs sometimes output <tool_call><tool_call>...</tool_call></tool_call>
@@ -669,6 +708,10 @@ class ToolCallParser:
         # delimiters need this path because parse() normalizes them before it
         # constructs ToolCall.raw, so raw cannot match the original response.
         if not tool_call.is_legacy:
+            # Normalize first, so every delimiter spelling the parser accepts
+            # is also one this can remove. Only the delimiters change; the
+            # prose around them is untouched, and the block is deleted whole.
+            response = normalize_tool_call_delimiters(response)
             result = re.sub(
                 r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
                 r'.*?'

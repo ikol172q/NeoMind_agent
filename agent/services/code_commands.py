@@ -1420,10 +1420,22 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                 content = delta.get("content", "")
                                 if content:
                                     # Filter DeepSeek thinking end token
+                                    _before_filter = content
                                     content = content.replace('<｜end▁of▁thinking｜>', '')
                                     content = content.replace('<|end▁of▁thinking|>', '')
-                                    if not content.strip():
-                                        continue  # Skip empty content after filtering
+                                    # Only suppress a delta the *filter* emptied.
+                                    # This used to be `if not content.strip()`,
+                                    # which also dropped genuine whitespace-only
+                                    # deltas — and a token boundary lands on a
+                                    # space constantly. That deleted the space
+                                    # out of `ls -F agent cli 2>/dev/null`,
+                                    # producing `cli2>/dev/null` in the model's
+                                    # own history, so it saw a typo it had not
+                                    # made and burned turns "correcting" it.
+                                    # Observed live in a coding session before
+                                    # this fix.
+                                    if not content and _before_filter:
+                                        continue
                                     if not is_final_response_active:
                                         # Transition: thinking → response
                                         # Clear any spinner remnants from stderr
