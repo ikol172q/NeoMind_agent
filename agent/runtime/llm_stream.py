@@ -144,8 +144,24 @@ class LLMAuthError(LLMStreamError):
 
 
 class LLMRateLimited(LLMStreamError):
+    """429. Carries `Retry-After` when the server sent one.
+
+    Without it the only option is a guessed backoff, and a guess that is too
+    short spends the next attempt getting rate-limited again.
+    """
+
     code = "llm_rate_limited"
     retryable = True
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: Optional[int] = None,
+        retry_after: Optional[float] = None,
+    ) -> None:
+        super().__init__(message, status=status)
+        self.retry_after = retry_after
 
 
 class LLMHTTPError(LLMStreamError):
@@ -169,7 +185,28 @@ class LLMProtocolError(LLMStreamError):
     retryable = False
 
 
-def error_for_status(status: int, body: str) -> LLMStreamError:
+def parse_retry_after(value: Any) -> Optional[float]:
+    """Read a `Retry-After` header, as seconds.
+
+    Only the delta-seconds form is honoured. The HTTP-date form is legal but
+    needs a clock comparison, and a misparsed date that lands far in the future
+    would stall a turn for longer than any caller would accept — falling back
+    to the caller's own backoff is the safer failure.
+    """
+    if value is None:
+        return None
+    try:
+        seconds = float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+    if seconds < 0:
+        return None
+    return seconds
+
+
+def error_for_status(
+    status: int, body: str, retry_after: Any = None
+) -> LLMStreamError:
     """Map an HTTP status onto the right typed error."""
     snippet = body.strip()[:200]
     if status in (401, 403):
@@ -177,5 +214,9 @@ def error_for_status(status: int, body: str) -> LLMStreamError:
             f"API authentication failed (HTTP {status}): {snippet}", status=status
         )
     if status == 429:
-        return LLMRateLimited(f"Rate limited (HTTP 429): {snippet}", status=status)
+        return LLMRateLimited(
+            f"Rate limited (HTTP 429): {snippet}",
+            status=status,
+            retry_after=parse_retry_after(retry_after),
+        )
     return LLMHTTPError(f"HTTP {status}: {snippet}", status=status)

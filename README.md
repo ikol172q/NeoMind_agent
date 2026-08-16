@@ -142,9 +142,22 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 2 — LLM streaming port | substantially done — `agent/runtime/llm_stream.py` + `providers/openai_sse.py`, verified against a real DeepSeek stream |
 > | 3 — `AgentSession` + headless | done — `neomind -p` runs through `AgentSession` |
 > | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
-> | 5 — Telegram migration | **next** |
+> | 5 — Telegram migration | **in progress — the session path is built and wired behind `NEOMIND_TELEGRAM=session`; the default is still the legacy loop until a real Telethon round-trip signs it off** |
 > | 6 — commands/config boundaries, fleet | pending |
 > | 7 — new frontend (Textual TUI and/or an ACP server) | pending |
+>
+> **Rollback switches.** Each migrated surface keeps one, read per turn rather than cached at
+> import, so reverting is a restart and never a rebuild: `NEOMIND_REPL=legacy` for the terminal,
+> `NEOMIND_TELEGRAM=session|legacy` for the bot (also declared in `docker-compose.yml`),
+> `NEOMIND_HEADLESS` for `-p`.
+>
+> **What Telegram gains by moving.** The bot is a remote surface: in a group chat the person talking
+> to it is not necessarily the person who owns the machine it runs on, and the container has the
+> source tree bind-mounted. On the session path its tools come from an explicit allowlist
+> intersected with what is still declared `READ_ONLY` (`agent/integration/telegram_session.py`),
+> the policy is built non-interactive so an unanswerable permission question resolves to DENY
+> rather than hanging, and a refusal is rendered as ⊘ instead of silently ending the turn with no
+> reply — which is what the old loop did, by never answering the approval event at all.
 >
 > `plans/2026-08-06_frontend-contract-cli-tui-decoupling-plan.md` is authoritative — §11 is the
 > live tracker, and no phase may be marked complete on code review, mocks or skipped tests alone.

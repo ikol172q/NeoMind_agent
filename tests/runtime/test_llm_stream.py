@@ -207,12 +207,15 @@ class TestErrorMapping:
 
 
 class FakeResponse:
-    def __init__(self, lines, status_code=200, body=b"", on_close=None):
+    def __init__(self, lines, status_code=200, body=b"", on_close=None, headers=None):
         self._lines = lines
         self.status_code = status_code
         self._body = body
         self._on_close = on_close
         self.closed = False
+        # A real httpx response always carries these; a double without them
+        # lets the adapter read a header in production that no test can see.
+        self.headers = dict(headers or {})
 
     async def aread(self):
         return self._body
@@ -268,6 +271,28 @@ class TestTransport:
         with pytest.raises(LLMAuthError):
             asyncio.run(collect(port))
         assert resp.closed, "response must be closed even on an error path"
+
+    def test_a_429_carries_retry_after_through_to_the_caller(self):
+        """The chain backs off by this. Dropping the header on the floor here
+        turns a server-specified wait into a guess."""
+        from agent.runtime.llm_stream import LLMRateLimited
+
+        resp = FakeResponse(
+            [], status_code=429, body=b"slow down", headers={"Retry-After": "12"}
+        )
+        port = OpenAICompatibleStream("http://x", "k", client=FakeClient(resp))
+        with pytest.raises(LLMRateLimited) as caught:
+            asyncio.run(collect(port))
+        assert caught.value.retry_after == 12.0
+
+    def test_a_429_without_the_header_is_still_a_rate_limit(self):
+        from agent.runtime.llm_stream import LLMRateLimited
+
+        resp = FakeResponse([], status_code=429, body=b"slow down")
+        port = OpenAICompatibleStream("http://x", "k", client=FakeClient(resp))
+        with pytest.raises(LLMRateLimited) as caught:
+            asyncio.run(collect(port))
+        assert caught.value.retry_after is None
 
     def test_cancelling_closes_the_provider_stream(self):
         """The Phase 2 gate: a cancelled turn must not leave the socket open."""

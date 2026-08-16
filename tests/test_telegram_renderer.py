@@ -43,11 +43,13 @@ class Chat:
 
     def __init__(self):
         self.edits = []
+        self.finals = []
         self.sends = []
         self.clock = 1000.0
 
-    async def edit(self, text):
+    async def edit(self, text, final=False):
         self.edits.append(text)
+        self.finals.append(final)
 
     async def send(self, text):
         self.sends.append(text)
@@ -115,6 +117,41 @@ class TestEditThrottling:
         assert outcome.ok is True
 
 
+class TestFinalFlag:
+    """The adapter renders a streaming edit and the last one differently — a
+    cursor while tokens arrive, the search-source footer at the end. It can
+    only do that if the renderer says which is which."""
+
+    def test_exactly_one_edit_is_marked_final(self):
+        chat = Chat()
+        run(chat.renderer(edit_interval=0), [
+            ev(TextDelta, 0, text="one "),
+            ev(TextDelta, 1, text="two"),
+            ev(TurnFinished, 2, response="one two"),
+        ])
+        assert chat.finals.count(True) == 1
+        assert chat.finals[-1] is True
+
+    def test_a_forced_tool_edit_is_not_final(self):
+        """`force` bypasses the throttle; it does not mean the turn is over.
+        Conflating them puts the closing footer on every tool announcement."""
+        chat = Chat()
+        run(chat.renderer(), [
+            ev(ToolProposed, 0, call_id="c", tool_name="Read", preview="p"),
+            ev(ToolFinished, 1, call_id="c", tool_name="Read", success=True, preview="x"),
+            ev(TextDelta, 2, text="answer"),
+            ev(TurnFinished, 3, response="answer"),
+        ])
+        assert chat.finals.count(True) == 1, chat.finals
+
+    def test_an_error_edit_is_final(self):
+        chat = Chat()
+        run(chat.renderer(), [
+            ev(TurnFailed, 0, error_code="llm_auth", message="bad key", retryable=False),
+        ])
+        assert chat.finals == [True]
+
+
 class TestOverflow:
     """4096 is a hard limit on one message. Editing past it fails outright,
     which used to strand the tail of a long answer."""
@@ -171,7 +208,7 @@ class TestTools:
         run(chat.renderer(), [
             ev(ToolProposed, 0, call_id="c", tool_name="Write", preview="p"),
             ev(ToolFinished, 1, call_id="c", tool_name="Write", success=False,
-               error="Permission denied: not in snapshot"),
+               denied=True, error="tool not in session capability snapshot"),
             ev(TurnFinished, 2, response=""),
         ])
         assert "⊘" in chat.last, "a refusal should not look like a crash"
@@ -194,6 +231,57 @@ class TestTools:
             ev(TurnFinished, 2, response="summary"),
         ])
         assert "y" * 100 not in "".join(chat.edits)
+
+
+class TestOverflowSealsTheLiveMessage:
+    """Found by a real 1500-word answer on the live bot.
+
+    Once the composed body passes the ceiling, `flush` stops editing — so the
+    last edit that landed was a streaming one, and the live message kept the
+    "still arriving" cursor forever on a turn that had already finished.
+    """
+
+    def test_the_live_message_gets_a_final_edit_before_the_tail_is_sent(self):
+        chat = Chat()
+        long_text = "x" * (EDIT_CEILING + 800)
+        outcome = run(chat.renderer(edit_interval=0), [
+            ev(TextDelta, 0, text=long_text),
+            ev(TurnFinished, 1, response=long_text),
+        ])
+        assert outcome.overflowed is True
+        assert chat.finals.count(True) == 1, (
+            "an overflowing turn still needs exactly one closing edit"
+        )
+
+    def test_the_seal_happens_only_once(self):
+        chat = Chat()
+        big = "y" * (EDIT_CEILING + 100)
+        run(chat.renderer(edit_interval=0), [
+            ev(TextDelta, 0, text=big),
+            ev(ToolProposed, 1, call_id="c", tool_name="Read", preview="p"),
+            ev(ToolFinished, 2, call_id="c", tool_name="Read", success=True, preview="x"),
+            ev(TurnFinished, 3, response=big),
+        ])
+        assert chat.finals.count(True) <= 1
+
+    def test_the_sealed_body_still_fits_telegrams_limit(self):
+        chat = Chat()
+        big = "z" * (EDIT_CEILING + 5000)
+        run(chat.renderer(edit_interval=0), [
+            ev(TextDelta, 0, text=big),
+            ev(TurnFinished, 1, response=big),
+        ])
+        assert all(len(e) <= EDIT_CEILING for e in chat.edits), (
+            "editing past the limit fails outright"
+        )
+
+    def test_a_turn_that_never_overflows_is_unaffected(self):
+        chat = Chat()
+        run(chat.renderer(edit_interval=0), [
+            ev(TextDelta, 0, text="short"),
+            ev(TurnFinished, 1, response="short"),
+        ])
+        assert chat.finals.count(True) == 1
 
 
 class TestTerminalEvents:

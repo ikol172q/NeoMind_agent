@@ -179,6 +179,12 @@ class ToolFinished(RuntimeEvent):
     call_id: str = ""
     tool_name: str = ""
     success: bool = False
+    #: A refusal is not a failure, and a renderer must not have to recover the
+    #: difference by matching on the wording of `error`. It carried
+    #: `denied_reason` verbatim — "tool not in session capability snapshot" —
+    #: which no prefix check was ever going to recognise, so every denial on
+    #: every surface drew as a crash.
+    denied: bool = False
     preview: str = ""
     error: str = ""
     output_ref: Optional[str] = None

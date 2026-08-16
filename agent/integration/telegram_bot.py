@@ -115,6 +115,14 @@ _TOOL_CALL_PARTIAL_SUFFIXES = tuple(sorted({
 }, key=len, reverse=True))
 
 
+#: D8 rollback switch for this surface, the counterpart to `NEOMIND_REPL`.
+#: `session` runs a turn through `AgentSession`; anything else keeps the
+#: hand-rolled loop. Read per call rather than cached at import, so flipping it
+#: takes a container restart and not a rebuild.
+def _session_path_enabled() -> bool:
+    return os.getenv("NEOMIND_TELEGRAM", "").strip().lower() == "session"
+
+
 def _contains_tool_call(text: str) -> bool:
     """Return whether *text* contains any supported tool-call opener."""
     return bool(text and re.search(_TOOL_CALL_OPEN_PATTERN, text))
@@ -3856,11 +3864,19 @@ class NeoMindTelegramBot:
         try:
             if thinking:
                 await self._ask_llm_streaming(msg, text, chat_id=cid, chat_type=ctype)
+                ok = True
+            elif _session_path_enabled():
+                outcome = await self._ask_llm_stream_session(
+                    msg, text, chat_id=cid, chat_type=ctype,
+                )
+                # The renderer has already written any failure into the chat,
+                # so this only picks the reaction.
+                ok = outcome is None or outcome.ok
             else:
                 await self._ask_llm_stream_normal(msg, text, chat_id=cid, chat_type=ctype)
+                ok = True
 
-            # React ✅ = "done"
-            await self._react(msg, "✅")
+            await self._react(msg, "✅" if ok else "❌")
         except Exception as e:
             logger.error(f"LLM call failed: {e}")
             await msg.reply_text(f"⚠️ LLM 调用失败: {e}")
@@ -4963,6 +4979,176 @@ class NeoMindTelegramBot:
             )
 
         return error_msg
+
+    # ── Session path (Phase 5) ─────────────────────────────────────
+
+    def _session_registry(self):
+        """The tool registry the agentic loop already builds.
+
+        Reused rather than rebuilt so WebSearch and the finance tools are
+        registered exactly once, in one place. What the session may actually
+        *call* is narrowed separately by the capability snapshot in
+        `telegram_session.py` — this is the pool, not the permission.
+        """
+        loop = self._get_agentic_loop()
+        return getattr(loop, "registry", None) if loop else None
+
+    def _telegram_render_callbacks(self, msg, live_msg, search_footer: str = ""):
+        """The two network calls the renderer needs, with Telegram's formatting.
+
+        Kept here rather than in the renderer because markdown-to-HTML, the
+        parse-mode fallback and RetryAfter are Telegram's problems, and the
+        renderer is meant to be testable without any of them.
+        """
+        async def _edit(text: str, final: bool = False) -> None:
+            # Tool-call markup is stripped here, not in the renderer. The
+            # session removes it from *history*, but the deltas that carried it
+            # have already been streamed — so without this the user watches the
+            # raw `<tool_call>{"tool": "Read", ...}</tool_call>` payload appear
+            # in the chat, which is what a real run showed.
+            text = _strip_tool_calls(text, streaming=not final).strip()
+            if not text:
+                return
+            html = self._md_to_html(text)
+            if final and search_footer:
+                html += search_footer
+            elif not final:
+                # A cursor while tokens are still arriving. Dropped on the
+                # final edit so the finished answer does not keep blinking.
+                html += " ▍"
+            ok = await self._safe_edit(
+                live_msg, html,
+                max_retries=0 if not final else 2,
+                parse_mode=ParseMode.HTML,
+                disable_web_page_preview=True,
+            )
+            if not ok and final:
+                # HTML that Telegram rejects must not cost the user the answer.
+                plain = re.sub(r"<[^>]+>", "", html)
+                await self._safe_edit(
+                    live_msg, plain[:self.config.max_message_length],
+                    disable_web_page_preview=True,
+                )
+
+        async def _send(text: str) -> None:
+            await self._send_long_message(msg, text)
+
+        return _edit, _send
+
+    async def _ask_llm_stream_session(self, msg, user_message: str,
+                                      chat_id: int = 0, chat_type: str = "private"):
+        """A normal-mode turn, run through `AgentSession`.
+
+        The replacement for `_ask_llm_stream_normal` plus the agentic loop that
+        followed it. Everything specific to this surface stays here — provider
+        chain, auto-compaction, search augmentation, HTML rendering — and
+        everything that is not specific to it now lives in the runtime, shared
+        with the CLI.
+
+        Reachable via `NEOMIND_TELEGRAM=session`; see `_ask_llm_stream_normal`
+        for the path this replaces.
+        """
+        from agent.integration.telegram_renderer import TelegramRenderer
+        from agent.integration.telegram_session import (
+            TelegramHistoryStore,
+            build_telegram_session,
+        )
+        from agent.runtime.providers.fallback import ChainLink
+        from agent.runtime.providers.openai_sse import OpenAICompatibleStream
+
+        providers = self._get_provider_chain(thinking=False, chat_id=chat_id)
+        if not providers:
+            await msg.reply_text("⚠️ No API key configured")
+            return
+
+        model = providers[0]["model"]
+        compact_notice = self._auto_compact_if_needed_db(chat_id, model)
+        if compact_notice:
+            self._last_compact_notice = compact_notice
+
+        # Loaded before the turn runs. The session appends the user message
+        # itself — pre-adding it here would send it to the model twice and
+        # store it twice.
+        history = self._store.get_recent_history(chat_id, limit=20)
+        seed = [{"role": "system", "content": self._get_system_prompt(chat_id)}]
+        seed.extend(history)
+
+        if self._SEARCH_OPTOUT_RE.search(user_message):
+            seed.append({
+                "role": "system",
+                "content": (
+                    "The user has explicitly asked you NOT to search the web. "
+                    "Do NOT emit any <tool_call> blocks. Do NOT call WebSearch, "
+                    "Bash, or any tool. Answer directly from your training "
+                    "knowledge in the user's language. Be concise."
+                ),
+            })
+
+        search_footer = ""
+        if self._should_search(user_message, chat_id):
+            live_msg = await msg.reply_text("🔍 正在搜索相关信息...")
+            search_ctx, search_footer = await self._augment_with_search(
+                user_message, chat_id,
+            )
+            if search_ctx:
+                seed.append({"role": "system", "content": search_ctx})
+                await self._safe_edit(live_msg, "💭 正在整合搜索结果...", max_retries=0)
+            else:
+                await self._safe_edit(live_msg, "💭 ...", max_retries=0)
+        else:
+            live_msg = await msg.reply_text("💭 ...")
+
+        links = [
+            ChainLink(
+                OpenAICompatibleStream(
+                    p["base_url"], p["api_key"], timeout=90.0,
+                ),
+                p["model"],
+                p["name"],
+            )
+            for p in providers
+        ]
+
+        t_start = time.time()
+        selected = {}
+
+        edit, send = self._telegram_render_callbacks(msg, live_msg, search_footer)
+        renderer = TelegramRenderer(edit=edit, send=send)
+
+        session = build_telegram_session(
+            links=links,
+            registry=self._session_registry(),
+            history=seed,
+            store=TelegramHistoryStore(self._store, chat_id, chat_type),
+            model=model,
+            mode=self._store.get_mode(chat_id),
+            on_selected=lambda link: selected.update(
+                name=link.name, model=link.model,
+            ),
+        )
+
+        outcome = await renderer.render(session.run_turn(user_message))
+
+        if selected and outcome.response:
+            self._usage.record(
+                provider=selected["name"], model=selected["model"],
+                tokens=outcome.usage.get("total_tokens")
+                or len(outcome.response) * 2,
+                latency_ms=int((time.time() - t_start) * 1000),
+                success=outcome.ok, chat_id=chat_id,
+            )
+            print(
+                f"[session] ✅ {selected['name']}:{selected['model']} "
+                f"({len(outcome.response)} chars, "
+                f"{int((time.time() - t_start) * 1000)}ms, "
+                f"tools={outcome.tools_run})",
+                flush=True,
+            )
+
+        # Returned rather than raised. The renderer has already written the
+        # reason into the live message, and raising would make
+        # `_process_and_reply` send a second error message on top of it.
+        return outcome
 
     # ── Normal streaming: live message updates without thinking ────
 

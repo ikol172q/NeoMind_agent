@@ -221,6 +221,7 @@ class OpenAICompatibleStream:
                     raise error_for_status(
                         response.status_code,
                         body.decode("utf-8", errors="replace"),
+                        response.headers.get("Retry-After"),
                     )
                 async for line in response.aiter_lines():
                     for chunk in parse_sse_frame(line):

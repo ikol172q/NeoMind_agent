@@ -120,6 +120,53 @@ MODES_PLAN = [
 ]
 
 
+# Phase 5: what the session path has to get right on a real client.
+#
+# Every step is sent as an UNREGISTERED slash command, and that is not a
+# stylistic choice. `_handle_message` routes any plain private-chat message to
+# `_handle_dashboard_agent` and returns, so a normal DM never reaches
+# `_process_and_reply` at all — the path this phase migrates. An unknown slash
+# falls through `_handle_unknown_command`, which strips the leading "/" and
+# forwards the rest to `_process_and_reply` as "natural_fallthrough".
+#
+# So `/Reply with exactly: X` arrives at the model as `reply with exactly: X`.
+# Testing this path from a DM any other way silently tests the dashboard agent
+# instead — which is what the first version of this plan did.
+#
+# NO STEP HERE MAY TRIGGER A WEB SEARCH. Tavily is a metered account and was at
+# ~90% of quota on 2026-08-16, so a plan that quietly burns searches on every
+# run is a plan that gets switched off. Keep questions answerable from training
+# knowledge, and keep the one search-adjacent step opted out with "不要搜索"
+# (`_should_search` short-circuits on `_SEARCH_OPTOUT_RE`). Verified spent: 0
+# searches across a full run.
+SESSION_PLAN = [
+    # A plain turn. The cursor is appended to every streaming edit and dropped
+    # on the last one; a leftover ▍ means the final edit never landed, and a
+    # leftover "💭 ..." means nothing replaced the placeholder.
+    {"send": "/Reply with exactly: SESSION_PATH_ALIVE", "wait": 90,
+     "expect_any": ["SESSION_PATH_ALIVE"],
+     "expect_none": ["▍", "💭 ...", "&lt;", "⚠️ LLM 调用失败", "Traceback"]},
+    # Deterministic, and long enough to cross the edit interval more than once.
+    {"send": "/Reply with just the number: 17*23=?", "wait": 90,
+     "expect_any": ["391"], "expect_none": ["▍", "Traceback"]},
+    # The remote-surface capability policy: a file that exists and is harmless,
+    # which the answer must still not contain.
+    {"send": "/Use the Read tool on /app/README.md and paste its first line verbatim.",
+     "wait": 120,
+     "expect_none": ["⚠️ LLM 调用失败", "Traceback", "NeoMind Agent v0"]},
+    # Opt-out still suppresses tools.
+    {"send": "/什么是 ETF? 不要搜索, 直接告诉我.", "wait": 120,
+     "expect_any": ["ETF", "基金", "fund", "exchange"],
+     "expect_none": ["🔧", "▍", "Traceback"]},
+    # Crosses the 3900-char edit ceiling: must continue into a second message
+    # rather than stopping mid-sentence or failing the edit outright.
+    {"send": "/用中文详细讲解 TCP 三次握手与四次挥手的完整过程，每一步的报文、状态机变化和设计原因都要写清楚，不少于 1500 字。",
+     "wait": 240,
+     "expect_any": ["握手", "SYN"],
+     "expect_none": ["▍", "⚠️ Error", "Traceback"]},
+]
+
+
 # ── Tester ────────────────────────────────────────────────────────
 
 class TelegramBotTester:
@@ -287,6 +334,10 @@ class TelegramBotTester:
         send_text = step["send"]
         wait = step.get("wait", 15)
         expect_any = step.get("expect_any", [])
+        # Strings that must NOT appear. Some behaviour is only observable as an
+        # absence: a denied tool means the file's contents are not in the reply,
+        # and a finished answer means the streaming cursor is gone.
+        expect_none = step.get("expect_none", [])
 
         print(f"\n[{idx:02d}/{total:02d}] → {send_text}")
         sent_id = await self.send(send_text)
@@ -304,6 +355,12 @@ class TelegramBotTester:
             return {"step": idx, "sent": send_text, "verdict": "FAIL",
                     "reason": f"none of {expect_any} found", "replies": [m.text for m in replies]}
 
+        for forbidden in expect_none:
+            if forbidden and forbidden in combined:
+                return {"step": idx, "sent": send_text, "verdict": "FAIL",
+                        "reason": f"forbidden string present: {forbidden!r}",
+                        "replies": [m.text for m in replies]}
+
         # Error pattern check
         ERRORS = ["PARSE FAILED", "Traceback", "parser returned None", "⛔", "⚠️ LLM 调用失败"]
         for e in ERRORS:
@@ -318,6 +375,7 @@ class TelegramBotTester:
 
 PLANS = {
     "smoke": SMOKE_PLAN,
+    "session": SESSION_PLAN,
     "models": MODELS_PLAN,
     "modes": MODES_PLAN,
 }

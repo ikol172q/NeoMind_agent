@@ -254,6 +254,6 @@ class SessionRenderer:
         # A refusal and a failure read differently for the same reason the
         # runtime keeps them apart: one is worth retrying, the other is not.
         reason = (event.error or "").strip()
-        if reason.lower().startswith("permission denied"):
+        if event.denied:
             return f"[yellow]  ⊘ {event.tool_name}: {reason}[/yellow]\n"
         return f"[red]  ✗ {event.tool_name}: {reason or 'failed'}[/red]\n"

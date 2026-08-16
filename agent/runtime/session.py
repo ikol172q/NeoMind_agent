@@ -354,6 +354,7 @@ class AgentSession:
             call_id=call_id,
             tool_name=tool_name,
             success=success,
+            denied=denied,
             preview=preview,
             error=error,
             output_ref=output_ref,

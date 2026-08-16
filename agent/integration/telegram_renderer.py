@@ -71,12 +71,18 @@ class TelegramRenderer:
     offline. `now` is injected for the same reason — the throttle is time-based
     and a test that has to sleep 2.5 seconds per assertion is a test nobody
     runs.
+
+    `edit` is called as `edit(text, final)`. The flag is not decoration: a
+    streaming edit ends in a cursor to show the answer is still arriving, and
+    the last one carries the search-source footer instead. Only the adapter
+    knows how to render either, and only the renderer knows which edit is the
+    last one.
     """
 
     def __init__(
         self,
         *,
-        edit: Callable[[str], Awaitable[Any]],
+        edit: Callable[..., Awaitable[Any]],
         send: Callable[[str], Awaitable[Any]],
         edit_interval: float = DEFAULT_EDIT_INTERVAL,
         show_tools: bool = True,
@@ -94,19 +100,33 @@ class TelegramRenderer:
         tool_notes: List[str] = []
         last_edit = 0.0
         overflow_from = 0
+        #: Whether the live message got its closing, cursor-free edit.
+        sealed = False
 
-        async def flush(force: bool = False) -> None:
-            """Edit the live message, subject to the interval and the ceiling."""
-            nonlocal last_edit, overflow_from
+        async def flush(force: bool = False, final: bool = False) -> None:
+            """Edit the live message, subject to the interval and the ceiling.
+
+            `force` bypasses the throttle; `final` says this is the last edit
+            of the turn. A tool note is forced but not final — conflating them
+            would put the closing footer on every tool announcement.
+            """
+            nonlocal last_edit, overflow_from, sealed
             body = self._compose(buffer, tool_notes)
             if not body:
                 return
             if len(body) > EDIT_CEILING:
-                # Past the ceiling the live message is frozen at whatever it
-                # last showed, and the rest goes out as new messages. Editing
-                # beyond the limit fails outright, which used to strand the
-                # tail of a long answer.
+                # Past the ceiling the live message can no longer hold the
+                # answer, and the rest goes out as new messages. Editing beyond
+                # the limit fails outright, which used to strand the tail.
                 outcome.overflowed = True
+                if final and not sealed:
+                    # Seal the live message first. Its last edit was a
+                    # streaming one, so without this it keeps the "still
+                    # arriving" cursor forever on a turn that has finished —
+                    # which is exactly what a real 1500-word answer did.
+                    sealed = True
+                    outcome.edits += 1
+                    await self._edit(body[:EDIT_CEILING], True)
                 tail = buffer[overflow_from:]
                 if force and tail.strip():
                     await self._send(tail)
@@ -117,7 +137,7 @@ class TelegramRenderer:
                 return
             last_edit = now
             outcome.edits += 1
-            await self._edit(body)
+            await self._edit(body, final)
 
         async for event in events:
             if isinstance(event, ThinkingDelta):
@@ -162,7 +182,7 @@ class TelegramRenderer:
                     # A turn whose text arrived only in the final event — a
                     # tool-only round, or a provider that did not stream.
                     buffer = event.response
-                await flush(force=True)
+                await flush(force=True, final=True)
                 return outcome
 
             if isinstance(event, TurnFailed):
@@ -175,7 +195,9 @@ class TelegramRenderer:
                     if outcome.interrupted
                     else f"⚠️ {event.error_code}: {event.message[:200]}"
                 )
-                await self._edit(self._compose(buffer, tool_notes, footer=label) or label)
+                await self._edit(
+                    self._compose(buffer, tool_notes, footer=label) or label, True
+                )
                 outcome.edits += 1
                 return outcome
 
@@ -186,14 +208,15 @@ class TelegramRenderer:
         outcome.error_code = "no_terminal_event"
         outcome.error_message = "the turn ended without a terminal event"
         await self._edit(
-            self._compose(buffer, tool_notes, footer="⚠️ 回合异常结束") or "⚠️ 回合异常结束"
+            self._compose(buffer, tool_notes, footer="⚠️ 回合异常结束") or "⚠️ 回合异常结束",
+            True,
         )
         outcome.edits += 1
         return outcome
 
     @staticmethod
     def _denied(event: ToolFinished) -> bool:
-        return (event.error or "").lower().startswith("permission denied")
+        return bool(event.denied)
 
     @staticmethod
     def _compose(buffer: str, tool_notes: List[str], footer: str = "") -> str:
