@@ -106,29 +106,32 @@ def interactive_main(mode: str = "chat", resume_session: str = None,
         from agent_config import agent_config as _cfg2
         _cfg2.system_prompt = system_prompt
 
-    # Try NeoMind interface first (preferred)
+    # Only an import failure means "the interface is unavailable". This used to
+    # wrap the entire session in `except Exception`, so any error raised
+    # *during* a turn — a bug in migrated code, a provider fault twenty minutes
+    # in — printed a one-line Note and silently dropped the user into a
+    # different, unmigrated REPL with their session gone. A runtime error is
+    # now reported as one.
     try:
         from cli.neomind_interface import interactive_chat
-        interactive_chat(
-            mode=mode,
-            resume_session=resume_session,
-            system_prompt=system_prompt,
-            verbose=verbose,
-            max_turns=max_turns,
+    except ImportError as exc:
+        print(
+            f"NeoMind interface could not be loaded: {exc}",
+            file=sys.stderr,
         )
-        return
-    except Exception as e:
-        print(f"Note: NeoMind interface unavailable ({e}), falling back to standard interface")
+        from cli.interface import explain_unavailable_interface
 
-    # Fallback chain
-    try:
-        from prompt_toolkit import PromptSession
-        from cli.interface import interactive_chat_with_prompt_toolkit
-        interactive_chat_with_prompt_toolkit(mode)
-    except ImportError:
-        print("Note: For better experience, install prompt_toolkit: pip install prompt_toolkit")
-        from cli.interface import interactive_chat_fallback
-        interactive_chat_fallback(mode)
+        explain_unavailable_interface(exc)
+        return 1
+
+    interactive_chat(
+        mode=mode,
+        resume_session=resume_session,
+        system_prompt=system_prompt,
+        verbose=verbose,
+        max_turns=max_turns,
+    )
+    return
 
 
 def test_main():

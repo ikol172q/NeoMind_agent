@@ -42,34 +42,54 @@ class TestMainModule:
                 except Exception:
                     pass
 
-    def test_interactive_main_fallback_to_prompt_toolkit(self):
-        """Test interactive_main falls back to prompt_toolkit."""
+    def test_runtime_error_surfaces_instead_of_demoting_the_user(self):
+        """A bug mid-session must not become "Note: ... falling back".
+
+        interactive_main used to wrap the whole session in `except Exception`
+        and route into cli.interface's second, unmigrated REPL, so an error
+        raised twenty minutes into a turn cost the user their session and told
+        them almost nothing. Only an ImportError means the interface is
+        unavailable.
+        """
         import main
 
         with patch('agent_config.agent_config') as mock_config:
-            with patch('cli.neomind_interface.interactive_chat', side_effect=ImportError("NeoMind not available")):
-                with patch('cli.interface.interactive_chat_with_prompt_toolkit') as mock_fallback:
-                    mock_config.mode = "chat"
-
-                    try:
+            mock_config.mode = "chat"
+            with patch('cli.neomind_interface.interactive_chat',
+                       side_effect=RuntimeError("boom mid-turn")):
+                with patch('cli.interface.interactive_chat_with_prompt_toolkit') as legacy:
+                    with pytest.raises(RuntimeError):
                         main.interactive_main("chat")
-                    except ImportError:
-                        pass
+                    legacy.assert_not_called()
 
-    def test_interactive_main_fallback_chain(self):
-        """Test full fallback chain."""
+    def test_unimportable_interface_explains_rather_than_running_turns(self, capsys):
+        """A broken install gets a diagnostic, not a degraded second agent.
+
+        Asserts what the user sees rather than that a mock was called.
+        test_interface.py reloads cli.interface, which rebinds its functions,
+        so a mock installed on the module attribute is not the object main.py
+        ends up calling — that version passed alone and failed whenever
+        test_interface ran first. The diagnostic text and "the legacy REPL was
+        not started" are the contract; which function object carried them is
+        not.
+        """
+        import sys as _sys
+
         import main
 
         with patch('agent_config.agent_config') as mock_config:
-            with patch('cli.neomind_interface.interactive_chat', side_effect=Exception("Error")):
-                with patch('cli.interface.interactive_chat_with_prompt_toolkit', side_effect=ImportError()):
-                    with patch('cli.interface.interactive_chat_fallback') as mock_final:
-                        mock_config.mode = "chat"
+            mock_config.mode = "chat"
+            with patch.dict(_sys.modules, {"cli.neomind_interface": None}):
+                with patch('cli.interface.interactive_chat_with_prompt_toolkit') as legacy:
+                    with patch('cli.interface.interactive_chat_fallback') as legacy2:
+                        result = main.interactive_main("chat")
 
-                        try:
-                            main.interactive_main("chat")
-                        except ImportError:
-                            pass
+        err = capsys.readouterr().err
+        assert "could not be loaded" in err or "dependency is missing" in err, err
+        assert "pip install -e ." in err, err
+        legacy.assert_not_called()
+        legacy2.assert_not_called()
+        assert result == 1
 
     def test_test_main_calls_dev_test(self):
         """Test test_main imports and runs dev_test."""
