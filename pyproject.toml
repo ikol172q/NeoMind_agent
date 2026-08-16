@@ -141,6 +141,10 @@ markers = [
     "lattice_fast: spec + formulas + endpoint coherence (pure Python, <10s, pre-commit)",
     "lattice_slow: graph + viz + Playwright (CI only)",
     "lattice_drift: fixture regression + judge baseline (nightly)",
+    "llm: needs a real provider call",
+    "proc: spawns a subprocess",
+    "slow: waits on a real timeout on purpose",
+    "live: legacy alias for llm; declared so it stops warning",
 ]
 
 [tool.setuptools.package-data]

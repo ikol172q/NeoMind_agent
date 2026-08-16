@@ -78,6 +78,43 @@ behavior in Claude Code sessions.
 memories (loaded for any session under `/Users/user/Desktop/`). Contains
 the hard rule file `feedback_never_close_iterm2_windows.md`.
 
+## Running the tests
+
+The suite is ~6100 tests. Running all of them takes about six minutes, but the
+time is not evenly spread: the 25 slowest account for roughly 240 of those 360
+seconds, and every one of them is slow for the same reason — it leaves the
+process to call a provider, spawn a subprocess, or wait out a real timeout.
+
+So the default run holds those back and everything else finishes in about a
+minute and a half.
+
+```bash
+.venv/bin/python -m pytest tests/ -q          # fast tier — the inner loop
+NEOMIND_TESTS=all .venv/bin/python -m pytest tests/ -q   # everything
+.venv/bin/python -m pytest tests/ -q -m llm   # one tier: llm | proc | slow
+```
+
+Every default run prints what it held back:
+
+```
+- 160 tests held back (70 llm, 86 proc, 4 slow) — NEOMIND_TESTS=all to run them -
+```
+
+That line is not decoration. A suite that quietly stops running things starts
+lying about what is covered, and this repository has already been bitten by
+tests that skipped themselves and read as green.
+
+**Run the full tier before pushing, and after touching anything shared.** The
+fast tier does not exercise the provider, the CLI as a process, or timeout
+behaviour, so it cannot tell you the agent still boots.
+
+Tiers are assigned by path in `tests/conftest.py::_TIER_PATHS`, not by
+decorating each test, so a new file under `tests/llm/` is tiered the moment it
+exists. Add a path there rather than marking tests one by one.
+
+Killing pytest does not reap the Playwright chromium the web tests spawn per
+file. After an interrupted run: `tools/reap_test_processes.sh`.
+
 ## How to extend
 
 When a session produces new learnings:

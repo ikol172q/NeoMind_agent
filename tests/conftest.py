@@ -203,3 +203,91 @@ def _seed_fixture_project():
         except Exception:
             pass
     yield
+
+
+# ── test tiers ────────────────────────────────────────────────────────────
+#
+# 6000+ tests run in about six minutes, but that is not evenly spread: the 25
+# slowest account for roughly 240 of the 360 seconds, and they fall into three
+# groups that are slow for the same reason each time — they leave the process.
+#
+#   llm     a real provider call
+#   proc    spawns a subprocess, usually a whole python
+#   slow    waits on a real timeout on purpose
+#
+# Everything else — the other ~6000 — finishes in about two and a half
+# minutes, which is a fine inner loop. So the default run excludes those three
+# and says so out loud. Silently not running tests is how a suite starts
+# lying; the summary line at the end of every run names what was held back and
+# how to get it.
+#
+#   default            fast tier only
+#   NEOMIND_TESTS=all  everything
+#   -m llm             just that tier
+#
+# Tiers are assigned by path and name rather than by decorating each test, so
+# a new file under tests/llm/ is tiered the moment it exists and nobody has to
+# remember.
+
+_TIER_PATHS = {
+    "llm": ("tests/llm/", "test_integration_live", "test_simulation_llm"),
+    "proc": ("test_headless_subprocess", "cross_mode_boot_smoke", "test_fleet_"),
+    "slow": ("repl_fidelity_check", "repl_session_path_check", "repl_phase4_gate"),
+}
+
+#: Individual slow tests that live in otherwise fast files. Measured, not
+#: guessed: each of these spends its time inside a real timeout.
+_SLOW_TESTS = (
+    "test_persistent_bash_timeout",
+    "test_bash_timeout",
+    "test_no_matches",
+    "test_new_command_handlers_smoke",
+)
+
+
+def _tier_for(item) -> str:
+    path = str(getattr(item, "fspath", "")).replace("\\", "/")
+    for tier, needles in _TIER_PATHS.items():
+        if any(n in path for n in needles):
+            return tier
+    if any(name in item.name for name in _SLOW_TESTS):
+        return "slow"
+    return "fast"
+
+
+def pytest_collection_modifyitems(config, items):
+    import os as _os
+
+    import pytest as _pytest
+
+    run_all = _os.environ.get("NEOMIND_TESTS", "").strip().lower() in ("all", "1", "true")
+    selected_marker = (config.getoption("-m") or "").strip()
+
+    held = {"llm": 0, "proc": 0, "slow": 0}
+    for item in items:
+        tier = _tier_for(item)
+        if tier == "fast":
+            continue
+        item.add_marker(getattr(_pytest.mark, tier))
+        # An explicit -m selection means the caller asked for a tier by name;
+        # do not second-guess it.
+        if run_all or selected_marker:
+            continue
+        held[tier] += 1
+        item.add_marker(
+            _pytest.mark.skip(
+                reason=f"{tier} tier held back; NEOMIND_TESTS=all to include"
+            )
+        )
+    config._neomind_held = held
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config):
+    held = getattr(config, "_neomind_held", None)
+    if not held or not any(held.values()):
+        return
+    total = sum(held.values())
+    parts = ", ".join(f"{n} {t}" for t, n in held.items() if n)
+    terminalreporter.write_sep(
+        "-", f"{total} tests held back ({parts}) — NEOMIND_TESTS=all to run them"
+    )
