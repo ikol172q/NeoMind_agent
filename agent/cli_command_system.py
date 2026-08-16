@@ -67,6 +67,36 @@ class CommandAvailability(Enum):
     INTERNAL = "internal"  # Like Claude Code's ANT-ONLY
 
 
+class Effect:
+    """Something the frontend must *do*, as opposed to something to display.
+
+    Commands used to signal these by writing sentinel values into `text` —
+    `"__EXIT__"`, `"__MODE_SWITCH__coding"` — which made the display channel
+    and the control channel the same field. Two consequences: a command whose
+    ordinary output happened to equal a sentinel would quit the application,
+    and a second frontend could not be written without knowing the spelling of
+    every sentinel string.
+
+    Subclasses carry their arguments as fields rather than as a string a
+    consumer has to slice apart. Frozen for the same reason runtime events are:
+    a frontend that can mutate an effect can rewrite what it was asked to do.
+    """
+
+
+@dataclass(frozen=True)
+class ExitRequested(Effect):
+    """End the session. The frontend decides what "end" means for it."""
+
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class ModeSwitchRequested(Effect):
+    """Switch personality mode. `target` is validated by the command."""
+
+    target: str = ""
+
+
 @dataclass
 class CommandResult:
     """Result from executing a command.
@@ -80,6 +110,19 @@ class CommandResult:
     next_input: str = ""                # Pre-fill next input
     submit_next: bool = False           # Auto-submit next input
     compact: bool = False               # Trigger compaction
+    #: Control signals, kept out of `text` on purpose. See `Effect`.
+    effects: Tuple[Effect, ...] = ()
+
+    def effect(self, kind: type) -> Optional[Effect]:
+        """The first effect of `kind`, or None.
+
+        A helper so frontends ask "was I asked to exit?" instead of
+        iterating and isinstance-ing at every dispatch site.
+        """
+        for eff in self.effects:
+            if isinstance(eff, kind):
+                return eff
+        return None
 
 
 @dataclass
@@ -654,7 +697,7 @@ def _build_builtin_commands() -> List[Command]:
 
     def _cmd_exit(args: str, agent=None, **kw) -> CommandResult:
         """Exit the agent."""
-        return CommandResult(text="__EXIT__", display="skip")
+        return CommandResult(display="skip", effects=(ExitRequested(),))
 
     def _cmd_mode(args: str, agent=None, **kw) -> CommandResult:
         """Switch personality mode."""
@@ -665,8 +708,8 @@ def _build_builtin_commands() -> List[Command]:
                 text=f"Usage: /mode <{' | '.join(valid_modes)}>",
             )
         return CommandResult(
-            text=f"__MODE_SWITCH__{target}",
             display="skip",
+            effects=(ModeSwitchRequested(target=target),),
         )
 
     def _cmd_model(args: str, agent=None, **kw) -> CommandResult:

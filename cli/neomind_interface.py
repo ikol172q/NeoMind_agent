@@ -1213,6 +1213,8 @@ class NeoMindInterface:
         Phase 1: Tries the new Claude Code-style CommandDispatcher first.
         Falls through to legacy handler if the new system doesn't handle it.
         """
+        from agent.cli_command_system import ExitRequested, ModeSwitchRequested
+
         # ── Try new command system first (Claude Code pattern) ──────
         if self._new_command_dispatcher:
             try:
@@ -1247,12 +1249,16 @@ class NeoMindInterface:
                     result = None  # Let legacy handler try
 
             if result is not None:
-                # Handle special result codes
-                if result.text == "__EXIT__":
+                # Control signals arrive as typed effects rather than sentinel
+                # values inside `text` — a command whose ordinary output
+                # happened to read "__EXIT__" used to quit the application,
+                # and a second frontend had to know every sentinel's spelling.
+                if result.effect(ExitRequested):
                     self._print("[dim]Goodbye![/dim]")
                     return False
-                if result.text.startswith("__MODE_SWITCH__"):
-                    target = result.text.replace("__MODE_SWITCH__", "")
+                mode_switch = result.effect(ModeSwitchRequested)
+                if mode_switch:
+                    target = mode_switch.target
                     ok = self.chat.switch_mode(target)
                     if ok and hasattr(self, '_completer') and self._completer:
                         self._completer.set_mode(target)
