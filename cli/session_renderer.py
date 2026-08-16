@@ -55,6 +55,7 @@ class RenderOutcome:
     error_code: str = ""
     error_message: str = ""
     interrupted: bool = False
+    chars_written: int = 0
     thinking_seconds: float = 0.0
     tools_run: List[str] = field(default_factory=list)
     usage: dict = field(default_factory=dict)
@@ -78,11 +79,25 @@ class SessionRenderer:
         content_filter: Any = None,
         show_tools: bool = True,
     ) -> None:
-        self.write = write
+        self._raw_write = write
+        self.chars_written = 0
         self.write_markup = write_markup or write
         self.stop_spinner = stop_spinner or (lambda: None)
         self.content_filter = content_filter
         self.show_tools = show_tools
+
+    def write(self, text: str) -> None:
+        """Everything visible goes through here, so the count is the truth.
+
+        The REPL needs to know whether a turn actually put anything on screen:
+        twice during this migration a filter swallowed the whole answer and
+        the user got a blank turn with no error. Counting what was written is
+        what lets the caller notice and fall back.
+        """
+        if not text:
+            return
+        self.chars_written += len(text)
+        self._raw_write(text)
 
     # ── filtering ─────────────────────────────────────────────────────────
 
@@ -227,6 +242,7 @@ class SessionRenderer:
             outcome.error_message = "the turn ended without a terminal event"
             self.write_markup("\n[red]Error: the turn ended unexpectedly[/red]\n")
 
+        outcome.chars_written = self.chars_written
         return outcome
 
     def _tool_summary(self, event: ToolFinished) -> str:

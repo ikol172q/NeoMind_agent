@@ -15,6 +15,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from io import StringIO
+import pytest
+import inspect
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # setdefault, not assignment: this runs at import time, so a plain
@@ -742,6 +745,14 @@ class TestTranscriptInCommands(unittest.TestCase):
 class TestSpinnerCallback(unittest.TestCase):
     """Test that spinner callback is properly injected."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_to_legacy(self, monkeypatch):
+        """Asserts `stream_response` is called and `chat._ui_on_first_token`
+        is set — both legacy mechanics. The session path drives the provider
+        through LLMPort and stops the spinner from the renderer, so neither
+        exists to observe."""
+        monkeypatch.setenv("NEOMIND_REPL", "legacy")
+
     def test_callback_set_on_chat(self):
         from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
@@ -1150,6 +1161,19 @@ class TestAgenticLoopSpinnerDisplay(unittest.TestCase):
 class TestStreamAndRenderContentFilter(unittest.TestCase):
     """Test that _stream_and_render installs content filter in coding mode."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_to_legacy(self, monkeypatch):
+        """These describe how the legacy path installs the filter.
+
+        They assert that `_stream_and_render` sets `chat._content_filter` and
+        clears it afterwards. The session path deliberately does not: it builds
+        the filter locally and hands it to the renderer instead of mutating the
+        agent's private state, which is what Phase 4 task 2 asks for. The
+        behaviour they protect — the right filter per mode — is covered for the
+        new path in TestSessionPathFilterSelection below.
+        """
+        monkeypatch.setenv("NEOMIND_REPL", "legacy")
+
     def test_filter_installed_in_coding_mode(self):
         from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
@@ -1262,3 +1286,78 @@ class TestPermissionsCommand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSessionPathFilterSelection(unittest.TestCase):
+    """The same guarantee, through the mechanism the session path uses.
+
+    No private field is written; the filter is constructed and passed to the
+    renderer, so what is asserted is which class was chosen for the mode.
+    """
+
+    def _chosen_filter(self, mode):
+        import sys as _sys
+
+        _sys.argv = ["x"]
+        from cli.neomind_interface import NeoMindInterface, PYGMENTS_AVAILABLE
+
+        captured = {}
+
+        class _Renderer:
+            def __init__(self, **kw):
+                captured["filter"] = kw.get("content_filter")
+
+            async def render(self, events):
+                from cli.session_renderer import RenderOutcome
+
+                async for _ in events:
+                    pass
+                return RenderOutcome(ok=True, response="x", chars_written=1)
+
+        interface = NeoMindInterface.__new__(NeoMindInterface)
+        interface.chat = mock.MagicMock()
+        interface.chat.mode = mode
+        interface.chat.conversation_history = []
+        interface._fleet_session = None
+        interface._print = lambda *_a, **_k: None
+        interface._start_spinner = lambda *_a, **_k: mock.MagicMock()
+        interface._interpret_as_command = lambda _t: None
+        interface._build_turn_session = lambda: mock.MagicMock(
+            run_turn=lambda _t: _empty_stream()
+        )
+        interface._warn_on_context_usage = lambda: None
+
+        async def _empty_stream():
+            if False:
+                yield None
+
+        with mock.patch("cli.session_renderer.SessionRenderer", _Renderer):
+            interface._stream_and_render_session("hi")
+        return captured.get("filter"), PYGMENTS_AVAILABLE
+
+    def test_coding_mode_uses_the_code_fence_filter(self):
+        from cli.neomind_interface import NeoMindInterface
+
+        chosen, _ = self._chosen_filter("coding")
+        self.assertIsInstance(chosen, NeoMindInterface._CodeFenceFilter)
+
+    def test_other_modes_use_the_syntax_highlighter_when_available(self):
+        from cli.neomind_interface import NeoMindInterface
+
+        chosen, pygments = self._chosen_filter("chat")
+        if pygments:
+            self.assertIsInstance(chosen, NeoMindInterface._SyntaxHighlightFilter)
+        else:
+            self.assertIsNone(chosen)
+
+    def test_no_private_agent_field_is_written(self):
+        """The point of the migration: the UI stops mutating agent internals."""
+        import sys as _sys
+
+        _sys.argv = ["x"]
+        from cli.neomind_interface import NeoMindInterface
+
+        source = inspect.getsource(NeoMindInterface._stream_and_render_session)
+        self.assertNotIn("_content_filter", source)
+        self.assertNotIn("_ui_on_first_token", source)
+

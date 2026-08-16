@@ -2751,10 +2751,36 @@ class NeoMindInterface:
         else:
             content_filter = None
 
+        cleared = [False]
+
+        def _stop_spinner_and_clear():
+            """Stop the spinner and wipe its line — once.
+
+            The spinner runs on stderr while the answer goes to stdout, so its
+            final frame can land after the first characters of the reply and
+            overwrite them: a resumed session answered "SUME_MARKER_KIWI_42",
+            two characters short of the token it had correctly recalled. The
+            legacy path clears the line for the same reason.
+
+            Only on the first call. The renderer also stops the spinner when
+            the turn ends, and by then the buffered answer has just been
+            flushed onto that line — clearing again erased it, and the reply
+            vanished completely.
+            """
+            stop.set()
+            if cleared[0]:
+                return
+            cleared[0] = True
+            try:
+                sys.stderr.write("\r\033[K")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
         renderer = SessionRenderer(
             write=lambda text: (sys.stdout.write(text), sys.stdout.flush()),
             write_markup=self._print,
-            stop_spinner=stop.set,
+            stop_spinner=_stop_spinner_and_clear,
             content_filter=content_filter,
         )
 
@@ -2766,6 +2792,19 @@ class NeoMindInterface:
             outcome = None
         finally:
             stop.set()
+
+        # Same safety net the legacy path has: if a turn finished but nothing
+        # reached the screen, show the answer rather than leaving a blank. Two
+        # separate filter bugs during this migration produced exactly that —
+        # a "Thought for 0.5s" line, then the prompt again, with the reply
+        # nowhere. A wrong-looking answer is recoverable; a silent empty turn
+        # tells the user nothing at all.
+        if outcome is not None and outcome.ok and outcome.chars_written == 0:
+            text = (outcome.response or "").strip()
+            if text:
+                self._print(highlight_code_blocks_in_text(text))
+            elif outcome.tools_run:
+                self._print("[dim](Agent ran tools but produced no visible summary)[/dim]")
 
         self._warn_on_context_usage()
         return outcome
@@ -2789,13 +2828,22 @@ class NeoMindInterface:
     def _stream_and_render(self, prompt: str):
         """Send prompt to agent core's stream_response with spinner UX.
 
-        Phase 4 rollback switch (D8). `NEOMIND_REPL=session_v1` routes the turn
-        through AgentSession instead, so the REPL stops owning the LLM call and
-        the tool loop. It is opt-in until the real-terminal gate has run in
-        coding and fin — this is the surface people use every day, and the plan
-        is explicit that a green suite does not make a phase done.
+        Phase 4 rollback switch (D8). The turn runs through AgentSession by
+        default now: the REPL no longer owns the LLM call or the tool loop, so
+        there is one authorization path instead of two.
+
+        The gate that had to pass before this default flipped, all in real
+        iTerm2 windows: streaming, tool results, /help, /think, natural-language
+        mode switching, permission allow *and* deny in coding and in fin, chat
+        shown to run no tool loop at all, Ctrl+C leaving the session able to
+        take the next turn, and --resume recalling a token from before a
+        restart.
+
+        `NEOMIND_REPL=legacy` returns to the old path. It stays until Phase 8
+        retires the compatibility paths, because the first day a new default is
+        live is the worst possible day to have no way back.
         """
-        if os.environ.get("NEOMIND_REPL", "").strip() == "session_v1":
+        if os.environ.get("NEOMIND_REPL", "").strip() != "legacy":
             return self._stream_and_render_session(prompt)
 
         self._interrupt = False
