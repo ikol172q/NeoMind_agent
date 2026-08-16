@@ -63,27 +63,68 @@ class TestStoreAdapter:
 
 class TestPerTurnSeeding:
 
+    # These used to read `inspect.getsource(...)` and assert that particular
+    # substrings appeared in it. That checks spelling, not behaviour: it passes
+    # for a method that contains the right words and does the wrong thing, and
+    # it fails for a rename that changes nothing. It also produced two false
+    # failures in a full run — `inspect.getsource` resolves a code object's
+    # recorded line numbers against `linecache`, so editing the file while the
+    # suite is in flight hands the test a *different method's* source, and the
+    # assertion message then blames the wrong thing entirely.
+    #
+    # They now build a real session and look at what it holds.
+
+    def _session_for(self, interface, monkeypatch):
+        """Call the real `_build_turn_session`, stubbing only what reaches out."""
+        from unittest import mock
+
+        import cli.neomind_interface as mod
+
+        interface.chat._resolve_provider = lambda: {
+            "base_url": "http://x/v1", "api_key": "k", "name": "local",
+        }
+        interface.chat.api_key = "k"
+        interface.chat.model = "m"
+        interface.chat.mode = "coding"
+        interface.chat.thinking_enabled = False
+        interface._session_permission_broker = lambda: None
+
+        with mock.patch.object(mod, "ToolRegistry", create=True):
+            return interface._build_turn_session()
+
     def test_the_session_is_seeded_from_the_current_history(self, interface, monkeypatch):
         """Built per turn, not once. A long-lived session would keep a copy
         while /compact, /clear and /load rewrite the agent's list underneath
         it, and the two would disagree silently."""
-        import inspect
+        interface.chat.conversation_history = [
+            {"role": "user", "content": "the earlier question"},
+        ]
+        session = self._session_for(interface, monkeypatch)
+        assert [m["content"] for m in session.history] == ["the earlier question"]
 
-        from cli.neomind_interface import NeoMindInterface
-
-        source = inspect.getsource(NeoMindInterface._build_turn_session)
-        assert "history=list(self.chat.conversation_history)" in source
-        assert "store=self._HistoryStore(self.chat)" in source
-
-    def test_the_turn_path_builds_a_session_every_time(self):
-        import inspect
-
-        from cli.neomind_interface import NeoMindInterface
-
-        source = inspect.getsource(NeoMindInterface._stream_and_render_session)
-        assert source.count("self._build_turn_session()") == 1, (
-            "one construction per turn; caching it would reintroduce the copy"
+    def test_a_later_turn_sees_history_written_after_the_first(self, interface, monkeypatch):
+        """The actual property: two sessions built at different times disagree
+        only if one is holding a stale copy."""
+        interface.chat.conversation_history = [{"role": "user", "content": "first"}]
+        first = self._session_for(interface, monkeypatch)
+        interface.chat.conversation_history.append(
+            {"role": "assistant", "content": "second"}
         )
+        later = self._session_for(interface, monkeypatch)
+        assert len(first.history) == 1
+        assert len(later.history) == 2, (
+            "a session built now must see what was written since the last one"
+        )
+
+    def test_the_session_writes_through_to_the_agents_list(self, interface, monkeypatch):
+        """The store half of the same property, asserted through the session
+        rather than by looking for `_HistoryStore` in the source."""
+        interface.chat.conversation_history = []
+        session = self._session_for(interface, monkeypatch)
+        session.store.append(session.session_id, {"role": "user", "content": "written"})
+        assert interface.chat.conversation_history == [
+            {"role": "user", "content": "written"}
+        ]
 
 
 class TestSessionWritesThroughTheStore:

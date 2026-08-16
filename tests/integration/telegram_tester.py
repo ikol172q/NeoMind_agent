@@ -42,6 +42,7 @@ import asyncio
 import os
 import sys
 import time
+from typing import Optional
 from pathlib import Path
 
 # ── Load credentials ──────────────────────────────────────────────
@@ -381,6 +382,48 @@ PLANS = {
 }
 
 
+#: Log markers that prove which turn implementation actually ran. A plan can
+#: pass every step while the surface answers from a path the change never
+#: touched — `_handle_message` sends plain private DMs to
+#: `_handle_dashboard_agent` and returns, which is exactly how a 6-step run
+#: once reported green against untouched code.
+PATH_MARKERS = {
+    "session": {"new": "[session]", "old": "[llm-stream]"},
+}
+
+
+def container_log(lines: int = 400) -> str:
+    """The bot's stdout, which supervisord writes to a file rather than docker."""
+    import subprocess
+
+    try:
+        out = subprocess.run(
+            ["docker", "exec", "neomind-telegram", "sh", "-c",
+             f"tail -{lines} /data/neomind/agent.log"],
+            capture_output=True, text=True, timeout=20,
+        )
+        return out.stdout
+    except Exception as exc:
+        return f"(could not read container log: {exc})"
+
+
+def check_path_marker(plan_name: str) -> Optional[str]:
+    """Return an error string if the run did not exercise the intended path."""
+    markers = PATH_MARKERS.get(plan_name)
+    if not markers:
+        return None
+    from tests.integration.evidence import WitnessMissing, require_path_marker
+
+    try:
+        require_path_marker(
+            container_log(), markers["new"], markers.get("old"),
+            label=f"telegram/{plan_name}",
+        )
+    except (WitnessMissing, AssertionError) as exc:
+        return str(exc)
+    return None
+
+
 async def run_plan(plan_name: str):
     plan = PLANS[plan_name]
     print(f"=" * 60)
@@ -408,6 +451,15 @@ async def run_plan(plan_name: str):
     pass_n = sum(1 for r in results if r["verdict"] == "PASS")
     fail_n = sum(1 for r in results if r["verdict"] == "FAIL")
     print(f"  Results: {pass_n} PASS / {fail_n} FAIL")
+
+    # A pass count means nothing until the intended code path is shown to have
+    # run. Checked after the steps so the log covers the whole plan.
+    path_error = check_path_marker(plan_name)
+    if path_error:
+        print(f"\n  !! WRONG CODE PATH — every result above is void:\n     {path_error}")
+        fail_n += 1
+    elif plan_name in PATH_MARKERS:
+        print(f"  Path: exercised {PATH_MARKERS[plan_name]['new']} ✓")
     print(f"{'=' * 60}")
     if fail_n:
         print("\nFailures:")

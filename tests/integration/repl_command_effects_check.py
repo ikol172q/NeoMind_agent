@@ -30,6 +30,7 @@ REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO))
 
 from tests.integration.cli_tester_iterm2 import ITerm2CliTester, ITerm2Config  # noqa: E402
+from tests.integration.evidence import Evidence, collect  # noqa: E402
 from tests.integration.repl_fidelity_check import wait_for_response  # noqa: E402
 
 DUMP_DIR = Path(
@@ -54,6 +55,10 @@ async def poll(tester, seconds: float, interval: float = 0.3) -> None:
     for _ in range(int(seconds / interval)):
         await tester.capture(lines=200)
         await asyncio.sleep(interval)
+
+
+def read(path) -> str:
+    return Path(path).read_text(encoding="utf-8", errors="ignore")
 
 
 async def main() -> int:
@@ -97,39 +102,30 @@ async def main() -> int:
         (DUMP_DIR / "exit.txt").write_text(screen, encoding="utf-8")
         captured["exit"] = str(DUMP_DIR / "exit.txt")
 
-    empty = [n for n, path in captured.items()
-             if not Path(path).read_text(encoding="utf-8", errors="ignore").strip()]
-    if empty:
-        # An empty dump cannot support any claim about what was on screen.
-        print(f"  !! empty dumps, nothing was measured: {empty}")
-        return 2
+    # Every claim below goes through Evidence, which refuses to assert
+    # anything until a witness proves the capture shows the thing under test.
+    # The first version of this gate reported three passes from two empty
+    # dumps; that is now impossible rather than merely documented.
+    try:
+        mode = Evidence("mode_switch", read(captured["mode_switch"]))
+        mode.witness("/mode coding").contains("coding mode").absent("__MODE_SWITCH__")
 
-    verdicts = {}
-    for name, path in captured.items():
-        body = Path(path).read_text(encoding="utf-8", errors="ignore")
-        verdicts[name] = {
-            "sentinel_visible": "__EXIT__" in body or "__MODE_SWITCH__" in body,
-            "chars": len(body),
-        }
+        after = Evidence("after_switch", read(captured["after_switch"]))
+        after.witness("MODE_EFFECT_OK").absent("__MODE_SWITCH__", "__EXIT__")
 
-    exit_body = Path(captured["exit"]).read_text(encoding="utf-8", errors="ignore")
-    verdicts["exit"]["said_goodbye"] = "Goodbye" in exit_body
+        exited = Evidence("exit", read(captured["exit"]))
+        exited.witness("/exit").contains("Goodbye").absent("__EXIT__")
+    except AssertionError as failure:
+        print(f"\n  !! {type(failure).__name__}: {failure}")
+        return 1
 
-    after = Path(captured["after_switch"]).read_text(encoding="utf-8", errors="ignore")
-    verdicts["after_switch"]["answered"] = "MODE_EFFECT_OK" in after
-    verdicts["after_switch"]["mode_is_coding"] = "coding" in after
-
+    report = collect([mode, after, exited])
     (DUMP_DIR / "index.json").write_text(
-        json.dumps({"dumps": captured, "verdicts": verdicts}, indent=2),
+        json.dumps({"dumps": captured, "evidence": report}, indent=2),
         encoding="utf-8",
     )
-    print(json.dumps(verdicts, indent=2))
+    print(json.dumps(report, indent=2, ensure_ascii=False))
     print(f"\n  dumps: {DUMP_DIR}")
-
-    failed = [n for n, v in verdicts.items() if v["sentinel_visible"]]
-    if failed:
-        print(f"  !! sentinel leaked into the screen: {failed}")
-        return 1
     return 0
 
 
