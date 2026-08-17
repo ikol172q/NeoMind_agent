@@ -148,6 +148,12 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 7 — be drivable by an existing harness | **done — ACP server (DeepSeek Harness, Zed, any ACP client) and pi's session protocol (its terminal UI). Own-TUI deferred by decision: existing clients cover it** |
 > | 8 — compatibility retirement | **audit done; removal deferred** — `/cost` was found broken on *both* paths and fixed; `QueryEngine` is a dead shell holding one live object, and extracting it is tidiness rather than need |
 >
+> **The dashboard route is deliberately not one of them.** Plain private-DM messages go to
+> `_handle_dashboard_agent`, which is a different product rather than an unmigrated turn: it loads
+> from the private dashboard repo, carries its own tool schemas, uses native provider tool-calls, and
+> returns decision proposals. Folding it into the shared runtime would cost those to gain a tidier
+> diagram.
+>
 > **Six surfaces, one runtime.** CLI, headless, Telegram, fleet, ACP and pi all consume the same
 > frozen events from the same `AgentSession`; each decides only which provider, which tools, and
 > whether it can ask a permission question. Telegram and fleet cannot (nobody is there, so ASK
