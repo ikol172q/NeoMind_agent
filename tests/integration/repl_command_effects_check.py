@@ -161,6 +161,19 @@ async def main() -> int:
         (DUMP_DIR / "cmd_fleet.txt").write_text(screen, encoding="utf-8")
         captured["cmd_fleet"] = str(DUMP_DIR / "cmd_fleet.txt")
 
+        # 5d. Phase 8 prerequisite: `/cost` reads QueryEngine.budget, which is
+        #     a legacy object slated for removal. Whether it still reports real
+        #     numbers on the session path decides whether it can be deleted or
+        #     has to be relocated first.
+        tester.start_recording()
+        await tester.send("Reply with exactly: COST_PROBE_OK")
+        await wait_for_response(tester, 90)
+        await tester.send("/cost")
+        await poll(tester, 6)
+        screen = tester.stop_recording()
+        (DUMP_DIR / "cmd_cost.txt").write_text(screen, encoding="utf-8")
+        captured["cmd_cost"] = str(DUMP_DIR / "cmd_cost.txt")
+
         # 6. The sentinel must not be visible anywhere — if the effect were
         #    ignored, the old code path would print the raw text instead.
         tester.start_recording()
@@ -213,6 +226,10 @@ async def main() -> int:
             "started with"
         ).absent("Traceback", "Command failed")
         probes.append(fleet)
+
+        cost = Evidence("cost", read(captured["cmd_cost"]))
+        cost.witness("/cost").absent("Traceback")
+        probes.append(cost)
 
         exited = Evidence("exit", read(captured["exit"]))
         exited.witness("/exit").contains("Goodbye").absent("__EXIT__")

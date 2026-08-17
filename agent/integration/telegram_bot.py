@@ -116,11 +116,17 @@ _TOOL_CALL_PARTIAL_SUFFIXES = tuple(sorted({
 
 
 #: D8 rollback switch for this surface, the counterpart to `NEOMIND_REPL`.
-#: `session` runs a turn through `AgentSession`; anything else keeps the
-#: hand-rolled loop. Read per call rather than cached at import, so flipping it
+#: `legacy` keeps the hand-rolled loop; anything else runs the turn through
+#: `AgentSession`. Read per call rather than cached at import, so flipping it
 #: takes a container restart and not a rebuild.
+#:
+#: The default lives here rather than only in `docker-compose.yml`. It was in
+#: the compose file alone, which meant the bot ran the migrated path inside its
+#: container and the legacy one anywhere else — a difference that would only
+#: show up as "it behaves differently when I run it by hand", with nothing
+#: saying why.
 def _session_path_enabled() -> bool:
-    return os.getenv("NEOMIND_TELEGRAM", "").strip().lower() == "session"
+    return os.getenv("NEOMIND_TELEGRAM", "session").strip().lower() != "legacy"
 
 
 def _contains_tool_call(text: str) -> bool:

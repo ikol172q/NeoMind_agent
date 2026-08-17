@@ -21,9 +21,12 @@ class TestRollbackSwitch:
     """One switch per surface (D8), read per call so flipping it needs a
     container restart and not a rebuild."""
 
-    def test_default_is_the_legacy_path(self, monkeypatch):
+    def test_the_default_is_the_session_path(self, monkeypatch):
+        """The default belongs in the code, not only in docker-compose.yml.
+        With it only there, the bot ran the migrated path in its container and
+        the legacy one anywhere else."""
         monkeypatch.delenv("NEOMIND_TELEGRAM", raising=False)
-        assert tb._session_path_enabled() is False
+        assert tb._session_path_enabled() is True
 
     def test_session_enables_the_new_path(self, monkeypatch):
         monkeypatch.setenv("NEOMIND_TELEGRAM", "session")
@@ -33,16 +36,19 @@ class TestRollbackSwitch:
         monkeypatch.setenv("NEOMIND_TELEGRAM", "  Session  ")
         assert tb._session_path_enabled() is True
 
-    def test_an_unknown_value_falls_back_to_legacy(self, monkeypatch):
-        """A typo in an env var must not silently pick the new path."""
-        monkeypatch.setenv("NEOMIND_TELEGRAM", "sesion")
-        assert tb._session_path_enabled() is False
-
-    def test_it_is_not_cached_at_import(self, monkeypatch):
-        monkeypatch.setenv("NEOMIND_TELEGRAM", "session")
+    def test_only_the_exact_word_legacy_reverts(self, monkeypatch):
+        """A typo must not silently revert to the unmigrated path — the
+        rollback is deliberate, so it has to be spelled."""
+        monkeypatch.setenv("NEOMIND_TELEGRAM", "legcy")
         assert tb._session_path_enabled() is True
         monkeypatch.setenv("NEOMIND_TELEGRAM", "legacy")
         assert tb._session_path_enabled() is False
+
+    def test_it_is_not_cached_at_import(self, monkeypatch):
+        monkeypatch.setenv("NEOMIND_TELEGRAM", "legacy")
+        assert tb._session_path_enabled() is False
+        monkeypatch.setenv("NEOMIND_TELEGRAM", "session")
+        assert tb._session_path_enabled() is True
 
 
 class FakeMessage:

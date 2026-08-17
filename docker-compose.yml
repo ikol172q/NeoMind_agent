@@ -88,7 +88,7 @@ services:
       # Default flipped to `session` 2026-08-16 after the Telethon gate passed
       # 5/5 against the live bot, including a real refusal rendering as ⊘.
       # `NEOMIND_TELEGRAM=legacy docker compose up -d neomind-telegram` reverts.
-      - NEOMIND_TELEGRAM=${NEOMIND_TELEGRAM:-session}
+      - NEOMIND_TELEGRAM=${NEOMIND_TELEGRAM:-session}   # matches the code default; set to `legacy` to revert
       # ── LLM API keys: inherit from shell env (zshrc) — never written to .env ──
       # docker compose reads these from the shell invoking it; if a key is unset
       # in the shell env, it stays empty in the container (no override).

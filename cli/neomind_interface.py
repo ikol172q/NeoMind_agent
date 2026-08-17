@@ -2652,8 +2652,48 @@ class NeoMindInterface:
             elif outcome.tools_run:
                 self._print("[dim](Agent ran tools but produced no visible summary)[/dim]")
 
+        self._record_turn_usage(outcome)
         self._warn_on_context_usage()
         return outcome
+
+    def _record_turn_usage(self, outcome) -> None:
+        """Feed the turn's provider-reported usage into the budget `/cost` reads.
+
+        The session path does not go through `QueryEngine`, which is what owns
+        that budget — so after the REPL migrated, `/cost` reported $0.0000 and
+        0 tokens after a real turn while the status bar showed thousands. Both
+        were 'working': the status bar counts the conversation, `/cost` reports
+        what the provider billed, and nothing was writing the second one.
+
+        Guarded because an accounting failure must not take down a turn that
+        already succeeded — the answer is on screen by the time this runs.
+        """
+        usage = getattr(outcome, "usage", None)
+        if not usage:
+            return
+        engine = getattr(self.chat, "_query_engine", None)
+        budget = getattr(engine, "budget", None)
+        if budget is None or not hasattr(budget, "record_usage"):
+            return
+        try:
+            from agent.runtime.usage_accounting import cost_for, pricing_for_model
+
+            class _Chunk:
+                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+
+            budget.record_usage(
+                input_tokens=_Chunk.prompt_tokens,
+                output_tokens=_Chunk.completion_tokens,
+                cost_usd=cost_for(_Chunk, pricing_for_model(self.chat.model)),
+            )
+        except Exception as exc:
+            # Non-fatal by design: the answer is already on screen. Visible
+            # under /debug rather than swallowed, because the previous version
+            # of this arithmetic sat behind a bare `except: pass` in
+            # `code_commands` and reported $0.0000 for months without a word.
+            if getattr(self.chat, "verbose_mode", False):
+                self._print(f"[dim]usage accounting failed: {exc}[/dim]")
 
     def _warn_on_context_usage(self):
         """Unchanged from the legacy path — extracted so both can call it."""

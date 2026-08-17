@@ -1635,11 +1635,21 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             # ── Update QueryEngine budget for /cost command ───────────────
             if hasattr(core, '_query_engine') and core._query_engine:
                 try:
-                    from agent_config import agent_config as _ac
-                    pricing = _ac._config.get("cost", {}).get("model_pricing", {}).get(core.model, {})
-                    input_price = pricing.get("input", 0.0)  # per 1M tokens
-                    output_price = pricing.get("output", 0.0)
-                    cost = (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
+                    # `_ac._config` has not existed since the config became a
+                    # context-scoped proxy, so this raised AttributeError on
+                    # every turn and the `except: pass` below turned it into a
+                    # silent zero — `/cost` has been reporting $0.0000 on this
+                    # path too, not just the migrated one.
+                    from agent.runtime.usage_accounting import (
+                        cost_for, pricing_for_model,
+                    )
+
+                    class _Chunk:
+                        pass
+
+                    _Chunk.prompt_tokens = prompt_tokens
+                    _Chunk.completion_tokens = completion_tokens
+                    cost = cost_for(_Chunk, pricing_for_model(core.model))
                     core._query_engine.budget.record_usage(
                         input_tokens=prompt_tokens,
                         output_tokens=completion_tokens,

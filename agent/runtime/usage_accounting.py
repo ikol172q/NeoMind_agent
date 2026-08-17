@@ -72,14 +72,39 @@ def record_usage_chunk(
 
 
 def pricing_for_model(model: str) -> Mapping[str, Any]:
-    """Look the model up in the same config table `code_commands` reads.
+    """Look the model up in the cost table in `base.yaml`.
 
-    Guarded: a missing or malformed cost table must not stop a turn.
+    Reads `_base` rather than `_config`: the latter has not existed since the
+    config became a context-scoped proxy, so this function was raising
+    `AttributeError` on every call and the bare `except` turned that into an
+    empty table — which prices every model at zero. `/cost` reporting $0.0000
+    after a real turn is what that looks like from outside.
+
+    Still guarded, because an unpriced model should stream rather than fail.
+    The difference is that a *lookup* failure is now distinguishable from a
+    model that genuinely has no price: `pricing_unavailable()` says which.
     """
     try:
         from agent_config import agent_config
 
-        table = agent_config._config.get("cost", {}).get("model_pricing", {})
+        base = getattr(agent_config, "_base", None) or {}
+        table = (base.get("cost") or {}).get("model_pricing") or {}
         return table.get(model, {}) or {}
     except Exception:
         return {}
+
+
+def pricing_unavailable() -> bool:
+    """True when the cost table itself could not be read.
+
+    A zero cost means one of two very different things — an unpriced model, or
+    a broken lookup — and a surface that shows $0.0000 for both leaves the user
+    no way to tell.
+    """
+    try:
+        from agent_config import agent_config
+
+        base = getattr(agent_config, "_base", None) or {}
+        return not ((base.get("cost") or {}).get("model_pricing"))
+    except Exception:
+        return True
