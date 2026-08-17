@@ -69,6 +69,65 @@ class TestHandshake:
         assert reply["ok"] is False
 
 
+class TestResultEnvelopes:
+    """Every result carries `command`, and `detach` carries an id rather than a
+    snapshot. Both were missing until pi's real client rejected the very first
+    response after the handshake — the schema check could not catch it because
+    the samples it validates never included a response envelope. It only
+    validates what you remember to export."""
+
+    @pytest.mark.parametrize("command,extra", [
+        ("list", {}),
+        ("create", {"cwd": "/tmp"}),
+        ("attach", {}),
+        ("abort", {}),
+        ("prompt", {"text": "hi"}),
+        ("set_model", {"model": "m"}),
+        ("set_thinking", {"thinkingLevel": "low"}),
+    ])
+    def test_the_result_names_its_command(self, server, command, extra):
+        sid = create(server)
+        request = {"command": command, "sessionId": sid}
+        request.update(extra)
+        out = server.handle({"type": "request", "id": "r", "request": request})
+        assert out[0]["result"]["command"] == command
+
+    def test_detach_returns_an_id_not_a_snapshot(self):
+        srv = PiProtocolServer(server_id="neomind")
+        sid = create(srv)
+        out = srv.handle({"type": "request", "id": "d",
+                          "request": {"command": "detach", "sessionId": sid}})
+        result = out[0]["result"]
+        assert result["command"] == "detach"
+        assert result["sessionId"] == sid
+        assert "session" not in result
+
+
+class TestCreateImpliesAttach:
+    """A behavioural contract no schema can express.
+
+    pi's client takes an exclusive lease on the id `create` returns and never
+    sends a separate `attach`, so a session that comes back detached makes the
+    next call fail with "Session … is not attached". The message was perfectly
+    valid; the meaning was wrong.
+    """
+
+    def test_a_created_session_is_already_attached(self, server):
+        sid = create(server)
+        assert server.sessions[sid].attached is True
+
+    def test_the_create_result_says_so(self, server):
+        out = server.handle({"type": "request", "id": "r",
+                             "request": {"command": "create", "cwd": "/tmp"}})
+        assert out[0]["result"]["session"]["attached"] is True
+
+    def test_detach_still_detaches(self, server):
+        sid = create(server)
+        server.handle({"type": "request", "id": "d",
+                       "request": {"command": "detach", "sessionId": sid}})
+        assert server.sessions[sid].attached is False
+
+
 class TestSessions:
 
     def test_create_returns_a_snapshot_and_announces_it(self, server):

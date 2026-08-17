@@ -318,7 +318,10 @@ class PiProtocolServer:
         return handler(request_id, request)
 
     def _cmd_list(self, request_id: str, _request: Dict[str, Any]) -> List[Dict[str, Any]]:
-        return [response(request_id, {"sessions": [s.metadata() for s in self.sessions.values()]})]
+        return [response(request_id, {
+            "command": "list",
+            "sessions": [s.metadata() for s in self.sessions.values()],
+        })]
 
     def _cmd_create(self, request_id: str, request: Dict[str, Any]) -> List[Dict[str, Any]]:
         self._counter += 1
@@ -328,11 +331,17 @@ class PiProtocolServer:
             name=request.get("name"),
             model=_model_ref(request.get("model")),
             thinking_level=request.get("thinkingLevel") or "off",
+            # `create` implies attach. pi's client takes an exclusive lease on
+            # the returned id without sending a separate `attach`, so a session
+            # that comes back detached makes the very next call fail with
+            # "Session … is not attached" — a behavioural contract the schema
+            # cannot express, and one only a real client run reveals.
+            attached=True,
         )
         self.sessions[session.id] = session
         self.revision += 1
         return [
-            response(request_id, {"session": session.snapshot()}),
+            response(request_id, {"command": "create", "session": session.snapshot()}),
             event({"type": "server_snapshot", "snapshot": self.server_snapshot()}),
         ]
 
@@ -343,7 +352,7 @@ class PiProtocolServer:
         session.attached = True
         session.touch()
         return [
-            response(request_id, {"session": session.snapshot()}),
+            response(request_id, {"command": "attach", "session": session.snapshot()}),
             event({"type": "session_snapshot", "snapshot": session.snapshot()}),
         ]
 
@@ -353,7 +362,8 @@ class PiProtocolServer:
             return [failure(request_id, ERROR_NOT_FOUND, "no such session")]
         session.attached = False
         session.touch()
-        return [response(request_id, {"session": session.snapshot()})]
+        # `detach` is the one result that carries an id rather than a snapshot.
+        return [response(request_id, {"command": "detach", "sessionId": session.id})]
 
     def _cmd_set_model(self, request_id: str, request: Dict[str, Any]) -> List[Dict[str, Any]]:
         session = self.sessions.get(str(request.get("sessionId", "")))
@@ -362,7 +372,7 @@ class PiProtocolServer:
         session.model = _model_ref(request.get("model"))
         session.touch()
         return [
-            response(request_id, {"session": session.snapshot()}),
+            response(request_id, {"command": "set_model", "session": session.snapshot()}),
             event({"type": "session_snapshot", "snapshot": session.snapshot()}),
         ]
 
@@ -373,7 +383,7 @@ class PiProtocolServer:
         session.thinking_level = str(request.get("thinkingLevel") or "off")
         session.touch()
         return [
-            response(request_id, {"session": session.snapshot()}),
+            response(request_id, {"command": "set_thinking", "session": session.snapshot()}),
             event({"type": "session_snapshot", "snapshot": session.snapshot()}),
         ]
 
@@ -383,7 +393,7 @@ class PiProtocolServer:
             return [failure(request_id, ERROR_NOT_FOUND, "no such session")]
         session.phase = PHASE_IDLE
         session.touch()
-        return [response(request_id, {"session": session.snapshot()})]
+        return [response(request_id, {"command": "abort", "session": session.snapshot()})]
 
     def _cmd_steer(self, request_id: str, _request: Dict[str, Any]) -> List[Dict[str, Any]]:
         """Mid-generation intervention, which NeoMind does not have.
@@ -413,7 +423,7 @@ class PiProtocolServer:
             return [failure(request_id, ERROR_INVALID, "prompt text is required")]
         session.phase = PHASE_TURN
         session.touch()
-        return [response(request_id, {"session": session.snapshot()})]
+        return [response(request_id, {"command": "prompt", "session": session.snapshot()})]
 
     # ── the turn ──────────────────────────────────────────────────────────
 
