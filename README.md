@@ -145,7 +145,15 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
 > | 6A — commands/config/store boundaries | **done — one registry defines every command (the 279-line duplicate chain is gone), a session's config is its own, one conversation-store owner per session** |
 > | 6B — fleet turn/lifecycle boundaries | **done — fleet worker turns run on `AgentSession` (same ToolExecutor and permission policy as every surface), and the fleet's asyncio loop moved out of the frontend into `fleet/driver.py`** |
-> | 7 — be drivable by an existing harness (pi / DeepSeek Harness) | **next** — own-TUI deferred by decision 2026-08-16: the marginal value of building one is questionable when existing clients cover it |
+> | 7 — be drivable by an existing harness | **done — ACP server (DeepSeek Harness, Zed, any ACP client) and pi's session protocol (its terminal UI). Own-TUI deferred by decision: existing clients cover it** |
+> | 8 — compatibility retirement | pending |
+>
+> **Six surfaces, one runtime.** CLI, headless, Telegram, fleet, ACP and pi all consume the same
+> frozen events from the same `AgentSession`; each decides only which provider, which tools, and
+> whether it can ask a permission question. Telegram and fleet cannot (nobody is there, so ASK
+> resolves to DENY); ACP and pi can, through their clients. Protocol conformance for pi is checked
+> against pi's own schemas by `tools/protocol/` — passing our tests and passing theirs turned out to
+> be different claims.
 >
 > **Rollback switches.** Each migrated surface keeps one, read per turn rather than cached at
 > import, so reverting is a restart and never a rebuild: `NEOMIND_REPL=legacy` for the terminal,
