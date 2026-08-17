@@ -145,7 +145,7 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 > | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
 > | 6A — commands/config/store boundaries | **done — one registry defines every command (the 279-line duplicate chain is gone), a session's config is its own, one conversation-store owner per session** |
 > | 6B — fleet turn/lifecycle boundaries | **done — fleet worker turns run on `AgentSession` (same ToolExecutor and permission policy as every surface), and the fleet's asyncio loop moved out of the frontend into `fleet/driver.py`** |
-> | 7 — be drivable by an existing harness | **done — ACP server (DeepSeek Harness, Zed, any ACP client) and pi's session protocol (its terminal UI). Own-TUI deferred by decision: existing clients cover it** |
+> | 7 — be drivable by an existing harness | **adapters done and verified against both projects' own code; neither client can connect yet** — pi's `client` command is unmounted, DSH's ACP subagent package ships without a `dsh.bundle` and never activates. Own-TUI deferred by decision |
 > | 8 — compatibility retirement | **audit done; removal deferred** — `/cost` was found broken on *both* paths and fixed; `QueryEngine` is a dead shell holding one live object, and extracting it is tidiness rather than need |
 >
 > **The dashboard route is deliberately not one of them.** Plain private-DM messages go to

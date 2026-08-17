@@ -92,11 +92,47 @@ Until then `drive_with_pi_client.mjs` is the real-client evidence: it drives
 our server with pi's own `PiClient`, which is their code doing the handshake,
 framing, request correlation and event dispatch.
 
-## ACP over stdio — usable by DeepSeek Harness today
+## ACP over stdio — ready here, blocked upstream (tested 2026-08-17)
 
-Unlike pi, this path needs nothing from upstream. DSH's `subagent-acp` provider
-spawns a configured command and speaks ACP over its stdio, which is exactly
-what `agent/integration/acp_stdio.py` serves.
+**Correction.** This section previously said DSH could drive NeoMind today.
+It cannot yet, and finding that out required running it rather than reading
+its docs.
+
+DSH's `subagent-acp` provider spawns a configured command and speaks ACP over
+its stdio, which is exactly what `agent/integration/acp_stdio.py` serves — and
+the entry point is verified against a real ACP client below. What does not work
+is the DSH side:
+
+    npm i -g @deepseek-ai/dsh                              # v0.1.0-rc.7, runs
+    dsh plugin --profile headless add @deepseek-ai/dsh-subagent-acp
+
+    dsh: warning: @deepseek-ai/dsh-subagent-acp declares no dsh.bundle —
+    installed as a plain dependency, not a profile layer
+
+That warning is the whole story. The package is `0.0.1-rc.1` on npm with no
+`dsh` field, so it installs but never activates. The `--patch` config appears
+in `dsh --dump-config`, and the provider is never registered.
+
+### DSH's model claimed the delegation happened
+
+Asked to delegate, DSH answered:
+
+    Delegated to the neomind subagent. Its reply:
+    ```
+    DELEGATION_PROOF
+    ```
+
+**No NeoMind process was ever spawned.** Proven by pointing `command` at a
+shell that touches a file before exec'ing the real entry point — the file does
+not exist after the run. The model produced the answer itself and narrated a
+delegation that did not occur.
+
+Worth stating plainly because it inverts the usual failure: the risk here was
+not a test that lied about the system, but a *system* that lied about itself.
+Any check for "is NeoMind wired in" has to be a side effect only NeoMind could
+produce, never the text of the reply.
+
+### Verified on our side
 
 Verified by spawning it the way that provider does — subprocess, stdio,
 `initialize` → `session/new` → `prompt`, collect `agent_message_chunk`, then
