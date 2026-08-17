@@ -290,3 +290,67 @@ class TestFleetLifecycleIsNotOwnedByTheUI:
                     if name.split(".")[0] in {"cli", "rich", "prompt_toolkit"}:
                         offenders.append(f"{path.name}: {name}")
         assert offenders == [], offenders
+
+
+class TestACPSurface:
+    """Phase 7. The fourth surface on the shared runtime, and the first remote
+    one that can answer a permission prompt."""
+
+    def test_the_translator_imports_no_frontend(self):
+        source = (REPO / "agent/integration/acp_translate.py").read_text(encoding="utf-8")
+        bad = []
+        for node in ast.walk(ast.parse(source)):
+            names = []
+            if isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            elif isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            for name in names:
+                if name.split(".")[0] in {"cli", "rich", "prompt_toolkit", "telegram"}:
+                    bad.append(name)
+        assert bad == [], bad
+
+    def test_the_translator_owns_no_transport(self):
+        """Pure events-in, models-out. A translator that opens a socket cannot
+        be tested without one, and the mapping is the part that goes wrong."""
+        source = (REPO / "agent/integration/acp_translate.py").read_text(encoding="utf-8")
+        for forbidden in ("asyncio", "httpx", "socket", "requests"):
+            assert f"import {forbidden}" not in source, forbidden
+
+    def test_discriminators_are_never_hand_typed(self):
+        """One was, and it was wrong: "usage" where the schema says
+        "usage_update". Nothing catches that but a constructed object."""
+        source = (REPO / "agent/integration/acp_translate.py").read_text(encoding="utf-8")
+        import re
+
+        literals = re.findall(r'session_update\s*=\s*"([a-z_]+)"', source)
+        assert literals == [], f"derive these from the schema instead: {literals}"
+
+    def test_the_acp_policy_can_ask_unlike_the_unattended_surfaces(self):
+        """Telegram and fleet are interactive=False because nobody is there.
+        An ACP client implements request_permission, so this one is not."""
+        import inspect
+
+        from agent.integration import acp_server
+
+        source = inspect.getsource(acp_server.NeoMindACPAgent._build_agent_session)
+        assert "interactive=True" in source
+
+        for module, expected in (
+            ("agent/integration/telegram_session.py", "interactive=False"),
+            ("fleet/worker_session.py", "interactive=False"),
+        ):
+            body = (REPO / module).read_text(encoding="utf-8")
+            assert expected in body, f"{module} must stay non-interactive"
+
+    def test_every_surface_builds_its_own_capability_snapshot(self):
+        """Four surfaces, four explicit allowlists, no `unrestricted()` among
+        the remote ones."""
+        for module in (
+            "agent/integration/acp_server.py",
+            "agent/integration/telegram_session.py",
+            "fleet/worker_session.py",
+        ):
+            body = (REPO / module).read_text(encoding="utf-8")
+            assert "CapabilitySnapshot.only(" in body, module
+            assert "unrestricted" not in body, module
