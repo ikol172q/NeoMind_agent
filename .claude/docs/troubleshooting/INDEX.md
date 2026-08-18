@@ -104,3 +104,7 @@ recreate, feature gating, etc.). Open the specific entries and apply.
 ## 2026-08-17 — 被测系统自己撒谎：DSH 声称委派了，进程从未启动
 
 - [20260817-the-system-lied-about-itself.md](20260817-the-system-lied-about-itself.md) — 验证 DSH 能否驱动 NeoMind 时,DSH 输出「**Delegated to the neomind subagent. Its reply: DELEGATION_PROOF**」——而**我的进程一次都没被 spawn**(用「只有它启动才会创建的文件」判定,文件不存在)。它的模型自己答了然后编造了委派过程。**这不是测试骗我,是被测系统骗我**——比 fixture 编码假设更难防,因为证据来自系统本身。真因是安装时那条我略过的 warning:`dsh-subagent-acp declares no dsh.bundle — installed as a plain dependency, not a profile layer`(npm 上 `0.0.1-rc.1`,无 `dsh` 字段),所以插件装了但从不激活,`--dump-config` 里看得见配置、provider 却从未注册。判据:**判断「X 是否接上」只能用「只有 X 会产生的副作用」**(进程存在/它写的文件/它独有的日志标记),**绝不能用回复文本**——尤其当对方是 LLM。附带:安装期 warning 必须当场读完,那条一句话里已经写明了根因。
+
+## 2026-08-17 — 10-K 正文里的交叉引用被当成章节结束，抽取器"合理地"永远返回空
+
+- [20260817-sec-crossref-truncates-mda.md](20260817-sec-crossref-truncates-mda.md) — GOOGL 的分部/债务两维长期为空，看上去是「LLM 抽不出 Alphabet 的分部」。真因是 `slice_10k_sections` 的 `item7_ends` 正则匹配到了 MD&A **正文中间**的一句交叉引用（`"...included in Item 8 as well as Item 7A Quantitative..."`），`min(ends)` 选中它 → MD&A 被切在「Executive Overview」之前，切片里 **`$` 出现 0 次**，而 segments/debt 的 prompt 要求数字必须出现在原文 → 它们**正确地**返回空。**解析 bug 伪装成模型无能**：不报错、不异常、只是永远空。判据不是「是否在行首」（那会误杀 AMD 粘在页眉后的真标题，MD&A 反而吞到财报附注 37K→139K 字），而是「前面有没有流动的散文」——前缀为空 / 不以空格结尾 / 短于 25 字 → 是标题。教训：**抽取器返回空先数源文本里有几个 `$`**；边缘样本必须和正常样本共存在同一 fixture 里，否则 `or starts` 兜底会让坏判据也全绿。

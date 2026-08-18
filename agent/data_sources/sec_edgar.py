@@ -222,6 +222,44 @@ def _html_to_text(html: str) -> str:
     return text
 
 
+# A same-line prefix this short is a page-header crumb ("Table of Contents" is
+# 17 chars), not a sentence. Anything longer that also ends in a space is prose.
+_MAX_HEADER_CRUMB = 25
+
+
+def _heading_anchors(text: str, starts: list[int]) -> list[int]:
+    """Keep anchors that look like section *headings*, drop in-text cross-references.
+
+    Both real 10-K filings in our holdings exercise a different edge, and the
+    naive "must start a line" test gets exactly one of them right:
+
+    * GOOGL — the MD&A body contains ``"...included in Item 8 as well as
+      Item 7A Quantitative and Qualitative Disclosures About Market Risk..."``.
+      Same-line prefix is 43 chars of prose ending in a **space**.
+    * AMD — the real heading renders glued to the running page header after
+      ``_html_to_text`` flattening: ``"...Table of ContentsITEM 7A. QUANTITATIVE"``.
+      Same-line prefix is ``'s'`` — mid-line, but **no separating space**.
+
+    So the discriminator is not "starts a line", it is *"is there running prose
+    in front of it"*: an anchor is a heading when the text before it on the same
+    line is empty, is glued directly to it (no space — page-header artifact), or
+    is a short header crumb. Prose that flows into the anchor with a space is a
+    cross-reference.
+
+    If filtering would remove every candidate, the originals are returned
+    unchanged — same sparse > wrong contract as :func:`_body_anchors`.
+    """
+    out = []
+    for s in starts:
+        prefix = text[text.rfind("\n", 0, s) + 1: s]
+        stripped = prefix.strip()
+        if (not stripped                          # heading owns the line
+                or not prefix.endswith((" ", "\t"))   # glued to a page-header crumb
+                or len(stripped) <= _MAX_HEADER_CRUMB):
+            out.append(s)
+    return out or starts
+
+
 def _body_anchors(text: str, starts: list[int]) -> list[int]:
     """Drop table-of-contents anchors from a list of section-header match
     positions. A real (body) section header is followed by prose; a TOC
@@ -358,9 +396,23 @@ def slice_10k_sections(html: str, source_url: str,
     # sits within ~300 chars of Item 8, and filtering it would push the MD&A
     # end deep into the financial statements. min(ends>start) below already
     # picks the earliest correct bound; pre-start TOC ends are just ignored.
-    item7_ends = [m.start() for m in re.finditer(
+    #
+    # 🔴 2026-08-17 — but they must be *headings*, not in-text cross-references.
+    # GOOGL's MD&A contains the sentence "...see Note 1 and Note 3 ... included
+    # in Item 8 as well as Item 7A Quantitative and Qualitative Disclosures
+    # About Market Risk of this Annual Report on Form 10-K." That mid-sentence
+    # phrase matched, min(ends) picked it, and Alphabet's MD&A got cut at
+    # 17.5K chars — **right before "Executive Overview"**, which is where every
+    # number lives. Result: the slice had 0 dollar figures, so the segments and
+    # debt extractors correctly emitted nothing (their prompts require the
+    # figure to appear in the source), and the dossier reported those dimensions
+    # empty for the last two months. A parsing bug that looked like "the LLM
+    # can't find Alphabet's segments".
+    # _heading_anchors keeps only anchors with no running prose in front of
+    # them on the same line — headings qualify, cross-references don't.
+    item7_ends = _heading_anchors(text, [m.start() for m in re.finditer(
         r"(?i)item\s*(7a|8)\b\.?\s*\n*\s*"
-        r"(quantitative|financial\s*statements)", text)]
+        r"(quantitative|financial\s*statements)", text)])
     if item7_starts and item7_ends:
         # "biggest gap" picker, same as item1a
         for s in item7_starts:
@@ -541,6 +593,62 @@ def _latest_foreign_filing(submissions: dict) -> Optional[FilingRef]:
     return FilingRef(accession=accs[best], primary_doc=docs[best], filing_date=dates[best], form=forms[best])
 
 
+def _slice_foreign_mda(text: str) -> Optional[str]:
+    """20-F Item 5 "Operating and Financial Review and Prospects" — the 20-F
+    equivalent of a 10-K's Item 7 MD&A, and the home of the segment / revenue
+    and debt-maturity discussion.
+
+    Why this exists (2026-08-17): ``get_foreign_sections`` used to hardcode
+    ``item7_mda=None``, so **every 20-F filer could never populate the segment
+    or debt dimensions** — not "the extractor failed", the source was never
+    fetched. ARM (a 20-F filer) sat at 33% dossier coverage for that reason.
+
+    Picking the body is the whole problem: ARM's filing mentions the Item 5
+    title **9 times** (TOC rows, "refer to Item 5...", the body). Two cheaper
+    discriminators were tried and both failed on real filings:
+
+    * *"must be a heading"* (:func:`_heading_anchors`) — the cross-reference
+      ``... including, but not limited to, "Item 5. Operating and Financial
+      Review and Prospects."`` survives it, because ``_html_to_text`` breaks
+      the line right after the opening quote, so the title *does* start a line.
+    * *biggest span to the next Item 6* — the TOC row and that cross-reference
+      both sit near the top of the document, so they reach for an Item 6
+      hundreds of thousands of chars away and win. ARM came out as a
+      404,229-char slice (half the filing).
+
+    What works is the same shape :func:`_find_mda_body` uses for 10-Ks:
+    bound each candidate by the **nearest** following Item 6 heading, keep only
+    spans that actually contain MD&A hallmarks (Results of Operations +
+    Liquidity), and take the **shortest** survivor. TOC rows are too short to
+    hold the hallmarks; stray cross-references produce spans that are valid but
+    far longer than the real body, so shortest-valid isolates it.
+    """
+    if not text:
+        return None
+    low = text.lower()
+    starts = [m.start() for m in re.finditer(
+        r"item\s*5[.\s]{0,4}\s*operating\s+and\s+financial\s+review", low)]
+    ends = [m.start() for m in re.finditer(
+        r"item\s*6[.\s]{0,4}\s*directors", low)]
+    if not starts:
+        return None
+    best, best_len = None, None
+    for st in starts:
+        after = [e for e in ends if e > st]
+        end = min(after) if after else min(st + 200_000, len(text))
+        seg = text[st:end]
+        if len(seg) < 5000:
+            continue                      # TOC row
+        seg_low = seg.lower()
+        if "results of operations" not in seg_low:
+            continue
+        if "liquidity" not in seg_low:
+            continue
+        if best_len is None or len(seg) < best_len:
+            best_len, best = len(seg), seg
+    return best
+
+
 def _slice_foreign(text: str) -> tuple[Optional[str], Optional[str]]:
     """Return (business_region, risk_region). Heuristic but safe — the
     downstream verbatim gate drops anything not literally in these bytes."""
@@ -576,8 +684,8 @@ def _slice_foreign(text: str) -> tuple[Optional[str], Optional[str]]:
 
 
 def get_foreign_sections(ticker: str) -> Optional[SlicedSections]:
-    """20-F / S-1 → SlicedSections (Business + Risk Factors only). None if no
-    such filing. Used as a fallback when get_10k_sections returns None."""
+    """20-F / S-1 → SlicedSections (Business + Risk Factors + Item 5 MD&A).
+    None if no such filing. Used as a fallback when get_10k_sections returns None."""
     cik = lookup_cik(ticker)
     if cik is None:
         return None
@@ -589,9 +697,12 @@ def get_foreign_sections(ticker: str) -> Optional[SlicedSections]:
     html = fetch_filing_html(cik, f.accession, f.primary_doc)
     text = _html_to_text(html)
     biz, risk = _slice_foreign(text)
+    # 20-F Item 5 is the MD&A equivalent — without it the segment and debt
+    # extractors have no source at all and report empty forever.
+    mda = _slice_foreign_mda(text)
     return SlicedSections(
         item1_full=biz, item1_competition=None, item1_customers=None,
-        item1_suppliers=None, item1a_risks=risk, item7_mda=None,
+        item1_suppliers=None, item1a_risks=risk, item7_mda=mda,
         source_url=filing_url(cik, f.accession, f.primary_doc),
         filing_date=f.filing_date, accession=f.accession,
     )

@@ -222,9 +222,24 @@ def stop_reason_for(event: Any) -> str:
     `cancelled` is not an error — the runtime keeps them apart and so does
     ACP, and a client that shows a user's own Ctrl-C as a failure is lying to
     them.
+
+    Every other `TurnFailed` maps to `max_turn_requests`, **not** `refusal`.
+    `TurnFailed` is only ever a technical failure — a provider error, a
+    timeout, an unexpected exception — and the runtime has no way to express
+    "the model declined", so nothing here can legitimately produce a refusal.
+
+    Mapping them to `refusal` was wrong in a way only a real client showed:
+    DeepSeek Harness took it at its word and reported "subagent declined the
+    task", sending its model off to rephrase the prompt twice. A transport
+    failure dressed as a refusal makes the caller debug the wrong thing.
     """
     if isinstance(event, TurnFinished):
         return "end_turn"
     if isinstance(event, TurnFailed):
-        return "cancelled" if event.error_code == "cancelled" else "refusal"
+        if event.error_code == "cancelled":
+            return "cancelled"
+        # ACP's remaining options are end_turn | max_tokens |
+        # max_turn_requests | refusal. Of those, only max_turn_requests reads
+        # as "the run stopped without finishing" rather than a deliberate act.
+        return "max_turn_requests"
     return "end_turn"

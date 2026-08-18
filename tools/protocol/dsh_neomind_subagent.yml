@@ -1,0 +1,53 @@
+# Run NeoMind as a DeepSeek Harness subagent over ACP.
+#
+# Verified working 2026-08-17 against dsh 0.1.0-rc.7. Proof that it is real
+# rather than DSH's model narrating a delegation it did not perform: point
+# `command` at tools/protocol/dsh_subagent_probe.yml's wrapper and check the
+# marker file, because the answer text is not evidence.
+#
+#   dsh plugin --profile <p> add @deepseek-ai/dsh-subagent-acp@0.1.0-rc.7
+#   dsh plugin --profile <p> add @deepseek-ai/dsh-tool-subagent@0.1.0-rc.7
+#   dsh --profile <p> --patch tools/protocol/dsh_neomind_subagent.yml \
+#       "Use subagent_neomind exactly once: ask it to reply with the word PONG"
+#
+# **Install the `next` tag explicitly.** npm's `latest` for
+# dsh-subagent-acp points at 0.0.1-rc.1, several releases behind; installing
+# without a version silently gets the old one.
+#
+# Three things are each individually required, and omitting any of them fails
+# in a way that does not name the cause:
+#
+#   1. the tool row. Registering the provider alone leaves the model with no
+#      way to reach it — it falls back to the in-process subagent and *says*
+#      it delegated. Nothing is spawned and the answer looks right.
+#   2. maxDepth: 'provider-managed'. Without it the plugin tree fails to load
+#      with "provider … cannot enforce maxDepth (no depthLimit capability)".
+#   3. env. DSH scrubs credential-shaped variables from the child environment
+#      by design, so an inherited API key arrives empty and the child fails
+#      with `Illegal header value b'Bearer '`.
+- insert:
+    - id: subagent-acp
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: neomind
+        command: <ABSOLUTE_PATH_TO_REPO>/.venv/bin/python
+        args: ['-m', 'agent.integration.acp_stdio', '--mode', 'coding']
+        cwd: <ABSOLUTE_PATH_TO_REPO>
+        # DSH auto-answers permission requests; it never asks a human.
+        # `reject` refuses every tool, `allow_once` takes the first allow
+        # option. NeoMind's ACP surface is interactive precisely because a
+        # client *can* answer — with `reject` the answer is always no.
+        permission: reject
+        env:
+          # Read from the parent shell at load time. Never written literally.
+          DEEPSEEK_API_KEY: !!js process.env.DEEPSEEK_API_KEY
+          LLM_ROUTER_BASE_URL: !!js process.env.LLM_ROUTER_BASE_URL
+          LLM_ROUTER_API_KEY: !!js process.env.LLM_ROUTER_API_KEY
+
+    - id: tool-subagent-neomind
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: neomind
+        toolName: subagent_neomind
+        enableRunInBackground: false
+        maxDepth: 'provider-managed'

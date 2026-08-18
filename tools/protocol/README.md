@@ -92,7 +92,82 @@ Until then `drive_with_pi_client.mjs` is the real-client evidence: it drives
 our server with pi's own `PiClient`, which is their code doing the handshake,
 framing, request correlation and event dispatch.
 
-## ACP over stdio — ready here, blocked upstream (tested 2026-08-17)
+## ACP over stdio — DeepSeek Harness drives NeoMind (working 2026-08-17)
+
+**Correction, twice over.** This section first claimed DSH could drive NeoMind
+"today" from reading its docs; then, after a failed run, that it was blocked
+upstream. Both were wrong. It works, and the failures were configuration plus
+one bug of ours.
+
+Proof it is real rather than DSH's model narrating a delegation it did not
+perform — which it did, convincingly, earlier the same day:
+
+    spawn count: 1                    # marker file only NeoMind's start writes
+    The subagent replied: PONG        # from NeoMind, not the parent
+
+Config: `tools/protocol/dsh_neomind_subagent.yml`. Probe:
+`tools/protocol/dsh_subagent_probe.yml`.
+
+### What was actually wrong
+
+**npm's `latest` tag is stale.** `@deepseek-ai/dsh-subagent-acp` publishes
+`latest = 0.0.1-rc.1` while `next = 0.1.0-rc.7`. Installing without a version
+silently gets a release several behind, and the older one warns "declares no
+`dsh.bundle`". That warning is a red herring: `dsh-llm` and `dsh-session` carry
+no `dsh` field either and work fine — `dsh.bundle` means "ships its own profile
+patch", not "can be loaded".
+
+**Registering the provider is half of it.** The model reaches a provider
+through a *tool row* (`dsh-tool-subagent`), which shipped presets carry with
+`disabled: true`. Without it the model has no way to call the provider, falls
+back to the in-process subagent, and reports a delegation that never happened —
+the exact false success this file's probe exists to catch.
+
+**`maxDepth: 'provider-managed'` is required.** Otherwise the plugin tree fails
+to load: "provider … cannot enforce maxDepth (no depthLimit capability)". That
+error is clear, but it only appears once the tool row exists.
+
+**Credentials must be passed explicitly.** DSH scrubs credential-shaped
+variables from the child environment by design, so an inherited key arrives
+empty and NeoMind fails with `Illegal header value b'Bearer '`. Pass them
+through `env:` as `!!js process.env.NAME` — a reference read at load time,
+never a literal in the file.
+
+### And one bug of ours, which only a real client could show
+
+`stop_reason_for` mapped every `TurnFailed` except cancellation to ACP's
+`refusal`. But `refusal` means *the agent declined*, and `TurnFailed` is only
+ever a technical failure — a provider error, a timeout, an exception. DSH took
+it literally, reported "subagent declined the task", and sent its model off to
+rephrase the prompt twice. A transport failure dressed as a refusal makes the
+caller debug the wrong thing entirely. It maps to `max_turn_requests` now.
+
+## Status: pi's own CLI cannot connect yet (upstream)
+
+Everything on our side works. What is missing is on pi's:
+
+- `pi client --connect unix:///path` exists **in source** —
+  `src/cli/experimental/commands/client.ts`, with `parseTransportAddress`
+  accepting `unix://` only — but `experimentalCli` (the command tree that
+  registers it) has **no caller**. Its only reference in the whole repository
+  is its own unit test, and the shipped `bin` points at `dist/cli.js`, which
+  never reaches it. `PI_EXPERIMENTAL=1` does not change that; the option is
+  rejected as unknown because the command was never mounted.
+- Checked against upstream commit `d3ab2af` (v0.84.2). pi's `server` package
+  calls itself "Experimental… may change or be removed without notice", so this
+  is a feature still being built rather than something we are holding wrong.
+
+So the protocol is proven and the client path is not available. When upstream
+mounts that command — or publishes `@earendil-works/pi-client` so another
+client can use it — this should work with no change on our side:
+
+    .venv/bin/python tools/protocol/pi_demo_server.py /tmp/neomind-pi.sock
+    pi client --connect unix:///tmp/neomind-pi.sock
+
+Until then `drive_with_pi_client.mjs` is the real-client evidence: it drives
+our server with pi's own `PiClient`, which is their code doing the handshake,
+framing, request correlation and event dispatch.
+
 
 **Correction.** This section previously said DSH could drive NeoMind today.
 It cannot yet, and finding that out required running it rather than reading

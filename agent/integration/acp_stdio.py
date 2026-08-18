@@ -33,6 +33,9 @@ def _silence_stdout() -> None:
     handler exists, so a module that configured logging at import time would
     otherwise keep its stdout handler and corrupt the stream.
     """
+    import os
+
+    level = logging.DEBUG if os.getenv("NEOMIND_ACP_DEBUG") else logging.WARNING
     root = logging.getLogger()
     for handler in list(root.handlers):
         stream = getattr(handler, "stream", None)
@@ -41,10 +44,11 @@ def _silence_stdout() -> None:
     if not root.handlers:
         logging.basicConfig(
             stream=sys.stderr,
-            level=logging.WARNING,
+            level=level,
             format="%(levelname)s %(name)s: %(message)s",
         )
     else:
+        root.setLevel(level)
         for handler in root.handlers:
             if getattr(handler, "stream", None) is sys.stdout:
                 handler.setStream(sys.stderr)  # type: ignore[attr-defined]

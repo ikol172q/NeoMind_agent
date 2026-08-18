@@ -208,10 +208,22 @@ class TestStopReason:
             ev(TurnFailed, error_code="cancelled", message="m", retryable=True)
         ) == "cancelled"
 
-    def test_a_provider_failure_is_a_refusal(self):
-        assert stop_reason_for(
-            ev(TurnFailed, error_code="llm_auth", message="bad key", retryable=False)
-        ) == "refusal"
+    def test_a_provider_failure_is_not_a_refusal(self):
+        """`refusal` means the agent declined. `TurnFailed` only ever means a
+        technical failure, so nothing here can legitimately produce one.
+
+        Getting this wrong was invisible until a real client read it: DSH
+        reported "subagent declined the task" for a transport error and sent
+        its model off to rephrase the prompt twice.
+        """
+        for code in ("llm_auth", "llm_timeout", "llm_transport", "unexpected"):
+            reason = stop_reason_for(
+                ev(TurnFailed, error_code=code, message="x", retryable=False)
+            )
+            assert reason == "max_turn_requests", code
+            assert reason != "refusal", (
+                f"{code} is a failure, not the agent choosing to decline"
+            )
 
     def test_a_missing_terminal_event_does_not_crash_the_response(self):
         assert stop_reason_for(None) == "end_turn"
