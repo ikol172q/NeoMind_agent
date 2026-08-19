@@ -513,3 +513,195 @@ class TestPermissionBridge:
         session = type("S", (), {"session_id": "s", "cwd": "/tmp"})()
         broker = agent._permission_broker(session)
         assert asyncio.run(broker.request(request_id="r", tool_name="Read")) is None
+
+
+class TestTheAgentGetsItsBriefing:
+    """The system prompt, and the config the mode lives in.
+
+    This surface shipped without either. Tools were wired and the mode was
+    recorded, but `history` started empty and the per-session config was bound
+    in `session/new` — a different task from `session/prompt`, so it was gone
+    before the turn ran. The result passed every test here because they all
+    asked arithmetic: `17*23` needs no briefing. Asked what the repository it
+    was running inside did, it replied asking for a link to the repository.
+
+    So these assert on what the turn is actually handed, not on whether it
+    answers.
+    """
+
+    @staticmethod
+    def _session_seen_by(agent, *, run_in_separate_tasks: bool):
+        """Run new_session then prompt, capturing what the factory was handed.
+
+        `run_in_separate_tasks` reproduces the SDK: `acp/task/supervisor.py`
+        wraps every request in `asyncio.create_task`, so a contextvar bound in
+        one request is invisible to the next. Awaiting both in one coroutine —
+        which is what every earlier test here did — hides exactly that.
+        """
+        seen = {}
+
+        def factory(session):
+            from agent_config import agent_config
+
+            seen["system_prompt"] = getattr(agent_config, "system_prompt", "")
+            seen["mode"] = getattr(agent_config, "mode", None)
+            seen["history"] = list(getattr(session, "history", []))
+            return FakeSession([ev(TurnFinished, response="")])
+
+        agent._session_factory = factory
+
+        async def go():
+            if run_in_separate_tasks:
+                s = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+                await asyncio.create_task(agent.prompt(s.session_id, []))
+            else:
+                s = await agent.new_session(cwd="/tmp")
+                await agent.prompt(s.session_id, [])
+
+        asyncio.run(go())
+        return seen
+
+    def test_the_session_config_reaches_the_turn_across_tasks(self):
+        """The binding has to survive the request boundary, not just the call."""
+        agent, _, _ = agent_with([])
+        agent._default_mode = "coding"
+        seen = self._session_seen_by(agent, run_in_separate_tasks=True)
+        assert seen["mode"] == "coding", (
+            "the turn read a config whose mode is not the session's; "
+            "session.mode was decoration"
+        )
+
+    def test_a_mode_switch_reaches_the_config_not_only_the_record(self):
+        agent, _, _ = agent_with([])
+        agent._default_mode = "coding"
+
+        async def go():
+            s = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+            await asyncio.create_task(agent.set_session_mode(s.session_id, "chat"))
+            return s.session_id
+
+        session_id = asyncio.run(go())
+        assert agent._sessions[session_id].config.mode == "chat"
+
+    def test_the_turn_is_handed_a_system_prompt(self):
+        agent, _, _ = agent_with([])
+        seen = self._session_seen_by(agent, run_in_separate_tasks=True)
+        roles = [m.get("role") for m in seen["history"]]
+        assert roles[:1] == ["system"], (
+            f"history starts {roles[:3]} — the agent has no briefing"
+        )
+        assert seen["history"][0]["content"].strip(), "the system message is empty"
+
+    def test_the_seeded_prompt_is_the_one_the_config_resolves(self):
+        agent, _, _ = agent_with([])
+        seen = self._session_seen_by(agent, run_in_separate_tasks=True)
+        assert seen["history"][0]["content"] == seen["system_prompt"]
+
+    def test_seeding_does_not_stack_on_a_resumed_history(self):
+        """A session that already carries the prompt must not gain a second."""
+        from agent.integration.acp_server import _Session
+        from agent_config import agent_config
+
+        prompt = getattr(agent_config, "system_prompt", "") or "x"
+        session = _Session(
+            session_id="s", cwd="/tmp",
+            history=[{"role": "system", "content": prompt},
+                     {"role": "user", "content": "earlier"}],
+        )
+        from agent.integration.acp_server import NeoMindACPAgent
+
+        seeded = NeoMindACPAgent._seeded_history(session)
+        assert [m["role"] for m in seeded] == ["system", "user"]
+
+    def test_an_empty_configured_prompt_seeds_nothing(self):
+        """Absent config is not a reason to insert an empty system message."""
+        from agent.integration.acp_server import NeoMindACPAgent, _Session
+        from agent_config import bind_session_config, reset_current_config, agent_config
+
+        token = bind_session_config()
+        try:
+            agent_config.system_prompt = ""
+            seeded = NeoMindACPAgent._seeded_history(_Session(session_id="s", cwd="/tmp"))
+        finally:
+            reset_current_config(token)
+        assert seeded == []
+
+
+class TestTheSessionRemembers:
+    """Cross-turn memory.
+
+    `session.history` was read to seed every turn and never written, and no
+    store was passed, so each prompt started from the same list: a client that
+    asked "what did I just say" got an agent that had genuinely forgotten. The
+    arithmetic probes used to check this surface are single-turn by nature and
+    could not see it.
+    """
+
+    @staticmethod
+    def _agent_recording_starts():
+        """Drive two turns, capturing the history each turn began with."""
+        starts = []
+
+        def factory(session):
+            starts.append([m.get("role") for m in session.history])
+            store = NeoMindACPAgent._HistoryStore(session)
+
+            class S:
+                async def run_turn(self, text):
+                    # What AgentSession._append does, minus the provider.
+                    store.append(session.session_id, {"role": "user", "content": text})
+                    store.append(session.session_id, {
+                        "role": "assistant", "content": "ok", "_bookkeeping": "x",
+                    })
+                    yield ev(TurnFinished, response="ok")
+
+                async def cancel(self, turn_id):
+                    pass
+
+            return S()
+
+        agent = NeoMindACPAgent(session_factory=factory)
+        agent.on_connect(FakeClient())
+
+        async def go():
+            s = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+            for text in ("the codeword is PLUMBAGO", "what was the codeword?"):
+                await asyncio.create_task(agent.prompt(
+                    s.session_id, [schema.TextContentBlock(type="text", text=text)],
+                ))
+            return s.session_id
+
+        session_id = asyncio.run(go())
+        return agent, session_id, starts
+
+    def test_the_second_turn_starts_from_what_the_first_one_said(self):
+        _, _, starts = self._agent_recording_starts()
+        assert starts[0] == ["system"]
+        assert starts[1] == ["system", "user", "assistant"], (
+            f"turn two began with {starts[1]} — the session forgot turn one"
+        )
+
+    def test_the_earlier_message_is_there_verbatim(self):
+        agent, session_id, _ = self._agent_recording_starts()
+        contents = [m.get("content") for m in agent._sessions[session_id].history]
+        assert "the codeword is PLUMBAGO" in contents
+
+    def test_bookkeeping_keys_do_not_reach_the_history(self):
+        """Underscored keys are the runtime's own; sending them to a provider
+        is at best noise and at worst a schema rejection."""
+        agent, session_id, _ = self._agent_recording_starts()
+        history = agent._sessions[session_id].history
+        assert not [k for m in history for k in m if k.startswith("_")]
+
+    def test_the_system_prompt_is_not_re_seeded_each_turn(self):
+        agent, session_id, _ = self._agent_recording_starts()
+        history = agent._sessions[session_id].history
+        assert sum(1 for m in history if m.get("role") == "system") == 1
+
+    def test_two_sessions_do_not_share_a_history(self):
+        """The store is bound to one session; a second must not see its turns."""
+        from agent.integration.acp_server import _Session
+
+        a, b = _Session(session_id="a", cwd="/tmp"), _Session(session_id="b", cwd="/tmp")
+        NeoMindACPAgent._HistoryStore(a).append("a", {"role": "user", "content": "hi"})
+        assert b.history == []

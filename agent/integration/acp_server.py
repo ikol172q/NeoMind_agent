@@ -27,7 +27,7 @@ from __future__ import annotations
 import asyncio
 import os
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Mapping, Optional
 
 import acp
 from acp import schema
@@ -59,12 +59,19 @@ ACP_TOOLS = (
 
 @dataclass
 class _Session:
-    """One ACP session: its agent session, its config binding, its cwd."""
+    """One ACP session: its agent session, its config, its cwd.
+
+    `config` holds the manager itself rather than a contextvar token. The token
+    was useless: `set_current_config` binds only the calling task, the SDK runs
+    every request in its own task, so the binding made in `session/new` was
+    already gone by the time `session/prompt` arrived — and nothing ever read
+    the token back. Holding the object lets the turn bind it for real.
+    """
 
     session_id: str
     cwd: str
     mode: str = "coding"
-    config_token: Any = None
+    config: Any = None
     history: List[Dict[str, Any]] = field(default_factory=list)
     active_turn: Optional[str] = None
     cancelled: bool = False
@@ -110,7 +117,7 @@ class NeoMindACPAgent(acp.Agent):
         )
 
     async def new_session(self, cwd: str, **kwargs: Any) -> Any:
-        from agent_config import fork_current_config, set_current_config
+        from agent_config import fork_current_config
 
         self._counter += 1
         session_id = f"neomind-{self._counter}"
@@ -118,11 +125,20 @@ class NeoMindACPAgent(acp.Agent):
         # Each ACP session gets its own config. Without this, a second client
         # setting a different mode would silently change the first client's —
         # the process-wide default that Phase 6A moved into the session.
-        token = set_current_config(fork_current_config())
+        #
+        # The fork is kept, not bound: binding here would die with this
+        # request's task. `prompt` binds it around the turn instead.
+        config = fork_current_config()
+        # Only switch when the mode actually differs. `switch_mode` rebuilds the
+        # active config from YAML, which discards a system prompt someone set at
+        # runtime — the very loss `fork_current_config` exists to avoid — so an
+        # unconditional call would quietly undo a `--system-prompt` override.
+        if getattr(config, "mode", None) != self._default_mode:
+            config.switch_mode(self._default_mode)
 
         self._sessions[session_id] = _Session(
             session_id=session_id, cwd=cwd, mode=self._default_mode,
-            config_token=token,
+            config=config,
         )
         return schema.NewSessionResponse(session_id=session_id)
 
@@ -136,6 +152,12 @@ class NeoMindACPAgent(acp.Agent):
         if mode_id not in SESSION_MODES:
             raise ValueError(f"unknown mode {mode_id!r}; expected one of {SESSION_MODES}")
         session.mode = mode_id
+        # The mode has to reach the config too, not just the session record:
+        # the personality, the model and the system prompt all read from the
+        # active mode, so setting only `session.mode` renamed the mode without
+        # changing the agent.
+        if session.config is not None:
+            session.config.switch_mode(mode_id)
         # A fresh agent session is built per turn, so the next one picks this
         # up; nothing cached needs invalidating.
         self._agent_sessions.pop(session_id, None)
@@ -148,6 +170,24 @@ class NeoMindACPAgent(acp.Agent):
         session.cancelled = False
         text = self._prompt_text(prompt)
 
+        # Bind the session's config for the whole turn. Everything downstream
+        # reads `agent_config` through the contextvar proxy — the model, the
+        # personality, the permission mode — and this request runs in its own
+        # task, so without binding here it would all come from the process-wide
+        # default and the session's mode would be decoration.
+        token = self._bind_config(session)
+        try:
+            # Seeded here rather than inside the composition root so that every
+            # session the turn can run against gets the briefing — including an
+            # injected one. Needs the config bound above, because which prompt
+            # applies depends on the session's mode.
+            session.history = self._seeded_history(session)
+            return await self._run_turn(session, text)
+        finally:
+            self._unbind_config(token)
+
+    async def _run_turn(self, session: "_Session", text: str) -> Any:
+        session_id = session.session_id
         agent_session = self._session_factory(session)
         self._agent_sessions[session_id] = agent_session
         terminal: Any = None
@@ -178,6 +218,55 @@ class NeoMindACPAgent(acp.Agent):
         agent_session = self._agent_sessions.get(session_id)
         if agent_session is not None and session.active_turn:
             await agent_session.cancel(session.active_turn)
+
+    class _HistoryStore:
+        """Writes the turn's messages back into the ACP session.
+
+        Without it the session had no memory. `session.history` was read to
+        seed each turn and never written, so turn two started from the same
+        list as turn one: a client that asked a follow-up got an agent which
+        had forgotten the question it had just answered. Every other surface
+        writes back — the CLI into `chat.conversation_history`, Telegram into
+        its store — and this one only looked like it did.
+
+        Underscore-prefixed keys are dropped, same as the CLI's store: they are
+        the runtime's own bookkeeping and do not belong in a message sent back
+        to a provider.
+        """
+
+        def __init__(self, session: "_Session") -> None:
+            self.session = session
+
+        def append(self, session_id: str, message: Mapping[str, Any]) -> None:
+            entry = {k: v for k, v in dict(message).items() if not k.startswith("_")}
+            self.session.history.append(entry)
+
+        def load(self, session_id: str) -> List[Dict[str, Any]]:
+            return list(self.session.history)
+
+    # ── config binding ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _bind_config(session: "_Session") -> Any:
+        """Make the session's config current, returning a token to undo it.
+
+        Returns None when the session has no config of its own — the injected
+        test factories construct `_Session` directly — so the caller can treat
+        "nothing to unbind" the same as a successful unbind.
+        """
+        if session.config is None:
+            return None
+        from agent_config import set_current_config
+
+        return set_current_config(session.config)
+
+    @staticmethod
+    def _unbind_config(token: Any) -> None:
+        if token is None:
+            return
+        from agent_config import reset_current_config
+
+        reset_current_config(token)
 
     # ── composition ───────────────────────────────────────────────────────
 
@@ -221,8 +310,36 @@ class NeoMindACPAgent(acp.Agent):
             mode=session.mode,
             session_id=session.session_id,
             history=list(session.history),
+            store=self._HistoryStore(session),
             tool_parser=ToolCallParser(),
         )
+
+    @staticmethod
+    def _seeded_history(session: "_Session") -> List[Dict[str, Any]]:
+        """The session's history with the mode's system prompt at its head.
+
+        Every other surface does this — the CLI through
+        `core._ensure_system_prompt`, a fleet worker by passing one in — but
+        this one shipped without it, so an ACP client got a model with no
+        briefing: no personality, no working directory, no notion that it had
+        tools. It answered a question about the repository it was running
+        inside by asking for a link to it.
+
+        Idempotent against a history that already carries the prompt, so
+        resuming a session does not stack duplicates.
+        """
+        from agent_config import agent_config
+
+        history = list(session.history)
+        prompt = getattr(agent_config, "system_prompt", "") or ""
+        if not prompt:
+            return history
+        if any(
+            msg.get("role") == "system" and msg.get("content") == prompt
+            for msg in history
+        ):
+            return history
+        return [{"role": "system", "content": prompt}, *history]
 
     @staticmethod
     def _allowed_tools(registry: Any) -> List[str]:
