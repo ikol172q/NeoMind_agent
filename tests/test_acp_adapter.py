@@ -705,3 +705,74 @@ class TestTheSessionRemembers:
         a, b = _Session(session_id="a", cwd="/tmp"), _Session(session_id="b", cwd="/tmp")
         NeoMindACPAgent._HistoryStore(a).append("a", {"role": "user", "content": "hi"})
         assert b.history == []
+
+
+class TestModesAreReachableFromOutside:
+    """`set_session_mode` worked; nothing told a client the modes existed.
+
+    NeoMind has had three personalities the whole time and validated switches
+    against them, but `NewSessionResponse` went out carrying only a session id.
+    A client with a mode picker had nothing to put in it, and one without could
+    only guess the ids. The capability was implemented and unreachable — the
+    same shape as the missing system prompt, one layer up.
+    """
+
+    def test_a_new_session_advertises_every_mode(self):
+        agent, _, _ = agent_with([])
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        assert resp.modes is not None, "a client is told nothing about modes"
+        ids = [m.id for m in resp.modes.available_modes]
+        assert ids == list(SESSION_MODES)
+
+    def test_the_advertised_ids_are_the_ones_set_mode_accepts(self):
+        """A client must be able to hand back exactly what it was given."""
+        agent, _, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            for mode in resp.modes.available_modes:
+                await agent.set_session_mode(resp.session_id, mode.id)
+            return agent._sessions[resp.session_id].mode
+
+        assert asyncio.run(go()) == SESSION_MODES[-1]
+
+    def test_each_mode_carries_something_displayable(self):
+        agent, _, _ = agent_with([])
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        for mode in resp.modes.available_modes:
+            assert mode.name and mode.name != mode.id
+            assert mode.description
+
+    def test_the_current_mode_is_the_one_the_session_starts_in(self):
+        agent, _, _ = agent_with([])
+        agent._default_mode = "fin"
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        assert resp.modes.current_mode_id == "fin"
+
+    def test_a_switch_notifies_the_client(self):
+        """A second client on the same session, or the same one after a
+        reconnect, has no other way to learn the mode moved."""
+        agent, client, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            await agent.set_session_mode(resp.session_id, "chat")
+
+        asyncio.run(go())
+        updates = [u for u in client.updates
+                   if type(u).__name__ == "CurrentModeUpdate"]
+        assert updates, "the mode changed and no client was told"
+        assert updates[-1].current_mode_id == "chat"
+
+    def test_the_notification_carries_its_discriminator(self):
+        """A union member without its tag is dropped by a strict client."""
+        agent, client, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            await agent.set_session_mode(resp.session_id, "chat")
+
+        asyncio.run(go())
+        update = [u for u in client.updates
+                  if type(u).__name__ == "CurrentModeUpdate"][-1]
+        assert update.session_update == "current_mode_update"

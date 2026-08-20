@@ -34,7 +34,7 @@ from acp import schema
 
 from agent.runtime.events import TurnFailed, TurnFinished
 
-from .acp_translate import stop_reason_for, translate, turn_usage
+from .acp_translate import _tag, stop_reason_for, translate, turn_usage
 
 #: The protocol revision this server implements. Echoed back in `initialize`;
 #: a client that speaks something else sees the mismatch immediately rather
@@ -43,6 +43,15 @@ PROTOCOL_VERSION = 1
 
 #: Modes a client may switch between, matching the CLI's personalities.
 SESSION_MODES = ("chat", "coding", "fin")
+
+#: What a client is shown in a mode picker. The ids are the same strings
+#: `set_session_mode` validates, so a client can round-trip what it was given
+#: without knowing anything about NeoMind.
+SESSION_MODE_DESCRIPTIONS = {
+    "chat": ("Chat", "General conversation."),
+    "coding": ("Coding", "Reads and edits code in the workspace."),
+    "fin": ("Finance", "Markets, filings, and portfolio analysis."),
+}
 
 #: What an ACP client may reach for.
 #:
@@ -140,7 +149,27 @@ class NeoMindACPAgent(acp.Agent):
             session_id=session_id, cwd=cwd, mode=self._default_mode,
             config=config,
         )
-        return schema.NewSessionResponse(session_id=session_id)
+        # Without this the modes are unreachable from outside: `set_session_mode`
+        # worked, but nothing told a client the ids existed, so a client with a
+        # mode picker had nothing to put in it and one without could only guess.
+        return schema.NewSessionResponse(
+            session_id=session_id,
+            modes=self._mode_state(self._default_mode),
+        )
+
+    @staticmethod
+    def _mode_state(current: str) -> Any:
+        return schema.SessionModeState(
+            current_mode_id=current,
+            available_modes=[
+                schema.SessionMode(
+                    id=mode_id,
+                    name=SESSION_MODE_DESCRIPTIONS[mode_id][0],
+                    description=SESSION_MODE_DESCRIPTIONS[mode_id][1],
+                )
+                for mode_id in SESSION_MODES
+            ],
+        )
 
     async def close_session(self, session_id: str, **kwargs: Any) -> Any:
         self._sessions.pop(session_id, None)
@@ -161,6 +190,17 @@ class NeoMindACPAgent(acp.Agent):
         # A fresh agent session is built per turn, so the next one picks this
         # up; nothing cached needs invalidating.
         self._agent_sessions.pop(session_id, None)
+        # A client that did not initiate the switch — a second one attached to
+        # the same session, or the same one after a reconnect — has no other way
+        # to learn the mode changed.
+        if self._client is not None:
+            await self._client.session_update(
+                session_id,
+                schema.CurrentModeUpdate(
+                    session_update=_tag(schema.CurrentModeUpdate),
+                    current_mode_id=mode_id,
+                ),
+            )
         return None
 
     # ── the turn ──────────────────────────────────────────────────────────
