@@ -66,6 +66,55 @@ ACP_TOOLS = (
 )
 
 
+#: Returned by the cancel watcher so a caller can tell "the client answered
+#: with nothing" from "we stopped waiting". A sentinel rather than None,
+#: because None is already a meaningful answer here — it means denied.
+_CANCELLED = object()
+
+#: How often the cancel watcher looks. `session.cancelled` is a plain flag set
+#: from another task, so there is nothing to await on; this bounds how long a
+#: cancelled turn keeps a dialog open, and is short enough to feel immediate.
+_CANCEL_POLL_SECONDS = 0.05
+
+
+async def _cancelled(session: Any) -> Any:
+    """Resolve once the session is marked cancelled, never if it cannot be.
+
+    `getattr` rather than attribute access: the broker is handed whatever the
+    caller has, and a stand-in without the flag should mean "nothing will
+    cancel this" — not an AttributeError raised into a permission prompt.
+    """
+    while not getattr(session, "cancelled", False):
+        await asyncio.sleep(_CANCEL_POLL_SECONDS)
+    return _CANCELLED
+
+
+async def _first_of(*coros: Any) -> Any:
+    """Whichever finishes first; the rest are cancelled and awaited.
+
+    Awaiting the losers matters: a bare `task.cancel()` returns before the task
+    has actually stopped, and an in-flight `request_permission` left running
+    would deliver its answer into a turn that has already ended.
+    """
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    try:
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        return next(iter(done)).result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+
+
 @dataclass
 class _Session:
     """One ACP session: its agent session, its config, its cwd.
@@ -460,7 +509,7 @@ class NeoMindACPAgent(acp.Agent):
                         option_id="reject", name="Reject", kind="reject_once",
                     ),
                 ]
-                answer = await client.request_permission(
+                asking = asyncio.ensure_future(client.request_permission(
                     session.session_id,
                     schema.ToolCallUpdate(
                         tool_call_id=request_id,
@@ -471,7 +520,17 @@ class NeoMindACPAgent(acp.Agent):
                         raw_input=dict(params or {}) or None,
                     ),
                     options,
-                )
+                ))
+                # A cancel arriving while the dialog is up has to end the wait.
+                # ACP says a client that cancels answers the outstanding request
+                # with `cancelled`, but a client that just closes the dialog —
+                # or drops — sends nothing, and this used to sit here for the
+                # executor's full 300s permission timeout before the turn could
+                # finish. The user pressed Escape; they should not wait five
+                # minutes to find out it worked.
+                answer = await _first_of(asking, _cancelled(session))
+                if answer is _CANCELLED:
+                    return None
                 # `outcome` is a discriminated union: AllowedOutcome carries
                 # the chosen option_id, DeniedOutcome carries only
                 # outcome="cancelled" and has no option_id at all. Reading
