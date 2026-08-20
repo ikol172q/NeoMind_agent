@@ -610,6 +610,53 @@ def reset_current_config(token: Token) -> None:
     _current_config.reset(token)
 
 
+def fork_current_config() -> "AgentConfigManager":
+    """A private copy of whatever config is current, safe to mutate alone.
+
+    The mechanism for per-context config already existed — fleet workers bind
+    their own manager — but interactive surfaces never used it, so every
+    ``agent_config.permission_mode = "auto_accept"`` landed on the
+    process-wide default. With one session that is invisible. With two, the
+    first session to relax its permissions relaxes the other one too, and
+    nothing in either session says so.
+
+    Forking rather than constructing fresh: the YAML-derived settings are
+    deterministic given the mode, but the *mutated* state is not.
+    ``main.py`` writes ``agent_config.system_prompt``, which the setter puts
+    into ``_active`` — a fresh manager would silently lose it and the agent
+    would run with the file's default prompt instead.
+    """
+    source = _current_config.get()
+    clone = AgentConfigManager(mode=getattr(source, "_mode", None))
+
+    # Mutable state, in the order it is layered onto a manager. Anything that
+    # a running session can change has to come across, or the fork is a
+    # different configuration wearing the same name.
+    for attr in ("_active", "_agent", "_base", "_agent_base", "_runtime_overrides"):
+        value = getattr(source, attr, None)
+        if isinstance(value, dict):
+            setattr(clone, attr, dict(value))
+
+    # Property setters stash their value in a private `_*_override`; copying
+    # them by prefix means a new override added later comes across for free
+    # rather than being forgotten here.
+    for name, value in vars(source).items():
+        if name.endswith("_override") and not isinstance(value, dict):
+            setattr(clone, name, value)
+
+    return clone
+
+
+def bind_session_config() -> Token:
+    """Give this context its own config. Returns the token to undo it.
+
+    Called once when a session starts. From then on the session's writes are
+    its own, and reads still see everything the process had configured,
+    because the copy is a fork rather than a fresh load.
+    """
+    return set_current_config(fork_current_config())
+
+
 class _AgentConfigProxy:
     """Transparent forwarder to the current-context AgentConfigManager.
 

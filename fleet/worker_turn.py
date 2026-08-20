@@ -174,6 +174,37 @@ async def _default_llm_call(
         raise
 
 
+#: D8 rollback switch for this surface, alongside `NEOMIND_REPL`,
+#: `NEOMIND_TELEGRAM` and `NEOMIND_HEADLESS`. `session` runs the worker turn
+#: through `AgentSession` — same ToolExecutor and permission policy as every
+#: other surface — and anything else keeps the direct `requests.post`. Read per
+#: call so flipping it needs no rebuild.
+def _session_path_enabled() -> bool:
+    import os
+
+    # Default flipped to the session path 2026-08-16, after a real fleet run
+    # on coding-smoke and an end-to-end suite covering fin signal parsing,
+    # the analysis write, leader notification and failure handling.
+    # `NEOMIND_FLEET=legacy` restores the direct `requests.post`.
+    return os.getenv("NEOMIND_FLEET", "session").strip().lower() == "session"
+
+
+def _resolve_llm_call() -> LlmCallable:
+    """Which implementation a worker turn uses when the caller injects none."""
+    if not _session_path_enabled():
+        return _default_llm_call
+
+    from fleet.worker_session import session_llm_call
+
+    async def _call(model: str, system_prompt: str, user_prompt: str) -> str:
+        return await session_llm_call(
+            model, system_prompt, user_prompt,
+            mode=getattr(agent_config, "mode", "fin"),
+        )
+
+    return _call
+
+
 # ── Fail-fast check on entry ───────────────────────────────────────────
 
 
@@ -405,7 +436,7 @@ async def execute_task(
     caller (the fleet launcher) can then mark the task in its queue
     and continue without propagation.
     """
-    call = llm_call or _default_llm_call
+    call = llm_call or _resolve_llm_call()
 
     _emit(event_sink, member.name, "task_received",
           content=task.get("description", "")[:200],

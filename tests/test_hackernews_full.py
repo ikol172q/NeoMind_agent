@@ -199,27 +199,35 @@ class TestFetchTopStories:
         mock_id_response.status_code = 200
         mock_id_response.json.return_value = [1, 2, 3, 4, 5]
 
-        # Mock individual story fetches
-        stories_data = [
-            {"id": 1, "title": "Story 1", "score": 100, "type": "story"},
-            {"id": 2, "title": "Story 2", "score": 90, "type": "story"},
-            {"id": 3, "title": "Story 3", "score": 80, "type": "story"},
-        ]
+        # Keyed by id rather than a fixed-length list on purpose.
+        # fetch_top_stories over-fetches (`resp.json()[:limit * 2]`) so it can
+        # drop low-score stories, so it calls fetch_story once per id above —
+        # five times — not once per story the caller asked for. The previous
+        # three-element side_effect raised StopIteration on calls 4 and 5,
+        # inside run_in_executor. asyncio cannot put that on a Future
+        # ("StopIteration interacts badly with generators and cannot be raised
+        # into a Future"), so the future stayed pending and the event loop
+        # waited forever — this test hung the entire suite at 28%.
+        # A dict lookup stays correct whatever the over-fetch factor becomes.
+        stories_by_id = {
+            sid: HNStory(id=sid, title=f"Story {sid}", score=110 - sid * 10)
+            for sid in [1, 2, 3, 4, 5]
+        }
 
         with patch("agent.finance.hackernews.requests.get") as mock_get:
             # First call returns ID list
             mock_get.return_value = mock_id_response
 
             with patch("agent.finance.hackernews.fetch_story") as mock_fetch:
-                mock_fetch.side_effect = [
-                    HNStory(id=1, title="Story 1", score=100),
-                    HNStory(id=2, title="Story 2", score=90),
-                    HNStory(id=3, title="Story 3", score=80),
-                ]
+                mock_fetch.side_effect = lambda story_id: stories_by_id.get(story_id)
 
                 stories = await fetch_top_stories(category="top", limit=3)
                 assert len(stories) == 3
                 assert stories[0].id == 1
+                # The over-fetch is the point of this regression: assert it, so
+                # a future change to `limit * 2` cannot quietly reintroduce the
+                # count mismatch that hung the suite.
+                assert mock_fetch.call_count == 5
 
     @pytest.mark.asyncio
     async def test_fetch_top_stories_categories(self):
@@ -480,8 +488,13 @@ class TestHackerNewsEdgeCases:
         assert story.descendants == 0
 
     def test_story_very_old_age(self):
-        """Test age calculation for very old story."""
-        ancient_time = 0  # Unix epoch
+        """Test age calculation for a genuinely old story."""
+        # Not 0: that is the "no timestamp" sentinel (the dataclass default and
+        # fetch_story's data.get("time", 0) fallback), and age_hours reports 0
+        # for it on purpose — see test_age_hours_no_timestamp. Use a real old
+        # timestamp instead: HN launched in 2007.
+        import time as _time
+        ancient_time = int(_time.time()) - 10 * 365 * 24 * 3600
         story = HNStory(id=1, title="Ancient", time=ancient_time)
         age = story.age_hours
         # Should be huge number of hours

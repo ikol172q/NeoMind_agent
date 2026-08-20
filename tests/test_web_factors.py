@@ -7,8 +7,13 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -71,6 +76,7 @@ def page(browser) -> Page:
     _clear_watchlist()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist()
@@ -112,8 +118,7 @@ def test_factors_unknown_symbol_graceful():
 def test_watchlist_tier1_is_default(page: Page):
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-widget"]', timeout=10000)
     page.wait_for_selector('[data-testid="watchlist-row-US-AAPL"]', timeout=15000)
     # Factor pills should NOT be visible at default tier
@@ -124,7 +129,7 @@ def test_watchlist_tier1_is_default(page: Page):
 def test_tier_toggle_cycles_tiers(page: Page):
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-tier-toggle-US-AAPL"]', timeout=10000)
     # Click once → tier 2 (factor pills)
     page.click('[data-testid="watchlist-tier-toggle-US-AAPL"]')
@@ -143,7 +148,7 @@ def test_tier_toggle_cycles_tiers(page: Page):
 def test_factor_pills_render_five_axes(page: Page):
     _seed("AAPL")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-tier-toggle-US-AAPL"]', timeout=10000)
     page.click('[data-testid="watchlist-tier-toggle-US-AAPL"]')
     for axis in ("momentum", "value", "quality", "growth", "revisions"):
@@ -155,7 +160,7 @@ def test_cn_symbol_shows_factors_unavailable_message(page: Page):
     polite note instead of trying and failing."""
     _seed("600519", market="CN")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="watchlist-tier-toggle-CN-600519"]', timeout=10000)
     page.click('[data-testid="watchlist-tier-toggle-CN-600519"]')
     page.wait_for_selector('[data-testid="watchlist-tier2-CN-600519"]', timeout=5000)

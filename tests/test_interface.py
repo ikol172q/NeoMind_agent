@@ -8,7 +8,7 @@ import os
 import sys
 import time
 import unittest
-from unittest.mock import Mock, patch, MagicMock, call, mock_open
+from unittest.mock import Mock, patch, MagicMock, call, mock_open, PropertyMock
 import tempfile
 import shutil
 
@@ -520,7 +520,6 @@ class TestInteractiveChatWithPromptToolkit(unittest.TestCase):
             error_calls = [call for call in mock_print.call_args_list if "Error:" in str(call)]
             self.assertGreater(len(error_calls), 0)
 
-    @unittest.skip("property patching issues")
     def test_auto_completion_initialization_coding_mode(self):
         """Test auto-completion initialization in coding mode."""
         self.mock_chat.mode = "coding"
@@ -528,7 +527,7 @@ class TestInteractiveChatWithPromptToolkit(unittest.TestCase):
         self.mock_get_input.return_value = None
 
         # Mock agent_config
-        with patch('cli.interface.agent_config.coding_mode_enable_auto_complete', True):
+        with _patch_coding_auto_complete(True):
             with patch('cli.interface.CommandCompleter') as mock_completer_class:
                 mock_completer = Mock()
                 mock_completer_class.return_value = mock_completer
@@ -543,13 +542,12 @@ class TestInteractiveChatWithPromptToolkit(unittest.TestCase):
                     workspace_manager=self.mock_chat.workspace_manager
                 )
 
-    @unittest.skip("property patching issues")
     def test_auto_completion_error(self):
         """Test auto-completion initialization error."""
         self.mock_chat.mode = "coding"
         self.mock_get_input.return_value = None
 
-        with patch('cli.interface.agent_config.coding_mode_enable_auto_complete', True):
+        with _patch_coding_auto_complete(True):
             with patch('cli.interface.CommandCompleter', side_effect=Exception("Completer error")):
                 with patch('builtins.print') as mock_print:
                     interactive_chat_with_prompt_toolkit("coding")
@@ -559,6 +557,26 @@ class TestInteractiveChatWithPromptToolkit(unittest.TestCase):
                                   if "Auto-completion error" in str(call)]
                     self.assertGreater(len(error_calls), 0)
 
+
+
+def _patch_coding_auto_complete(value: bool):
+    """Patch coding_mode_enable_auto_complete for cli.interface.
+
+    cli.interface holds a _AgentConfigProxy, a bare __getattr__ forwarder
+    with no attribute of its own, so patching the name on it raises
+    "no attribute" and patching the property through it raises "can't set
+    attribute" — which is what "property patching issues" referred to.
+    The property lives on AgentConfigManager, and the proxy forwards to
+    an instance of it, so patching the class is what actually takes
+    effect.
+    """
+    from agent_config import AgentConfigManager
+    return patch.object(
+        AgentConfigManager,
+        "coding_mode_enable_auto_complete",
+        new_callable=PropertyMock,
+        return_value=value,
+    )
 
 class TestInteractiveChatFallback(unittest.TestCase):
     """Test interactive_chat_fallback function."""

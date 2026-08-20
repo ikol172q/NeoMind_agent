@@ -72,11 +72,7 @@ class TestPatternMatching(unittest.TestCase):
         """Test search intent detection."""
         test_cases = [
             ("search for Python tutorials", "/search Python tutorials", 0.9),
-            ("look up latest news", "/search latest news", 0.9),
             ("find information about AI", "/search information about AI", 0.9),
-            ("what is the latest technology", "/search latest technology", 0.8),
-            ("tell me about machine learning", "/search machine learning", 0.7),
-            ("what's current news about politics", "/search politics", 0.8),
         ]
 
         for text, expected_cmd, min_confidence in test_cases:
@@ -85,14 +81,44 @@ class TestPatternMatching(unittest.TestCase):
             self.assertEqual(cmd, expected_cmd)
             self.assertGreaterEqual(confidence, min_confidence)
 
+
+    def test_conversational_phrasing_is_left_to_the_llm(self):
+        """BUG-008: polite / question phrasing must NOT be rewritten to a command.
+
+        These all used to be pattern-matched into slash commands. interpret()
+        now defers to should_suggest(), which rejects polite prefixes
+        ("show me", "tell me"), over-long inputs, and anything without a
+        command keyword — so the phrasing reaches the LLM instead of being
+        flattened into e.g. a bare /read. Asserting the refusal here keeps that
+        behaviour covered now that these cases have left the match tables.
+        """
+        deferred = [
+            "look up latest news",
+            "what is the latest technology",
+            "tell me about machine learning",
+            "what's current news about politics",
+            "what's in README.md",
+            "view file.txt",
+            "load file data.json",
+            "save config.yaml as key: value",
+            "inspect the codebase in lib/",
+            "look for TODO in source code",
+            "what commands are available?",
+            "what tasks are pending?",
+            "how can I implement caching",
+            "show me the file main.py",
+            "where is User class defined?",
+        ]
+        for text in deferred:
+            cmd, confidence = self.interpreter.interpret(text)
+            self.assertIsNone(cmd, f"{text!r} should reach the LLM, got {cmd}")
+            self.assertEqual(confidence, 0.0)
+
     def test_file_read_intent(self):
         """Test file read intent detection."""
         test_cases = [
             ("read main.py", "/read main.py", 0.9),
             ("show file config.yaml", "/read config.yaml", 0.9),
-            ("what's in README.md", "/read README.md", 0.7),
-            ("view file.txt", "/read file.txt", 0.7),
-            ("load file data.json", "/read data.json", 0.8),
         ]
 
         for text, expected_cmd, min_confidence in test_cases:
@@ -106,7 +132,6 @@ class TestPatternMatching(unittest.TestCase):
         test_cases = [
             ("write file notes.txt with content Hello", "/write notes.txt Hello", 0.8),
             ("create file script.py containing print('hi')", "/write script.py print('hi')", 0.8),
-            ("save config.yaml as key: value", "/write config.yaml key: value", 0.7),
         ]
 
         for text, expected_cmd, min_confidence in test_cases:
@@ -120,7 +145,6 @@ class TestPatternMatching(unittest.TestCase):
         test_cases = [
             ("analyze code in src/", "/code scan src/", 0.9),
             ("scan codebase src/", "/code scan src/", 0.8),
-            ("inspect the codebase in lib/", "/code scan lib/", 0.8),
             ("find code issues in tests/", "/code scan tests/", 0.7),
         ]
 
@@ -136,7 +160,6 @@ class TestPatternMatching(unittest.TestCase):
             ("search codebase for function", "/code search function", 0.9),
             ("search for error in code", "/code search error", 0.9),
             ("find imports in codebase", "/code search imports", 0.8),
-            ("look for TODO in source code", "/code search TODO", 0.8),
             ("search source code for print statements", "/code search print statements", 0.9),
         ]
 
@@ -164,7 +187,6 @@ class TestPatternMatching(unittest.TestCase):
         """Test help intent detection."""
         test_cases = [
             ("show commands", "/help", 0.9),
-            ("what commands are available?", "/help", 0.8),
             ("help me", "/help", 0.7),
             ("help", "/help", 0.7),
         ]
@@ -182,7 +204,6 @@ class TestPatternMatching(unittest.TestCase):
             ("add task Fix bug", "/task create Fix bug", 0.9),
             ("list tasks", "/task list", 0.9),
             ("show tasks", "/task list", 0.9),
-            ("what tasks are pending?", "/task list todo", 0.8),
             ("update task abc123 to done", "/task update abc123 done", 0.8),
             ("mark task xyz456 as in_progress", "/task update xyz456 in_progress", 0.8),
             ("delete task def789", "/task delete def789", 0.9),
@@ -202,7 +223,6 @@ class TestPatternMatching(unittest.TestCase):
             ("create plan for Add authentication", "/plan Add authentication", 0.9),
             ("generate plan for Refactor code", "/plan Refactor code", 0.9),
             ("make a plan to Improve performance", "/plan Improve performance", 0.8),
-            ("how can I implement caching", "/plan implement caching", 0.7),
             ("list plans", "/plan list", 0.9),
             ("show plans", "/plan list", 0.9),
             ("delete plan abc123", "/plan delete abc123", 0.9),
@@ -218,12 +238,10 @@ class TestPatternMatching(unittest.TestCase):
     def test_coding_mode_patterns(self):
         """Test coding-specific patterns."""
         test_cases = [
-            ("show me the file main.py", "/read main.py", 0.9),
             ("open the file utils.py", "/read utils.py", 0.9),
             ("list files", "/browse", 0.9),
             ("show files in the project", "/browse", 0.9),
             ("find definition of calculate", "/code search calculate", 0.8),
-            ("where is User class defined?", "/code search User class", 0.8),
             ("analyze the codebase", "/code scan .", 0.9),
             ("find file named config.yaml", "/find config.yaml", 0.9),
         ]
@@ -477,10 +495,16 @@ class TestInterpretEdgeCases(unittest.TestCase):
 
     def test_partial_matches(self):
         """Test that patterns match anywhere in text."""
-        # Patterns use re.search, not re.match, so they match anywhere
-        cmd, confidence = self.interpreter.interpret("Can you search for Python?")
+        # Patterns use re.search, not re.match, so they match mid-string.
+        cmd, confidence = self.interpreter.interpret("then search for Python?")
         self.assertIsNotNone(cmd)
         self.assertEqual(cmd, "/search Python?")
+
+        # But a polite lead-in is deferred to the LLM before any pattern runs
+        # (BUG-008): "can you" is one of should_suggest's rejected prefixes, so
+        # re.search never gets a chance. This used to return /search Python?.
+        cmd, confidence = self.interpreter.interpret("Can you search for Python?")
+        self.assertIsNone(cmd)
 
     def test_multiple_matches_highest_confidence(self):
         """Test that highest confidence match is returned."""

@@ -8,7 +8,7 @@ the integration test suite.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import patch, AsyncMock, MagicMock
 
 import pytest
 
@@ -216,9 +216,11 @@ async def test_market_overview_partial_failure():
 
 @pytest.mark.asyncio
 async def test_news_search_no_engine():
+    # search_engine is kept only for backward compatibility now — the tool
+    # goes to miniflux first and falls back to UniversalSearchEngine itself,
+    # so passing None is no longer a failure.
     result = await finance_news_search(None, "Apple earnings")
-    assert result["ok"] is False
-    assert "not available" in result["error"].lower()
+    assert result["ok"] is True
 
 
 @pytest.mark.asyncio
@@ -244,8 +246,16 @@ async def test_news_search_success():
     mock_result.items = [mock_item]
     mock_result.sources_used = ["gnews_en"]
 
-    engine.search = AsyncMock(return_value=mock_result)
-    result = await finance_news_search(engine, "Apple earnings", max_results=5)
+    # The tool calls search_advanced(), not search() — mocking the wrong
+    # method left an un-awaitable MagicMock and the Tavily stage errored out.
+    engine.search_advanced = AsyncMock(return_value=mock_result)
+
+    # Force stage 2. finance_news_search tries miniflux first via
+    # fin_provider.fin_module('news_hub'); in a full-suite run that provider is
+    # loaded and the local feed DB answers with real entries, so this test saw
+    # 5 items instead of the mocked 1 and only passed in isolation.
+    with patch("agent.fin_provider.fin_module", side_effect=RuntimeError("no miniflux")):
+        result = await finance_news_search(engine, "Apple earnings", max_results=5)
     assert result["ok"] is True
     assert len(result["items"]) == 1
     assert result["items"][0]["title"] == "Apple beats earnings"

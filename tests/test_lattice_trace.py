@@ -16,6 +16,7 @@ import urllib.parse
 import pytest
 
 from agent.finance.lattice import spec
+from tests.fixture_project import PROJECT
 
 
 pytestmark = pytest.mark.lattice_fast
@@ -228,7 +229,7 @@ def test_trace_endpoint_returns_obs_layer_note():
     if not _backend_up():
         pytest.skip("backend unreachable")
     r = urllib.request.urlopen(
-        BASE_URL + "api/lattice/trace/obs_something_123?project_id=fin-core",
+        BASE_URL + f"api/lattice/trace/obs_something_123?project_id={PROJECT}",
         timeout=10,
     )
     body = json.loads(r.read())
@@ -241,7 +242,7 @@ def test_trace_endpoint_returns_subtheme_layer_note():
     if not _backend_up():
         pytest.skip("backend unreachable")
     r = urllib.request.urlopen(
-        BASE_URL + "api/lattice/trace/subtheme_anything?project_id=fin-core",
+        BASE_URL + f"api/lattice/trace/subtheme_anything?project_id={PROJECT}",
         timeout=10,
     )
     body = json.loads(r.read())
@@ -260,19 +261,19 @@ def test_trace_endpoint_theme_includes_llm_prompt_if_live():
         pytest.skip("no DEEPSEEK_API_KEY")
     # Force fresh regeneration so the trace populates
     urllib.request.urlopen(
-        BASE_URL + "api/lattice/calls?project_id=fin-core&fresh=1",
+        BASE_URL + f"api/lattice/calls?project_id={PROJECT}&fresh=1",
         timeout=300,
     ).read()
     # Pick one theme from the payload
     calls_payload = json.loads(urllib.request.urlopen(
-        BASE_URL + "api/lattice/calls?project_id=fin-core", timeout=30,
+        BASE_URL + f"api/lattice/calls?project_id={PROJECT}", timeout=30,
     ).read())
     themes = calls_payload["themes"]
     if not themes:
-        pytest.skip("no themes in current fin-core state")
+        pytest.skip("no themes in the current fixture-project state")
     theme_id = themes[0]["id"]
     r = urllib.request.urlopen(
-        BASE_URL + f"api/lattice/trace/{theme_id}?project_id=fin-core",
+        BASE_URL + f"api/lattice/trace/{theme_id}?project_id={PROJECT}",
         timeout=10,
     )
     body = json.loads(r.read())
@@ -282,7 +283,15 @@ def test_trace_endpoint_theme_includes_llm_prompt_if_live():
     # prompt text must be non-empty.
     assert trace["kind"] in ("llm_call", "cache_hit")
     if trace["kind"] == "llm_call":
-        assert trace["model"] == "deepseek-chat"
+        # Model default moved to deepseek-v4-flash.
+        assert trace["model"] == "deepseek-v4-flash"
         assert len(trace["user_prompt"]) > 100
-        assert trace["validator"]["passed"] in (True, False)
+        # The validator only appears when the LLM call actually returned. On
+        # the exception path themes.py records error + fallback_reason=
+        # "llm_exception" and never runs validation, so a trace carrying an
+        # error legitimately has no validator key.
+        if trace.get("error"):
+            assert trace["fallback_reason"] == "llm_exception"
+        else:
+            assert trace["validator"]["passed"] in (True, False)
         assert trace["final_source"] in ("llm", "template_fallback")

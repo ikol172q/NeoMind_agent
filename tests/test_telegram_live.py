@@ -89,6 +89,10 @@ def bot(tmp_path):
     b._bot_id = 123
     b._last_response_time = {}
     b._last_compact_notice = None
+    # __new__ skips __init__, so every attribute the handlers touch has to be
+    # set by hand — these were added to the bot later and left unset here.
+    b._web_extractor = None
+    b._web_cache = None
 
     # Use temp ChatStore
     from agent.finance.chat_store import ChatStore
@@ -350,7 +354,10 @@ class TestEvidenceCommand:
 
 class TestUnknownCommand:
     def test_typo_suggestion(self, bot):
-        update = make_update("/model chat")
+        # "/model" is a real command now and is the suggestion *target*, not a
+        # key — sending it falls through to the LLM. "/modes" is the typo the
+        # handler actually maps to "/mode".
+        update = make_update("/modes chat")
         asyncio.run(bot._handle_unknown_command(update, make_context()))
         reply = get_reply_text(update)
         assert "/mode" in reply

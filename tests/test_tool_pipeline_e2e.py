@@ -175,8 +175,13 @@ class TestParseValidateExecuteRead(unittest.TestCase):
 
     def test_parse_read_nonexistent_file(self):
         """Parse Read for non-existent file → error result."""
+        # Inside the workspace on purpose: an absolute path outside it is
+        # rejected by the safety layer first ("Path outside allowed roots"),
+        # so the old fixture never reached the file-existence check this test
+        # is about.
+        missing = os.path.join(self.temp_dir, "nonexistent-file.txt")
         response = (
-            '{"tool": "Read", "params": {"path": "/nonexistent/file.txt"}}'
+            '{"tool": "Read", "params": {"path": "' + missing + '"}}'
         )
         tool_call = self.parser.parse(f'<tool_call>{response}</tool_call>')
 
@@ -346,6 +351,16 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
         self.registry = ToolRegistry(working_dir=self.temp_dir)
         self.parser = ToolCallParser()
 
+    def _read_first(self, file_path):
+        """Satisfy the read-before-edit guard.
+
+        _exec_edit refuses any path missing from registry._files_read
+        ("Must Read '<path>' before editing"), and only the Read *tool*
+        populates that set — registry.read_file() does not. These are
+        pipeline tests, so going through the tool is the realistic path.
+        """
+        self.registry.get_tool("Read").execute(path=file_path)
+
     def tearDown(self):
         import shutil
         shutil.rmtree(self.temp_dir, ignore_errors=True)
@@ -367,6 +382,7 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
         self.assertTrue(valid)
 
         params = tool_def.apply_defaults(tool_call.params)
+        self._read_first(file_path)
         result = tool_def.execute(**params)
 
         self.assertTrue(result.success)
@@ -389,6 +405,7 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
 
         tool_def = self.registry.get_tool("Edit")
         params = tool_def.apply_defaults(tool_call.params)
+        self._read_first(file_path)
         result = tool_def.execute(**params)
 
         self.assertTrue(result.success)
@@ -412,6 +429,7 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
 
         tool_def = self.registry.get_tool("Edit")
         params = tool_def.apply_defaults(tool_call.params)
+        self._read_first(file_path)
         result = tool_def.execute(**params)
 
         self.assertFalse(result.success)
@@ -431,6 +449,7 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
 
         tool_def = self.registry.get_tool("Edit")
         params = tool_def.apply_defaults(tool_call.params)
+        self._read_first(file_path)
         result = tool_def.execute(**params)
 
         # Depending on implementation, either errors or replaces first occurrence
@@ -465,6 +484,7 @@ class TestParseValidateExecuteEdit(unittest.TestCase):
         self.assertTrue(valid)
 
         params = tool_def.apply_defaults(tool_call.params)
+        self._read_first(file_path)
         result = tool_def.execute(**params)
 
         self.assertTrue(result.success)

@@ -269,7 +269,12 @@ class FleetLauncher:
         try:
             if self._task_queue is not None:
                 self._task_queue.complete_task(
-                    task["id"], result=str(result.get("result", ""))[:1000],
+                    task["id"],
+                    result=str(result.get("result", ""))[:1000],
+                    # The worker already said whether it succeeded, and the
+                    # leader notification below has always used that value.
+                    # The queue was the one place that ignored it.
+                    status=str(result.get("status", "completed")),
                 )
         except Exception as exc:
             logger.warning(

@@ -9,8 +9,10 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -52,21 +54,21 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
 def _open_research(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
-    page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=30000)
+    goto_tab(page, "research")
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
 
 
 def test_drilldown_mode_shows_l15_section(page: Page):
     _open_research(page)
     page.click('[data-testid="digest-mode-drilldown"]')
-    page.wait_for_selector('[data-testid="section-l15"]', timeout=5000)
+    page.wait_for_selector('[data-testid="section-l15"]', timeout=30000)
 
 
 def test_flat_mode_expands_sub_themes(page: Page):
@@ -74,9 +76,9 @@ def test_flat_mode_expands_sub_themes(page: Page):
     should be visible directly after switching."""
     _open_research(page)
     page.click('[data-testid="digest-mode-flat"]')
-    page.wait_for_selector('[data-testid="section-l15"]', timeout=5000)
+    page.wait_for_selector('[data-testid="section-l15"]', timeout=30000)
     # At least one sub-theme row rendered (drill-theme-subtheme_...)
-    page.wait_for_selector('[data-testid^="drill-theme-subtheme_"]', timeout=5000)
+    page.wait_for_selector('[data-testid^="drill-theme-subtheme_"]', timeout=30000)
 
 
 def test_summary_mode_hides_sub_themes_section(page: Page):

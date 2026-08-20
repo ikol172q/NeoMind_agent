@@ -57,14 +57,20 @@ def test_write_and_read_round_trip(tmp_root):
         "themes": [{"id": "theme_1", "narrative": "near highs"}],
         "calls": [{"id": "call_1", "claim": "watch close"}],
     }
-    path = write_snapshot(pid, payload, date_str="2026-04-23")
+    # V8.1 moved snapshots to lattice_snapshots/<date>/<run_id>.json so several
+    # runs on the same day are all kept; it was <date>.json before. Passing an
+    # explicit run_id keeps the filename deterministic (it must match
+    # _RUN_ID_RE: 8-40 hex characters or dashes).
+    path = write_snapshot(pid, payload, date_str="2026-04-23", run_id="abcdef01")
     assert path.is_file()
-    assert path.parent.name == "lattice_snapshots"
-    assert path.name == "2026-04-23.json"
+    assert path.parent.name == "2026-04-23"
+    assert path.parent.parent.name == "lattice_snapshots"
+    assert path.name == "abcdef01.json"
 
     envelope = read_snapshot(pid, "2026-04-23")
     assert envelope is not None
-    assert envelope["snapshot_meta"]["version"] == 1
+    # V8.1 bumped the envelope version along with the directory layout.
+    assert envelope["snapshot_meta"]["version"] == 2
     assert envelope["snapshot_meta"]["date"] == "2026-04-23"
     assert envelope["payload"] == payload
 

@@ -14,6 +14,11 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -47,14 +52,14 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
 
 
 # ── Sector heatmap ────────────────────────────────────────

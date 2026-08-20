@@ -12,6 +12,7 @@ Run standalone (fresh process = no throttle):
 from __future__ import annotations
 
 import logging
+from contextlib import closing
 from typing import Any, Dict, List
 
 from agent.fin_provider import fin_module
@@ -68,7 +69,18 @@ def backfill_eod(tickers: List[str], period: str = "6mo", market: str = "us") ->
         if not bars:
             fail.append(tk)
             continue
-        with connect() as conn:
+        # 🔴 2026-07-30 真事故: 这里原来是 `with connect() as conn:` ——
+        #    `with <sqlite3.Connection>` 只**提交事务, 不关闭连接**。690 个 ticker 的循环
+        #    因此泄漏 690 条连接, 每条在 WAL 下占 3 个 fd (db / -wal / -shm)。
+        #    交互 shell 的 fd 上限是 1,048,576 所以手跑永远正常; 但 **launchd 只给 256**,
+        #    于是定时任务每天跑到第 ~127 个 ticker 就死于
+        #    `sqlite3.OperationalError: unable to open database file` (SQLITE_CANTOPEN)。
+        #    实测后果: 690 个 symbol 里 550 个陈旧 —— 按字母序靠后的全军覆没
+        #    (QQQ 第 521 / SPY 579 / SSP 584 / VITL 655), 而 market_data_daily 是
+        #    相关性 / 回撤告警 / regime / 回测共用的底座。
+        #    (下游 `spreads()` 的陈旧回落只是止血, 治不了这个生产端。)
+        #    修法: closing() 负责关连接, 内层 `with conn` 仍负责提交 —— 峰值 fd 占用回到 3。
+        with closing(connect()) as conn, conn:
             n = dao.upsert_market_data_daily(
                 conn, symbol=tk, market=market, bars=bars, source="yfinance-history",
             )

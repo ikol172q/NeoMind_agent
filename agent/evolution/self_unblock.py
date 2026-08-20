@@ -18,6 +18,7 @@ No external dependencies — stdlib only.
 import os
 import re
 import subprocess
+import sys
 import tempfile
 import json
 import logging
@@ -315,7 +316,8 @@ class SelfUnblocker:
                 script_path = f.name
 
             result = subprocess.run(
-                ["python", script_path],
+                # sys.executable, not "python" — see self_edit.py
+                [sys.executable, script_path],
                 capture_output=True, text=True,
                 timeout=self.TIMEOUT,
                 cwd=str(SANDBOX_DIR),

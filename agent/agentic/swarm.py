@@ -238,12 +238,24 @@ class SharedTaskQueue:
             return task
         return None
 
-    def complete_task(self, task_id: str, result: str = ""):
-        """Mark a task as completed."""
+    def complete_task(self, task_id: str, result: str = "", status: str = "completed"):
+        """Record a task's outcome.
+
+        `status` exists because it used to be hardcoded to "completed" while
+        the caller already knew better: `launch_project` catches a failed
+        worker turn, builds `{"status": "failed", ...}`, and then marked the
+        task done anyway. A fin task that produced no analysis read as
+        completed with the error text sitting where the summary belongs, so
+        anything consulting the queue to ask "did this work?" got the wrong
+        answer — while the leader's notification, built two lines later,
+        correctly said failed.
+
+        Defaults to "completed" so existing callers are unaffected.
+        """
         tasks = self._load()
         for task in tasks:
             if task['id'] == task_id:
-                task['status'] = 'completed'
+                task['status'] = status
                 task['completed_at'] = time.time()
                 task['result'] = result
                 break

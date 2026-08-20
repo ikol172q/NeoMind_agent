@@ -50,6 +50,123 @@ class ToolCall:
             return f"{self.tool_name}({key_param})"
 
 
+#: Either bar DeepSeek spells its delimiters with: ASCII U+007C and fullwidth
+#: U+FF5C. Both appear in the wild, sometimes in the same session.
+_TOOL_BAR = r'[|\uff5c]'
+
+#: One place that knows every spelling of the delimiters. parse() and
+#: strip_tool_call() both go through it, because when they each carried their
+#: own list they drifted: parse learned the fullwidth `<｜｜DSML｜｜tool_call>`
+#: form while strip did not, so a call was executed *and* its raw JSON payload
+#: was still printed to the user as prose.
+_TOOL_WORD = rf'tool[_\u2581]?call'
+
+#: A closing delimiter is one that either carries a slash or says "end". The
+#: first version made the slash optional in one branch, which matched the
+#: *opening* `<｜tool_call｜>` and rewrote it as a close — the call then parsed
+#: as nothing at all. Requiring one of the two is what keeps them apart.
+_CLOSE_DELIM_RE = re.compile(
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}'
+    rf'(?:[_\u2581](?:end|stop))?\s*{_TOOL_BAR}*\s*>'
+    rf'|<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*/\s*{_TOOL_WORD}\s*{_TOOL_BAR}*\s*>'
+    rf'|<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}[_\u2581](?:end|stop)'
+    rf'\s*{_TOOL_BAR}*\s*>',
+    re.IGNORECASE,
+)
+
+_OPEN_DELIM_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*{_TOOL_WORD}'
+    rf'(?:[_\u2581](?:begin|start))?\s*{_TOOL_BAR}*\s*>',
+    re.IGNORECASE,
+)
+
+
+def normalize_tool_call_delimiters(text: str) -> str:
+    """Rewrite every known delimiter spelling to plain <tool_call> tags."""
+    text = _CLOSE_DELIM_RE.sub('</tool_call>', text)
+    return _OPEN_DELIM_RE.sub('<tool_call>', text)
+
+
+
+#: DeepSeek also emits the Anthropic-shaped call: `tool_calls` (plural) holding
+#: `invoke name="X"` with `parameter name="y"` children, all wearing the same
+#: fullwidth DSML bars. Observed live *after* the JSON-shaped variant was
+#: fixed — the first fix covered one spelling and the model simply used the
+#: other, and the payload was printed to the user again.
+_DSML_INVOKE_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*invoke\s+name\s*=\s*"([^"]+)"\s*>'
+    r'(.*?)'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*invoke\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+#: The attribute list is captured whole rather than assuming `name="…"` comes
+#: first, or at all. Observed live: `<｜｜DSML｜｜parameter string="command">`,
+#: with the parameter's name in the `string` attribute and no `name` attribute —
+#: the strict pattern captured nothing, the call ran as `bash()` and the
+#: executor rejected it with "Missing required parameter: 'command'".
+_DSML_PARAM_RE = re.compile(
+    rf'<\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\b([^>]*)>'
+    r'(.*?)'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*parameter\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_ATTR_RE = re.compile(r'(\w+)\s*=\s*"([^"]*)"')
+
+#: Attribute values that describe the parameter rather than name it.
+_ATTR_NOISE = frozenset({"true", "false", "string", "number", "boolean", "json"})
+
+
+def _param_name_from_attrs(attrs: str):
+    """The parameter's name, however the model chose to spell the attributes."""
+    pairs = _ATTR_RE.findall(attrs or "")
+    for key, value in pairs:
+        if key.lower() == "name":
+            return value.strip()
+    for _key, value in pairs:
+        if value.strip().lower() not in _ATTR_NOISE:
+            return value.strip()
+    return None
+
+#: The wrapper around one or more invokes. Removed wholesale from display text.
+_DSML_CALLS_BLOCK_RE = re.compile(
+    rf'<?\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*tool_calls\s*{_TOOL_BAR}*\s*>'
+    r'.*?'
+    rf'<\s*/\s*{_TOOL_BAR}*\s*(?:DSML)?\s*{_TOOL_BAR}*\s*tool_calls\s*>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def parse_dsml_invoke(text: str):
+    """First `invoke`-shaped call, as (tool_name, params, raw_block) or None.
+
+    The raw block is the matched text and not the whole response: ToolCall.raw
+    is what `strip_tool_call()` removes first, so passing the entire response
+    deleted the model's prose along with the payload — the user saw an empty
+    turn instead of "好的，我来执行:".
+    """
+    block = _DSML_CALLS_BLOCK_RE.search(text)
+    scope = block.group(0) if block else text
+    match = _DSML_INVOKE_RE.search(scope)
+    if not match:
+        return None
+    tool_name = match.group(1).strip()
+    params = {}
+    for attrs, value in _DSML_PARAM_RE.findall(match.group(2)):
+        name = _param_name_from_attrs(attrs)
+        if name:
+            params[name] = value.strip()
+    return tool_name, params, (block.group(0) if block else match.group(0))
+
+
+def strip_dsml_invoke(text: str) -> str:
+    """Remove the whole tool_calls block, or a bare invoke if unwrapped."""
+    cleaned = _DSML_CALLS_BLOCK_RE.sub('', text)
+    if cleaned == text:
+        cleaned = _DSML_INVOKE_RE.sub('', text)
+    return cleaned
+
 class ToolCallParser:
     """Parse tool calls from LLM responses.
 
@@ -66,8 +183,14 @@ class ToolCallParser:
     # When the LLM invents a tool name (e.g. "LS", "List", "Cat"),
     # map it to the closest real tool so the agentic loop can execute it.
     _TOOL_ALIASES = {
-        "LS": "Bash",
-        "ls": "Bash",
+        # "LS" is a registered first-class tool, not a hallucinated name — it
+        # was mapping to Bash, so every LS call the model made got rewritten
+        # into Bash("ls -la <path>") and the real LS tool was unreachable.
+        # Worse, a caller that resolved the LS tool and then passed the
+        # rewritten params got TypeError: _exec_ls() got an unexpected keyword
+        # argument 'command'. The lowercase spelling is a plausible
+        # hallucination, so it now normalises to the canonical tool.
+        "ls": "LS",
         "List": "Bash",
         "list": "Bash",
         "Cat": "Read",
@@ -179,6 +302,17 @@ class ToolCallParser:
             '</tool_call>',
             response,
         )
+
+        # The invoke/parameter shape is checked before the delimiter rewrite:
+        # normalising `<｜｜DSML｜｜tool_calls>` into `<tool_call>` would leave
+        # the XML body behind a tag that promises JSON, and the JSON parsers
+        # below would find nothing and hand the payload back as prose.
+        _invoke = parse_dsml_invoke(response)
+        if _invoke:
+            _name, _params, _raw = _invoke
+            return ToolCall(tool_name=_name, params=_params, raw=_raw)
+
+        response = normalize_tool_call_delimiters(response)
 
         # Pre-process: normalize doubled/nested <tool_call> tags
         # LLMs sometimes output <tool_call><tool_call>...</tool_call></tool_call>
@@ -659,10 +793,25 @@ class ToolCallParser:
             return result.strip()
 
         # Fallback: raw didn't match (preprocessing changed the response).
-        # Remove the entire <tool_call>...</tool_call> block from the original.
+        # Remove the entire supported tool-call block from the original. Pipe
+        # delimiters need this path because parse() normalizes them before it
+        # constructs ToolCall.raw, so raw cannot match the original response.
         if not tool_call.is_legacy:
+            # invoke-shaped calls first, for the same reason parse() tries
+            # them first — the delimiter rewrite does not understand their body.
+            _stripped = strip_dsml_invoke(response)
+            if _stripped != response:
+                return _stripped.strip()
+
+            # Normalize first, so every delimiter spelling the parser accepts
+            # is also one this can remove. Only the delimiters change; the
+            # prose around them is untouched, and the block is deleted whole.
+            response = normalize_tool_call_delimiters(response)
             result = re.sub(
-                r'<tool_call>.*?</tool_(?:call|result)>',
+                r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
+                r'.*?'
+                r'(?:</tool_(?:call|result|report|re)\s*>'
+                r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
                 '',
                 response,
                 count=1,
@@ -670,9 +819,9 @@ class ToolCallParser:
             )
             if result != response:
                 return result.strip()
-            # Also try unclosed <tool_call>
+            # Also try an unclosed standard or pipe-delimited tool call.
             result = re.sub(
-                r'<tool_call>\s*\{.*',
+                r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)\s*\{.*',
                 '',
                 response,
                 count=1,

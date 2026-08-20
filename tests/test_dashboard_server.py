@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+import re
 import pytest
 from fastapi.testclient import TestClient
 
@@ -161,14 +162,17 @@ def test_index_html_renders_with_js_hooks(client):
     res = client.get("/")
     assert res.status_code == 200
     body = res.text
-    assert "neomind" in body.lower()
-    assert "fin dashboard" in body.lower()
-    # JS hooks that the SPA wires at load time
-    for marker in (
-        "refreshHealth", "refreshProjects", "doQuote", "doAnalyze",
-        "/api/health", "/api/projects", "/api/quote/",
-    ):
-        assert marker in body, f"missing frontend wiring: {marker!r}"
+    # The hand-written dashboard with inline refreshHealth/doQuote handlers was
+    # replaced by a React SPA, so index.html is now just the Vite shell — those
+    # markers exist nowhere, not even in the bundle. Assert the shell contract
+    # instead, and check the API wiring where it actually lives.
+    assert '<div id="root">' in body
+    assert re.search(r'<script[^>]+type="module"[^>]+src="(/assets/[^"]+\.js)"', body), body[:300]
+
+    bundle_path = re.search(r'src="(/assets/[^"]+\.js)"', body).group(1)
+    bundle = client.get(bundle_path).text
+    for marker in ("/api/health", "/api/projects"):
+        assert marker in bundle, f"missing frontend wiring: {marker!r}"
 
 
 def test_health_returns_status_and_root(client, tmp_investment_root):
@@ -575,12 +579,18 @@ def test_chart_502_when_upstream_raises(client):
     assert res.status_code == 502
 
 
-def test_index_html_includes_lightweight_charts_cdn(client):
+def test_charts_are_bundled(client):
+    """Charting still ships — via d3/SVG in the bundle, not a CDN script tag.
+
+    The old hand-written page pulled lightweight-charts from a CDN and mounted
+    price-chart / rsi-chart / macd-chart divs. The React rewrite draws them
+    itself, so none of those strings exist anywhere any more; the capability
+    does, so assert it where it now lives.
+    """
     body = client.get("/").text
-    assert "lightweight-charts" in body
-    assert "price-chart" in body
-    assert "rsi-chart" in body
-    assert "macd-chart" in body
+    bundle = client.get(re.search(r'src="(/assets/[^"]+\.js)"', body).group(1)).text
+    assert "d3" in bundle
+    assert "<svg" in bundle
 
 
 # ── Phase 5.8 — fleet-dispatched async analyze ───────────────────
@@ -728,8 +738,8 @@ def test_analyze_use_fleet_still_validates_symbol(fleet_client):
     assert res.status_code == 400
 
 
-def test_index_html_has_use_fleet_checkbox(client):
+def test_fleet_dispatch_is_bundled(client):
+    """Fleet dispatch survived the React rewrite; the checkbox markup did not."""
     body = client.get("/").text
-    assert "use-fleet" in body
-    assert "fleet (real LLM)" in body
-    assert "pollTask" in body
+    bundle = client.get(re.search(r'src="(/assets/[^"]+\.js)"', body).group(1)).text
+    assert "fleet" in bundle

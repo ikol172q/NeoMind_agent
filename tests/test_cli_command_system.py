@@ -295,13 +295,39 @@ class TestBuiltinCommands:
 
     @pytest.mark.asyncio
     async def test_exit_command(self):
+        from agent.cli_command_system import ExitRequested
+
         result = await self.dispatcher.dispatch("/exit")
-        assert result.text == "__EXIT__"
+        assert result.effect(ExitRequested) is not None
+
+    @pytest.mark.asyncio
+    async def test_exit_does_not_smuggle_the_signal_through_display_text(self):
+        """`text` is what the user sees. When it was also the control channel,
+        a command whose ordinary output happened to read "__EXIT__" would quit
+        the application, and a second frontend could not be written without
+        knowing the spelling of every sentinel."""
+        result = await self.dispatcher.dispatch("/exit")
+        assert "__EXIT__" not in result.text
+        assert "__" not in result.text
 
     @pytest.mark.asyncio
     async def test_mode_command_valid(self):
+        from agent.cli_command_system import ModeSwitchRequested
+
         result = await self.dispatcher.dispatch("/mode coding")
-        assert "__MODE_SWITCH__coding" in result.text
+        effect = result.effect(ModeSwitchRequested)
+        assert effect is not None
+        assert effect.target == "coding", (
+            "the argument is a field, not a substring the frontend slices out"
+        )
+        assert "__MODE_SWITCH__" not in result.text
+
+    @pytest.mark.asyncio
+    async def test_an_ordinary_command_carries_no_effects(self):
+        """The default has to be 'nothing to do', or every command becomes a
+        control signal by omission."""
+        result = await self.dispatcher.dispatch("/mode invalid")
+        assert result.effects == ()
 
     @pytest.mark.asyncio
     async def test_mode_command_invalid(self):
@@ -311,3 +337,58 @@ class TestBuiltinCommands:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestNoSentinelsRemain:
+    """Phase 6A task 1. A guard, because the sentinel pattern is easy to
+    reintroduce: it takes one `return CommandResult(text="__RELOAD__")` in a
+    new command and one matching `if result.text ==` in a frontend, and both
+    look reasonable in isolation."""
+
+    def test_no_module_returns_a_sentinel_in_command_text(self):
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        pattern = re.compile(r'CommandResult\([^)]*text\s*=\s*f?"__')
+        for path in list(root.glob("agent/**/*.py")) + list(root.glob("cli/**/*.py")):
+            if ".venv" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if pattern.search(text):
+                offenders.append(str(path.relative_to(root)))
+        assert offenders == [], (
+            f"control signals belong in `effects`, not in display text: {offenders}"
+        )
+
+    def test_no_frontend_compares_command_text_to_a_sentinel(self):
+        import pathlib
+        import re
+
+        root = pathlib.Path(__file__).resolve().parents[1]
+        offenders = []
+        pattern = re.compile(r'\.text\s*(==|\.startswith\()\s*f?"__')
+        for path in list(root.glob("cli/**/*.py")) + list(root.glob("agent/**/*.py")):
+            if ".venv" in path.parts:
+                continue
+            text = path.read_text(encoding="utf-8", errors="ignore")
+            if pattern.search(text):
+                offenders.append(str(path.relative_to(root)))
+        assert offenders == [], (
+            f"frontends should ask `result.effect(...)`: {offenders}"
+        )
+
+    def test_effects_are_immutable(self):
+        """A frontend that can mutate an effect can rewrite what it was
+        asked to do before acting on it."""
+        import dataclasses
+
+        import pytest as _pytest
+
+        from agent.cli_command_system import ExitRequested, ModeSwitchRequested
+
+        for cls in (ExitRequested, ModeSwitchRequested):
+            with _pytest.raises(dataclasses.FrozenInstanceError):
+                obj = cls()
+                setattr(obj, dataclasses.fields(obj)[0].name, "tampered")

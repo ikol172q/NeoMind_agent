@@ -2,7 +2,6 @@
 
 Tests cover:
 - _check_permission: all modes × all permission levels
-- _execute_tool_call: structured dispatch, validation, unknown tools
 - _run_agentic_loop: basic flow, multi-step, max iterations
 - Backward compatibility with legacy bash blocks
 - Per-tool permission levels (READ_ONLY auto-approves, WRITE/EXECUTE asks)
@@ -21,7 +20,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agent.tool_schema import PermissionLevel
 from agent.tool_parser import ToolCall
-from agent.tools import ToolResult
 
 
 def _make_interface(mode="coding", tmpdir=None):
@@ -70,8 +68,11 @@ class TestCheckPermission(unittest.TestCase):
     def test_auto_accept_always_approves(self, mock_config):
         mock_config.permission_mode = "auto_accept"
         tc = self._make_tc("Bash")
-        approved, auto = self.interface._check_permission(tc, False)
+        with patch("builtins.input") as mock_input:
+            approved, auto = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
+        self.assertTrue(auto)
+        mock_input.assert_not_called()
 
     @patch("cli.neomind_interface.agent_config")
     def test_auto_accept_write_tools(self, mock_config):
@@ -79,6 +80,30 @@ class TestCheckPermission(unittest.TestCase):
         tc = ToolCall("Write", {"path": "x", "content": "y"}, "raw")
         approved, auto = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
+
+    @patch("builtins.input", return_value="n")
+    @patch("cli.neomind_interface.agent_config")
+    def test_auto_accept_critical_bash_prompts_and_denies(self, mock_config, mock_input):
+        mock_config.permission_mode = "auto_accept"
+        tc = ToolCall("Bash", {"command": "rm -rf /tmp/neomind-critical-test"}, "raw")
+
+        approved, auto = self.interface._check_permission(tc, False)
+
+        self.assertFalse(approved)
+        self.assertFalse(auto)
+        mock_input.assert_called_once()
+
+    @patch("builtins.input", return_value="y")
+    @patch("cli.neomind_interface.agent_config")
+    def test_auto_accept_critical_bash_prompts_and_allows(self, mock_config, mock_input):
+        mock_config.permission_mode = "auto_accept"
+        tc = ToolCall("Bash", {"command": "rm -rf /tmp/neomind-critical-test"}, "raw")
+
+        approved, auto = self.interface._check_permission(tc, False)
+
+        self.assertTrue(approved)
+        self.assertFalse(auto)
+        mock_input.assert_called_once()
 
     # ── plan mode ──
 
@@ -178,9 +203,57 @@ class TestCheckPermission(unittest.TestCase):
         """Once auto_approved=True, no more prompts for this turn."""
         mock_config.permission_mode = "normal"
         tc = self._make_tc("Bash")
-        approved, auto = self.interface._check_permission(tc, True)  # already auto
+        with patch("builtins.input") as mock_input:
+            approved, auto = self.interface._check_permission(tc, True)  # already auto
         self.assertTrue(approved)
-        # No input() was called (no mock needed)
+        self.assertTrue(auto)
+        mock_input.assert_not_called()
+
+    @patch("builtins.input", return_value="n")
+    @patch("cli.neomind_interface.agent_config")
+    def test_auto_approved_critical_path_prompts_and_denies(self, mock_config, mock_input):
+        mock_config.permission_mode = "normal"
+        tc = ToolCall("Write", {"path": ".env", "content": "secret"}, "raw")
+
+        approved, auto = self.interface._check_permission(tc, True)
+
+        self.assertFalse(approved)
+        self.assertTrue(auto)
+        mock_input.assert_called_once()
+
+    @patch("builtins.input", return_value="y")
+    @patch("cli.neomind_interface.agent_config")
+    def test_auto_approved_critical_path_prompts_and_allows(self, mock_config, mock_input):
+        mock_config.permission_mode = "normal"
+        tc = ToolCall("Write", {"path": ".env", "content": "secret"}, "raw")
+
+        approved, auto = self.interface._check_permission(tc, True)
+
+        self.assertTrue(approved)
+        self.assertTrue(auto)
+        mock_input.assert_called_once()
+
+    @patch("builtins.input", side_effect=EOFError)
+    @patch("cli.neomind_interface.agent_config")
+    def test_critical_prompt_eof_denies(self, mock_config, mock_input):
+        mock_config.permission_mode = "auto_accept"
+        tc = ToolCall("Bash", {"command": "sudo true"}, "raw")
+
+        approved, _ = self.interface._check_permission(tc, False)
+
+        self.assertFalse(approved)
+        mock_input.assert_called_once()
+
+    @patch("builtins.input", side_effect=KeyboardInterrupt)
+    @patch("cli.neomind_interface.agent_config")
+    def test_critical_prompt_ctrl_c_denies(self, mock_config, mock_input):
+        mock_config.permission_mode = "auto_accept"
+        tc = ToolCall("Bash", {"command": "sudo true"}, "raw")
+
+        approved, _ = self.interface._check_permission(tc, False)
+
+        self.assertFalse(approved)
+        mock_input.assert_called_once()
 
     @patch("builtins.input", return_value="y")
     @patch("cli.neomind_interface.agent_config")
@@ -199,84 +272,6 @@ class TestCheckPermission(unittest.TestCase):
         approved, _ = self.interface._check_permission(tc, False)
         self.assertTrue(approved)
         mock_input.assert_called_once()
-
-
-class TestExecuteToolCall(unittest.TestCase):
-    """Test _execute_tool_call dispatches correctly."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.interface, self.chat = _make_interface(tmpdir=self.tmpdir)
-
-    def test_read_file(self):
-        # Create test file
-        test_file = os.path.join(self.tmpdir, "test.txt")
-        with open(test_file, "w") as f:
-            f.write("line 1\nline 2\n")
-
-        tc = ToolCall("Read", {"path": "test.txt"}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("line 1", result.output)
-
-    def test_glob_files(self):
-        for name in ["a.py", "b.py"]:
-            with open(os.path.join(self.tmpdir, name), "w") as f:
-                f.write("x")
-
-        tc = ToolCall("Glob", {"pattern": "*.py"}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("a.py", result.output)
-
-    def test_grep_files(self):
-        with open(os.path.join(self.tmpdir, "test.py"), "w") as f:
-            f.write("def main():\n    pass\n")
-
-        tc = ToolCall("Grep", {"pattern": "def main"}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("def main", result.output)
-
-    def test_write_file(self):
-        path = os.path.join(self.tmpdir, "new.txt")
-        tc = ToolCall("Write", {"path": path, "content": "hello\n"}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertTrue(os.path.exists(path))
-
-    def test_ls_directory(self):
-        with open(os.path.join(self.tmpdir, "file.txt"), "w") as f:
-            f.write("x")
-
-        tc = ToolCall("LS", {}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("file.txt", result.output)
-
-    def test_unknown_tool(self):
-        tc = ToolCall("NonExistent", {}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertFalse(result.success)
-        self.assertIn("Unknown tool", result.error)
-
-    def test_invalid_params(self):
-        tc = ToolCall("Read", {"path": 42}, "raw")  # path should be string
-        result = self.interface._execute_tool_call(tc)
-        self.assertFalse(result.success)
-        self.assertIn("Invalid params", result.error)
-
-    def test_missing_required_param(self):
-        tc = ToolCall("Read", {}, "raw")  # missing required "path"
-        result = self.interface._execute_tool_call(tc)
-        self.assertFalse(result.success)
-        self.assertIn("Invalid params", result.error)
-
-    def test_bash_execution(self):
-        tc = ToolCall("Bash", {"command": "echo hello_world"}, "raw")
-        result = self.interface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("hello_world", result.output)
 
 
 class TestAgenticLoopFlow(unittest.TestCase):
@@ -324,9 +319,11 @@ class TestAgenticLoopFlow(unittest.TestCase):
 
         # After re-prompt, assistant responds without tool call (ends loop)
         def fake_stream(prompt):
+            response = "The file imports os."
             chat.conversation_history.append(
-                {"role": "assistant", "content": "The file imports os."}
+                {"role": "assistant", "content": response}
             )
+            return response
         chat.stream_response = fake_stream
 
         interface._run_agentic_loop(max_iterations=2)
@@ -384,9 +381,15 @@ class TestAgenticLoopFlow(unittest.TestCase):
         call_count = [0]
         def fake_stream(prompt):
             call_count[0] += 1
-            chat.conversation_history.append(
-                {"role": "assistant", "content": '<tool_call>\n{"tool": "Bash", "params": {"command": "echo step"}}\n</tool_call>'}
+            response = (
+                '<tool_call>\n'
+                f'{{"tool": "Bash", "params": {{"command": "echo step_{call_count[0]}"}}}}\n'
+                '</tool_call>'
             )
+            chat.conversation_history.append(
+                {"role": "assistant", "content": response}
+            )
+            return response
         chat.stream_response = fake_stream
 
         chat.conversation_history = [

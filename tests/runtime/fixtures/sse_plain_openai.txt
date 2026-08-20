@@ -1,0 +1,6 @@
+data: {"id":"c2","choices":[{"index":0,"delta":{"role":"assistant"}}]}
+data: {"id":"c2","choices":[{"index":0,"delta":{"content":"Hello"}}]}
+data: {"id":"c2","choices":[{"index":0,"delta":{"content":", world."}}]}
+data: {"id":"c2","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}
+data: {"id":"c2","choices":[],"usage":{"prompt_tokens":4,"completion_tokens":3,"total_tokens":7}}
+data: [DONE]

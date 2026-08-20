@@ -15,7 +15,10 @@ from unittest.mock import patch, MagicMock
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Set a dummy API key for tests
-os.environ["DEEPSEEK_API_KEY"] = "test-key-for-tests"
+# setdefault, not assignment: this runs at import time, so a plain
+# assignment clobbers the real key for every test collected after
+# this module and silently 401s anything that makes a live call.
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-key-for-tests")
 # Disable vault and memory side effects during tests
 os.environ["NEOMIND_DISABLE_VAULT"] = "1"
 os.environ["NEOMIND_DISABLE_MEMORY"] = "1"
@@ -36,32 +39,42 @@ class TestSystemPromptDifferences(unittest.TestCase):
         self.agent_config_cls = AgentConfigManager
 
     def test_chat_system_prompt_has_first_principles(self):
-        """Chat mode should explicitly mention First Principles Thinking."""
+        """Chat mode should carry the first-principles axiom."""
         cfg = self.agent_config_cls(mode="chat")
-        self.assertIn("First Principles", cfg.system_prompt)
-        self.assertIn("First Principles Thinking", cfg.system_prompt)
+        # The pyramid rewrite moved this into the shared LAYER 0 axioms and
+        # spells it "first-principles" — the old "First Principles Thinking"
+        # heading no longer exists in any prompt.
+        self.assertIn("first-principles", cfg.system_prompt.lower())
 
     def test_chat_system_prompt_conversational_markers(self):
         """Chat mode should have conversational/assistant markers."""
         cfg = self.agent_config_cls(mode="chat")
         prompt = cfg.system_prompt
-        # Should mention being an AI assistant or conversational agent
+        # Markers are the LAYER 3 Chat persona's own wording now; the prompts
+        # are Chinese since the pyramid rewrite, so the old English strings
+        # ("AI assistant", "CHAT MODE", ...) matched nothing.
         self.assertTrue(
             any(marker in prompt for marker in [
-                "AI assistant",
-                "CHAT MODE",
-                "Conversational",
-                "help with general conversation",
-                "web search",
-                "webpages"
+                "Chat 模式行为",
+                "日常对话",
+                "WebSearch",
+                "认知延伸",
             ]),
             f"Chat prompt missing conversational markers. Got: {prompt[:200]}"
         )
 
     def test_coding_system_prompt_has_software_engineer(self):
-        """Coding mode should explicitly mention software engineer expertise."""
+        """Coding mode should declare a software-engineering role."""
         cfg = self.agent_config_cls(mode="coding")
-        self.assertIn("software engineer", cfg.system_prompt.lower())
+        prompt = cfg.system_prompt
+        # "software engineer" is gone: the LAYER 3 identity now reads
+        # "Coding Engine ... 技术认知延伸 — code review / debug / refactor".
+        # Assert the role it actually claims rather than the retired phrase.
+        self.assertIn("Coding Engine", prompt)
+        self.assertTrue(
+            any(marker in prompt for marker in ["code review", "debug", "refactor"]),
+            "Coding prompt should name its engineering duties",
+        )
 
     def test_coding_system_prompt_has_tool_system(self):
         """Coding mode should describe the tool system for code execution."""
@@ -81,9 +94,10 @@ class TestSystemPromptDifferences(unittest.TestCase):
         )
 
     def test_coding_system_prompt_first_principles(self):
-        """Coding mode should also emphasize First Principles for code."""
+        """Coding mode should also carry the first-principles axiom."""
         cfg = self.agent_config_cls(mode="coding")
-        self.assertIn("First Principles", cfg.system_prompt)
+        # Shared LAYER 0 axiom, spelled "first-principles" since the rewrite.
+        self.assertIn("first-principles", cfg.system_prompt.lower())
 
     def test_fin_system_prompt_has_finance_marker(self):
         """Finance mode should explicitly mention finance or investment."""
@@ -99,11 +113,16 @@ class TestSystemPromptDifferences(unittest.TestCase):
             f"Finance prompt missing finance markers. Got: {prompt[:200]}"
         )
 
-    def test_fin_system_prompt_has_cash_flow_analysis(self):
-        """Finance mode should mention cash flow analysis and fundamentals."""
+    def test_fin_system_prompt_has_analysis_mandate(self):
+        """Finance mode should state that it exists to support investment decisions."""
         cfg = self.agent_config_cls(mode="fin")
         prompt = cfg.system_prompt
-        self.assertIn("cash flow", prompt.lower())
+        # The literal "cash flow analysis" instruction is gone: the rewritten
+        # fin persona states its mandate as "金融认知延伸 — 帮用户做更好的投资决策"
+        # and enforces analysis quality through the LAYER 2 gates rather than by
+        # listing techniques. Assert the mandate that actually survives.
+        self.assertIn("Finance Engine", prompt)
+        self.assertIn("投资决策", prompt)
 
     def test_fin_system_prompt_disclaimer(self):
         """Finance mode should include financial disclaimer."""
@@ -130,22 +149,32 @@ class TestSystemPromptDifferences(unittest.TestCase):
         self.assertNotEqual(chat_cfg.system_prompt, fin_cfg.system_prompt)
         self.assertNotEqual(code_cfg.system_prompt, fin_cfg.system_prompt)
 
-        # Calculate rough similarity using word overlap
+        # Compare the persona sections, not the whole prompt. The pyramid
+        # architecture deliberately shares LAYER 0+1+2 (三才/八卦/GATE) across
+        # all three modes, so whole-prompt overlap now sits at 0.70-0.86 by
+        # design; asserting <0.8 on the full text tested the shared base rather
+        # than the differentiation. Persona overlap is 0.12-0.29.
+        import re
+
+        def persona(prompt):
+            match = re.search(r"══════ \w+ Persona[^\n]*══════(.*)$", prompt, re.S)
+            self.assertIsNotNone(match, "prompt has no persona section")
+            return match.group(1)
+
         def word_overlap(s1, s2):
             words1 = set(s1.lower().split())
             words2 = set(s2.lower().split())
             return len(words1 & words2) / max(len(words1), len(words2))
 
-        # Each pair should have <80% word overlap (truly different)
         for name1, cfg1, name2, cfg2 in [
             ("chat", chat_cfg, "coding", code_cfg),
             ("chat", chat_cfg, "fin", fin_cfg),
             ("coding", code_cfg, "fin", fin_cfg),
         ]:
-            overlap = word_overlap(cfg1.system_prompt, cfg2.system_prompt)
+            overlap = word_overlap(persona(cfg1.system_prompt), persona(cfg2.system_prompt))
             self.assertLess(
-                overlap, 0.8,
-                f"{name1} and {name2} prompts too similar (overlap: {overlap:.2f})"
+                overlap, 0.5,
+                f"{name1} and {name2} personas too similar (overlap: {overlap:.2f})"
             )
 
 
@@ -324,10 +353,15 @@ class TestCommandAvailability(unittest.TestCase):
         self.agent_config_cls = AgentConfigManager
 
     def test_chat_has_search_browse_commands(self):
-        """Chat mode should have search and browse commands."""
+        """Chat mode should have web-research commands."""
         cfg = self.agent_config_cls(mode="chat")
         self.assertIn("search", cfg.available_commands)
-        self.assertIn("browse", cfg.available_commands)
+        # /browse was split into the read/links/crawl/webmap family; chat keeps
+        # the web-reading side while /browse now lives only in coding.
+        self.assertTrue(
+            any(cmd in cfg.available_commands for cmd in ["read", "links", "crawl", "webmap"]),
+            f"Chat missing web-reading commands. Got: {cfg.available_commands}",
+        )
 
     def test_chat_has_remember_commands(self):
         """Chat mode should have remember/recall for user preferences."""
@@ -340,7 +374,10 @@ class TestCommandAvailability(unittest.TestCase):
     def test_chat_no_coding_commands(self):
         """Chat mode should NOT have /run, /edit, /git, /glob, /grep."""
         cfg = self.agent_config_cls(mode="chat")
-        coding_commands = ["run", "edit", "glob", "grep", "git", "read", "write", "find"]
+        # "read" is intentionally absent from this list: /read is chat's
+        # web-page reader (alongside /links, /crawl, /webmap), not the coding
+        # file reader. The rest remain coding-only.
+        coding_commands = ["run", "edit", "glob", "grep", "git", "write", "find"]
         for cmd in coding_commands:
             self.assertNotIn(cmd, cfg.available_commands,
                            f"Chat should not have /{cmd} command")
@@ -392,10 +429,14 @@ class TestCommandAvailability(unittest.TestCase):
         )
 
     def test_fin_has_search_and_browse(self):
-        """Finance mode should also have /search and /browse for research."""
+        """Finance mode should also have research commands."""
         cfg = self.agent_config_cls(mode="fin")
         self.assertIn("search", cfg.available_commands)
-        self.assertIn("browse", cfg.available_commands)
+        # Same /browse split as chat — fin keeps read/links/crawl.
+        self.assertTrue(
+            any(cmd in cfg.available_commands for cmd in ["read", "links", "crawl"]),
+            f"Fin missing research commands. Got: {cfg.available_commands}",
+        )
 
     def test_coding_no_finance_commands(self):
         """Coding mode should NOT have /stock, /portfolio, /alert."""
@@ -479,8 +520,10 @@ class TestModeSwitchPreservation(unittest.TestCase):
 
         self.assertNotEqual(chat_prompt, coding_prompt,
                            "System prompt should change on mode switch")
-        self.assertIn("software engineer", coding_prompt.lower())
-        self.assertNotIn("software engineer", chat_prompt.lower())
+        # "software engineer" was retired with the pyramid rewrite; the
+        # coding persona identifies itself as the Coding Engine.
+        self.assertIn("Coding Engine", coding_prompt)
+        self.assertNotIn("Coding Engine", chat_prompt)
 
     def test_mode_switch_updates_commands(self):
         """Switching modes should update available commands."""
@@ -573,30 +616,43 @@ class TestFinanceSpecificBehavior(unittest.TestCase):
         self.assertTrue(fin_cfg.thinking_mode,
                        "Finance mode should have thinking_mode=true")
 
-    def test_fin_model_is_kimi(self):
-        """Finance mode should use kimi-k2.5 for deep reasoning."""
+    def test_fin_model_and_thinking_mode(self):
+        """Finance mode should resolve a model and run with thinking enabled."""
         fin_cfg = self.agent_config_cls(mode="fin")
-        self.assertEqual(fin_cfg.model, "kimi-k2.5",
-                        f"Finance should use kimi-k2.5, got {fin_cfg.model}")
+        # Modes no longer pin distinct models — the LLM router picks per request
+        # and every mode resolves the same default. What still distinguishes fin
+        # is that it reasons with thinking_mode on.
+        self.assertTrue(fin_cfg.model, "fin should resolve a model")
+        self.assertTrue(fin_cfg.thinking_mode, "fin should enable thinking_mode")
 
     def test_fin_has_fallback_model(self):
         """Finance mode should have a fallback model specified."""
-        fin_cfg = self.agent_config_cls(mode="fin")
-        # fallback_model should be set to something reasonable
-        self.assertIsNotNone(fin_cfg.fallback_model,
-                            "Finance should have fallback_model defined")
+        # The per-mode fallback_model field is vestigial: core.py assigns it
+        # but nothing reads it for routing. Real fallback is provider-level
+        # NeoMindAgent._PROVIDERS[<provider>]["fallback_models"], so assert
+        # that instead of a dead config key.
+        from agent.core import NeoMindAgent
+
+        providers = getattr(NeoMindAgent, "_PROVIDERS", {})
+        self.assertTrue(providers, "no providers configured")
+        self.assertTrue(
+            any(prov.get("fallback_models") for prov in providers.values()),
+            "no provider defines fallback_models",
+        )
 
     def test_fin_system_prompt_has_data_sources(self):
         """Finance mode prompt should mention data sources and APIs."""
         fin_cfg = self.agent_config_cls(mode="fin")
         prompt = fin_cfg.system_prompt.lower()
+        # Data-source discipline is no longer prose about "APIs"; it is the
+        # LAYER 2 gate requiring every realtime number to come from a
+        # this-turn tool call, plus the named finance_* tools.
         self.assertTrue(
             any(marker in prompt for marker in [
-                "web search",
-                "financial data",
-                "apis",
-                "multiple sources",
-                "cite sources"
+                "finance_get_stock",
+                "finance_news_search",
+                "tool_call",
+                "tool result",
             ]),
             "Finance prompt should mention data sources"
         )
@@ -605,13 +661,14 @@ class TestFinanceSpecificBehavior(unittest.TestCase):
         """Finance mode prompt should emphasize quantification."""
         fin_cfg = self.agent_config_cls(mode="fin")
         prompt = fin_cfg.system_prompt.lower()
+        # Quantification is now expressed as the epistemic-label requirement
+        # (verified-by-tool / inferred / from-training-cutoff / guess / unknown)
+        # attached to every number, which is stricter than the old wording.
         self.assertTrue(
             any(marker in prompt for marker in [
-                "quantif",
-                "numbers",
-                "ranges",
-                "scenarios",
-                "confidence"
+                "置信度",
+                "verified-by-tool",
+                "from-training-cutoff",
             ]),
             "Finance prompt should emphasize quantification"
         )
@@ -802,12 +859,12 @@ class TestChatVsCodeVsFinDifferentiation(unittest.TestCase):
         code_cfg = self.agent_config_cls(mode="coding")
         fin_cfg = self.agent_config_cls(mode="fin")
 
-        # Chat and coding use the default
-        self.assertEqual(chat_cfg.model, "deepseek-chat")
-        self.assertEqual(code_cfg.model, "deepseek-chat")
-
-        # Finance uses specialized model for reasoning
-        self.assertEqual(fin_cfg.model, "kimi-k2.5")
+        # Model pinning per mode is gone: all three resolve the same default
+        # and the LLM router selects per request. The purpose-specific setting
+        # that survived is fin's thinking_mode.
+        self.assertTrue(chat_cfg.model)
+        self.assertTrue(code_cfg.model)
+        self.assertEqual(chat_cfg.model, code_cfg.model)
         self.assertTrue(fin_cfg.thinking_mode)
 
     def test_temperature_settings_appropriate(self):

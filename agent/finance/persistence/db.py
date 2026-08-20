@@ -70,16 +70,41 @@ def _prepare_dir(db_path: Path) -> None:
         logger.debug("chmod 0o700 not honoured on %s", parent)
 
 
+class _AutoClosingConnection(sqlite3.Connection):
+    """退出 ``with`` 块时: 先按 stdlib 语义提交/回滚, **然后关闭连接**。
+
+    🔴 2026-07-31 真事故 (与 neomind-dashboard 的满血版同步修复):
+    stdlib 的 ``with <sqlite3.Connection>`` **只管事务, 不关连接**。本仓 + dashboard
+    合计 **568 处**写成 ``with connect() as conn:``, 全都以为出块就还回去了。
+    短命脚本靠进程退出兜底, 所以长期没暴露; **长驻进程**每次调用泄漏 1 条连接 ×
+    3 个 fd (db / -wal / -shm)。
+
+    实测: scheduler 进程 (launchd, maxfiles 256) 攒到 **4,368 个 fd / 3,729 个 fin.db
+    句柄**, 自 2026-07-28 起每个 job 都死在 ``Errno 24 Too many open files``
+    → ``unable to open database file``, **35 个 job 里 34 个停摆 3 天**。
+
+    改基类安全的依据 (2026-07-31 实测): 568 处**全部**是 ``with connect() as ...``,
+    裸 ``x = connect()`` 0 处, 嵌套 ``with conn:`` 0 处 —— 没有跨多个 with 块复用连接的调用点。
+    """
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
 def connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     """Open a SQLite connection with project-wide pragmas applied.
 
-    Caller is responsible for ``commit()`` / ``close()``. Use as a
-    context manager (``with connect() as conn:``) for auto-commit on
-    success, rollback on exception.
+    **用作 context manager**: ``with connect() as conn:`` —— 成功提交 / 异常回滚,
+    并且**退出时自动关闭**(见 ``_AutoClosingConnection``)。
+    需要跨多个 ``with`` 块复用同一条连接时, 用 ``contextlib.closing`` 显式管理。
     """
     path = db_path or get_db_path()
     _prepare_dir(path)
-    conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None)
+    conn = sqlite3.connect(str(path), timeout=5.0, isolation_level=None,
+                           factory=_AutoClosingConnection)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
     conn.execute("PRAGMA journal_mode = WAL")

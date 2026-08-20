@@ -1350,20 +1350,43 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                     except Exception:
                         pass
 
+        # Vocabulary that only exists inside the system prompt. A line
+        # mentioning any of it is the model reasoning about its own
+        # instructions, which means nothing to the reader and quietly
+        # publishes how the agent is built. Observed live in the spinner:
+        # "No procedures needed really — no claims, no URLs, no current state
+        # dependencies", and "为了匹配该 persona 用 Bash".
+        _FRAMEWORK_WORDS = (
+            "persona", "system prompt", "procedure", "no claims", "framework",
+            "instruction", "guardrail", "policy", "we need answer",
+            "the user asks", "user wants", "comply", "i should", "let me think",
+            "框架", "人设", "系统提示", "指令", "护栏",
+        )
+
         def _summarize_thinking(text, max_len=100):
-            """Extract a brief summary from thinking content for spinner display."""
-            # Take the last meaningful sentence/phrase
+            """One short line describing what the model is doing, or nothing.
+
+            A blacklist is not a security boundary and is not claimed to be
+            one — reasoning is the model's own prose and can say anything.
+            It is a display filter: it drops the lines that were observed
+            leaking, and returns "" rather than a bad summary when nothing
+            clean is left, because no summary reads better than a confusing
+            one.
+            """
             lines = text.strip().split('\n')
             for line in reversed(lines):
                 line = line.strip()
-                if len(line) > 5:
-                    if len(line) > max_len:
-                        # Try to cut at a word boundary
-                        cut = line[:max_len].rfind(' ')
-                        if cut > max_len // 2:
-                            return line[:cut] + "…"
-                        return line[:max_len - 1] + "…"
-                    return line
+                if len(line) <= 5:
+                    continue
+                lowered = line.lower()
+                if any(word in lowered for word in _FRAMEWORK_WORDS):
+                    continue
+                if len(line) > max_len:
+                    cut = line[:max_len].rfind(' ')
+                    if cut > max_len // 2:
+                        return line[:cut] + "…"
+                    return line[:max_len - 1] + "…"
+                return line
             return ""
 
         def _update_thinking_spinner(reasoning_so_far):
@@ -1420,10 +1443,22 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                 content = delta.get("content", "")
                                 if content:
                                     # Filter DeepSeek thinking end token
+                                    _before_filter = content
                                     content = content.replace('<｜end▁of▁thinking｜>', '')
                                     content = content.replace('<|end▁of▁thinking|>', '')
-                                    if not content.strip():
-                                        continue  # Skip empty content after filtering
+                                    # Only suppress a delta the *filter* emptied.
+                                    # This used to be `if not content.strip()`,
+                                    # which also dropped genuine whitespace-only
+                                    # deltas — and a token boundary lands on a
+                                    # space constantly. That deleted the space
+                                    # out of `ls -F agent cli 2>/dev/null`,
+                                    # producing `cli2>/dev/null` in the model's
+                                    # own history, so it saw a typo it had not
+                                    # made and burned turns "correcting" it.
+                                    # Observed live in a coding session before
+                                    # this fix.
+                                    if not content and _before_filter:
+                                        continue
                                     if not is_final_response_active:
                                         # Transition: thinking → response
                                         # Clear any spinner remnants from stderr
@@ -1435,17 +1470,18 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
                                             _thinking_already_displayed = True
                                             # Show condensed thinking summary
                                             elapsed = time.time() - thinking_start_time
-                                            summary = _summarize_thinking(reasoning_content)
+                                            # Duration only. The summary is
+                                            # useful while the spinner runs —
+                                            # it shows the turn is alive — but
+                                            # in the scrollback it is a
+                                            # permanent line of the model
+                                            # talking to itself, and it was
+                                            # where the framework vocabulary
+                                            # ended up being read.
                                             if COLORS_ENABLED:
-                                                if summary:
-                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s — {summary}{COLOR_RESET}")
-                                                else:
-                                                    print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
+                                                print(f"{COLOR_THINKING}Thought for {elapsed:.1f}s{COLOR_RESET}")
                                             else:
-                                                if summary:
-                                                    print(f"Thought for {elapsed:.1f}s — {summary}")
-                                                else:
-                                                    print(f"Thought for {elapsed:.1f}s")
+                                                print(f"Thought for {elapsed:.1f}s")
                                         else:
                                             _notify_first_token()
                                         is_final_response_active = True
@@ -1599,11 +1635,21 @@ def stream_response(core, prompt: str, temperature: float = 0.7, max_tokens: int
             # ── Update QueryEngine budget for /cost command ───────────────
             if hasattr(core, '_query_engine') and core._query_engine:
                 try:
-                    from agent_config import agent_config as _ac
-                    pricing = _ac._config.get("cost", {}).get("model_pricing", {}).get(core.model, {})
-                    input_price = pricing.get("input", 0.0)  # per 1M tokens
-                    output_price = pricing.get("output", 0.0)
-                    cost = (prompt_tokens * input_price + completion_tokens * output_price) / 1_000_000
+                    # `_ac._config` has not existed since the config became a
+                    # context-scoped proxy, so this raised AttributeError on
+                    # every turn and the `except: pass` below turned it into a
+                    # silent zero — `/cost` has been reporting $0.0000 on this
+                    # path too, not just the migrated one.
+                    from agent.runtime.usage_accounting import (
+                        cost_for, pricing_for_model,
+                    )
+
+                    class _Chunk:
+                        pass
+
+                    _Chunk.prompt_tokens = prompt_tokens
+                    _Chunk.completion_tokens = completion_tokens
+                    cost = cost_for(_Chunk, pricing_for_model(core.model))
                     core._query_engine.budget.record_usage(
                         input_tokens=prompt_tokens,
                         output_tokens=completion_tokens,

@@ -164,7 +164,11 @@ class SafetyManager:
                 for root in [self.workspace_root, self.agent_root]:
                     if root:
                         try:
-                            rel = os.path.relpath(real, root)
+                            # realpath the root too: `real` is already resolved,
+                            # so comparing it against an unresolved root reports
+                            # a symlink whose target sits right next to it as
+                            # "outside the workspace" (/private/var vs /var).
+                            rel = os.path.relpath(real, os.path.realpath(root))
                             if not rel.startswith('..'):
                                 allowed = True
                                 break
@@ -396,13 +400,20 @@ class SafetyManager:
                 return False, traversal_reason
 
             abs_path = os.path.abspath(path)
+            # Compare on resolved paths. On macOS os.getcwd() hands back the
+            # real path (/private/var/...) while the configured root is often
+            # the symlinked spelling (/var/...), so a plain string comparison
+            # declared every relative path inside the workspace to be outside
+            # it. Same file, two spellings, two verdicts. realpath both sides;
+            # it also collapses any symlink hop inside the path itself.
+            real_path = os.path.realpath(abs_path)
 
             # Check if path is within allowed roots (workspace or agent root)
             allowed = False
             for root in [self.workspace_root, self.agent_root]:
                 if root:
                     try:
-                        rel_path = os.path.relpath(abs_path, root)
+                        rel_path = os.path.relpath(real_path, os.path.realpath(root))
                         if not rel_path.startswith('..'):
                             allowed = True
                             break
@@ -412,8 +423,8 @@ class SafetyManager:
             # Allow access to safe temp directories (e.g. macOS /var/folders)
             if not allowed:
                 for temp_dir in self.SAFE_TEMP_DIRS:
-                    temp_abs = os.path.abspath(temp_dir)
-                    if abs_path.startswith(temp_abs + os.sep):
+                    temp_abs = os.path.realpath(temp_dir)
+                    if real_path.startswith(temp_abs + os.sep):
                         allowed = True
                         break
             if not allowed:

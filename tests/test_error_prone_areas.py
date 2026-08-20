@@ -254,8 +254,21 @@ class TestToolRegistryExecErrors(unittest.TestCase):
         with open(filepath, "w") as f:
             f.write("original content")
 
-        # Simulate the file being deleted after the exists check
-        with patch("builtins.open", side_effect=FileNotFoundError("No such file")):
+        # Read first: _exec_edit refuses any path missing from _files_read.
+        self.registry.get_tool("Read").execute(path=filepath)
+
+        # Fail only the target file's open. A blanket builtins.open failure also
+        # hits SafetyService._ensure_audit_log inside _resolve_path, which runs
+        # before _exec_edit's try block, so the error escaped from the wrong
+        # place and the test never exercised the edit path.
+        real_open = open
+
+        def fail_only_target(file, *args, **kwargs):
+            if str(file).endswith("temp.txt"):
+                raise FileNotFoundError("No such file")
+            return real_open(file, *args, **kwargs)
+
+        with patch("builtins.open", side_effect=fail_only_target):
             result = self.registry._exec_edit("temp.txt", "original", "new")
             # Should return error gracefully
             self.assertFalse(result.success)

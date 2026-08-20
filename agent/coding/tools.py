@@ -1691,7 +1691,9 @@ class ToolRegistry:
         except (TypeError, ValueError):
             limit = 0
 
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        if blocked is not None:
+            return blocked
 
         # Deduplication: if exact same range was already read, return abbreviated
         range_key = (offset, limit)
@@ -1724,7 +1726,11 @@ class ToolRegistry:
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — file writes are disabled. Exit plan mode first.")
         result = self.write_file(path, content)
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        if blocked is not None:
+            # write_file already reported the rejection; return it rather than
+            # re-raising out of the metadata line below.
+            return result if not result.success else blocked
         result.metadata["file_path"] = resolved
         if result.success:
             # Bug #4 fix: phantom Write — write_file reported success but
@@ -1776,7 +1782,10 @@ class ToolRegistry:
         """Execute file edit with metadata and staleness detection."""
         if self._plan_mode:
             return ToolResult(False, error="Plan mode active — file edits are disabled. Exit plan mode first.")
-        resolved = self._resolve_path(path, operation='write')
+        try:
+            resolved = self._resolve_path(path, operation='write')
+        except ValueError as e:
+            return ToolResult(False, error=f"Path rejected: {e}")
         if resolved not in self._files_read:
             return ToolResult(False, error=f"Must Read '{path}' before editing. Use the Read tool first to see current content.")
 
@@ -2081,30 +2090,43 @@ class ToolRegistry:
         if path.startswith('~'):
             path = os.path.expanduser(path)
 
+        # Resolve relative inputs against the registry workspace before handing
+        # them to SafetyManager.  SafetyManager intentionally uses absolute-path
+        # checks; passing it the original relative input made its verdict depend
+        # on the process cwd instead of this registry's working_dir.
+        p = pathlib.Path(path)
+        if not p.is_absolute():
+            p = pathlib.Path(self.working_dir) / p
+        safety_path = os.path.abspath(str(p))
+
         # Run full safety check (includes protected files, path traversal, etc.)
         try:
             from agent.services.safety_service import SafetyManager
             sm = SafetyManager(workspace_root=self.working_dir)
             # Check is_path_safe (covers protected files, system dirs, etc.)
-            ok, reason = sm.is_path_safe(path, operation)
+            ok, reason = sm.is_path_safe(safety_path, operation)
             if not ok:
                 raise ValueError(f"Path security check failed: {reason}")
             # Also check path traversal specifically
-            ok, reason = sm.validate_path_traversal(path, operation)
+            ok, reason = sm.validate_path_traversal(safety_path, operation)
             if not ok:
                 raise ValueError(f"Path security check failed: {reason}")
         except ImportError:
             pass
 
-        p = pathlib.Path(path)
-        if not p.is_absolute():
-            p = pathlib.Path(self.working_dir) / p
         resolved = str(p.resolve())
         workspace_abs = str(pathlib.Path(self.working_dir).resolve())
+        try:
+            in_workspace = os.path.commonpath(
+                [resolved, workspace_abs]
+            ) == workspace_abs
+        except ValueError:
+            # Different drives on Windows cannot share a common path.
+            in_workspace = False
         # Allow workspace paths, /tmp/, and macOS temp dirs (/var/folders/)
         # macOS: /tmp is a symlink to /private/tmp, so include both
         _SAFE_EXTERNAL_PREFIXES = ("/tmp/", "/private/tmp/", "/var/folders/")
-        if not resolved.startswith(workspace_abs) and not any(
+        if not in_workspace and not any(
             resolved.startswith(prefix) for prefix in _SAFE_EXTERNAL_PREFIXES
         ):
             raise ValueError(f"Path '{path}' resolves outside workspace")
@@ -2186,6 +2208,24 @@ class ToolRegistry:
 
     # ── Read ─────────────────────────────────────────────────────────────
 
+    def _resolve_path_checked(self, path: str):
+        """Resolve a path, turning a safety rejection into a ToolResult.
+
+        _resolve_path raises ValueError for anything the safety layer blocks.
+        read_file / write_file / edit_file are documented to return a
+        ToolResult, and their callers treat a raise as a crash rather than a
+        tool failure — so a blocked path took the turn down instead of coming
+        back as an error the model could react to and correct. list_dir already
+        degraded gracefully; this makes the other three behave the same.
+
+        Returns (resolved_path, None) on success, or (None, ToolResult) when
+        the path was rejected.
+        """
+        try:
+            return self._resolve_path(path), None
+        except ValueError as e:
+            return None, ToolResult(False, error=f"Path rejected: {e}")
+
     def read_file(self, path: str, offset: int = 0, limit: int = 0, max_chars: int = 30000) -> ToolResult:
         """Read a file with line numbers.
 
@@ -2195,7 +2235,12 @@ class ToolRegistry:
             limit: Max lines to read (0 = all)
             max_chars: Max output characters (default 30K, middle-truncation)
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         if not os.path.exists(resolved):
             return ToolResult(False, error=f"File not found: {path}")
         if os.path.isdir(resolved):
@@ -2262,7 +2307,12 @@ class ToolRegistry:
             path: File path
             content: File content
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         try:
             # Create parent directories if needed
             os.makedirs(os.path.dirname(resolved), exist_ok=True)
@@ -2288,7 +2338,12 @@ class ToolRegistry:
             new_string: Replacement text
             replace_all: If True, replace all occurrences (default: first only)
         """
-        resolved = self._resolve_path(path)
+        resolved, blocked = self._resolve_path_checked(path)
+        # `is not None`, not a truth test: ToolResult.__bool__ is its
+        # success flag, so a rejection ToolResult is falsy and a plain
+        # `if blocked:` would sail straight past it with resolved=None.
+        if blocked is not None:
+            return blocked
         if not os.path.exists(resolved):
             return ToolResult(False, error=f"File not found: {path}")
 
@@ -2329,7 +2384,28 @@ class ToolRegistry:
             pattern: Glob pattern (e.g. "**/*.py", "src/**/*.ts")
             path: Base directory (default: working dir)
         """
-        base = pathlib.Path(path or self.working_dir)
+        # Both the base and the pattern could leave the workspace: `path` is
+        # caller-supplied, and pathlib follows ../ inside a pattern happily.
+        # test_glob_cannot_escape_workspace documented this as a known gap and
+        # skipped itself; glob_files("../*") really did return every file
+        # beside the workspace. Names alone are a leak even with read_file
+        # sandboxed — they carry usernames, project names and layout.
+        if path:
+            base_str, blocked = self._resolve_path_checked(path)
+            if blocked is not None:
+                return blocked
+            base = pathlib.Path(base_str)
+        else:
+            base = pathlib.Path(self.working_dir)
+
+        # realpath both sides: resolves ../ and refuses to be fooled by a
+        # symlink pointing out of the tree, the same way is_path_safe does.
+        root = os.path.realpath(self.working_dir)
+
+        def _inside(p: pathlib.Path) -> bool:
+            rp = os.path.realpath(str(p))
+            return rp == root or rp.startswith(root + os.sep)
+
         try:
             matches = list(base.glob(pattern))
             # Filter out common exclusions
@@ -2337,8 +2413,11 @@ class ToolRegistry:
             filtered = []
             for m in matches:
                 parts = m.parts
-                if not any(ex in parts for ex in excludes):
-                    filtered.append(m)
+                if any(ex in parts for ex in excludes):
+                    continue
+                if not _inside(m):
+                    continue
+                filtered.append(m)
 
             if not filtered:
                 return ToolResult(True, output=f"No files matching '{pattern}'")
@@ -2349,7 +2428,23 @@ class ToolRegistry:
             except OSError:
                 filtered.sort()  # Fallback to alphabetical
 
-            rel_paths = [str(m.relative_to(base)) for m in filtered]
+            # Report relative to the workspace root: after the containment
+            # filter a match need not sit under `base` (a pattern can climb
+            # and descend again), and relative_to would raise on those.
+            # Report relative to `base` when that reads naturally, and fall
+            # back to the workspace root otherwise. Everything here survived
+            # the containment filter, so a ../-prefixed answer would be both
+            # misleading and indistinguishable from a real escape — which is
+            # exactly what the security test keys on.
+            rel_paths = []
+            for m in filtered:
+                try:
+                    rel = str(m.relative_to(base))
+                except ValueError:
+                    rel = os.path.relpath(str(m), root)
+                if rel == ".." or rel.startswith(".." + os.sep):
+                    rel = os.path.relpath(os.path.realpath(str(m)), root)
+                rel_paths.append(rel)
             output = f"# {len(rel_paths)} files matching '{pattern}'\n" + "\n".join(rel_paths)
             return ToolResult(True, output=output)
         except Exception as e:

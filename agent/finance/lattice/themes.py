@@ -302,7 +302,16 @@ def _call_llm(prompt: str) -> Dict[str, Any]:
                     {"role": "user", "content": prompt},
                 ],
                 "temperature": 0.3,
-                "max_tokens": 200,
+                # DEFAULT_MODEL is a reasoning model and its reasoning
+                # tokens are billed against max_tokens, so a budget sized
+                # for the answer alone starves the answer. Measured on
+                # deepseek-v4-flash with a zh-CN-mixed taxonomy: reasoning
+                # alone hit the old 200 ceiling in 5 of 6 samples, giving
+                # finish_reason="length", a truncated body, a json.loads
+                # "Unterminated string", and a silent fall back to the
+                # English template. The narrative itself is only ~50-80
+                # tokens; the headroom here is for the reasoning pass.
+                "max_tokens": 800,
                 "response_format": {"type": "json_object"},
             },
             headers={"Authorization": f"Bearer {api_key}"},

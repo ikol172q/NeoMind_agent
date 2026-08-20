@@ -42,7 +42,7 @@ class TestCheckAndRunPending:
     def test_runs_health_check(self, scheduler, mock_evolve):
         actions = scheduler.check_and_run_pending()
         mock_evolve.run_startup_check.assert_called_once()
-        assert any("Health check" in a for a in actions)
+        assert any(a.startswith("Health:") for a in actions)
 
     def test_returns_actions(self, scheduler):
         actions = scheduler.check_and_run_pending()
@@ -57,7 +57,10 @@ class TestCheckAndRunPending:
     def test_no_evolve_instance(self):
         s = EvolutionScheduler(None)
         actions = s.check_and_run_pending()
-        assert actions == []
+        # The scheduler starts its heartbeat regardless of whether an evolve
+        # instance exists, and reports that as an action. Nothing evolution-
+        # related should run.
+        assert actions == ["Heartbeat writer started"]
 
 
 class TestOnSessionStart:
@@ -123,7 +126,7 @@ class TestOnSessionStart:
 
     def test_no_evolve_returns_empty(self):
         s = EvolutionScheduler(None)
-        assert s.on_session_start() == []
+        assert s.on_session_start() == ["Heartbeat writer started"]
 
 
 class TestOnTurnComplete:

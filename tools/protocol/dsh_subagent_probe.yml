@@ -1,0 +1,33 @@
+# Prove whether DSH actually spawns NeoMind, rather than trusting what it says.
+#
+# DSH's model has claimed "Delegated to the neomind subagent. Its reply: …"
+# with no NeoMind process ever started. The answer text is not evidence; a
+# side effect only the child could produce is. This config wraps the real
+# entry point in a shell that leaves a trace before exec'ing it.
+#
+# Usage — replace the two placeholders with absolute paths, then:
+#
+#   rm -f /tmp/neomind-spawn-proof.txt
+#   dsh --profile headless --patch tools/protocol/dsh_subagent_probe.yml \
+#       "Delegate to the neomind subagent: reply with exactly DELEGATION_PROOF"
+#   test -f /tmp/neomind-spawn-proof.txt && echo SPAWNED || echo "never ran"
+#
+# As of DSH v0.1.0-rc.7 with dsh-subagent-acp 0.0.1-rc.1 this prints
+# "never ran": the plugin declares no `dsh.bundle`, so it installs as a plain
+# dependency and never activates. The config still shows up in --dump-config.
+- insert:
+    - id: subagent-acp
+      name: '@deepseek-ai/dsh-subagent-acp'
+      config:
+        providerName: neomind
+        command: /bin/sh
+        args:
+          - '-c'
+          - >-
+            echo NEOMIND_SPAWNED >> /tmp/neomind-spawn-proof.txt;
+            exec <ABSOLUTE_PATH_TO_REPO>/.venv/bin/python
+            -m agent.integration.acp_stdio --mode chat
+        cwd: <ABSOLUTE_PATH_TO_REPO>
+        # DSH auto-answers rather than asking a human: `reject` refuses every
+        # tool, `allow_once` takes the first allow option. Choose deliberately.
+        permission: reject

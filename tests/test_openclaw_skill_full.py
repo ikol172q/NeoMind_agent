@@ -294,7 +294,10 @@ class TestOpenClawFinanceSkill:
     async def test_handle_portfolio(self, skill):
         """Test portfolio command."""
         result = await skill._handle_portfolio("", Mock())
-        assert "coming in Phase 3" in result or "Portfolio" in result
+        # Returns None on purpose: the handler delegates to LLM routing
+        # so the reply keeps the active personality, instead of the old
+        # fixed placeholder string.
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_handle_predict_no_args(self, skill):
@@ -335,13 +338,19 @@ class TestOpenClawFinanceSkill:
     async def test_handle_compare(self, skill):
         """Test compare command."""
         result = await skill._handle_compare("AAPL MSFT", Mock())
-        assert "Compare" in result or "coming" in result
+        # Returns None on purpose: the handler delegates to LLM routing
+        # so the reply keeps the active personality, instead of the old
+        # fixed placeholder string.
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_handle_watchlist(self, skill):
         """Test watchlist command."""
         result = await skill._handle_watchlist("", Mock())
-        assert "watchlist" in result.lower() or "usage" in result.lower()
+        # Returns None on purpose: the handler delegates to LLM routing
+        # so the reply keeps the active personality, instead of the old
+        # fixed placeholder string.
+        assert result is None
 
     @pytest.mark.asyncio
     async def test_handle_risk(self, skill):

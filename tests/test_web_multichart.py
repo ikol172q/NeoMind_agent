@@ -1,10 +1,17 @@
 """End-to-end validation for the multi-symbol comparison chart."""
 from __future__ import annotations
 
+import json
 import urllib.request
 
 import pytest
 from playwright.sync_api import Page, sync_playwright
+
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -41,18 +48,36 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
+def _seed(symbol: str, market: str = "US"):
+    """Put a symbol on the watchlist.
+
+    This file used to rely on whatever the dashboard already held. Ten other
+    web test files call _clear_watchlist / _reset_watchlist_and_paper, so in a
+    full-suite run the list is often empty by the time these run — they passed
+    alone and failed in the suite. Seed what we need instead.
+    """
+    req = urllib.request.Request(
+        BASE_URL + f"api/watchlist?project_id={PROJECT}",
+        data=json.dumps({"symbol": symbol, "market": market, "note": ""}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=15).read()
+
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="multi-chart-widget"]', timeout=10000)
 
 
 def test_initial_symbols_render_plot(page: Page):
+    _seed('AAPL')
+    _seed('MSFT')
     _open_research(page)
     # Default seeded with AAPL + MSFT — wait for plotly SVG
     page.wait_for_function(

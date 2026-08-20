@@ -17,6 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
+from unittest.mock import patch
 
 _test_dir = os.path.dirname(os.path.abspath(__file__))
 _agent_dir = os.path.dirname(_test_dir)
@@ -429,38 +430,47 @@ class TestSensitiveFileProtection(unittest.TestCase):
             pass
 
     def test_self_editor_safety_gates(self):
-        """SelfEditor should reject obviously dangerous edits.
-        Skip if SelfEditor is not available."""
+        """The AST gate must refuse a self-edit that calls os.system.
+
+        This used to skipTest("SelfEditor could not be instantiated") on
+        any host: REPO_DIR is /app and DATA_DIR is /data/neomind/evolution,
+        both Docker paths, so __init__ raised OSError outside the
+        container and a security boundary went permanently untested.
+        They are class attributes, so pointing them at a temp tree runs
+        the real gate.
+
+        It also used to accept a *successful* dangerous edit as "a known
+        gap" and pass anyway, and to swallow every exception. Both are
+        gone — this asserts the rejection and the reason, since being
+        refused because the test suite happened to fail would be luck,
+        not a safety guarantee.
+        """
         try:
             from agent.evolution.self_edit import SelfEditor
         except ImportError:
             self.skipTest("SelfEditor not available")
-        try:
-            editor = SelfEditor()
-        except Exception:
-            self.skipTest("SelfEditor could not be instantiated")
 
-        # Attempt to inject os.system call via self-edit
         dangerous_content = (
             "import os\n"
             "os.system('rm -rf /')\n"
         )
-        try:
-            success, message = editor.propose_edit(
-                "agent/test_target.py",
-                "Security test: inject os.system",
-                dangerous_content,
-            )
-            if not success:
-                # Safety gate blocked the edit — this is the expected result
-                self.assertFalse(success)
-            else:
-                # If it succeeded, the safety review may have passed it.
-                # Not ideal, but we document this as a known gap.
-                pass
-        except Exception:
-            # Any exception is acceptable — the edit was not silently applied
-            pass
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / "agent").mkdir(parents=True)
+            (repo / "agent" / "test_target.py").write_text("# placeholder\n")
+            with patch.object(SelfEditor, "REPO_DIR", repo), \
+                 patch.object(SelfEditor, "DATA_DIR", Path(tmp) / "evolution"):
+                editor = SelfEditor()
+                success, message = editor.propose_edit(
+                    "agent/test_target.py",
+                    "Security test: inject os.system",
+                    dangerous_content,
+                )
+
+        self.assertFalse(success, f"os.system edit must be refused, got: {message}")
+        self.assertIn("AST safety check", message)
+        self.assertIn("os.system", message)
 
 
 # ===================================================================

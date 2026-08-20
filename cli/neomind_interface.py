@@ -51,7 +51,7 @@ except ImportError:
 
 from agent.core import NeoMindAgent
 from agent.help_system import HelpSystem
-from agent_config import agent_config
+from agent_config import agent_config, bind_session_config
 
 # --- pygments imports (code block syntax highlighting) ---
 try:
@@ -98,11 +98,57 @@ def highlight_code_blocks_in_text(text: str) -> str:
 # Slash Command Completer
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _registry_descriptions() -> dict:
+    """Command descriptions read straight from the command registry.
+
+    ALL_DESCRIPTIONS below used to be a second, hand-maintained copy of the
+    same information, so every command added to the registry since it was
+    written had no description here — 34 of them across chat/coding/fin, which
+    is what test_all_descriptions_covers_all_commands catches. Reading the
+    registry keeps the two from drifting apart again.
+
+    Guarded: the completer must still work if the registry cannot be built.
+    """
+    try:
+        from agent.cli_command_system import create_default_registry
+
+        registry = create_default_registry()
+        commands = getattr(registry, "commands", None) or getattr(registry, "_commands", {})
+        return {
+            name: getattr(cmd, "description", "") or ""
+            for name, cmd in commands.items()
+        }
+    except Exception:
+        return {}
+
+
+# Commands that live outside the registry and so have to be named here.
+# Sourced from their own docstrings, not invented:
+#   speckit.*  — agent/coding/speckit/__init__.py module docstring
+#   links/crawl/webmap — the _shared_handle_*_command docstrings in
+#                        agent/services/shared_commands.py
+_EXTRA_DESCRIPTIONS = {
+    "links": "Extract links from a URL",
+    "crawl": "Crawl a website starting from a URL",
+    "webmap": "Generate a site map from a URL",
+    "speckit.constitution": "Scaffold project constitution",
+    "speckit.specify": "Create feature specification",
+    "speckit.clarify": "Resolve [NEEDS CLARIFICATION] markers",
+    "speckit.plan": "Generate implementation plan",
+    "speckit.tasks": "Break plan into tasks",
+    "speckit.analyze": "Cross-artifact consistency check",
+    "speckit.implement": "Execute implementation",
+    "speckit.checklist": "Generate quality checklist",
+    "speckit.status": "Show spec-kit state",
+}
+
+
 class SlashCommandCompleter(Completer):
     """Mode-aware slash command completer with descriptions."""
 
-    # All known command descriptions (superset)
-    ALL_DESCRIPTIONS = {
+    # All known command descriptions (superset). Hand-written entries below win
+    # over the registry so curated wording is preserved; see _build_descriptions.
+    _CURATED_DESCRIPTIONS = {
         # Shared
         "help": "Show available commands",
         "clear": "Clear conversation history",
@@ -184,6 +230,15 @@ class SlashCommandCompleter(Completer):
         "watchlist": "Manage tracked assets watchlist",
         "risk": "Assess portfolio risk (VaR, Sharpe, position sizing)",
         "calendar": "View upcoming financial events and earnings",
+    }
+
+    # Registry first, then the out-of-registry extras, then the curated text —
+    # so a command always has *some* description and the hand-written wording
+    # still wins where it exists.
+    ALL_DESCRIPTIONS = {
+        **_registry_descriptions(),
+        **_EXTRA_DESCRIPTIONS,
+        **_CURATED_DESCRIPTIONS,
     }
 
     def __init__(self, mode: str = "chat", help_system: Optional[HelpSystem] = None, command_registry=None):
@@ -282,6 +337,34 @@ class ConversationManager:
 # NeoMindInterface
 # ──────────────────────────────────────────────────────────────────────────────
 
+
+def _tp_open_pattern() -> str:
+    from agent.coding.tool_parser import _OPEN_DELIM_RE
+    return _OPEN_DELIM_RE.pattern
+
+
+def _tp_close_pattern() -> str:
+    from agent.coding.tool_parser import _CLOSE_DELIM_RE
+    return _CLOSE_DELIM_RE.pattern
+
+
+#: This family requires a real marker — the DSML word, or a fullwidth U+FF5C
+#: bar — before it will suppress anything. Matching a bare `<|tool_calls|>`
+#: swallowed prose that merely mentions the tag, which
+#: test_pipe_like_normal_text_passes_through has asserted since before this
+#: work: eating a user's sentence is worse than letting one payload through,
+#: and every payload observed in the wild carried the marker.
+_DSML_MARK = r'(?:\uff5c+\s*(?:DSML)?\s*\uff5c*|\|*\s*DSML\s*\|*)'
+
+
+def _tp_dsml_open(tag: str) -> str:
+    return rf'<\s*{_DSML_MARK}\s*{tag}\b[^>]*>'
+
+
+def _tp_dsml_close(tag: str) -> str:
+    return rf'<\s*/\s*{_DSML_MARK}\s*{tag}\s*>' 
+
+
 class NeoMindInterface:
     """NeoMind terminal chat interface."""
 
@@ -294,11 +377,19 @@ class NeoMindInterface:
         self._interrupt = False
         self._auto_approved = False  # Persists "always allow" across turns
 
-        # ── Phase 1: Claude Code CLI integration ────────────────────
-        # Use the new command system alongside legacy _handle_local_command.
-        # New system takes priority; if it returns None, falls through to legacy.
+        # ── One command registry (Phase 6A task 2) ──────────────────
+        # The registry is the only place that defines what commands exist.
+        # The terminal's own commands are declared into it here, so
+        # autocomplete, /help and the mode-availability check all read one
+        # list. It is `NeoMindAgent`'s per-instance registry, so these
+        # declarations are scoped to this session and never reach Telegram's.
         self._new_command_dispatcher = getattr(chat, '_command_dispatcher', None)
         self._new_command_registry = getattr(chat, '_command_registry', None)
+        from cli.ui_commands import register_ui_commands
+
+        self._ui_command_names = register_ui_commands(
+            self, self._new_command_registry
+        )
 
         # ── Phase 5: Fleet multi-agent monitor (2026-04-12) ─────────
         # In-session FleetSession wrapper; None when no fleet active.
@@ -613,60 +704,31 @@ class NeoMindInterface:
     # "future belongs to a different loop" errors (caught by Phase 5.10
     # iTerm2 live smoke 2026-04-12). Using a dedicated thread + persistent
     # loop fixes both problems in one move.
-    _fleet_bg_loop = None  # type: ignore
-    _fleet_bg_thread = None  # type: ignore
+    #: The loop a fleet runs on now belongs to `fleet.driver.FleetDriver`,
+    #: one per interface. It used to be two class attributes here, which meant
+    #: every interface in the process shared one loop and one thread — the same
+    #: shape as the process-wide config Phase 6A moved into the session, and a
+    #: mechanism any second frontend would have had to rebuild.
+
+    def _fleet_driver(self):
+        """This session's fleet driver, created on first use."""
+        driver = getattr(self, "_fleet_driver_obj", None)
+        if driver is None:
+            from fleet.driver import FleetDriver
+
+            driver = FleetDriver()
+            self._fleet_driver_obj = driver
+        return driver
 
     def _fleet_async_run(self, coro):
-        """Run an async coroutine on the dedicated background loop.
+        """Run a fleet coroutine and return its result.
 
-        Submits the coroutine via asyncio.run_coroutine_threadsafe and
-        blocks the CLI thread until it completes (or raises). Short
-        operations (start, stop, submit, status) complete in
-        milliseconds. Long operations should not be run through this
-        helper — the fleet's own background workers run on the same
-        loop and make progress independently of the CLI thread.
+        Blocks this thread. Short operations (start, stop, submit, status)
+        complete in milliseconds; the fleet's own workers keep running on the
+        same loop and make progress independently of the CLI thread, which is
+        why the loop is persistent rather than created per call.
         """
-        import asyncio
-        import threading
-        import time
-
-        # Lazy-create the background loop + thread on first call
-        cls = type(self)
-        if cls._fleet_bg_loop is None:
-            loop_ready = threading.Event()
-
-            def _run_loop():
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                cls._fleet_bg_loop = loop
-                loop_ready.set()
-                try:
-                    loop.run_forever()
-                finally:
-                    # Cancel any remaining tasks on teardown
-                    try:
-                        pending = asyncio.all_tasks(loop)
-                        for t in pending:
-                            t.cancel()
-                        if pending:
-                            loop.run_until_complete(
-                                asyncio.gather(*pending, return_exceptions=True)
-                            )
-                    except Exception:
-                        pass
-                    loop.close()
-
-            cls._fleet_bg_thread = threading.Thread(
-                target=_run_loop, name="neomind-fleet-loop", daemon=True,
-            )
-            cls._fleet_bg_thread.start()
-            loop_ready.wait(timeout=5.0)
-            if cls._fleet_bg_loop is None:
-                raise RuntimeError("fleet background loop failed to start")
-
-        # Submit the coroutine to the background loop and wait for it
-        future = asyncio.run_coroutine_threadsafe(coro, cls._fleet_bg_loop)
-        return future.result()
+        return self._fleet_driver().submit(coro)
 
     def _print_fleet_focus_banner(self) -> None:
         """Print a focus-change banner plus the last N turns of the
@@ -1121,6 +1183,55 @@ class NeoMindInterface:
             )
 
     # ── Command handling ──────────────────────────────────────────────────
+    #: Commands that work in every mode regardless of the personality's list.
+    #: `fleet` is here because a multi-agent monitor is not a property of the
+    #: personality you happen to be in.
+    _MODE_AGNOSTIC_COMMANDS = frozenset({
+        "quit", "exit", "help", "mode", "config", "skills", "careful",
+        "freeze", "unfreeze", "guard", "sprint", "evidence", "fleet",
+    })
+
+    def _mode_gate_message(self, user_input: str) -> Optional[str]:
+        """Why this command is unavailable here, or None if it is available."""
+        if not user_input.lstrip().startswith("/"):
+            return None
+        cmd = user_input.lstrip().split(maxsplit=1)[0][1:].lower()
+        if not cmd or cmd in self._MODE_AGNOSTIC_COMMANDS:
+            return None
+        allowed = agent_config.available_commands
+        if not allowed or cmd in allowed:
+            return None
+        # Declared by the frontend or the registry → available regardless of
+        # the personality's command list, which predates both.
+        registry = getattr(self, "_new_command_registry", None)
+        if registry is not None and registry.find(cmd) is not None:
+            return None
+
+        hint = {
+            "chat": "[dim]Hint: start with --mode coding for file and code operations[/dim]",
+            "fin": "[dim]Hint: use /stock, /crypto, /news, /compute for finance tools[/dim]",
+        }.get(self.chat.mode, "")
+        message = (
+            f"[yellow]/{cmd}[/yellow] is not available in "
+            f"[bold]{self.chat.mode}[/bold] mode"
+        )
+        return f"{message}\n{hint}" if hint else message
+
+    def _command_dispatch_failed(self, user_input: str, exc: Exception) -> Optional[bool]:
+        """A dispatcher that raised is a fault to report, not a verdict.
+
+        This used to set `result = None`, which means "not a command" — so a
+        crash inside `/permissions` handed the literal text `/permissions` to
+        the model as though the user had typed prose. The user saw a chat
+        reply about permissions and no indication anything had failed. Prose
+        is still passed through, because a bare `/` in a sentence should not
+        become an error.
+        """
+        if not user_input.lstrip().startswith("/"):
+            return None
+        self._print(f"[red]Command failed:[/red] {exc}")
+        return True
+
     def _handle_local_command(self, user_input: str) -> Optional[bool]:
         """Handle commands that this interface owns. Returns:
         - False  → quit
@@ -1130,6 +1241,17 @@ class NeoMindInterface:
         Phase 1: Tries the new Claude Code-style CommandDispatcher first.
         Falls through to legacy handler if the new system doesn't handle it.
         """
+        from agent.cli_command_system import ExitRequested, ModeSwitchRequested
+
+        # Mode gating, which used to live in the removed legacy chain. Without
+        # it a personality command typed in the wrong mode falls through to the
+        # model as prose, and the user gets a chat reply about `/run` instead
+        # of being told it is a coding-mode command.
+        gated = self._mode_gate_message(user_input)
+        if gated:
+            self._print(gated)
+            return True
+
         # ── Try new command system first (Claude Code pattern) ──────
         if self._new_command_dispatcher:
             try:
@@ -1151,10 +1273,10 @@ class NeoMindInterface:
                             agent=self.chat,
                         )
                     )
-                except Exception:
-                    result = None
-            except Exception:
-                result = None
+                except Exception as exc:
+                    return self._command_dispatch_failed(user_input, exc)
+            except Exception as exc:
+                return self._command_dispatch_failed(user_input, exc)
 
             if result is not None:
                 # Fall through to legacy handler for "Unknown command" —
@@ -1164,12 +1286,16 @@ class NeoMindInterface:
                     result = None  # Let legacy handler try
 
             if result is not None:
-                # Handle special result codes
-                if result.text == "__EXIT__":
+                # Control signals arrive as typed effects rather than sentinel
+                # values inside `text` — a command whose ordinary output
+                # happened to read "__EXIT__" used to quit the application,
+                # and a second frontend had to know every sentinel's spelling.
+                if result.effect(ExitRequested):
                     self._print("[dim]Goodbye![/dim]")
                     return False
-                if result.text.startswith("__MODE_SWITCH__"):
-                    target = result.text.replace("__MODE_SWITCH__", "")
+                mode_switch = result.effect(ModeSwitchRequested)
+                if mode_switch:
+                    target = mode_switch.target
                     ok = self.chat.switch_mode(target)
                     if ok and hasattr(self, '_completer') and self._completer:
                         self._completer.set_mode(target)
@@ -1197,287 +1323,90 @@ class NeoMindInterface:
                     self._print(result.text)
                 return True
 
-        # ── Legacy command handling (fallback) ──────────────────────
-        parts = user_input.split(maxsplit=1)
-        cmd = parts[0][1:].lower() if parts[0].startswith("/") else ""
-        args = parts[1].strip() if len(parts) > 1 else ""
-
-        # /fleet is always available regardless of mode — multi-agent
-        # monitor is a mode-agnostic capability.
-        if cmd == "fleet":
-            return self._handle_fleet_command(args)
-
-        # Check if command is allowed in current mode
-        allowed = agent_config.available_commands
-        if allowed and cmd not in allowed and cmd not in ("quit", "exit", "help", "mode", "config", "skills", "careful", "freeze", "unfreeze", "guard", "sprint", "evidence", "fleet"):
-            self._print(f"[yellow]/{cmd}[/yellow] is not available in [bold]{self.chat.mode}[/bold] mode")
-            if self.chat.mode == "chat":
-                self._print("[dim]Hint: start with --mode coding for file and code operations[/dim]")
-            elif self.chat.mode == "fin":
-                self._print("[dim]Hint: use /stock, /crypto, /news, /compute for finance tools[/dim]")
-            return True
-
-        if cmd in ("quit", "exit"):
-            self._print("[dim]Goodbye![/dim]")
-            return False
-
-        if cmd == "mode":
-            if not args:
-                self._print(f"Current mode: [bold]{self.chat.mode}[/bold]")
-                self._print("[dim]Usage: /mode chat | /mode coding | /mode fin[/dim]")
-                return True
-            target = args.lower().strip()
-            if target == self.chat.mode:
-                self._print(f"Already in [bold]{target}[/bold] mode")
-                return True
-            ok = self.chat.switch_mode(target)
-            if ok:
-                # Update completer for new mode's commands
-                if hasattr(self, '_completer') and self._completer:
-                    self._completer.set_mode(target)
-                # Re-display welcome for new mode
-                self.display_welcome()
-            return True
-
-        if cmd == "config":
-            parts = args.split(maxsplit=2) if args else []
-            if not parts or parts[0] == "show":
-                # Show current config
-                self._print(f"[bold]Mode:[/bold] {agent_config.mode}")
-                self._print(f"[bold]Model:[/bold] {agent_config.model}")
-                self._print(f"[bold]Temperature:[/bold] {agent_config.temperature}")
-                self._print(f"[bold]Max tokens:[/bold] {agent_config.max_tokens}")
-                self._print(f"[bold]Stream:[/bold] {agent_config.stream}")
-                self._print(f"[bold]Search:[/bold] {agent_config.search_enabled}")
-                self._print(f"[bold]Think:[/bold] {self.chat.thinking_enabled}")
-                self._print("[dim]Usage: /config set <key> <value>[/dim]")
-                self._print("[dim]  Keys: temperature, max_tokens, stream, search_enabled[/dim]")
-                self._print("[dim]  /config save — save current config to YAML[/dim]")
-            elif parts[0] == "set" and len(parts) >= 3:
-                key, val_str = parts[1], parts[2]
-                # Parse value
-                if val_str.lower() in ("true", "on", "yes"):
-                    val = True
-                elif val_str.lower() in ("false", "off", "no"):
-                    val = False
-                else:
-                    try:
-                        val = float(val_str) if "." in val_str else int(val_str)
-                    except ValueError:
-                        val = val_str
-                agent_config.set_runtime(key, val)
-                self._print(f"[green]✓[/green] {key} = {val}")
-            elif parts[0] == "save":
-                filepath = agent_config.save_config()
-                self._print(f"[green]✓[/green] Config saved to {filepath}")
-            else:
-                self._print("[yellow]Usage:[/yellow] /config show | /config set <key> <value> | /config save")
-            return True
-
-        if cmd == "clear":
-            self.chat.clear_history()
-            self._print("[green]✓[/green] Conversation cleared")
-            return True
-
-        if cmd == "think":
-            if args.lower() in ("on", "1", "true", "yes"):
-                self.chat.thinking_enabled = True
-            elif args.lower() in ("off", "0", "false", "no"):
-                self.chat.thinking_enabled = False
-            else:
-                # No argument or unrecognized → toggle
-                self.chat.thinking_enabled = not self.chat.thinking_enabled
-            status = "[green]ON[/green]" if self.chat.thinking_enabled else "[red]OFF[/red]"
-            self._print(f"Thinking mode: {status}")
-            return True
-
-        if cmd == "debug":
-            if args == "dump":
-                # Show buffered debug messages from recent requests
-                if self.chat.status_buffer:
-                    self._print("[dim]── Debug log ──[/dim]")
-                    for entry in self.chat.status_buffer[-30:]:
-                        lvl = entry.get("level", "info")
-                        msg = entry["message"]
-                        self._print(f"[dim]  [{lvl}] {msg}[/dim]")
-                    self._print(f"[dim]── {len(self.chat.status_buffer)} entries total ──[/dim]")
-                else:
-                    self._print("[dim]No debug messages yet[/dim]")
-            elif args == "clear":
-                self.chat.status_buffer = []
-                self._print("[green]✓[/green] Debug log cleared")
-            else:
-                # Toggle verbose mode
-                self.chat.verbose_mode = not self.chat.verbose_mode
-                if self.chat.verbose_mode:
-                    self._print("[yellow]Debug mode: on[/yellow] — all status messages will be shown")
-                else:
-                    self._print("[yellow]Debug mode: off[/yellow] — clean output")
-            return True
-
-        if cmd == "history":
-            for i, msg in enumerate(self.chat.conversation_history, 1):
-                role = msg["role"].capitalize()
-                preview = msg["content"][:120].replace("\n", " ")
-                if len(msg["content"]) > 120:
-                    preview += "…"
-                self._print(f"  {i}. [{role}] {preview}")
-            return True
-
-        if cmd == "save":
-            try:
-                fp = self.conv_mgr.save(self.chat, args or None)
-                self._print(f"[green]✓[/green] Saved → {fp}")
-            except Exception as e:
-                self._print(f"[red]✗[/red] Save failed: {e}")
-            return True
-
-        if cmd == "load":
-            if not args:
-                convs = self.conv_mgr.list_all()
-                if convs:
-                    self._print("[bold]Saved conversations:[/bold]")
-                    for c in convs[:20]:
-                        self._print(f"  • {c}")
-                else:
-                    self._print("[dim]No saved conversations[/dim]")
-            else:
-                data = self.conv_mgr.load(args)
-                if data:
-                    self.chat.conversation_history = data.get("history", [])
-                    self._print(f"[green]✓[/green] Loaded: {args}")
-                else:
-                    self._print(f"[red]✗[/red] Not found: {args}")
-            return True
-
-        if cmd == "help" and not args:
-            mode_label = self.chat.mode
-            self._print(f"[bold]Commands ({mode_label} mode):[/bold]")
-            allowed = agent_config.available_commands
-            for c in sorted(allowed):
-                desc = SlashCommandCompleter.ALL_DESCRIPTIONS.get(c, "")
-                self._print(f"  /{c:<14} {desc}")
-            return True
-
-        if cmd == "transcript":
-            self._show_transcript(args)
-            return True
-
-        if cmd == "expand":
-            self._show_expand(args)
-            return True
-
-        if cmd == "permissions":
-            current = agent_config.permission_mode
-            if not args:
-                # Toggle between normal and auto_accept
-                new_mode = "auto_accept" if current == "normal" else "normal"
-                agent_config.permission_mode = new_mode
-            elif args in ("normal", "auto_accept", "auto", "plan"):
-                new_mode = "auto_accept" if args == "auto" else args
-                agent_config.permission_mode = new_mode
-            else:
-                self._print(f"[yellow]Usage:[/yellow] /permissions [normal|auto|plan]")
-                self._print(f"  [dim]Current: {current}[/dim]")
-                return True
-            mode_display = {
-                "normal": "[cyan]normal[/cyan] — ask before each command",
-                "auto_accept": "[green]auto_accept[/green] — run all commands automatically",
-                "plan": "[yellow]plan[/yellow] — read-only, no execution",
-            }
-            self._print(f"Permissions: {mode_display[agent_config.permission_mode]}")
-            return True
-
-        # ── Skill System ──────────────────────────────────────────
-        if cmd == "skills":
-            from agent.skills import get_skill_loader
-            loader = get_skill_loader()
-            if args:
-                skill = loader.get(args)
-                if skill:
-                    self._print(f"[bold]{skill.name}[/bold] — {skill.description}")
-                    self._print(f"[dim]Modes: {', '.join(skill.modes)} | v{skill.version}[/dim]")
-                    self._print(f"\n{skill.body[:500]}")
-                else:
-                    self._print(f"[yellow]Skill not found: {args}[/yellow]")
-            else:
-                self._print(loader.format_skill_list(mode=self.chat.mode))
-            return True
-
-        # ── Safety Guards ────────────────────────────────────────
-        if cmd == "careful":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            guard.enable_careful()
-            self._print("[green]✓[/green] Careful mode: [bold]ON[/bold] — will warn before destructive ops")
-            return True
-
-        if cmd == "freeze":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            directory = args or os.getcwd()
-            guard.enable_freeze(directory)
-            self._print(f"[cyan]🧊[/cyan] Freeze: edits restricted to [bold]{directory}[/bold]")
-            return True
-
-        if cmd == "unfreeze":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            guard.disable_freeze()
-            self._print("[green]✓[/green] Freeze removed — edits unrestricted")
-            return True
-
-        if cmd == "guard":
-            from agent.workflow.guards import get_guard
-            guard = get_guard()
-            directory = args or os.getcwd()
-            guard.enable_guard(directory)
-            self._print(f"[green]✓[/green] Guard mode: careful + freeze to [bold]{directory}[/bold]")
-            return True
-
-        # ── Sprint ───────────────────────────────────────────────
-        if cmd == "sprint":
-            from agent.workflow.sprint import SprintManager
-            mgr = SprintManager()
-            if args.startswith("new "):
-                goal = args[4:].strip()
-                sprint = mgr.create(goal, mode=self.chat.mode)
-                self._print(f"[green]✓[/green] Sprint created: {sprint.id}")
-                self._print(mgr.format_status(sprint.id))
-            elif args == "status":
-                for sid, s in mgr._active_sprints.items():
-                    self._print(mgr.format_status(sid))
-            elif args == "next":
-                for sid in list(mgr._active_sprints.keys()):
-                    phase = mgr.advance(sid)
-                    if phase:
-                        self._print(f"[green]▶️[/green] Now: {phase.name}")
-                    else:
-                        self._print("[green]✓[/green] Sprint completed!")
-                    break
-            elif args == "skip":
-                for sid in list(mgr._active_sprints.keys()):
-                    phase = mgr.skip_phase(sid)
-                    if phase:
-                        self._print(f"[yellow]⏭️[/yellow] Skipped → {phase.name}")
-                    break
-            else:
-                self._print("Usage: /sprint new <goal> | /sprint status | /sprint next | /sprint skip")
-            return True
-
-        # ── Evidence Trail ───────────────────────────────────────
-        if cmd == "evidence":
-            from agent.workflow.evidence import get_evidence_trail
-            trail = get_evidence_trail()
-            if args == "stats":
-                stats = trail.get_stats()
-                self._print(f"Evidence: {stats.get('total', 0)} entries, {stats.get('log_size_kb', 0)} KB")
-            else:
-                self._print(trail.format_recent(10))
+        # One registry defines the commands. There is no second chain.
+        #
+        # There used to be: 21 `if cmd == ...` branches here, of which 14 were
+        # already shadowed — the dispatcher above answers and returns, so those
+        # bodies could not run, while still looking like the place to edit
+        # `/clear`. They were only reachable when the registry failed to build,
+        # and silently serving a *different* implementation of a command is
+        # worse than saying the registry is broken. The remaining seven are
+        # genuinely frontend-owned and are now declared in the same registry by
+        # `cli/ui_commands.py`.
+        if self._new_command_dispatcher is None:
+            self._print(
+                "[red]Command registry unavailable[/red] — slash commands are "
+                "disabled for this session. Start with [bold]/debug[/bold] logs "
+                "to see why it failed to build."
+            )
             return True
 
         # Not a local command
         return None
+
+    # ── Frontend-owned commands ──────────────────────────────────────────
+    #
+    # Declared in the one registry by `cli/ui_commands.py` and executed here.
+    # They draw, they read interface state, and they mean nothing to a chat
+    # surface — but "what commands exist" still has to have a single answer,
+    # or autocomplete, /help and the mode-availability check each learn a
+    # different list.
+
+    def _ui_cmd_freeze(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        guard = get_guard()
+        directory = args or os.getcwd()
+        guard.enable_freeze(directory)
+        self._print(f"[cyan]🧊[/cyan] Freeze: edits restricted to [bold]{directory}[/bold]")
+
+    def _ui_cmd_unfreeze(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        get_guard().disable_freeze()
+        self._print("[green]✓[/green] Freeze removed — edits unrestricted")
+
+    def _ui_cmd_guard(self, args: str) -> None:
+        from agent.workflow.guards import get_guard
+        guard = get_guard()
+        directory = args or os.getcwd()
+        guard.enable_guard(directory)
+        self._print(f"[green]✓[/green] Guard mode: careful + freeze to [bold]{directory}[/bold]")
+
+    def _ui_cmd_sprint(self, args: str) -> None:
+        from agent.workflow.sprint import SprintManager
+        mgr = SprintManager()
+        if args.startswith("new "):
+            goal = args[4:].strip()
+            sprint = mgr.create(goal, mode=self.chat.mode)
+            self._print(f"[green]✓[/green] Sprint created: {sprint.id}")
+            self._print(mgr.format_status(sprint.id))
+        elif args == "status":
+            for sid, s in mgr._active_sprints.items():
+                self._print(mgr.format_status(sid))
+        elif args == "next":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.advance(sid)
+                if phase:
+                    self._print(f"[green]▶️[/green] Now: {phase.name}")
+                else:
+                    self._print("[green]✓[/green] Sprint completed!")
+                break
+        elif args == "skip":
+            for sid in list(mgr._active_sprints.keys()):
+                phase = mgr.skip_phase(sid)
+                if phase:
+                    self._print(f"[yellow]⏭️[/yellow] Skipped → {phase.name}")
+                break
+        else:
+            self._print("Usage: /sprint new <goal> | /sprint status | /sprint next | /sprint skip")
+
+    def _ui_cmd_evidence(self, args: str) -> None:
+        from agent.workflow.evidence import get_evidence_trail
+        trail = get_evidence_trail()
+        if args == "stats":
+            stats = trail.get_stats()
+            self._print(f"Evidence: {stats.get('total', 0)} entries, {stats.get('log_size_kb', 0)} KB")
+        else:
+            self._print(trail.format_recent(10))
 
     # ── Fact extraction for /compact ──────────────────────────────────────
     @staticmethod
@@ -1767,21 +1696,80 @@ class NeoMindInterface:
         Suppresses:
         - Bash code fences: ```bash, ```shell, ```sh, ```console
         - Python code fences: ```python (LLM fallback)
-        - Structured tool calls: <tool_call>...</tool_call>
+        - Structured tool calls using either ``<tool_call>`` or DeepSeek's
+          pipe-delimited ``<|tool_call|>`` protocol tags
         """
 
         _OPEN_RE = re.compile(r'```(?:bash|shell|sh|console|python)[ \t]*\n')
-        _TOOL_CALL_OPEN_RE = re.compile(r'<tool_call>\s*')
+        # A fourth copy of the delimiter list lived here, knowing only the
+        # ASCII spellings — so DeepSeek's fullwidth `<｜｜DSML｜｜tool_calls>`
+        # and its `invoke` form streamed to the screen in fragments
+        # ("</｜｜DSML｜｜tool_ca" … "lls>") while parse() and strip_tool_call()
+        # handled them fine. Built from the parser's own patterns instead, so
+        # a spelling the parser learns is a spelling this suppresses.
+        _TOOL_CALL_OPEN_RE = re.compile(
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>'
+            + r'|' + _tp_open_pattern()
+            + r')\s*'
+        )
+
+        #: The XML-shaped family is tracked separately because it nests:
+        #: `invoke` sits inside `tool_calls`, so accepting `</invoke>` as the
+        #: end of the block released suppression early and left the outer
+        #: `</｜｜DSML｜｜tool_calls>` on screen.
+        #: `invoke` nests inside `tool_calls`, so the tag that opened the block
+        #: is the only one allowed to close it. Accepting either — as the first
+        #: version did — let `</invoke>` end the outer block and leave
+        #: `</｜｜DSML｜｜tool_calls>` on screen.
+        _DSML_OPENERS = (
+            ("tool_calls", re.compile(_tp_dsml_open("tool_calls"), re.IGNORECASE)),
+            ("invoke", re.compile(_tp_dsml_open("invoke"), re.IGNORECASE)),
+        )
+        _DSML_CLOSERS = {
+            "tool_calls": re.compile(_tp_dsml_close("tool_calls"), re.IGNORECASE),
+            "invoke": re.compile(_tp_dsml_close("invoke"), re.IGNORECASE),
+        }
         # LLM sometimes hallucinates closing tags: </tool_result>, </tool_report>,
         # or truncated </tool_re, </tool_r, etc. Match all with one regex.
-        _TOOL_CALL_CLOSE_RE = re.compile(r'</tool_(?:call|result|report|re)\s*>')
+        _TOOL_CALL_CLOSE_RE = re.compile(
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>'
+            + r'|' + _tp_close_pattern()
+            + r')'
+        )
         # Orphan closing tags that may leak without a matching opener
-        _ORPHAN_CLOSE_RE = re.compile(r'\s*</tool_(?:call|result|report|re)\s*>\s*')
+        _ORPHAN_CLOSE_RE = re.compile(
+            r'\s*(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)\s*'
+        )
+        # Retain enough undecided input to recognize the longest protocol tag
+        # when it is split across streaming chunks.
+        _OPEN_TAIL_LEN = max(
+            len('<tool_call>'),
+            len('<|tool_call|>'),
+            len('<|tool_call_begin|>'),
+            len('```console\n'),
+        )
+        # Sized for the longest closing tag, since a shorter retention cuts a
+        # tag that straddles two chunks in half and prints the remainder. This
+        # was 18, computed before the DSML forms existed; `</｜｜DSML｜｜tool_calls>`
+        # is 21, so three characters survived as "lls>" on screen after an
+        # otherwise correctly suppressed block.
+        _CLOSE_TAIL_LEN = max(
+            len('</tool_report>'),
+            len('<|/tool_call|>'),
+            len('<|tool_call_end|>'),
+            len('<|/tool_call_end|>'),
+            len('</｜｜DSML｜｜tool_calls>'),
+            len('</｜｜DSML｜｜tool_call>'),
+            len('</｜｜DSML｜｜invoke>'),
+        )
 
         def __init__(self):
             self._buf = ""
             self._suppressing = False
-            self._suppress_type = None  # "fence" or "tool_call"
+            self._suppress_type = None  # "fence" | "tool_call" | "dsml_block"
+            self._dsml_tag = "tool_calls"
             self._after_tool_result = False
 
         def write(self, text: str) -> str:
@@ -1806,14 +1794,28 @@ class NeoMindInterface:
                             rest = rest[1:]
                         self._buf = rest
                         continue
+                    elif self._suppress_type == "dsml_block":
+                        m_close = self._DSML_CLOSERS[
+                            getattr(self, "_dsml_tag", "tool_calls")
+                        ].search(self._buf)
+                        if not m_close:
+                            if len(self._buf) > self._CLOSE_TAIL_LEN:
+                                self._buf = self._buf[-self._CLOSE_TAIL_LEN:]
+                            break
+                        self._suppressing = False
+                        self._suppress_type = None
+                        rest = self._buf[m_close.end():]
+                        if rest.startswith('\n'):
+                            rest = rest[1:]
+                        self._buf = rest
+                        continue
                     elif self._suppress_type == "tool_call":
                         # Check all LLM-hallucinated closing tag variants
                         m_close = self._TOOL_CALL_CLOSE_RE.search(self._buf)
                         if not m_close:
-                            # Keep tail for partial match (enough for longest close tag)
-                            max_close_len = 18  # </tool_report> is longest
-                            if len(self._buf) > max_close_len:
-                                self._buf = self._buf[-max_close_len:]
+                            # Keep tail for a closing tag split across chunks.
+                            if len(self._buf) > self._CLOSE_TAIL_LEN:
+                                self._buf = self._buf[-self._CLOSE_TAIL_LEN:]
                             break
                         # Found closing tag — skip past it
                         self._suppressing = False
@@ -1843,6 +1845,13 @@ class NeoMindInterface:
                     elif m_fence:
                         match, match_type = m_fence, "fence"
 
+                    for _tag, _open_re in self._DSML_OPENERS:
+                        m_dsml = _open_re.search(self._buf)
+                        if m_dsml and (match is None or m_dsml.start() < match.start()):
+                            match, match_type = m_dsml, "dsml_block"
+                            self._dsml_tag = _tag
+                            break
+
                     if match:
                         # Strip trailing newlines before the suppressed block
                         output += self._buf[:match.start()].rstrip('\n')
@@ -1859,9 +1868,9 @@ class NeoMindInterface:
                         continue
 
                     # Keep a small tail in case a tag straddles two chunks
-                    if len(self._buf) > 15:
-                        safe = self._buf[:-15]
-                        self._buf = self._buf[-15:]
+                    if len(self._buf) > self._OPEN_TAIL_LEN:
+                        safe = self._buf[:-self._OPEN_TAIL_LEN]
+                        self._buf = self._buf[-self._OPEN_TAIL_LEN:]
                         output += safe
                     break
 
@@ -1983,33 +1992,6 @@ class NeoMindInterface:
                 self._tool_registry = None
         return self._tool_registry
 
-    def _execute_tool_call(self, tool_call) -> 'ToolResult':
-        """Execute a parsed ToolCall through the registry.
-
-        For structured tool calls (Read, Edit, Grep, etc.), dispatches to
-        the registered tool definition's execute function with validated params.
-        For legacy bash blocks, falls back to Bash tool.
-
-        Returns a ToolResult.
-        """
-        registry = self._get_tool_registry()
-        tool_def = registry.get_tool(tool_call.tool_name)
-
-        if tool_def is None:
-            # Unknown tool — try Bash as fallback for legacy compatibility
-            from agent.tools import ToolResult
-            return ToolResult(False, error=f"Unknown tool: {tool_call.tool_name}")
-
-        # Validate params
-        valid, error = tool_def.validate_params(tool_call.params)
-        if not valid:
-            from agent.tools import ToolResult
-            return ToolResult(False, error=f"Invalid params: {error}")
-
-        # Apply defaults and execute
-        params = tool_def.apply_defaults(tool_call.params)
-        return tool_def.execute(**params)
-
     def _check_permission(self, tool_call, auto_approved: bool) -> tuple:
         """Interactive permission dialog for tool execution.
 
@@ -2028,6 +2010,25 @@ class NeoMindInterface:
         else:
             level = PermissionLevel.EXECUTE
 
+        tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
+        params = tool_call.params if hasattr(tool_call, 'params') else {}
+
+        # Classify dynamic risk before any mode/session shortcut.  In particular,
+        # auto_accept and the per-session "always" choice must not bypass a
+        # CRITICAL command or path.
+        risk_label = ""
+        explanation = ""
+        pm = None
+        try:
+            from agent.services.permission_manager import PermissionManager
+            pm = PermissionManager()
+            risk = pm.classify_risk(tool_name, level.value, params)
+            risk_label = risk.value.upper()
+        except Exception:
+            # If dynamic classification is unavailable, fail closed for every
+            # non-read action rather than letting an auto-approval shortcut run.
+            risk_label = "LOW" if level == PermissionLevel.READ_ONLY else "CRITICAL"
+
         # Plan mode: only READ_ONLY tools run
         if perm_mode == "plan":
             if level == PermissionLevel.READ_ONLY:
@@ -2035,13 +2036,15 @@ class NeoMindInterface:
             self._print("[dim]  \u2298 Blocked (plan mode)[/dim]")
             return False, auto_approved
 
-        # Auto-accept mode or already auto-approved this turn
-        if perm_mode == "auto_accept" or auto_approved:
-            return True, auto_approved if perm_mode != "auto_accept" else True
+        # The explicitly named bypass mode is the sole CRITICAL shortcut.
+        if perm_mode == "bypass":
+            return True, auto_approved
 
-        # Normal mode: READ_ONLY tools auto-approve (no prompt)
+        # READ_ONLY tools and noncritical auto-approved calls need no prompt.
         if level == PermissionLevel.READ_ONLY:
             return True, auto_approved
+        if risk_label != "CRITICAL" and (perm_mode == "auto_accept" or auto_approved):
+            return True, auto_approved if perm_mode != "auto_accept" else True
 
         # Show interactive permission dialog for WRITE/EXECUTE/DESTRUCTIVE tools
         level_colors = {
@@ -2051,20 +2054,11 @@ class NeoMindInterface:
         }
         color = level_colors.get(level, "yellow")
 
-        tool_name = tool_call.tool_name if hasattr(tool_call, 'tool_name') else str(tool_call)
-        params = tool_call.params if hasattr(tool_call, 'params') else {}
-
-        # Get risk level and explanation from PermissionManager
-        risk_label = ""
-        explanation = ""
-        try:
-            from agent.services.permission_manager import PermissionManager
-            pm = PermissionManager()
-            risk = pm.classify_risk(tool_name, level.value, params)
-            risk_label = risk.value.upper()
-            explanation = pm.explain_permission(tool_name, level.value, params)
-        except Exception:
-            risk_label = level.value.upper()
+        if pm is not None:
+            try:
+                explanation = pm.explain_permission(tool_name, level.value, params)
+            except Exception:
+                pass
 
         # Build permission panel with tool preview
         preview_lines = [f"[bold]{tool_name}[/bold] ({level.value})"]
@@ -2389,8 +2383,355 @@ class NeoMindInterface:
             f"[dim](leader replying…)[/dim]"
         )
 
+    # ── Phase 4: session-backed turn ──────────────────────────────────────
+
+    class _HistoryStore:
+        """Writes the session's messages straight into the agent's history.
+
+        The REPL's other machinery — /history, /transcript, /compact, token
+        accounting — all read `chat.conversation_history`, so that list stays
+        authoritative. The session is the only writer during a turn; it just
+        writes through here instead of keeping a second copy that would drift
+        the moment /compact rewrote one of them.
+        """
+
+        def __init__(self, chat):
+            self.chat = chat
+
+        def append(self, session_id, message):
+            entry = {k: v for k, v in dict(message).items() if not k.startswith("_")}
+            self.chat.conversation_history.append(entry)
+
+        def load(self, session_id):
+            return list(self.chat.conversation_history)
+
+    def _build_turn_session(self):
+        """A fresh AgentSession seeded from the agent's current history.
+
+        Per turn rather than per session, deliberately. A long-lived session
+        would hold its own copy of the conversation, and /compact, /clear and
+        resume all rewrite the agent's list underneath it — the two would
+        disagree silently and the model would be prompted with a history the
+        user could no longer see.
+        """
+        import os as _os
+
+        from agent.coding.tool_parser import ToolCallParser
+        from agent.runtime.permissions import CapabilitySnapshot, PermissionPolicy
+        from agent.runtime.providers.openai_sse import OpenAICompatibleStream
+        from agent.runtime.session import AgentSession
+        from agent.runtime.tool_executor import ToolExecutor
+        from agent.tools import ToolRegistry
+
+        provider = self.chat._resolve_provider()
+        llm = OpenAICompatibleStream(
+            provider["base_url"],
+            provider["api_key"] or self.chat.api_key,
+            timeout=180.0,
+        )
+
+        registry = ToolRegistry(working_dir=_os.getcwd())
+        # Interactive: every registered tool is offered, and the executor asks
+        # before anything that needs asking. That is the difference from
+        # headless, which starts from an explicit read-only allowlist because
+        # there is nobody to answer.
+        # interactive=True is not decoration. PermissionPolicy defaults it to
+        # False, and with it False every ASK collapses straight to DENY —
+        # "execute requires confirmation; no interactive broker" — so a real
+        # terminal session could not run Bash at all even though a broker was
+        # attached. auto_accept has to be threaded through the same way, or
+        # NEOMIND_AUTO_ACCEPT stops working the moment the REPL moves onto
+        # this path. Read from agent_config so there is one source of truth
+        # about permission mode rather than a second copy here.
+        perm_mode = agent_config.permission_mode
+        executor = ToolExecutor(
+            registry=registry,
+            policy=PermissionPolicy(
+                capabilities=CapabilitySnapshot.unrestricted(),
+                interactive=True,
+                auto_accept=(perm_mode == "auto_accept"),
+            ),
+            broker=self._session_permission_broker(),
+            working_dir=_os.getcwd(),
+        )
+
+        llm_kwargs = {}
+        if getattr(self.chat, "thinking_enabled", False) and provider.get("name") == "deepseek":
+            llm_kwargs["thinking"] = {"type": "enabled"}
+
+        max_rounds = getattr(self.chat, "_cli_max_turns", None) or self._AGENTIC_HARD_LIMIT
+
+        return AgentSession(
+            llm=llm,
+            executor=executor,
+            model=self.chat.model,
+            mode=self.chat.mode,
+            history=list(self.chat.conversation_history),
+            store=self._HistoryStore(self.chat),
+            tool_parser=ToolCallParser(),
+            max_tool_rounds=max_rounds,
+            llm_kwargs=llm_kwargs,
+        )
+
+    def _session_permission_broker(self):
+        """Bridge the executor's permission question to the REPL's prompt.
+
+        Reuses `_check_permission` rather than drawing a second dialog, so the
+        panel, the risk wording and the [y]es/[n]o/[a]lways keys stay exactly
+        as they are today.
+
+        `_check_permission(tool_call, auto_approved) -> (approved,
+        new_auto_approved)` — it wants an object with `.tool_name` and
+        `.params`, not the executor's keyword arguments, and the second half of
+        its return value is how "[a]lways" persists for the rest of the
+        session. Dropping it would make "always" mean "once".
+
+        The prompt blocks on stdin, so it runs in an executor thread; calling
+        it directly would freeze the event loop the stream is running on.
+        """
+        interface = self
+
+        class _Call:
+            __slots__ = ("tool_name", "params")
+
+            def __init__(self, tool_name, params):
+                self.tool_name = tool_name
+                self.params = params
+
+        class _Broker:
+            def __init__(self):
+                self.auto_approved = False
+
+            async def request(self, request_id, tool_name, preview, risk,
+                              explanation, allowed_scopes, params=None, **_ignored):
+                import asyncio as _asyncio
+                import os as _os
+
+                from agent.runtime.permissions import Approval, Scope, fingerprint
+
+                call = _Call(tool_name, dict(params or {}))
+
+                def _ask():
+                    return interface._check_permission(call, self.auto_approved)
+
+                approved, new_auto = await _asyncio.get_event_loop().run_in_executor(
+                    None, _ask
+                )
+                self.auto_approved = new_auto
+                if not approved:
+                    return None
+
+                # An Approval, not a Decision. The executor rejects anything
+                # else outright — "a bare True is not an approval: it names no
+                # call, so it cannot be bound to one" — and returning a
+                # Decision silently denied every tool in the session path.
+                #
+                # The fingerprint has to be derived from the same params the
+                # executor is about to run, which is why the broker contract
+                # carries them: it re-derives it after approval and refuses a
+                # mismatch, so an approval cannot be replayed onto a different
+                # call.
+                return Approval(
+                    request_id=request_id,
+                    fingerprint=fingerprint(tool_name, dict(params or {}), _os.getcwd()),
+                    scope=Scope.ONCE,
+                )
+
+        return _Broker()
+
+    def _interpret_as_command(self, text: str):
+        """Map prose onto a slash command, or None.
+
+        Mirrors what stream_response() does before calling the provider: the
+        same interpreter, the same confidence threshold, and the same silence
+        when nothing is confident enough.
+        """
+        if text.startswith("/"):
+            return None
+        interpreter = getattr(self.chat, "interpreter", None)
+        if not interpreter or not getattr(self.chat, "natural_language_enabled", False):
+            return None
+        try:
+            command, confidence = interpreter.interpret(text, self.chat.mode)
+        except Exception:
+            return None
+        if not command:
+            return None
+        threshold = getattr(interpreter, "confidence_threshold", 0.8)
+        return command if confidence >= threshold else None
+
+    def _stream_and_render_session(self, prompt: str):
+        """The session-backed replacement for _stream_and_render().
+
+        Behind NEOMIND_REPL=session_v1 until the real-terminal gate has run —
+        this is the surface people use every day, and a green test suite is
+        not the same as a turn that still looks right.
+        """
+        import asyncio as _asyncio
+
+        from cli.session_renderer import SessionRenderer
+
+        # Natural-language command interpretation lives inside
+        # stream_response(), which this path does not call — so on session_v1
+        # "换成 fin" reached the model as prose and it replied "已切换到 fin
+        # 模式" while the status bar still read coding. It claimed to have done
+        # something it has no way to do.
+        #
+        # Interpreted here instead, and dispatched as the command it maps to,
+        # using the same interpreter and threshold rather than a second copy.
+        interpreted = self._interpret_as_command(prompt)
+        if interpreted:
+            self._handle_local_command(interpreted)
+            return None
+
+        self._interrupt = False
+        if self._fleet_session is not None:
+            self._print_fleet_stream_header()
+
+        stop = self._start_spinner("Thinking…")
+
+        if self.chat.mode == "coding":
+            content_filter = self._CodeFenceFilter()
+        elif PYGMENTS_AVAILABLE:
+            content_filter = self._SyntaxHighlightFilter()
+        else:
+            content_filter = None
+
+        cleared = [False]
+
+        def _stop_spinner_and_clear():
+            """Stop the spinner and wipe its line — once.
+
+            The spinner runs on stderr while the answer goes to stdout, so its
+            final frame can land after the first characters of the reply and
+            overwrite them: a resumed session answered "SUME_MARKER_KIWI_42",
+            two characters short of the token it had correctly recalled. The
+            legacy path clears the line for the same reason.
+
+            Only on the first call. The renderer also stops the spinner when
+            the turn ends, and by then the buffered answer has just been
+            flushed onto that line — clearing again erased it, and the reply
+            vanished completely.
+            """
+            stop.set()
+            if cleared[0]:
+                return
+            cleared[0] = True
+            try:
+                sys.stderr.write("\r\033[K")
+                sys.stderr.flush()
+            except Exception:
+                pass
+
+        renderer = SessionRenderer(
+            write=lambda text: (sys.stdout.write(text), sys.stdout.flush()),
+            write_markup=self._print,
+            stop_spinner=_stop_spinner_and_clear,
+            content_filter=content_filter,
+        )
+
+        session = self._build_turn_session()
+        try:
+            outcome = _asyncio.run(renderer.render(session.run_turn(prompt)))
+        except KeyboardInterrupt:
+            self._print("\n[dim][Interrupted][/dim]")
+            outcome = None
+        finally:
+            stop.set()
+
+        # Same safety net the legacy path has: if a turn finished but nothing
+        # reached the screen, show the answer rather than leaving a blank. Two
+        # separate filter bugs during this migration produced exactly that —
+        # a "Thought for 0.5s" line, then the prompt again, with the reply
+        # nowhere. A wrong-looking answer is recoverable; a silent empty turn
+        # tells the user nothing at all.
+        if outcome is not None and outcome.ok and outcome.chars_written == 0:
+            text = (outcome.response or "").strip()
+            if text:
+                self._print(highlight_code_blocks_in_text(text))
+            elif outcome.tools_run:
+                self._print("[dim](Agent ran tools but produced no visible summary)[/dim]")
+
+        self._record_turn_usage(outcome)
+        self._warn_on_context_usage()
+        return outcome
+
+    def _record_turn_usage(self, outcome) -> None:
+        """Feed the turn's provider-reported usage into the budget `/cost` reads.
+
+        The session path does not go through `QueryEngine`, which is what owns
+        that budget — so after the REPL migrated, `/cost` reported $0.0000 and
+        0 tokens after a real turn while the status bar showed thousands. Both
+        were 'working': the status bar counts the conversation, `/cost` reports
+        what the provider billed, and nothing was writing the second one.
+
+        Guarded because an accounting failure must not take down a turn that
+        already succeeded — the answer is on screen by the time this runs.
+        """
+        usage = getattr(outcome, "usage", None)
+        if not usage:
+            return
+        engine = getattr(self.chat, "_query_engine", None)
+        budget = getattr(engine, "budget", None)
+        if budget is None or not hasattr(budget, "record_usage"):
+            return
+        try:
+            from agent.runtime.usage_accounting import cost_for, pricing_for_model
+
+            class _Chunk:
+                prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+
+            budget.record_usage(
+                input_tokens=_Chunk.prompt_tokens,
+                output_tokens=_Chunk.completion_tokens,
+                cost_usd=cost_for(_Chunk, pricing_for_model(self.chat.model)),
+            )
+        except Exception as exc:
+            # Non-fatal by design: the answer is already on screen. Visible
+            # under /debug rather than swallowed, because the previous version
+            # of this arithmetic sat behind a bare `except: pass` in
+            # `code_commands` and reported $0.0000 for months without a word.
+            if getattr(self.chat, "verbose_mode", False):
+                self._print(f"[dim]usage accounting failed: {exc}[/dim]")
+
+    def _warn_on_context_usage(self):
+        """Unchanged from the legacy path — extracted so both can call it."""
+        try:
+            if hasattr(self.chat, 'context_manager') and self.chat.context_manager:
+                tokens = self.chat.context_manager.count_conversation_tokens()
+                from agent.constants.models import get_active_max_context as _gmax
+                max_ctx = getattr(self.chat, 'max_context', 0) or _gmax()
+                usage = tokens / max_ctx if max_ctx > 0 else 0
+                if usage > 0.95:
+                    self._print(f"\n[red]⚠ Context {usage:.0%} full! Auto-compacting...[/red]")
+                    self.chat.handle_command("/compact", "")
+                elif usage > 0.85:
+                    self._print(f"\n[yellow]⚠ Context {usage:.0%} full. Run /compact to free space.[/yellow]")
+        except Exception:
+            pass
+
     def _stream_and_render(self, prompt: str):
-        """Send prompt to agent core's stream_response with spinner UX."""
+        """Send prompt to agent core's stream_response with spinner UX.
+
+        Phase 4 rollback switch (D8). The turn runs through AgentSession by
+        default now: the REPL no longer owns the LLM call or the tool loop, so
+        there is one authorization path instead of two.
+
+        The gate that had to pass before this default flipped, all in real
+        iTerm2 windows: streaming, tool results, /help, /think, natural-language
+        mode switching, permission allow *and* deny in coding and in fin, chat
+        shown to run no tool loop at all, Ctrl+C leaving the session able to
+        take the next turn, and --resume recalling a token from before a
+        restart.
+
+        `NEOMIND_REPL=legacy` returns to the old path. It stays until Phase 8
+        retires the compatibility paths, because the first day a new default is
+        live is the worst possible day to have no way back.
+        """
+        if os.environ.get("NEOMIND_REPL", "").strip() != "legacy":
+            return self._stream_and_render_session(prompt)
+
         self._interrupt = False
 
         # Phase 5.12 task #65: preserve fleet visibility during leader
@@ -2471,6 +2812,18 @@ class NeoMindInterface:
 
     # ── Main loop ─────────────────────────────────────────────────────────
     def run(self):
+        # This session's configuration is its own from here on. The mechanism
+        # already existed for fleet workers; interactive surfaces never bound
+        # anything, so `/permissions auto` wrote to the process-wide default
+        # and a second session — the whole point of extracting a frontend
+        # contract — would silently inherit it.
+        #
+        # Bound here rather than in __init__ because main.py configures the
+        # process (mode, custom system prompt) before calling run(), and the
+        # fork has to happen after that or the session starts from a
+        # configuration nobody chose.
+        self._config_token = bind_session_config()
+
         self.display_welcome()
 
         if not PROMPT_TOOLKIT_AVAILABLE:

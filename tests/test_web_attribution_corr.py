@@ -8,8 +8,13 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -96,6 +101,7 @@ def page(browser) -> Page:
     _reset()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _reset()
@@ -121,7 +127,7 @@ def test_attribution_endpoint_breaks_down_pnl():
 def test_portfolio_widget_shows_attribution_strip(page: Page):
     _place_order("AAPL", 5)
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="portfolio-attribution"]', timeout=30000)
     page.wait_for_selector('[data-testid="attrib-pos-AAPL"]', timeout=30000)
 
@@ -133,7 +139,13 @@ def test_correlation_endpoint_returns_matrix():
     _seed_watch("AAPL")
     _seed_watch("MSFT")
     with urllib.request.urlopen(
-        BASE_URL + f"api/correlation?project_id={PROJECT}&days=60", timeout=60
+        # fresh=1 because this test just changed the watchlist. /api/correlation
+        # caches for an hour under a key of project_id:days only — the symbol
+        # set is not part of it — so without this the seeded AAPL+MSFT is
+        # answered with whatever matrix was computed up to an hour earlier,
+        # which is how this asserted {'AAPL'} == {'AAPL', 'MSFT'}. The other
+        # two correlation tests in this file already pass it.
+        BASE_URL + f"api/correlation?project_id={PROJECT}&days=60&fresh=1", timeout=60
     ) as r:
         d = json.loads(r.read())
     assert set(d["symbols"]) == {"AAPL", "MSFT"}
@@ -165,7 +177,7 @@ def test_correlation_widget_renders_heatmap(page: Page):
         BASE_URL + f"api/correlation?project_id={PROJECT}&days=90&fresh=1", timeout=60
     ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="correlation-widget"]', timeout=10000)
     # Scroll it into view — analytics band is below the fold
     page.evaluate(
@@ -180,7 +192,7 @@ def test_correlation_window_toggle_changes_request(page: Page):
     _seed_watch("AAPL")
     _seed_watch("MSFT")
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="correlation-widget"]', timeout=10000)
     captured: list[str] = []
     page.on("request", lambda r: captured.append(r.url)

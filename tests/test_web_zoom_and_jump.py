@@ -17,6 +17,9 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -36,7 +39,7 @@ def graph():
     if not _backend_up():
         pytest.skip(f"backend not reachable at {BASE_URL}")
     with urllib.request.urlopen(
-        BASE_URL + "api/lattice/graph?project_id=fin-core", timeout=300,
+        BASE_URL + f"api/lattice/graph?project_id={PROJECT}", timeout=300,
     ) as r:
         return json.loads(r.read())
 
@@ -55,17 +58,33 @@ def browser(graph):
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
 def _open_trace(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
-    page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
+    goto_tab(page, "research")
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
     page.click('[data-testid="digest-mode-trace"]')
-    page.wait_for_selector('[data-testid="lattice-svg"]', state="attached", timeout=15000)
+    # Wait for trace mode to resolve to one of its two outcomes, then decide.
+    # Reading digest-body immediately after the click races the render.
+    # Measured 24.3-27.7s for the graph on a warm dashboard, so 15s could not
+    # be met even when healthy; and with an empty lattice the panel shows its
+    # onboarding copy ("the lattice needs real data to distil") and
+    # lattice-svg never mounts at all — no error, just nothing to draw.
+    page.wait_for_function(
+        """() => {
+            if (document.querySelector('[data-testid="lattice-svg"]')) return true
+            const b = document.querySelector('[data-testid="digest-body"]')
+            return !!b && b.innerText.includes('needs real data')
+        }""",
+        timeout=60000,
+    )
+    if not page.query_selector('[data-testid="lattice-svg"]'):
+        pytest.skip("lattice has no distilled data on this dashboard — seed it to run this test")
+
     page.wait_for_timeout(600)
 
 

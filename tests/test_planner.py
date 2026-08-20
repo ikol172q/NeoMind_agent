@@ -261,9 +261,17 @@ class TestBuildDependencyGraph(unittest.TestCase):
         self.assertEqual(graph[filepaths[1]], set())
 
 
-@unittest.skip("planner test failures")
 class TestTopologicalOrder(unittest.TestCase):
-    """Test topological sorting of dependency graph."""
+    """Test topological sorting of dependency graph.
+
+    This class carried @unittest.skip("planner test failures"). The
+    failures were the tests', not the planner's: they asserted
+    dependencies-first, while topological_order documents and returns
+    dependents-first, and plan_changes is the one that reverses it
+    ("We need dependencies first, so reverse the order"). Asserting the
+    documented contract here, and the user-visible one in
+    TestPlanChanges, is what the skip was hiding.
+    """
 
     def setUp(self):
         """Set up test environment."""
@@ -285,8 +293,9 @@ class TestTopologicalOrder(unittest.TestCase):
         }
         order = self.planner.topological_order(graph)
 
-        # Should be c, b, a (dependencies before dependents)
-        self.assertEqual(order, ["c", "b", "a"])
+        # Dependents before dependencies: a depends on b depends on c,
+        # so a (indegree 0) comes out first. plan_changes reverses this.
+        self.assertEqual(order, ["a", "b", "c"])
 
     def test_topological_order_diamond(self):
         """Test topological order of diamond-shaped dependencies."""
@@ -298,20 +307,17 @@ class TestTopologicalOrder(unittest.TestCase):
         }
         order = self.planner.topological_order(graph)
 
-        # d must come before b and c
-        # b and c must come before a
-        self.assertIn("d", order)
-        self.assertIn("b", order)
-        self.assertIn("c", order)
-        self.assertIn("a", order)
-        d_index = order.index("d")
+        # Dependents first: a before b and c, and both before d.
+        for node in ("a", "b", "c", "d"):
+            self.assertIn(node, order)
+        a_index = order.index("a")
         b_index = order.index("b")
         c_index = order.index("c")
-        a_index = order.index("a")
-        self.assertLess(d_index, b_index)
-        self.assertLess(d_index, c_index)
-        self.assertLess(b_index, a_index)
-        self.assertLess(c_index, a_index)
+        d_index = order.index("d")
+        self.assertLess(a_index, b_index)
+        self.assertLess(a_index, c_index)
+        self.assertLess(b_index, d_index)
+        self.assertLess(c_index, d_index)
 
     def test_topological_order_cycle(self):
         """Test topological order with cycle (should still produce order)."""
@@ -322,8 +328,9 @@ class TestTopologicalOrder(unittest.TestCase):
         }
         order = self.planner.topological_order(graph)
 
-        # c has no dependencies, should come first
-        # a and b have cycle, will be added at end
+        # c has no incoming dependencies, so it is the only zero-indegree
+        # node and comes out first; a and b are in a cycle and get
+        # appended at the end in arbitrary order.
         self.assertEqual(order[0], "c")
         self.assertIn("a", order)
         self.assertIn("b", order)

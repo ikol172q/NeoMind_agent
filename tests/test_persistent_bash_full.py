@@ -240,6 +240,11 @@ class TestPersistentBashExecute:
                 # Mock queue behavior
                 with patch.object(bash, "_stdout_q") as mock_stdout_q:
                     with patch.object(bash, "_stderr_q") as mock_stderr_q:
+                        # execute() 先调 _drain_queue(), 它用的是 get_nowait() 而非 get()。
+                        # 不配这两行, MagicMock 的 get_nowait() 永远返回新 Mock、永不抛
+                        # queue.Empty, _drain_queue 的 `while True` 就是死循环 (整套测试因此永远跑不完)。
+                        mock_stdout_q.get_nowait.side_effect = queue.Empty
+                        mock_stderr_q.get_nowait.side_effect = queue.Empty
                         # Simulate sentinel being returned
                         mock_stdout_q.get.side_effect = [
                             "output line\n",
@@ -269,6 +274,11 @@ class TestPersistentBashExecute:
 
                 with patch.object(bash, "_stdout_q") as mock_stdout_q:
                     with patch.object(bash, "_stderr_q") as mock_stderr_q:
+                        # execute() 先调 _drain_queue(), 它用的是 get_nowait() 而非 get()。
+                        # 不配这两行, MagicMock 的 get_nowait() 永远返回新 Mock、永不抛
+                        # queue.Empty, _drain_queue 的 `while True` 就是死循环 (整套测试因此永远跑不完)。
+                        mock_stdout_q.get_nowait.side_effect = queue.Empty
+                        mock_stderr_q.get_nowait.side_effect = queue.Empty
                         mock_stdout_q.get.side_effect = [
                             f"{bash._exit_code_marker}1\n",
                             f"{bash._sentinel}\n",
@@ -278,7 +288,12 @@ class TestPersistentBashExecute:
                         result = bash.execute("false")
 
                         assert result.success is False
-                        assert "Exit code: 1" in result.error
+                        # 断言退出码本身, 不绑定措辞: error 有两种形态 ——
+                        # "Exit code 1: <stderr 尾部>" 与 "Exit code 1 (no stderr)"。
+                        # 旧断言写的是 "Exit code: 1"(带冒号), 那是 persistent_bash.py:209
+                        # 注释里说明的、被有意改掉的旧格式(裸退出码对 LLM 没有诊断价值)。
+                        # 该断言从未失败过, 只因为这个测试一直死在 _drain_queue 里没跑到这。
+                        assert "Exit code 1" in result.error
 
     @patch("agent.persistent_bash.subprocess.Popen")
     @patch("agent.persistent_bash.threading.Thread")
@@ -297,6 +312,11 @@ class TestPersistentBashExecute:
 
                 with patch.object(bash, "_stdout_q") as mock_stdout_q:
                     with patch.object(bash, "_stderr_q") as mock_stderr_q:
+                        # execute() 先调 _drain_queue(), 它用的是 get_nowait() 而非 get()。
+                        # 不配这两行, MagicMock 的 get_nowait() 永远返回新 Mock、永不抛
+                        # queue.Empty, _drain_queue 的 `while True` 就是死循环 (整套测试因此永远跑不完)。
+                        mock_stdout_q.get_nowait.side_effect = queue.Empty
+                        mock_stderr_q.get_nowait.side_effect = queue.Empty
                         mock_stdout_q.get.side_effect = queue.Empty
                         mock_stderr_q.get.side_effect = queue.Empty
 
@@ -321,6 +341,11 @@ class TestPersistentBashExecute:
 
                 with patch.object(bash, "_stdout_q") as mock_stdout_q:
                     with patch.object(bash, "_stderr_q") as mock_stderr_q:
+                        # execute() 先调 _drain_queue(), 它用的是 get_nowait() 而非 get()。
+                        # 不配这两行, MagicMock 的 get_nowait() 永远返回新 Mock、永不抛
+                        # queue.Empty, _drain_queue 的 `while True` 就是死循环 (整套测试因此永远跑不完)。
+                        mock_stdout_q.get_nowait.side_effect = queue.Empty
+                        mock_stderr_q.get_nowait.side_effect = queue.Empty
                         with patch.object(bash, "_drain_queue", return_value=""):
                             mock_stdout_q.get.side_effect = queue.Empty
                             mock_stderr_q.get.side_effect = queue.Empty
@@ -378,6 +403,11 @@ class TestPersistentBashExecute:
 
                 with patch.object(bash, "_stdout_q") as mock_stdout_q:
                     with patch.object(bash, "_stderr_q") as mock_stderr_q:
+                        # execute() 先调 _drain_queue(), 它用的是 get_nowait() 而非 get()。
+                        # 不配这两行, MagicMock 的 get_nowait() 永远返回新 Mock、永不抛
+                        # queue.Empty, _drain_queue 的 `while True` 就是死循环 (整套测试因此永远跑不完)。
+                        mock_stdout_q.get_nowait.side_effect = queue.Empty
+                        mock_stderr_q.get_nowait.side_effect = queue.Empty
                         mock_stdout_q.get.side_effect = queue.Empty
                         mock_stderr_q.get.side_effect = queue.Empty
 

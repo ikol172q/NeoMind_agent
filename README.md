@@ -117,6 +117,70 @@ Limits auto-adjust when switching models. Run `/models` to see all available mod
 
 ## Architecture
 
+> ### ⚠️ Architecture in migration — frontend contract extraction (started 2026-08-06)
+>
+> **The diagrams below describe the architecture as it is today, which is the one being dismantled.**
+> Read them as the starting point, not the target.
+>
+> NeoMind has no separable frontend. `cli/neomind_interface.py` is at once the terminal rendering,
+> the wiring between the agent and that terminal, and the owner of 21 slash-command branches — so a
+> second frontend (a TUI, an editor client, anything) cannot exist without duplicating agent
+> behaviour. The migration extracts one **internal Python frontend contract**: an `AgentSession`
+> that owns each session and hands frontends *snapshots and events* instead of mutable agent
+> internals, with a single authoritative `ToolExecutor` behind which validation, capability
+> filtering, permission policy, approval matching and audit all live.
+>
+> Dependency direction after the migration: the runtime must not import a frontend. That is enforced
+> by a test (`tests/runtime/test_import_boundary.py`), not by convention.
+>
+> **Where it stands**
+>
+> | Phase | State |
+> |---|---|
+> | 0 — baseline + safety containment | done (2026-08-07) |
+> | 1 — runtime contract + `ToolExecutor` | substantially done — `agent/runtime/` (events, ports, permissions, tool_executor) with 66 passing runtime tests |
+> | 2 — LLM streaming port | substantially done — `agent/runtime/llm_stream.py` + `providers/openai_sse.py`, verified against a real DeepSeek stream |
+> | 3 — `AgentSession` + headless | done — `neomind -p` runs through `AgentSession` |
+> | 4 — Prompt REPL migration | **done — the interactive REPL turn runs on `AgentSession` by default** (`NEOMIND_REPL=legacy` to revert) |
+> | 5 — Telegram migration | **done for the normal-mode turn — `NEOMIND_TELEGRAM=session` is the default, signed off by a live Telethon run (5 PASS, incl. a real tool refusal). Thinking mode, attachments and the private-DM dashboard route stay on the legacy loop by design** |
+> | 6A — commands/config/store boundaries | **done — one registry defines every command (the 279-line duplicate chain is gone), a session's config is its own, one conversation-store owner per session** |
+> | 6B — fleet turn/lifecycle boundaries | **done — fleet worker turns run on `AgentSession` (same ToolExecutor and permission policy as every surface), and the fleet's asyncio loop moved out of the frontend into `fleet/driver.py`** |
+> | 7 — be drivable by an existing harness | **done — DeepSeek Harness drives NeoMind as an ACP subagent, verified by process-spawn proof** (`tools/protocol/`). pi's protocol is proven against its own client and schemas but its `client` command is not mounted in any released build. Own-TUI deferred by decision |
+> | 8 — compatibility retirement | **audit done; removal deferred** — `/cost` was found broken on *both* paths and fixed; `QueryEngine` is a dead shell holding one live object, and extracting it is tidiness rather than need |
+>
+> **The dashboard route is deliberately not one of them.** Plain private-DM messages go to
+> `_handle_dashboard_agent`, which is a different product rather than an unmigrated turn: it loads
+> from the private dashboard repo, carries its own tool schemas, uses native provider tool-calls, and
+> returns decision proposals. Folding it into the shared runtime would cost those to gain a tidier
+> diagram.
+>
+> **Six surfaces, one runtime.** CLI, headless, Telegram, fleet, ACP and pi all consume the same
+> frozen events from the same `AgentSession`; each decides only which provider, which tools, and
+> whether it can ask a permission question. Telegram and fleet cannot (nobody is there, so ASK
+> resolves to DENY); ACP and pi can, through their clients. Protocol conformance for pi is checked
+> against pi's own schemas by `tools/protocol/` — passing our tests and passing theirs turned out to
+> be different claims.
+>
+> **Rollback switches.** Each migrated surface keeps one, read per turn rather than cached at
+> import, so reverting is a restart and never a rebuild: `NEOMIND_REPL=legacy` for the terminal,
+> `NEOMIND_TELEGRAM=session|legacy` for the bot (also declared in `docker-compose.yml`),
+> `NEOMIND_HEADLESS` for `-p`, `NEOMIND_FLEET=session|legacy` for fleet worker turns.
+>
+> **What Telegram gains by moving.** The bot is a remote surface: in a group chat the person talking
+> to it is not necessarily the person who owns the machine it runs on, and the container has the
+> source tree bind-mounted. On the session path its tools come from an explicit allowlist
+> intersected with what is still declared `READ_ONLY` (`agent/integration/telegram_session.py`),
+> the policy is built non-interactive so an unanswerable permission question resolves to DENY
+> rather than hanging, and a refusal is rendered as ⊘ instead of silently ending the turn with no
+> reply — which is what the old loop did, by never answering the approval event at all.
+>
+> `plans/2026-08-06_frontend-contract-cli-tui-decoupling-plan.md` is authoritative — §11 is the
+> live tracker, and no phase may be marked complete on code review, mocks or skipped tests alone.
+> The plan also records why two candidate harnesses (`badlogic/pi-mono` and DeepSeek Harness) were
+> examined at source in the D7 addendum: pi independently arrived at the same dependency direction,
+> and DeepSeek Harness ships an Agent Client Protocol server, which makes ACP a concrete option to
+> weigh at Phase 7 once the event set is frozen.
+
 ### System Overview
 
 ```mermaid

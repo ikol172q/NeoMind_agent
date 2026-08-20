@@ -8,8 +8,10 @@ from urllib.parse import urlencode
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -86,6 +88,7 @@ def page(browser) -> Page:
     _clear_watchlist_and_paper()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1200})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist_and_paper()
@@ -163,12 +166,15 @@ def test_anomaly_chip_renders_on_brief_and_is_clickable(page: Page):
         BASE_URL + f"api/anomalies?project_id={PROJECT}", timeout=60
     ).read()
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
-    page.wait_for_selector('[data-testid="research-brief-widget"]', timeout=10000)
+    goto_tab(page, "research")
+    # The anomaly chips moved from the ResearchBrief hero into DigestView's
+    # anomaly strip when v14 swapped the two.
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
+    if not page.query_selector('[data-testid="digest-anomaly-strip"]'):
+        pytest.skip("no anomaly strip on this dashboard — needs distilled lattice data")
     page.wait_for_function(
         """() => {
-            const box = document.querySelector('[data-testid="anomaly-flags"]')
+            const box = document.querySelector('[data-testid="digest-anomaly-strip"]')
             return box && box.querySelectorAll('[data-testid^="anomaly-flag-"]').length > 0
         }""",
         timeout=60000,

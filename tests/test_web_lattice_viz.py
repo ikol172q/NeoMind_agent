@@ -23,9 +23,11 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+from tests.web_nav import goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 pytestmark = pytest.mark.lattice_slow
 
@@ -45,16 +47,73 @@ def _fetch_graph() -> dict:
         return json.loads(r.read())
 
 
+def _graph_identity(g: dict):
+    """Node and edge ids, not counts.
+
+    /graph exposes no dep_hash, and counts are too weak a fingerprint:
+    a recompute that swaps obs_near_52w_low_002 for _003 leaves every
+    count identical while changing what the page draws, which is
+    exactly the mismatch that read as "phantom edge in DOM".
+    """
+    return (
+        frozenset(n["id"] for n in g.get("nodes") or []),
+        frozenset((e["source"], e["target"]) for e in g.get("edges") or []),
+    )
+
+
+def _stable_graph(attempts: int = 3):
+    """A graph snapshot two consecutive fetches agree on, or None."""
+    prev = _fetch_graph()
+    for _ in range(attempts):
+        cur = _fetch_graph()
+        if _graph_identity(prev) == _graph_identity(cur):
+            return cur
+        prev = cur
+    return None
+
+
 @pytest.fixture(scope="module")
-def graph():
+def graph_initial():
     if not _backend_up():
         pytest.skip(f"backend not reachable at {BASE_URL}")
     return _fetch_graph()
 
 
+@pytest.fixture
+def graph(page):
+    """The graph payload **the page itself received**.
+
+    Comparing the DOM against a separately-fetched graph is a race no
+    amount of bracketing closes: the module-scoped version was read once
+    at module start, a per-test re-read still lands at a different
+    instant than the SPA's own fetch, and even requiring two consecutive
+    identical reads is too weak — a recompute that swaps
+    obs_near_52w_low_002 for _003 leaves every count identical while
+    changing what gets drawn. Each variant surfaced the same way: a
+    "phantom edge in DOM" that was simply an edge from a newer graph.
+
+    So take the answer off the wire. This returns a dict seeded from a
+    stable fetch (for tests that never enter trace mode) which
+    _open_trace then overwrites in place with the exact body the browser
+    got, leaving the window at zero. The mutable-holder shape is what
+    keeps all 16 tests' signatures untouched.
+    """
+    if not _backend_up():
+        pytest.skip(f"backend not reachable at {BASE_URL}")
+    seed = _stable_graph()
+    if seed is None:
+        pytest.skip(
+            "the lattice graph changed on every consecutive read; "
+            "re-run when the scheduler is quieter"
+        )
+    holder = dict(seed)
+    page._graph_holder = holder
+    return holder
+
+
 @pytest.fixture(scope="module")
-def browser(graph):
-    if not graph.get("nodes"):
+def browser(graph_initial):
+    if not graph_initial.get("nodes"):
         pytest.skip("graph empty")
     with sync_playwright() as p:
         b = p.chromium.launch(headless=True)
@@ -62,22 +121,60 @@ def browser(graph):
         b.close()
 
 
+def _capture_graph(page):
+    """Record the body of the SPA's own /api/lattice/graph fetch."""
+    def _on_response(resp):
+        if "/api/lattice/graph" not in resp.url:
+            return
+        try:
+            page._captured_graph = resp.json()
+        except Exception:
+            pass
+    page.on("response", _on_response)
+
+
 @pytest.fixture
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
+    _capture_graph(page)
     yield page
     ctx.close()
 
 
 def _open_trace(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
-    page.wait_for_selector('[data-testid="digest-view"]', timeout=15000)
+    goto_tab(page, "research")
+    page.wait_for_selector('[data-testid="digest-view"]', timeout=30000)
     page.click('[data-testid="digest-mode-trace"]')
-    page.wait_for_selector('[data-testid="lattice-svg"]', state="attached", timeout=15000)
+    # Wait for trace mode to resolve to one of its two outcomes, then decide.
+    # Reading digest-body immediately after the click races the render.
+    # Measured 24.3-27.7s for the graph on a warm dashboard, so 15s could not
+    # be met even when healthy; and with an empty lattice the panel shows its
+    # onboarding copy ("the lattice needs real data to distil") and
+    # lattice-svg never mounts at all — no error, just nothing to draw.
+    page.wait_for_function(
+        """() => {
+            if (document.querySelector('[data-testid="lattice-svg"]')) return true
+            const b = document.querySelector('[data-testid="digest-body"]')
+            return !!b && b.innerText.includes('needs real data')
+        }""",
+        timeout=60000,
+    )
+    if not page.query_selector('[data-testid="lattice-svg"]'):
+        pytest.skip("lattice has no distilled data on this dashboard — seed it to run this test")
+
     page.wait_for_timeout(500)
+
+    # Swap in the payload the browser actually rendered from, so the
+    # assertions below compare the DOM against its own source rather
+    # than against a second, later read of a moving lattice.
+    captured = getattr(page, "_captured_graph", None)
+    holder = getattr(page, "_graph_holder", None)
+    if captured and holder is not None:
+        holder.clear()
+        holder.update(captured)
 
 
 # ── DOM zero-ghost invariants ──────────────────────────
@@ -222,7 +319,16 @@ def test_click_membership_edge_shows_exact_computation_from_graph(page, graph):
     assert membership, "need at least one membership edge to test"
     e = membership[0]
     sel = f'[data-edge-source="{e["source"]}"][data-edge-target="{e["target"]}"]'
-    page.locator(sel).click(force=True)
+    # dispatch_event, not click(force=True). Edges are SVG paths that
+    # overlap heavily near a shared endpoint, and force=True only skips
+    # the actionability wait — the event is still delivered to whatever
+    # sits topmost at that coordinate. Here it consistently landed on
+    # obs_anomaly_near_52w_with_earnings_001 -> theme_near_highs instead
+    # of the intended -> subtheme_event_risk, and the panel then showed
+    # that edge's 1/2 against the intended edge's 1/3. The "zero drift"
+    # this test guards was never actually violated; it was comparing two
+    # different edges. dispatch_event goes straight to the element.
+    page.locator(sel).dispatch_event("click")
     page.wait_for_selector('[data-testid="trace-edge-computation-membership"]',
                            state="attached", timeout=5000)
     d = e["computation"]["detail"]

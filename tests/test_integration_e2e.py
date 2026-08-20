@@ -511,6 +511,12 @@ class TestServiceRegistryE2E:
         sr = ServiceRegistry()
         ff = sr.feature_flags
 
+        # This asserts DEFAULTS, so the developer's own
+        # ~/.neomind/feature_flags.json must not participate — it carries
+        # SANDBOX: false here, which is a user setting, not a code change.
+        ff._file_flags = {}
+        ff._runtime_overrides = {}
+
         assert ff.is_enabled('AUTO_DREAM') is True
         assert ff.is_enabled('SANDBOX') is True
         assert ff.is_enabled('VOICE_INPUT') is False

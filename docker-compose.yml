@@ -80,6 +80,15 @@ services:
       # writing to the SAME fin.db via different mount paths caused
       # sporadic "database disk image is malformed" SQLite errors.
       - NEOMIND_AGENT_DB=/data/neomind/agent_chat.db
+      # 2026-08-16: Phase 5 rollback switch for this surface.
+      # `session` runs a normal-mode turn through AgentSession (shared with
+      # the CLI); anything else keeps the hand-rolled streaming loop. Read per
+      # turn, so switching back is `docker restart neomind-telegram` — the
+      # source is bind-mounted below, no rebuild involved.
+      # Default flipped to `session` 2026-08-16 after the Telethon gate passed
+      # 5/5 against the live bot, including a real refusal rendering as ⊘.
+      # `NEOMIND_TELEGRAM=legacy docker compose up -d neomind-telegram` reverts.
+      - NEOMIND_TELEGRAM=${NEOMIND_TELEGRAM:-session}   # matches the code default; set to `legacy` to revert
       # ── LLM API keys: inherit from shell env (zshrc) — never written to .env ──
       # docker compose reads these from the shell invoking it; if a key is unset
       # in the shell env, it stays empty in the container (no override).

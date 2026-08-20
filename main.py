@@ -106,29 +106,32 @@ def interactive_main(mode: str = "chat", resume_session: str = None,
         from agent_config import agent_config as _cfg2
         _cfg2.system_prompt = system_prompt
 
-    # Try NeoMind interface first (preferred)
+    # Only an import failure means "the interface is unavailable". This used to
+    # wrap the entire session in `except Exception`, so any error raised
+    # *during* a turn — a bug in migrated code, a provider fault twenty minutes
+    # in — printed a one-line Note and silently dropped the user into a
+    # different, unmigrated REPL with their session gone. A runtime error is
+    # now reported as one.
     try:
         from cli.neomind_interface import interactive_chat
-        interactive_chat(
-            mode=mode,
-            resume_session=resume_session,
-            system_prompt=system_prompt,
-            verbose=verbose,
-            max_turns=max_turns,
+    except ImportError as exc:
+        print(
+            f"NeoMind interface could not be loaded: {exc}",
+            file=sys.stderr,
         )
-        return
-    except Exception as e:
-        print(f"Note: NeoMind interface unavailable ({e}), falling back to standard interface")
+        from cli.interface import explain_unavailable_interface
 
-    # Fallback chain
-    try:
-        from prompt_toolkit import PromptSession
-        from cli.interface import interactive_chat_with_prompt_toolkit
-        interactive_chat_with_prompt_toolkit(mode)
-    except ImportError:
-        print("Note: For better experience, install prompt_toolkit: pip install prompt_toolkit")
-        from cli.interface import interactive_chat_fallback
-        interactive_chat_fallback(mode)
+        explain_unavailable_interface(exc)
+        return 1
+
+    interactive_chat(
+        mode=mode,
+        resume_session=resume_session,
+        system_prompt=system_prompt,
+        verbose=verbose,
+        max_turns=max_turns,
+    )
+    return
 
 
 def test_main():
@@ -140,6 +143,130 @@ def test_main():
     except ImportError:
         print("Error: dev_test.py not found")
         sys.exit(1)
+
+
+#: What a run with no human present may do. An explicit list, not a filter
+#: over `permission_level`, because that field is wrong for several tools:
+#: TeamDelete ("Delete an existing team"), TeamCreate, SendMessage ("Send a
+#: message to another agent or user"), TodoWrite, TaskCreate and TaskStop all
+#: declare READ_ONLY today. Deriving "safe unattended" from that declaration
+#: means deriving safety from a mislabelling, so headless names what it wants
+#: instead. Also excluded, though harmless in themselves: AskUser (there is
+#: nobody to ask), Sleep (can stall a CI run), Brief and Enter/ExitPlanMode
+#: (mutate session state), and Skill (invokes arbitrary registered skills,
+#: which may write).
+HEADLESS_READ_ONLY_TOOLS = (
+    "CronList",
+    "CtxInspect",
+    "GitDiff",
+    "GitLog",
+    "GitStatus",
+    "Glob",
+    "Grep",
+    "LS",
+    "ListMcpResources",
+    "Read",
+    "ReadMcpResource",
+    "SyntheticOutput",
+    "TaskGet",
+    "TaskList",
+    "TaskOutput",
+    "ToolSearch",
+    "VerifyPlanExecution",
+    "WebFetch",
+    "WebSearch",
+)
+
+
+def _headless_allowed_tools(registry):
+    """Intersect the allowlist with what is registered and still READ_ONLY.
+
+    Both halves matter. The allowlist keeps a mislabelled side-effecting tool
+    out even if it is registered; re-checking the level keeps a tool out if its
+    declaration is ever tightened, so the list cannot silently re-widen.
+    """
+    from agent.coding.tool_schema import PermissionLevel
+
+    out = []
+    for name in HEADLESS_READ_ONLY_TOOLS:
+        tool = registry.get_tool(name)
+        if tool is None:
+            continue
+        if getattr(tool, "permission_level", None) is not PermissionLevel.READ_ONLY:
+            continue
+        out.append(name)
+    return out
+
+
+def _build_headless_session(agent, *, tool_parser=None):
+    """Compose an `AgentSession` for a non-interactive run.
+
+    The wiring lives here rather than in `agent/runtime/` on purpose: the
+    runtime must not know which provider or which registry a surface picked,
+    and `tests/runtime/test_import_boundary.py` enforces that. This function is
+    the composition root for `-p`.
+
+    Safety comes from the capability snapshot, not from remembering to check.
+    The snapshot lists only tools whose definition declares READ_ONLY, so the
+    executor refuses everything else before a permission question is ever
+    asked — there is no human here to answer one.
+    """
+    from agent.coding.tool_schema import PermissionLevel
+    from agent.runtime.permissions import CapabilitySnapshot, PermissionPolicy
+    from agent.runtime.providers.openai_sse import OpenAICompatibleStream
+    from agent.runtime.session import AgentSession
+    from agent.runtime.tool_executor import ToolExecutor
+    from agent.tools import ToolRegistry
+
+    provider = agent._resolve_provider()
+    llm = OpenAICompatibleStream(
+        provider["base_url"],
+        provider["api_key"] or agent.api_key,
+        timeout=90.0,
+    )
+
+    registry = ToolRegistry(working_dir=os.getcwd())
+    allowed = _headless_allowed_tools(registry)
+    executor = ToolExecutor(
+        registry=registry,
+        policy=PermissionPolicy(capabilities=CapabilitySnapshot.only(*allowed)),
+        working_dir=os.getcwd(),
+    )
+
+    if tool_parser is None:
+        from agent.coding.tool_parser import ToolCallParser
+
+        tool_parser = ToolCallParser()
+
+    llm_kwargs = {}
+    if getattr(agent, "thinking_enabled", False) and provider.get("name") == "deepseek":
+        llm_kwargs["thinking"] = {"type": "enabled"}
+
+    return AgentSession(
+        llm=llm,
+        executor=executor,
+        model=agent.model,
+        mode=getattr(agent, "mode", "chat"),
+        history=list(getattr(agent, "conversation_history", []) or []),
+        tool_parser=tool_parser,
+        llm_kwargs=llm_kwargs,
+    )
+
+
+def _headless_session_v1(agent, prompt: str, output_format: str) -> int:
+    """The `session_v1` path: one session, one event stream, no local loop."""
+    import asyncio
+
+    from agent.runtime.headless import consume, render
+
+    session = _build_headless_session(agent)
+    result = asyncio.run(consume(session.run_turn(prompt)))
+    text = render(result, output_format)
+    if result.ok:
+        print(text)
+        return 0
+    print(text, file=sys.stderr)
+    return 1
 
 
 def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
@@ -159,8 +286,13 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
     import json as _json
     import re as _re
 
-    # Suppress all status/debug output in headless mode
+    # Suppress all status/debug output in headless mode.
+    # logging.disable() is process-global and was never undone, so anything
+    # that called headless_main and kept running — a long-lived host, or the
+    # test suite — had every logger silently dead from then on. Restore the
+    # previous level on the way out.
     import logging
+    _prev_logging_disable = logging.root.manager.disable
     logging.disable(logging.CRITICAL)
 
     try:
@@ -193,6 +325,15 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         # In headless mode: auto-accept reads, deny writes
         agent.verbose_mode = False
 
+        # ── D8 rollback switch: legacy | session_v1 ──────────────────
+        # session_v1 runs the turn through AgentSession, so there is one
+        # authorization path instead of two. The legacy branch below is the
+        # hand-rolled parse/execute/continue loop it replaces, kept only until
+        # the Phase 3 real-surface gates have run in anger; it is not a second
+        # runtime to maintain. Set NEOMIND_HEADLESS=legacy to fall back.
+        if os.environ.get("NEOMIND_HEADLESS", "session_v1").strip() != "legacy":
+            sys.exit(_headless_session_v1(agent, prompt, output_format))
+
         # Suppress streaming output (thinking, status, etc.) during execution
         # by redirecting stdout to devnull, then restoring for final output
         import io
@@ -213,6 +354,7 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         _HEADLESS_MAX_ITERATIONS = 10
         try:
             from agent.coding.tool_parser import ToolCallParser
+            from agent.coding.tool_schema import PermissionLevel
             from agent.tools import ToolRegistry
 
             parser = ToolCallParser()
@@ -223,35 +365,53 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
                 if not tool_call:
                     break  # No more tool calls — done
 
-                # Execute the tool
+                # Headless mode has no user available to approve side effects.
+                # Fail closed: only an explicitly READ_ONLY definition may run.
                 tool_def = registry.get_tool(tool_call.tool_name) if registry else None
                 if tool_def is None:
-                    # Unknown tool — strip the tool_call and stop
-                    response = _re.sub(
-                        r'<tool_call>.*?</tool_(?:call|result)>',
-                        '', response, flags=_re.DOTALL,
-                    ).strip()
-                    break
-
-                try:
-                    params = tool_def.apply_defaults(tool_call.params)
-                    result = tool_def.execute(**params)
-                    result_text = str(result) if result else "(no output)"
-                except Exception as exec_err:
-                    result_text = f"Error: {exec_err}"
+                    result_text = (
+                        "Permission denied: unknown tools cannot run in "
+                        "non-interactive headless mode."
+                    )
+                elif getattr(tool_def, "permission_level", None) is not PermissionLevel.READ_ONLY:
+                    result_text = (
+                        "Permission denied: headless mode only allows read-only "
+                        "tools; this tool was not executed."
+                    )
+                else:
+                    try:
+                        params = tool_def.apply_defaults(tool_call.params)
+                        result = tool_def.execute(**params)
+                        result_text = str(result) if result else "(no output)"
+                    except Exception as exec_err:
+                        result_text = f"Error: {exec_err}"
 
                 # Truncate large tool output
                 if len(result_text) > 5000:
                     result_text = result_text[:5000] + "\n... [truncated]"
 
-                # Strip the tool_call block from the response for display
-                clean_response = _re.sub(
-                    r'<tool_call>.*?</tool_(?:call|result)>',
-                    '', response, count=1, flags=_re.DOTALL,
-                ).strip()
+                # Do not persist the raw tool payload in conversation history.
+                clean_response = parser.strip_tool_call(response, tool_call)
 
                 # Feed tool result back to LLM
-                agent.add_to_history("assistant", clean_response)
+                # stream_response() normally persisted the raw assistant reply
+                # already. Replace that exact entry in place; blindly appending
+                # a sanitized duplicate leaves the executable payload earlier
+                # in real history (a side effect mocks do not reproduce).
+                replaced_raw_response = False
+                history = getattr(agent, "conversation_history", None)
+                if isinstance(history, list):
+                    for message in reversed(history):
+                        if (
+                            isinstance(message, dict)
+                            and message.get("role") == "assistant"
+                            and message.get("content") == response
+                        ):
+                            message["content"] = clean_response
+                            replaced_raw_response = True
+                            break
+                if not replaced_raw_response:
+                    agent.add_to_history("assistant", clean_response)
                 agent.add_to_history("user",
                     f"Tool result for {tool_call.tool_name}:\n{result_text}\n\n"
                     "Continue based on the tool results above."
@@ -272,13 +432,27 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         except ImportError:
             pass  # Tool system not available — return raw response
 
-        # Strip any remaining tool_call blocks from final output
+        # Strip any remaining standard or DeepSeek pipe-delimited tool-call
+        # blocks from final output.
         response = _re.sub(
-            r'<tool_call>.*?</tool_(?:call|result)>',
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>)'
+            r'.*?'
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
             '', response, flags=_re.DOTALL,
         ).strip()
-        # Strip orphan closing tags
-        response = _re.sub(r'</tool_(?:call|result)>', '', response).strip()
+        # An incomplete/malformed invocation must not leak when parsing could
+        # not produce a ToolCall.
+        response = _re.sub(
+            r'(?:<tool_call>|<\|tool_call(?:_begin)?\|>).*\Z',
+            '', response, flags=_re.DOTALL,
+        ).strip()
+        # Strip orphan closing tags.
+        response = _re.sub(
+            r'(?:</tool_(?:call|result|report|re)\s*>'
+            r'|<\|(?:/tool_call(?:_end)?|tool_call_end)\|>)',
+            '', response,
+        ).strip()
 
         if not response:
             response = "(no response)"
@@ -293,6 +467,12 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
 
         sys.exit(0)
 
+    except KeyboardInterrupt:
+        if output_format == "json":
+            print(_json.dumps({"error": "Interrupted"}, ensure_ascii=False), file=sys.stderr)
+        else:
+            print("Interrupted.", file=sys.stderr)
+        sys.exit(130)
     except Exception as e:
         if output_format == "json":
             import json as _json
@@ -300,6 +480,8 @@ def headless_main(prompt: str, mode: str = "chat", output_format: str = "text",
         else:
             print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
+    finally:
+        logging.disable(_prev_logging_disable)
 
 
 def main():

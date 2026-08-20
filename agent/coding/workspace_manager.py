@@ -109,7 +109,15 @@ class WorkspaceManager:
         try:
             path_obj = Path(file_path)
             if path_obj.is_absolute():
-                rel_path = path_obj.relative_to(self.project_root)
+                # resolve() both sides: project_root was resolved in
+                # __init__, so an unresolved argument differing only by a
+                # symlinked prefix — /var vs /private/var on macOS, which is
+                # where every temp dir lives — made relative_to raise, and
+                # the except below swallowed it. get_file_context documents
+                # absolute paths as valid input and forwards them here, so
+                # the effect was that reading a file by absolute path
+                # silently left it out of get_recent_files().
+                rel_path = path_obj.resolve().relative_to(self.project_root)
             else:
                 rel_path = Path(file_path)
             rel_str = str(rel_path)

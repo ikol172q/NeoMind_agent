@@ -25,7 +25,15 @@ logger = logging.getLogger(__name__)
 
 
 JOB_NAME = "daily_market_pull"
-DEFAULT_CRON = "5 22 * * 1-5"
+# 🔴 2026-08-07: `1-5` → `mon-fri`。**APScheduler 的 day_of_week 用 0=周一**,
+#    与标准 crontab (0=周日) 差一位 —— 写 `1-5` 本意"周一~周五", 实际跑 **周二~周六**:
+#    每个周一(交易日)不跑, 每个周六(非交易日)白跑。
+#    这批 job 在 2026-08-03 修过 13 个, 本文件在**另一个仓**所以漏网, 又活了 4 天。
+#    症状之所以难发现: job 每次都 status=completed / consecutive_failures=0 ——
+#    **它没有失败, 它只是在错误的日子成功**, 任何只看"跑没跑完"的巡检都报绿灯。
+#    ⚠️ 只改这里不生效: `scheduler_jobs` 的 upsert **故意不覆盖 cron_expression**
+#    (为保留用户手改), 必须同步 UPDATE 数据库。
+DEFAULT_CRON = "5 22 * * mon-fri"
 DESCRIPTION = (
     "Pull last ~3 months of daily OHLCV for every active ticker and "
     "upsert into market_data_daily. Idempotent — re-runs replace rows."

@@ -194,6 +194,38 @@ system_prompt: |
   即便你"记得"训练数据里 AAPL 大约 $271、BTC ~$77K、PE ~34 ——
   那是 stale snapshot (from-training-cutoff 标签), 不是当前数据.
   先 tool_call, 再说话. 永远.
+
+  ══════ Fin-specific 第 5 个 GATE 项 (LAYER 2 — 合规 / 制裁 / 税务) ══════
+
+  荐股 / 选股 / 建仓 / 交易类回应前, 若标的是非美 / 中国 / 港股 / ADR
+  且用户可能是 US person (公民 / 绿卡 / 美国税务居民), 强制过这两项,
+  把结论作为证据主动呈现 (和"先 tool_call 再说数字"同性质强制, 不等问):
+
+  [ ] **制裁二元门槛 (OFAC)** — US person (含绿卡) 禁止买卖 OFAC
+      **NS-CMIC** 清单上的中国股 (严格责任, 不知情也罚; 民事 ~$370k+/次
+      或 2x 交易额, 刑事 willful 最高 $1M + 20yr). 荐任何中国名字前先核
+      是否在单上, 在 = 排除并明说. 已知禁买 (以 OFAC 实时单为准, 清单会变):
+      SMIC 0981 / SenseTime 商汤 0020. 别误当买卖禁令: 1260H (国防采购)
+      / BIS Entity List (管出口非持股) / Outbound Rule EO14105 (公开
+      证券豁免, 2025-12 还放宽) 都不禁买公开股. 升级陷阱: 已持有的名字
+      事后被加进 NS-CMIC → 触发清仓窗口 (典型 60 天生效 / 365 天 divest,
+      按每次指定为准), 须窗口内退出. 在 1260H 上的大名 (阿里 / 腾讯 /
+      比亚迪 / CATL / 百度) 有升级路径 → 提醒查 OFAC 实时单 + 设监控.
+
+  [ ] **税务红线 (US person 持外国证券, general info 非正式税务意见)** —
+      · 个股 + 美国券商账户 → 不触发 FBAR / Form 8938 / PFIC 8621;
+        照常 1040 + Sch D/8949 + Sch B (+ Form 1116 若有外国预扣).
+      · PFIC 雷 (最易踩): 别荐外国注册地 (港 / 爱尔兰 / 开曼) 的基金 / ETF
+        (= PFIC, 年年 Form 8621 + 惩罚性税). 要篮子 → 美国注册 ETF
+        (KWEB / MCHI / FXI) 或个股 (个股 per-issuer 确认).
+      · FBAR / 8938 取决于账户所在地非资产 → 确认账户在美国券商实体.
+      · 股息预扣: 开曼 P-chip (腾讯 / 阿里) = 0%; 真 H 股 = 10% (treaty)
+        / 20% (法定), Form 1116 抵免.
+      · 遗产税: LPR 算美国 domicile (全球资产计入), 2026 免税额 $15M;
+        非公民配偶留意 QDOT.
+
+  以上为 2026-06 核实的 general compliance info, 非正式法律 / 税务意见;
+  涉及个案 / 跨境身份决策, 明确提示用户咨询跨境 CPA / 制裁律师.
 temperature: 0.3
 workspace:
   auto_read_files: false

@@ -7,6 +7,12 @@ import urllib.request
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
 
 
@@ -45,18 +51,35 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
+def _seed(symbol: str, market: str = "US"):
+    """Put a symbol on the watchlist.
+
+    This file used to rely on whatever the dashboard already held. Ten other
+    web test files call _clear_watchlist / _reset_watchlist_and_paper, so in a
+    full-suite run the list is often empty by the time these run — they passed
+    alone and failed in the suite. Seed what we need instead.
+    """
+    req = urllib.request.Request(
+        BASE_URL + f"api/watchlist?project_id={PROJECT}",
+        data=json.dumps({"symbol": symbol, "market": market, "note": ""}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    urllib.request.urlopen(req, timeout=15).read()
+
 def _open_research(page: Page):
-    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]')
-    page.click('[data-testid="tab-research"]')
+    page.goto(BASE_URL, wait_until="domcontentloaded", timeout=45000)
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="sentiment-gauge-widget"]', timeout=10000)
 
 
 def test_gauge_renders_with_score(page: Page):
+    _seed('AAPL')
     _open_research(page)
     # Plotly gauge injects an SVG inside the plot container
     page.wait_for_function(
@@ -64,7 +87,7 @@ def test_gauge_renders_with_score(page: Page):
             const root = document.querySelector('[data-testid="sentiment-plot"]')
             return root && root.querySelector('svg') !== null
         }""",
-        timeout=15000,
+        timeout=45000,
     )
     # Subtitle should reflect one of the expected labels
     body = page.evaluate(
@@ -76,7 +99,7 @@ def test_gauge_renders_with_score(page: Page):
 
 def test_ask_button_prefills_chat_with_subscores(page: Page):
     _open_research(page)
-    page.wait_for_selector('[data-testid="sentiment-ask"]', timeout=15000)
+    page.wait_for_selector('[data-testid="sentiment-ask"]', timeout=45000)
     page.click('[data-testid="sentiment-ask"]')
     page.wait_for_selector('[data-testid="chat-input"]', timeout=5000)
     page.wait_for_function(

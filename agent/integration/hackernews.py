@@ -43,6 +43,9 @@ class HNStory:
 
     @property
     def age_hours(self) -> float:
+        # 0 is this codebase's "no timestamp" sentinel, not the Unix epoch:
+        # `time` defaults to 0 on the dataclass and fetch_story fills it with
+        # data.get("time", 0). A falsy check is therefore correct here.
         if not self.time:
             return 0
         return (time.time() - self.time) / 3600

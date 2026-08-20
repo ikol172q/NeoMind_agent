@@ -16,8 +16,13 @@ import urllib.error
 import pytest
 from playwright.sync_api import Page, sync_playwright
 
+# V11 moved the widget grid (Watchlist, Quote, Heatmap, Earnings, RS,
+# Correlation, Sectors...) off Research into LegacyTab, reachable only
+# through Settings. These tests exercise those widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
+from tests.fixture_project import PROJECT
+
 BASE_URL = "http://127.0.0.1:8001/"
-PROJECT = "fin-core"
 
 
 def _backend_up() -> bool:
@@ -84,6 +89,7 @@ def page(browser) -> Page:
     _clear_watchlist()
     ctx = browser.new_context(viewport={"width": 1600, "height": 1100})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
     _clear_watchlist()
@@ -91,8 +97,7 @@ def page(browser) -> Page:
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
+    goto_legacy(page)
     page.wait_for_selector('[data-testid="earnings-widget"]', timeout=10000)
 
 
@@ -105,7 +110,10 @@ def test_earnings_empty_state_when_no_us_watchlist(page: Page):
             const t = el.innerText.toLowerCase()
             return t.includes('empty') || t.includes('add us symbols')
         }""",
-        timeout=10000,
+        # Measured: the widget sits on "loading…" and resolves to the
+        # empty copy somewhere between 5s and 15s, so a 10s budget was
+        # landing on the boundary.
+        timeout=45000,
     )
 
 

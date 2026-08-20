@@ -2088,7 +2088,26 @@ def _send_telegram(text: str) -> bool:
                 ok = ok or (r.status_code == 200)
     except Exception as exc:
         logger.debug("telegram alert failed: %s", exc)
+    if ok:
+        _record_push_for_agent(text)
     return ok
+
+
+def _record_push_for_agent(text: str) -> None:
+    """镜像直推内容进 agent_alerts（共享 outbox）——Telegram bot 从这张表
+    ingest 主动推送进对话历史；不入表的直推对 agent 是信息孤岛。
+    status 直接标 pushed，避免 push_pending 把它再投一次。"""
+    try:
+        import hashlib
+        from agent.finance import agent_alerts
+        key = "td:" + hashlib.sha1(text.encode("utf-8")).hexdigest()[:16]
+        r = agent_alerts.upsert_alert(
+            dedup_key=key, source="trading_desk", ticker="",
+            severity="P1", title=text.splitlines()[0][:80], body=text)
+        if r.get("is_new"):
+            agent_alerts.mark_status(r["id"], "pushed")
+    except Exception as exc:
+        logger.debug("record push failed: %s", exc)
 
 
 def chart_data(spec: Dict[str, Any], symbol: str) -> Dict[str, Any]:

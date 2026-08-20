@@ -498,3 +498,28 @@ def interactive_chat_fallback(mode: str = "chat"):
         except Exception as e:
             print(f"\nError: {e}")
             continue
+
+def explain_unavailable_interface(exc: Exception) -> None:
+    """Explain a failed import of the main interface. Runs no turns.
+
+    This is what `main.py` calls when `cli.neomind_interface` cannot be
+    imported. It used to call `interactive_chat_with_prompt_toolkit()` instead,
+    dropping the user into this module's second, unmigrated REPL — and because
+    the call sat inside `except Exception` around the whole session, that
+    happened on any runtime error too, not just a broken install.
+
+    The turn-running entry points below are no longer reachable from `main.py`.
+    They are kept only because `dev_test.py` and two test modules still import
+    them; they are scheduled for deletion in Phase 8 (compatibility
+    retirement), not preserved as a supported fallback.
+    """
+    missing = str(exc)
+    print("", file=sys.stderr)
+    print("NeoMind could not start because a dependency is missing.", file=sys.stderr)
+    print(f"  {missing}", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("Most likely fix — reinstall the package and its dependencies:", file=sys.stderr)
+    print("  pip install -e .", file=sys.stderr)
+    print("", file=sys.stderr)
+    print("If you are running from a checkout, check that the virtualenv is", file=sys.stderr)
+    print("the one you installed into: python -c 'import sys; print(sys.executable)'", file=sys.stderr)

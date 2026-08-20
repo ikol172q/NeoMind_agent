@@ -6,6 +6,9 @@ draggable wrapper that was swallowing link activations. These tests
 lock in the fix: tabs render, switching a tab changes the entry set,
 and clicking an entry opens a new tab to its source URL.
 """
+# Wait budgets raised to 30s: this dashboard is slow enough that the
+# original 3-8s values could not be met even when the feature worked
+# (a freshly added watchlist row measured 8.9s end to end).
 from __future__ import annotations
 
 import json
@@ -13,6 +16,11 @@ import urllib.request
 
 import pytest
 from playwright.sync_api import Page, sync_playwright
+
+# V11 moved the widget grid (Watchlist, News, ...) off Research into
+# LegacyTab, reachable only through Settings. These tests drive those
+# widgets, so they follow.
+from tests.web_nav import goto_legacy, goto_tab, pin_project
 
 BASE_URL = "http://127.0.0.1:8001/"
 
@@ -52,21 +60,21 @@ def browser():
 def page(browser) -> Page:
     ctx = browser.new_context(viewport={"width": 1600, "height": 1000})
     page = ctx.new_page()
+    pin_project(page)
     yield page
     ctx.close()
 
 
 def _open_research(page: Page):
     page.goto(BASE_URL, wait_until="domcontentloaded", timeout=15000)
-    page.wait_for_selector('[data-testid="tab-research"]', timeout=8000)
-    page.click('[data-testid="tab-research"]')
-    page.wait_for_selector('[data-testid="news-tabs"]', timeout=8000)
+    goto_legacy(page)
+    page.wait_for_selector('[data-testid="news-tabs"]', timeout=30000)
 
 
 def test_news_tabs_render(page: Page):
     _open_research(page)
     # Always-present synthetic tab
-    page.wait_for_selector('[data-testid="news-tab-all"]', timeout=5000)
+    page.wait_for_selector('[data-testid="news-tab-all"]', timeout=30000)
     # At least one category tab should have landed from the backend
     page.wait_for_function(
         """() => {
@@ -74,7 +82,7 @@ def test_news_tabs_render(page: Page):
             if (!bar) return false
             return bar.querySelectorAll('[data-testid^="news-tab-"]').length > 1
         }""",
-        timeout=5000,
+        timeout=30000,
     )
 
 
@@ -84,7 +92,7 @@ def test_tech_tab_has_non_hn_tech_feeds(page: Page):
     them out."""
     _open_research(page)
     try:
-        page.wait_for_selector('[data-testid="news-tab-tech"]', timeout=4000)
+        page.wait_for_selector('[data-testid="news-tab-tech"]', timeout=30000)
     except Exception:
         pytest.skip("Tech category not populated — rerun seed_miniflux_feeds.py")
     page.click('[data-testid="news-tab-tech"]')
@@ -104,13 +112,13 @@ def test_hn_tab_shows_ycombinator_shortcut(page: Page):
     news.ycombinator.com appears in the tab bar."""
     _open_research(page)
     try:
-        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=4000)
+        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=30000)
     except Exception:
         pytest.skip("HN category not populated")
     # Shortcut should NOT be present on the default All tab
     assert page.query_selector('[data-testid="news-source-shortcut"]') is None
     page.click('[data-testid="news-tab-hn"]')
-    page.wait_for_selector('[data-testid="news-source-shortcut"]', timeout=3000)
+    page.wait_for_selector('[data-testid="news-source-shortcut"]', timeout=30000)
     el = page.query_selector('[data-testid="news-source-shortcut"]')
     assert el is not None
     href = el.get_attribute('href') or ''
@@ -121,7 +129,7 @@ def test_hn_tab_exists_and_has_hn_items(page: Page):
     """HN firehose has its own tab."""
     _open_research(page)
     try:
-        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=4000)
+        page.wait_for_selector('[data-testid="news-tab-hn"]', timeout=30000)
     except Exception:
         pytest.skip("HN category not populated — rerun seed_miniflux_feeds.py")
     page.click('[data-testid="news-tab-hn"]')
@@ -136,7 +144,7 @@ def test_hn_tab_exists_and_has_hn_items(page: Page):
 def test_news_entry_is_a_link_to_external_source(page: Page):
     _open_research(page)
     # Wait for at least one entry to render
-    page.wait_for_selector('[data-testid^="news-entry-"]', timeout=8000)
+    page.wait_for_selector('[data-testid^="news-entry-"]', timeout=30000)
     first = page.query_selector('[data-testid^="news-entry-"]')
     assert first is not None
     href = first.get_attribute("href") or ""
@@ -151,12 +159,12 @@ def test_clicking_news_entry_opens_new_tab(page: Page):
     """Confirm the draggable-wrapper doesn't swallow clicks — this
     was the original complaint. We listen for a new-page event."""
     _open_research(page)
-    page.wait_for_selector('[data-testid^="news-entry-"]', timeout=8000)
+    page.wait_for_selector('[data-testid^="news-entry-"]', timeout=30000)
     first = page.query_selector('[data-testid^="news-entry-"]')
     assert first is not None
 
     ctx = page.context
-    with ctx.expect_page(timeout=6000) as new_info:
+    with ctx.expect_page(timeout=30000) as new_info:
         first.click()
     new_page = new_info.value
     try:
@@ -182,7 +190,7 @@ def test_switching_tabs_issues_scoped_request(page: Page):
     )
 
     try:
-        page.wait_for_selector('[data-testid="news-tab-us"]', timeout=4000)
+        page.wait_for_selector('[data-testid="news-tab-us"]', timeout=30000)
     except Exception:
         pytest.skip("US category not populated")
     page.click('[data-testid="news-tab-us"]')

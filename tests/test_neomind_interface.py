@@ -15,13 +15,33 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from io import StringIO
+import pytest
+import inspect
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-os.environ["DEEPSEEK_API_KEY"] = "test-key-for-tests"
+# setdefault, not assignment: this runs at import time, so a plain
+# assignment clobbers the real key for every test collected after
+# this module and silently 401s anything that makes a live call.
+os.environ.setdefault("DEEPSEEK_API_KEY", "test-key-for-tests")
 
 
 def _make_mock_chat(mode="chat"):
     chat = MagicMock()
+    # A real command registry and dispatcher, because that is what production
+    # has. These used to be MagicMocks, so `dispatch()` returned a mock that
+    # blew up on await, the interface swallowed it, and every command test
+    # below silently exercised the 21-branch legacy fallback instead of the
+    # command system. When that fallback was removed the tests failed — not
+    # because behaviour changed, but because they had been aimed at the dead
+    # copy the whole time.
+    from agent.cli_command_system import CommandDispatcher, create_default_registry
+
+    registry = create_default_registry()
+    chat._command_registry = registry
+    chat._command_dispatcher = CommandDispatcher(
+        registry, context={"registry": registry, "config": None},
+    )
     chat.model = "deepseek-v4-flash"
     chat.mode = mode
     chat.thinking_enabled = False
@@ -255,12 +275,18 @@ class TestNeoMindInterfaceCommands(unittest.TestCase):
         result = self.interface._handle_local_command("/search python docs")
         self.assertIsNone(result)
 
-    def test_non_slash_handled_gracefully(self):
-        """Non-slash text should not crash if accidentally passed."""
-        # In practice, the main loop checks startswith("/") before calling
-        # _handle_local_command, so this path shouldn't occur. Just verify no crash.
+    def test_non_slash_text_is_passed_through_to_the_agent(self):
+        """None means "not a local command" — the contract the method
+        documents.
+
+        This used to assert the opposite, because the removed legacy chain
+        split prose on whitespace, derived an empty command name, and found it
+        missing from the mode's command list — so "hello world" was announced
+        as an unavailable command. The test pinned that accident. Prose
+        belongs to the model.
+        """
         result = self.interface._handle_local_command("hello world")
-        self.assertIsNotNone(result)  # handled (mode gating catches it)
+        self.assertIsNone(result)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -284,9 +310,15 @@ class TestCommandModeGating(unittest.TestCase):
         result = self.interface._handle_local_command("/edit file.py")
         self.assertTrue(result)
 
-    def test_read_blocked_in_chat(self):
+    def test_read_allowed_in_chat(self):
+        # /read is a chat command now — the web-page reader that ships with
+        # /links, /crawl and /webmap. It is no longer gated to coding mode.
+        from agent_config import agent_config
+        self.assertIn("read", agent_config.available_commands)
+        # In this class a truthy result means "intercepted with a rejection".
+        # /read is allowed in chat, so the gate must pass it through.
         result = self.interface._handle_local_command("/read file.py")
-        self.assertTrue(result)
+        self.assertIsNone(result)
 
     def test_git_blocked_in_chat(self):
         result = self.interface._handle_local_command("/git status")
@@ -408,7 +440,7 @@ class TestWelcomeScreen(unittest.TestCase):
         iface.display_welcome()
         output = captured.getvalue()
         self.assertIn("coding mode", output)
-        self.assertIn("Tools:", output)
+        self.assertIn("Tools (", output)   # now "Tools (52): ..."
 
     def test_welcome_fallback(self):
         from cli.neomind_interface import NeoMindInterface
@@ -629,39 +661,6 @@ class TestExtractToolBlocks(unittest.TestCase):
         self.assertIsNotNone(tc)
 
 
-class TestExecuteToolBlocks(unittest.TestCase):
-    """Test tool call execution through _execute_tool_call."""
-
-    def _iface(self):
-        from cli.neomind_interface import NeoMindInterface
-        return NeoMindInterface(_make_mock_chat("coding"))
-
-    def test_execute_echo(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc = ToolCall("Bash", {"command": "echo hello"}, "raw")
-        result = iface._execute_tool_call(tc)
-        self.assertTrue(result.success)
-        self.assertIn("hello", result.output)
-
-    def test_execute_failing_command(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc = ToolCall("Bash", {"command": "false"}, "raw")
-        result = iface._execute_tool_call(tc)
-        self.assertFalse(result.success)
-
-    def test_registry_reuse(self):
-        from agent.tool_parser import ToolCall
-        iface = self._iface()
-        tc1 = ToolCall("Bash", {"command": "echo 1"}, "raw")
-        iface._execute_tool_call(tc1)
-        reg1 = iface._tool_registry
-        tc2 = ToolCall("Bash", {"command": "echo 2"}, "raw")
-        iface._execute_tool_call(tc2)
-        self.assertIs(reg1, iface._tool_registry)
-
-
 class TestAgenticLoop(unittest.TestCase):
     """Test the agentic tool execution loop."""
 
@@ -765,6 +764,14 @@ class TestTranscriptInCommands(unittest.TestCase):
 
 class TestSpinnerCallback(unittest.TestCase):
     """Test that spinner callback is properly injected."""
+
+    @pytest.fixture(autouse=True)
+    def _pin_to_legacy(self, monkeypatch):
+        """Asserts `stream_response` is called and `chat._ui_on_first_token`
+        is set — both legacy mechanics. The session path drives the provider
+        through LLMPort and stops the spinner from the renderer, so neither
+        exists to observe."""
+        monkeypatch.setenv("NEOMIND_REPL", "legacy")
 
     def test_callback_set_on_chat(self):
         from cli.neomind_interface import NeoMindInterface
@@ -1138,8 +1145,9 @@ class TestAgenticLoopSpinnerDisplay(unittest.TestCase):
         with patch('sys.stderr', captured_stderr):
             iface._run_agentic_loop()
         stderr_out = captured_stderr.getvalue()
-        # Spinner should have written "Thinking" to stderr
-        self.assertIn("Thinking", stderr_out)
+        # The agentic loop's spinner names the tool it is running ("🔧 Bash(...)"),
+        # unlike _stream_and_render's "Thinking…" spinner.
+        self.assertIn("Bash", stderr_out)
 
     @patch('builtins.input', return_value='y')
     def test_no_verbose_output_to_stdout(self, _):
@@ -1173,6 +1181,19 @@ class TestAgenticLoopSpinnerDisplay(unittest.TestCase):
 class TestStreamAndRenderContentFilter(unittest.TestCase):
     """Test that _stream_and_render installs content filter in coding mode."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_to_legacy(self, monkeypatch):
+        """These describe how the legacy path installs the filter.
+
+        They assert that `_stream_and_render` sets `chat._content_filter` and
+        clears it afterwards. The session path deliberately does not: it builds
+        the filter locally and hands it to the renderer instead of mutating the
+        agent's private state, which is what Phase 4 task 2 asks for. The
+        behaviour they protect — the right filter per mode — is covered for the
+        new path in TestSessionPathFilterSelection below.
+        """
+        monkeypatch.setenv("NEOMIND_REPL", "legacy")
+
     def test_filter_installed_in_coding_mode(self):
         from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("coding")
@@ -1186,7 +1207,7 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
         self.assertEqual(len(filter_installed), 1)
         self.assertIsNotNone(filter_installed[0])
 
-    def test_filter_not_installed_in_chat_mode(self):
+    def test_syntax_highlight_filter_installed_in_chat_mode(self):
         from cli.neomind_interface import NeoMindInterface
         chat = _make_mock_chat("chat")
         chat._content_filter = None  # Explicitly initialize (MagicMock auto-creates)
@@ -1196,9 +1217,15 @@ class TestStreamAndRenderContentFilter(unittest.TestCase):
         chat.stream_response = MagicMock(side_effect=mock_stream)
         iface = NeoMindInterface(chat)
         iface._stream_and_render("test prompt")
-        # In chat mode, _content_filter should NOT be set
+        # Chat mode installs the syntax-highlight filter when Pygments is
+        # available; only coding mode gets the code-fence suppressor. The
+        # "no filter at all" case is now the no-Pygments fallback.
         self.assertEqual(len(filter_installed), 1)
-        self.assertIsNone(filter_installed[0])
+        from cli.neomind_interface import PYGMENTS_AVAILABLE, NeoMindInterface
+        if PYGMENTS_AVAILABLE:
+            self.assertIsInstance(filter_installed[0], NeoMindInterface._SyntaxHighlightFilter)
+        else:
+            self.assertIsNone(filter_installed[0])
 
     def test_filter_cleaned_up_after_render(self):
         from cli.neomind_interface import NeoMindInterface
@@ -1279,3 +1306,78 @@ class TestPermissionsCommand(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestSessionPathFilterSelection(unittest.TestCase):
+    """The same guarantee, through the mechanism the session path uses.
+
+    No private field is written; the filter is constructed and passed to the
+    renderer, so what is asserted is which class was chosen for the mode.
+    """
+
+    def _chosen_filter(self, mode):
+        import sys as _sys
+
+        _sys.argv = ["x"]
+        from cli.neomind_interface import NeoMindInterface, PYGMENTS_AVAILABLE
+
+        captured = {}
+
+        class _Renderer:
+            def __init__(self, **kw):
+                captured["filter"] = kw.get("content_filter")
+
+            async def render(self, events):
+                from cli.session_renderer import RenderOutcome
+
+                async for _ in events:
+                    pass
+                return RenderOutcome(ok=True, response="x", chars_written=1)
+
+        interface = NeoMindInterface.__new__(NeoMindInterface)
+        interface.chat = mock.MagicMock()
+        interface.chat.mode = mode
+        interface.chat.conversation_history = []
+        interface._fleet_session = None
+        interface._print = lambda *_a, **_k: None
+        interface._start_spinner = lambda *_a, **_k: mock.MagicMock()
+        interface._interpret_as_command = lambda _t: None
+        interface._build_turn_session = lambda: mock.MagicMock(
+            run_turn=lambda _t: _empty_stream()
+        )
+        interface._warn_on_context_usage = lambda: None
+
+        async def _empty_stream():
+            if False:
+                yield None
+
+        with mock.patch("cli.session_renderer.SessionRenderer", _Renderer):
+            interface._stream_and_render_session("hi")
+        return captured.get("filter"), PYGMENTS_AVAILABLE
+
+    def test_coding_mode_uses_the_code_fence_filter(self):
+        from cli.neomind_interface import NeoMindInterface
+
+        chosen, _ = self._chosen_filter("coding")
+        self.assertIsInstance(chosen, NeoMindInterface._CodeFenceFilter)
+
+    def test_other_modes_use_the_syntax_highlighter_when_available(self):
+        from cli.neomind_interface import NeoMindInterface
+
+        chosen, pygments = self._chosen_filter("chat")
+        if pygments:
+            self.assertIsInstance(chosen, NeoMindInterface._SyntaxHighlightFilter)
+        else:
+            self.assertIsNone(chosen)
+
+    def test_no_private_agent_field_is_written(self):
+        """The point of the migration: the UI stops mutating agent internals."""
+        import sys as _sys
+
+        _sys.argv = ["x"]
+        from cli.neomind_interface import NeoMindInterface
+
+        source = inspect.getsource(NeoMindInterface._stream_and_render_session)
+        self.assertNotIn("_content_filter", source)
+        self.assertNotIn("_ui_on_first_token", source)
+
