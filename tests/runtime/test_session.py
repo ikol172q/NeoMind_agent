@@ -14,6 +14,7 @@ import json
 import pytest
 
 from agent.runtime.events import (
+    StatusChanged,
     TextDelta,
     ThinkingDelta,
     ToolFinished,
@@ -462,3 +463,168 @@ class TestHeadlessConsumer:
         result = asyncio.run(consume(truncated()))
         assert result.ok is False
         assert result.error_code == "no_terminal_event"
+
+
+# ── the turn must not pass off an unexecuted tool call as work done ────────
+
+
+REAL_FABRICATED_EDIT = (
+    "I found the file and it does contain \"WIDGET\". Now I'll replace both "
+    "occurrences.\n[tool:Edit] # /tmp/acp_write_target.md"
+)
+"""Captured from a run that reported edits it never made.
+
+Only the search term is changed — the real probe used a word that names a
+real person's broker, and this repository is public. The shape, which is
+what the test turns on, is exactly what the model emitted.
+
+The model answered one call in the structured spelling the parser reads and
+improvised `[tool:Edit]` for the next. The parser saw prose, the turn ended
+`TurnFinished`, and the client was told two specific lines had been rewritten.
+The file was untouched. Kept as a literal so the test breaks against what
+actually happened rather than against a shape someone imagined.
+"""
+
+
+class NoParser:
+    """Reads nothing — stands in for a spelling the real parser cannot read."""
+
+    def parse(self, text):
+        return None
+
+    def strip_tool_call(self, text, tool_call):  # pragma: no cover - never called
+        return text
+
+
+def _session_over(rounds, tools=("Edit", "Read"), parser=None):
+    registry = FakeRegistry([FakeToolDef(n, "READ_ONLY") for n in tools])
+    return AgentSession(
+        llm=ScriptedLLM(rounds),
+        executor=read_only_executor(registry),
+        tool_parser=parser or NoParser(),
+    )
+
+
+def _run(session, text="edit the file"):
+    async def go():
+        return [e async for e in session.run_turn(text)]
+
+    return asyncio.run(go())
+
+
+class TestUnexecutedToolCallIsNotAnAnswer:
+
+    def test_the_real_fabrication_is_caught(self):
+        """The captured output, run through the real turn loop."""
+        session = _session_over([
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+            [TextChunk(text="Sorry — I did not edit anything."),
+             FinishChunk(reason="stop")],
+        ])
+        events = _run(session)
+        codes = [e.code for e in events if isinstance(e, StatusChanged)]
+        assert "tool_call_unparsed" in codes, (
+            "a turn that names a real tool in an unreadable spelling reported "
+            "success; nothing distinguished it from work actually done"
+        )
+
+    def test_the_model_is_told_and_gets_one_retry(self):
+        session = _session_over([
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+            [TextChunk(text="Nothing was changed."), FinishChunk(reason="stop")],
+        ])
+        _run(session)
+        # Two provider calls: the original, then the reissue request.
+        assert len(session.llm.calls) == 2
+        correction = session.llm.calls[1][-1]
+        assert correction["role"] == "user"
+        assert "nothing ran" in correction["content"].lower()
+        assert "Edit" in correction["content"]
+
+    def test_a_second_failure_is_reported_not_swallowed(self):
+        """One retry, then say plainly that the described action did not happen."""
+        session = _session_over([
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+        ])
+        events = _run(session)
+        codes = [e.code for e in events if isinstance(e, StatusChanged)]
+        assert codes.count("tool_call_unparsed") == 1, "retried more than once"
+        assert "tool_call_unparsed_final" in codes
+        final = [e for e in events if isinstance(e, StatusChanged)][-1]
+        assert "did not happen" in final.text
+
+    def test_the_turn_still_ends_with_exactly_one_terminal_event(self):
+        """The contract holds through the new branch."""
+        session = _session_over([
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+            [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+        ])
+        events = _run(session)
+        terminal = [e for e in events if isinstance(e, (TurnFinished, TurnFailed))]
+        assert len(terminal) == 1
+
+    def test_prose_about_a_tool_is_not_treated_as_a_failed_call(self):
+        """The check must not fire on an answer that merely mentions a tool."""
+        session = _session_over([
+            [TextChunk(text="You can use the Edit tool to change files."),
+             FinishChunk(reason="stop")],
+        ])
+        events = _run(session)
+        assert not [e for e in events if isinstance(e, StatusChanged)]
+        assert len(session.llm.calls) == 1, "a plain answer was needlessly retried"
+
+    def test_an_unknown_tool_name_does_not_fire(self):
+        session = _session_over([
+            [TextChunk(text="[tool:Frobnicate] do the thing"),
+             FinishChunk(reason="stop")],
+        ])
+        events = _run(session)
+        assert not [e for e in events if isinstance(e, StatusChanged)]
+
+    def test_the_names_come_from_the_registry_the_executor_actually_has(self):
+        """A lookup the real registry does not answer leaves the check inert —
+        which is how this guard would ship as decoration."""
+        from agent.tools import ToolRegistry
+
+        session = AgentSession(
+            llm=ScriptedLLM([]),
+            executor=read_only_executor(ToolRegistry(working_dir=".")),
+        )
+        names = session._known_tool_names()
+        assert names, "the real registry yielded no tool names"
+        assert "Edit" in names
+
+    def test_the_guard_holds_on_the_production_path(self):
+        """Real registry, real executor, real ACP-shaped policy.
+
+        The fakes above prove the branch; this proves it survives the wiring an
+        ACP client actually gets — where `Edit` resolves, its level is `write`,
+        and the policy would have asked. The point of the guard is that the
+        turn never reached that question.
+        """
+        from agent.integration.acp_server import NeoMindACPAgent
+        from agent.runtime.permissions import CapabilitySnapshot, PermissionPolicy
+        from agent.tools import ToolRegistry
+
+        registry = ToolRegistry(working_dir=".")
+        policy = PermissionPolicy(
+            capabilities=CapabilitySnapshot.only(
+                *NeoMindACPAgent._allowed_tools(registry)
+            ),
+            interactive=True,
+            auto_accept=False,
+        )
+        session = AgentSession(
+            llm=ScriptedLLM([
+                [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+                [TextChunk(text=REAL_FABRICATED_EDIT), FinishChunk(reason="stop")],
+            ]),
+            executor=ToolExecutor(registry=registry, policy=policy, working_dir="."),
+            tool_parser=NoParser(),
+        )
+        events = _run(session)
+        codes = [e.code for e in events if isinstance(e, StatusChanged)]
+        assert "tool_call_unparsed" in codes
+        assert "tool_call_unparsed_final" in codes
+        assert len([e for e in events if isinstance(e, (TurnFinished, TurnFailed))]) == 1
