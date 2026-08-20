@@ -122,7 +122,21 @@ class NeoMindACPAgent(acp.Agent):
     ) -> Any:
         return schema.InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
-            agent_capabilities=schema.AgentCapabilities(load_session=False),
+            agent_capabilities=schema.AgentCapabilities(
+                load_session=False,
+                # `close_session` has always been implemented and never
+                # advertised, so no client called it and `_sessions` only ever
+                # grew — harmless for a per-run stdio process, a leak for a
+                # server that stays up. Only `close` is claimed: listing,
+                # deletion, forking and resuming are not implemented, and
+                # advertising them would invite calls that fail.
+                # Presence is the claim — the field takes a capability object,
+                # not a bool, and pydantic drops a bool without complaining, so
+                # `close=True` reads back as `None` and advertises nothing.
+                session_capabilities=schema.SessionCapabilities(
+                    close=schema.SessionCloseCapabilities(),
+                ),
+            ),
         )
 
     async def new_session(self, cwd: str, **kwargs: Any) -> Any:

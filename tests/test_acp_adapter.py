@@ -776,3 +776,100 @@ class TestModesAreReachableFromOutside:
         update = [u for u in client.updates
                   if type(u).__name__ == "CurrentModeUpdate"][-1]
         assert update.session_update == "current_mode_update"
+
+
+class TestAdvertisedCapabilitiesMatchReality:
+    """A capability claim is a promise a client will act on.
+
+    Both directions are bugs. Claiming something unimplemented invites calls
+    that fail; implementing something unclaimed means nobody ever calls it —
+    which is how `close_session` came to exist for a surface where every client
+    leaked sessions instead.
+    """
+
+    @staticmethod
+    def _caps():
+        agent = NeoMindACPAgent(session_factory=lambda s: None)
+        return asyncio.run(agent.initialize(protocol_version=1)).agent_capabilities
+
+    def test_close_is_advertised_because_it_is_implemented(self):
+        caps = self._caps()
+        assert caps.session_capabilities is not None
+        # Presence is the claim; the field holds a capability object, and a
+        # bool put here is silently dropped back to None.
+        assert caps.session_capabilities.close is not None
+
+    def test_nothing_unimplemented_is_claimed(self):
+        """Each of these has no handler; claiming one would break a client that
+        believed it."""
+        caps = self._caps()
+        sc = caps.session_capabilities
+        for field in ("list", "delete", "fork", "resume"):
+            assert not getattr(sc, field), f"{field} advertised without a handler"
+        assert caps.load_session is False
+
+    def test_rich_content_is_not_claimed_because_the_turn_takes_text(self):
+        """`_prompt_text` names non-text blocks rather than understanding them,
+        so a client must not be told to send them."""
+        caps = self._caps()
+        pc = caps.prompt_capabilities
+        assert not pc.image and not pc.audio and not pc.embedded_context
+
+    def test_every_advertised_session_capability_has_a_handler(self):
+        """Derives the claim set from the response rather than listing it, so a
+        capability added later is covered without editing this test."""
+        caps = self._caps()
+        handlers = {
+            "close": "close_session",
+            "list": "list_sessions",
+            "delete": "delete_session",
+            "fork": "fork_session",
+            "resume": "load_session",
+        }
+        sc = caps.session_capabilities
+        for field, method in handlers.items():
+            if getattr(sc, field, None):
+                assert callable(getattr(NeoMindACPAgent, method, None)), (
+                    f"advertised {field} with no {method}()"
+                )
+
+
+class TestClosingASession:
+
+    def test_a_closed_session_is_gone(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            s = await agent.new_session(cwd="/tmp")
+            await agent.close_session(s.session_id)
+            return s.session_id in agent._sessions
+
+        assert asyncio.run(go()) is False
+
+    def test_closing_an_unknown_session_is_not_an_error(self):
+        """A client that closes twice, or after a reconnect, must not be
+        punished for it."""
+        agent, _, _ = agent_with([])
+        asyncio.run(agent.close_session("never-existed"))
+
+    def test_a_closed_session_cannot_be_prompted(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            s = await agent.new_session(cwd="/tmp")
+            await agent.close_session(s.session_id)
+            await agent.prompt(s.session_id, [])
+
+        with pytest.raises(ValueError):
+            asyncio.run(go())
+
+    def test_closing_one_session_leaves_the_other_alone(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            a = await agent.new_session(cwd="/tmp")
+            b = await agent.new_session(cwd="/tmp")
+            await agent.close_session(a.session_id)
+            return b.session_id in agent._sessions
+
+        assert asyncio.run(go()) is True
