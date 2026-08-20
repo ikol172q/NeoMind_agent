@@ -14,7 +14,7 @@ SharedMemory so all modes can benefit.
 ## Triggers
 
 User says things like:
-- "记住：我的券商是 Schwab" → fact (category: finance)
+- "记住：我的券商是 [券商名称]" → fact (category: finance)
 - "Remember: I work at Google" → fact (category: work)
 - "以后用中文回复" → preference (language: zh)
 - "Don't use bullet points" → preference (format: no-bullets)
@@ -53,8 +53,8 @@ User says things like:
 Stored knowledge is automatically injected into LLM system prompts via
 `SharedMemory.get_context_summary()`. The user doesn't need to repeat themselves.
 
-Example: After teaching "我的券商是 Schwab", when user later asks about trading,
-the system prompt already includes "User's broker: Schwab".
+Example: After teaching "我的券商是 [券商名称]", when user later asks about trading,
+the system prompt already includes "User's broker: [broker]".
 
 ## Rules
 
