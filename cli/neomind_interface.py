@@ -425,93 +425,95 @@ class NeoMindInterface:
 
     # ── Welcome ───────────────────────────────────────────────────────────
     def display_welcome(self):
-        model_name = self.chat.model
-        mode = self.chat.mode
-        think_icon = "on" if self.chat.thinking_enabled else "off"
+        """The session header.
 
-        if self.console:
-            self.console.print()
-            if mode == "coding":
-                cwd = os.getcwd()
-                self.console.print(
-                    f"[bold cyan]neomind[/bold cyan]  "
-                    f"[dim]coding mode[/dim]"
-                )
-                self.console.print(
-                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
-                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
-                )
-                self.console.print(
-                    f"[dim]Workspace:[/dim] [blue]{cwd}[/blue]"
-                )
-                # Show tool count from registry if available
-                try:
-                    registry = self._get_tool_registry()
-                    tool_names = sorted([t.name for t in registry.get_all_tools()]) if registry else []
-                    tool_count = len(tool_names)
-                    if tool_count > 0:
-                        # Show first few tools + count
-                        shown = ", ".join(tool_names[:7])
-                        if tool_count > 7:
-                            self.console.print(
-                                f"[dim]Tools ({tool_count}): {shown}, ... (+{tool_count - 7} more)[/dim]"
-                            )
-                        else:
-                            self.console.print(
-                                f"[dim]Tools ({tool_count}): {shown}[/dim]"
-                            )
-                    else:
-                        self.console.print(
-                            "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
-                        )
-                except Exception:
-                    self.console.print(
-                        "[dim]Tools: Bash, Read, Write, Edit, Glob, Grep, LS[/dim]"
-                    )
-                self.console.print(
-                    "[dim]  / commands  |  Ctrl+O think  |  Ctrl+E expand  |  /debug logs  |  Ctrl+D exit[/dim]"
-                )
-            elif mode == "fin":
-                self.console.print(
-                    f"[bold green]neomind[/bold green]  "
-                    f"[dim]finance mode[/dim]"
-                )
-                self.console.print(
-                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
-                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
-                )
-                self.console.print(
-                    "[dim]Sources: Finnhub, yfinance, AKShare, CoinGecko, DuckDuckGo, RSS[/dim]"
-                )
-                self.console.print(
-                    "[dim]Tools: /stock  /crypto  /news  /compute  /digest  /chart  /risk[/dim]"
-                )
-                self.console.print(
-                    "[dim]  / commands  |  Ctrl+O think  |  /sources trust  |  Ctrl+D exit[/dim]"
-                )
-            else:
-                self.console.print(
-                    f"[bold cyan]neomind[/bold cyan]  "
-                    f"[dim]chat mode[/dim]"
-                )
-                self.console.print(
-                    f"[dim]Model:[/dim] [green]{model_name}[/green]  "
-                    f"[dim]Think:[/dim] [yellow]{think_icon}[/yellow]"
-                )
-                self.console.print(
-                    "[dim]  / commands  |  Ctrl+O think  |  /debug logs  |  Ctrl+C cancel  |  Ctrl+D exit[/dim]"
-                )
-            self.console.print()
+        Shaped after Codex's, which is the one of the three that reads best: a
+        rounded panel, a label row, then aligned `key   value` rows. The three
+        modes shared ninety lines of near-identical branching before this —
+        each printing the same four facts in a slightly different order with a
+        different set of colours.
+
+        The key hints are deliberately not here. All fifteen of them used to be
+        printed as one dim pipe-separated row, which is the wall Codex avoids
+        by showing a single line and keeping the rest behind it. `/help` is
+        that line.
+
+        Rows are measured as plain text and styled afterwards. Doing it the
+        other way — counting the characters of a string that already carried
+        `[dim]` and `[/dim]` — is what put the right-hand border two columns
+        out on the title line.
+        """
+        mode = self.chat.mode
+        think = "on" if self.chat.thinking_enabled else "off"
+
+        title = f"◆ neomind · {mode}"
+        rows = [("model", f"{self.chat.model}   think:{think}")]
+        if mode == "coding":
+            rows.append(("workspace", self._short_path(os.getcwd())))
+            rows.append(("tools", self._tool_summary()))
+        elif mode == "fin":
+            rows.append(("sources", "Finnhub · yfinance · AKShare · CoinGecko · RSS"))
+            rows.append(("tools", "/stock  /news  /chart  /risk   /help for all"))
         else:
-            print(f"\nneomind — {mode} mode")
-            print(f"Model: {model_name}  Think: {think_icon}")
-            if mode == "coding":
-                print(f"Workspace: {os.getcwd()}")
-                print("Tools: Bash, Read, Write, Edit, Glob, Grep, LS")
-            elif mode == "fin":
-                print("Sources: Finnhub, yfinance, AKShare, CoinGecko, DuckDuckGo, RSS")
-                print("Tools: /stock  /crypto  /news  /compute  /digest  /chart  /risk")
-            print("  / commands | Ctrl+O think | Ctrl+D exit\n")
+            rows.append(("tools", "/help to list"))
+
+        body = [f"  {key:<10} {value}" for key, value in rows]
+
+        if not (self.console and RICH_AVAILABLE):
+            print(f"\n{title}")
+            for line in body:
+                print(line)
+            print("  /help for commands\n")
+            return
+
+        inner = max(self._display_width(t) for t in [f" {title}", *body]) + 2
+        inner = max(44, min(74, inner))
+        accent = {"coding": "cyan", "fin": "green"}.get(mode, "blue")
+
+        def row(plain: str, markup: str) -> str:
+            gap = " " * max(0, inner - self._display_width(plain))
+            return f"[{accent}]│[/{accent}]{markup}{gap}[{accent}]│[/{accent}]"
+
+        self.console.print()
+        self.console.print(f"[{accent}]╭{'─' * inner}╮[/{accent}]")
+        self.console.print(row(f" {title}", f" [bold]◆ neomind[/bold] [dim]· {mode}[/dim]"))
+        self.console.print(row("", ""))
+        for line in body:
+            self.console.print(row(line, f"[dim]{line}[/dim]"))
+        self.console.print(f"[{accent}]╰{'─' * inner}╯[/{accent}]")
+        self.console.print()
+
+    def _tool_summary(self) -> str:
+        try:
+            registry = self._get_tool_registry()
+            count = len(registry.get_all_tools()) if registry else 0
+        except Exception:
+            count = 0
+        return f"{count} available   /help to list" if count else "/help to list"
+
+    @staticmethod
+    def _display_width(text: str) -> int:
+        """Columns the text occupies, not characters it contains.
+
+        A CJK path or a translated label is two columns per glyph, and padding
+        computed from `len()` puts the border in the wrong place for exactly
+        the users most likely to notice.
+        """
+        try:
+            from wcwidth import wcswidth
+
+            width = wcswidth(text)
+            if width >= 0:
+                return width
+        except Exception:
+            pass
+        return len(text)
+
+    @staticmethod
+    def _short_path(path: str) -> str:
+        """`~/Desktop/NeoMind_agent`. All three references abbreviate `$HOME`."""
+        home = os.path.expanduser("~")
+        return f"~{path[len(home):]}" if path.startswith(home) else path
 
     # ── Status bar (prompt_toolkit bottom_toolbar) ────────────────────────
     def _fleet_toolbar_line(self) -> str:
@@ -628,6 +630,40 @@ class NeoMindInterface:
                 "</ansibrightblack>"
             )
         return "".join(parts)
+
+    def _status_fields(self) -> dict:
+        """What the status line knows, before anyone decides how it looks.
+
+        Two surfaces render this now and they want different shapes: the
+        line-based REPL packs it into one dense `bottom_toolbar`, the inline
+        Application has the width to space it out. Gathering it twice is how
+        the two would start disagreeing about the context percentage.
+        """
+        from agent.constants.models import get_active_max_context
+
+        tokens = 0
+        max_ctx = get_active_max_context()
+        if getattr(self.chat, "context_manager", None):
+            try:
+                tokens = self.chat.context_manager.count_conversation_tokens()
+            except Exception:
+                pass
+            try:
+                max_ctx = self.chat._get_model_spec(self.chat.model)["max_context"]
+            except Exception:
+                max_ctx = agent_config.max_context_tokens or get_active_max_context()
+        return {
+            "model": self.chat.model,
+            "mode": self.chat.mode,
+            "thinking": bool(self.chat.thinking_enabled),
+            "tokens": tokens,
+            "max_context": max_ctx,
+            "pct": (tokens / max_ctx * 100) if max_ctx > 0 else 0,
+            "messages": len(self.chat.conversation_history),
+            "permission_mode": agent_config.permission_mode,
+            "cwd": os.path.basename(os.getcwd()) or "~",
+            "fleet": self._fleet_toolbar_line(),
+        }
 
     def _bottom_toolbar(self):
         model = self.chat.model
@@ -1635,37 +1671,133 @@ class NeoMindInterface:
         # Fallback: just print
         print(text)
 
-    def _run_fullscreen(self, *, bindings=None, style=None) -> None:
-        """Host the REPL in a long-lived Application.
+    @staticmethod
+    def _compact_tokens(n: int) -> str:
+        """`6.8k`, `1.2M`. Codex and CodeWhale both carry one of these.
 
-        The only structural difference from the line-based loop is where output
-        goes. `self.console` is swapped for one that renders into the app's
-        transcript, which is enough to move all 135 `_print` calls and every
-        Rich panel, table and Markdown block without touching them — `_print`
-        reads `self.console` and nothing else.
-
-        The console is restored on exit. Leaving it pointed at a dead app's
-        buffer would silently discard everything printed during shutdown,
-        including the goodbye and any error that caused it.
+        A raw `6,851/1000000` is four glyphs of noise for a number nobody
+        reads to the digit; what is wanted is the order of magnitude.
         """
-        from cli.fullscreen import FullScreenREPL, StderrGuard
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f}M"
+        if n >= 1_000:
+            return f"{n / 1_000:.1f}k"
+        return str(n)
 
-        repl = FullScreenREPL(
-            toolbar=self._bottom_toolbar,
+    def _inline_status(self):
+        """The status line, copied from what the three agents already agreed on.
+
+        Nothing here is invented. Codex's footer is entirely `.dim()` with
+        parts joined by `" · "`, states the context as *headroom left* rather
+        than amount used, and shows the working directory with its branch,
+        ellipsised. CodeWhale formats token counts compactly for the same
+        reason. pi puts the location and the usage on their own line.
+
+        The key hints are the part worth copying most. Codex does not list them
+        here — it shows one, `Ctrl+X for shortcuts`, and keeps the other
+        fourteen behind that. A status line carrying every binding is a wall,
+        and it was most of why this one was unreadable.
+        """
+        from prompt_toolkit.formatted_text import HTML
+        from html import escape
+
+        f = self._status_fields()
+        left = 100 - f["pct"]
+        used = self._compact_tokens(f["tokens"])
+        cap = self._compact_tokens(f["max_context"])
+
+        where = f["cwd"]
+        branch = self._git_branch()
+        if branch:
+            where = f"{where} · {branch}"
+
+        parts = [
+            str(f["model"]),
+            str(f["mode"]),
+        ]
+        if f["mode"] == "coding":
+            parts.append(str(f["permission_mode"]))
+        if f["thinking"]:
+            parts.append("think:on")
+        parts.append(f"{left:.0f}% context left ({used}/{cap})")
+        parts.append(where)
+
+        line = " · ".join(escape(p) for p in parts if p)
+        line = self._ellipsise(line, 108)
+        # Dim throughout. Codex spends no colour on its footer at all, and the
+        # earlier version's red/amber/green percentage was this file's own idea.
+        out = f"  <ansibrightblack>{line}</ansibrightblack>"
+        if f["fleet"]:
+            out += f"\n  <ansibrightblack>{escape(str(f['fleet']))}</ansibrightblack>"
+        return HTML(out)
+
+    @staticmethod
+    def _ellipsise(text: str, width: int) -> str:
+        """Trailing `…`, the way all three truncate an over-long footer."""
+        return text if len(text) <= width else text[: width - 1] + "…"
+
+    def _git_branch(self) -> str:
+        """The branch, or "" when there is not one to show.
+
+        Shown because Codex and pi both show it: which branch the agent is
+        about to edit is worth not having to remember.
+
+        Cached. The subprocess costs ~10ms and the status line is drawn five
+        times a second, which would spend a twentieth of a core on a string
+        that changes when someone checks out a branch. Five seconds is short
+        enough that a checkout shows up while you are still looking at it.
+        """
+        import subprocess
+        import time
+
+        now = time.monotonic()
+        cached = getattr(self, "_git_branch_cache", None)
+        if cached is not None and now - cached[0] < 5.0:
+            return cached[1]
+
+        try:
+            out = subprocess.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=0.4,
+            )
+            name = out.stdout.strip()
+            branch = "" if out.returncode != 0 or name == "HEAD" else name
+        except Exception:
+            branch = ""
+        self._git_branch_cache = (now, branch)
+        return branch
+
+    def _run_fullscreen(self, *, bindings=None, style=None) -> None:
+        """Host the REPL in a long-lived Application that keeps the scrollback.
+
+        Two writers are redirected and one is not, which is the whole shape of
+        it. `self.console` is swapped for one that renders into the app's
+        writer — enough to move all 135 `_print` calls and every Rich panel,
+        table and Markdown block without touching them, because `_print` reads
+        `self.console` and nothing else. Streamed tokens go the same way.
+
+        stderr is deliberately left alone. Under the earlier alternate-screen
+        version it had to be captured, because anything written there landed on
+        a layout that owned the display. An inline viewport does not own those
+        rows: `patch_stdout` lifts the strip, lets the write through, and puts
+        it back, so a spinner behaves exactly as it does in the line-based REPL.
+
+        Everything is restored on exit. A console still pointed at a dead app
+        would silently swallow the goodbye and any error that caused it.
+        """
+        from cli.fullscreen import InlineREPL
+
+        repl = InlineREPL(
+            status=self._inline_status,
             completer=self._completer,
             key_bindings=bindings,
             style=style,
-            prompt=self._compute_prompt_str(),
+            placeholder="Ask NeoMind to do anything",
         )
 
         original_console = self.console
         sink = repl.sink(width=100)
         self.console = sink.console
-        # Every writer the REPL has is now pointed at the app: Rich through the
-        # console above, streamed tokens through this, and stderr through the
-        # guard below. A writer left pointing at the real terminal draws on top
-        # of the layout — the streamed answer landed on the input line before
-        # this existed.
         self._fullscreen_write = repl.write
 
         def submit(text: str) -> None:
@@ -1675,7 +1807,6 @@ class NeoMindInterface:
             if text.startswith("/"):
                 if not self._dispatch_input(text):
                     self.running = False
-                    repl.invalidate()
                     if repl._app is not None:
                         repl._app.exit()
                 return
@@ -1683,12 +1814,7 @@ class NeoMindInterface:
 
         repl.on_submit = submit
         try:
-            # stderr is taken for the duration, not just quietened at the known
-            # call sites. A real run showed why: the spinner's carriage returns
-            # went straight past the Application and shredded the layout, and
-            # it is one of thirteen places that write there.
-            with StderrGuard(repl.write):
-                repl.run()
+            repl.run()
         finally:
             self.console = original_console
             self._fullscreen_write = None
@@ -1700,9 +1826,11 @@ class NeoMindInterface:
     def _stream_writer(self):
         """Where streamed tokens go.
 
-        stdout in the line-based REPL, exactly as before. Under a full-screen
-        Application it is the app's transcript instead — set by
-        `_run_fullscreen`, which is the only place that knows an app exists.
+        stdout in the line-based REPL, exactly as before. Under the inline
+        Application it goes through the app's writer, which prints above the
+        viewport — set by `_run_fullscreen`, the only place that knows an app
+        exists. Wired to stdout regardless, the streamed answer was drawn on
+        the input line.
         """
         target = getattr(self, "_fullscreen_write", None)
         if target is not None:
@@ -1749,20 +1877,15 @@ class NeoMindInterface:
 
         The label can be updated dynamically via stop_event._label_ref[0].
 
-        Silent under a full-screen Application. The spinner writes carriage
-        returns and erase-line codes straight to stderr, which is a second
-        writer to a screen the Application believes it owns: in a real run the
-        frames landed on top of the layout and shredded it. The status bar is
-        already redrawing continuously there — that is the whole point of the
-        Application — so a separate liveness indicator has nothing to add.
+        Runs on both surfaces. It had to be silenced under the earlier
+        alternate-screen version, where its carriage returns landed on a layout
+        that owned the display; an inline viewport does not own those rows, and
+        `patch_stdout` lifts the strip out of the way, so the frames animate on
+        their own line exactly as they do in the line-based REPL.
         """
         stop_event = threading.Event()
         label_ref = [label]
         stop_event._label_ref = label_ref  # Expose for dynamic updates
-        from cli.fullscreen import fullscreen_enabled
-
-        if fullscreen_enabled():
-            return stop_event
         frames = itertools.cycle(self._SPINNER_FRAMES)
 
         def _spin():

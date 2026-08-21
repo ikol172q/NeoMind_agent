@@ -1,60 +1,104 @@
-"""The REPL as a long-lived full-screen Application.
+"""The REPL as a long-lived Application that keeps the terminal's scrollback.
 
-`neomind_interface.py:2355` records the problem and names this as the fix:
+`neomind_interface.py` has carried the problem in a comment for a while: once
+`session.prompt()` returns there is no Application to host `bottom_toolbar`, so
+the status bar is absent for the whole of a streaming turn — precisely when a
+user wants to know what is running and what it is costing. The fix it named
+was "moving the whole REPL into a long-lived Application".
 
-    prompt_toolkit's bottom_toolbar disappears because session.prompt() has
-    already returned and there is no running Application to host the toolbar.
-    ... without moving the whole REPL into a long-lived Application (the
-    expensive refactor).
+The first version of this did that with a **full-screen** Application, and
+paid for the persistent status bar by losing the terminal's scrollback: an
+alternate-screen application owns the display, so history had to be kept in a
+buffer of its own, `| tee` stopped meaning what it meant, and the transcript
+vanished on exit.
 
-It stopped being expensive. The phases that split the runtime out of the CLI
-cut the seams this needs, for a different reason: the 58 commands return a
-`CommandResult` and call `print` zero times, `session_renderer` writes through
-an injected callable, and `progress_display` is state rather than output. What
-is left coupled to the drawing is roughly 320 lines, and none of it is the
-part that took years to get right.
+That price turned out to be avoidable. Codex — one of three terminal agents
+installed on this machine — initialises its terminal with, in its own words,
+an "inline viewport; history stays in normal scrollback". It owns a strip at
+the bottom and nothing else. prompt_toolkit does the same thing with
+`full_screen=False` plus `patch_stdout`: verified before this was rewritten,
+by checking that the alternate-screen sequence is never emitted while the
+status bar still redraws and printed lines still land in scrollback.
 
-So this reuses rather than reimplements. Rich still renders every panel,
-table and Markdown block; it just renders into a buffer instead of onto the
-terminal, and prompt_toolkit draws the result. `ANSI()` round-trips colour,
-box drawing and CJK width intact — verified before this file was written,
-because the whole design rests on it.
+So there is no `Transcript` here any more. It existed only to stand in for a
+capability that had been given away, and the terminal does that job better
+than a bounded buffer ever could — search, selection and scroll all work
+again because they were never taken away.
 
-**The tradeoff is real and does not go away.** An alternate-screen application
-does not write to the terminal's scrollback. The transcript is the app's to
-keep, `| tee` no longer does what it did, and on exit the screen restores to
-whatever was there before. That is the price of a status bar that survives
-streaming, and it is why this ships behind a switch rather than as a
-replacement.
+The layout follows what Codex, pi and CodeWhale independently converged on:
+the input marked with a single glyph, one dim status line beneath it, parts
+separated by a middle dot rather than a pipe, and no rules — whitespace does
+the separating. Weight is spent on the one number that becomes a problem.
 """
 
 from __future__ import annotations
 
 import io
 import os
-from typing import Any, Callable, List, Optional
+from typing import Any, Callable, Optional
 
 
 def fullscreen_enabled() -> bool:
-    """Whether the REPL should run as a full-screen Application.
+    """Whether the REPL should run as a long-lived Application.
 
-    Read per call, never cached at import: flipping it is a restart, not a
-    rebuild. Off unless spelled exactly, so a typo lands on the path that has
-    years of use behind it rather than the new one.
+    On by default now. It kept the one thing the line-based REPL could not — a
+    status bar that survives a streaming turn — without giving up anything the
+    terminal already did, because an inline viewport leaves the scrollback
+    alone.
+
+    `NEOMIND_TUI=off` goes back, and the switch is read per call rather than
+    cached at import, so going back is a restart and not a rebuild. Only the
+    exact spellings turn it off: a typo should leave you on the default rather
+    than silently somewhere else.
     """
-    return os.getenv("NEOMIND_TUI", "").strip().lower() in ("1", "on", "true", "full")
+    value = os.getenv("NEOMIND_TUI", "").strip().lower()
+    return value not in ("0", "off", "false", "no", "legacy", "line")
+
+
+class _ForwardingFile:
+    """A file Rich can write to that hands each write straight on.
+
+    The obvious alternative — a `StringIO` plus a drain step — is what the
+    first version did, and it had a hole exactly the shape of the bug it
+    caused: `sink.print()` drained, `console.print()` did not. Handing the
+    console out meant every `_print` in the REPL wrote into a buffer nobody
+    emptied, so `/help` and every tool indicator went into it and stayed
+    there while streamed tokens, which took a different route, appeared
+    normally.
+
+    Forwarding on write removes the step that could be skipped.
+    """
+
+    def __init__(self, on_write: Callable[[str], None]) -> None:
+        self.on_write = on_write
+
+    def write(self, text: str) -> int:
+        if text:
+            self.on_write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        return None
+
+    def isatty(self) -> bool:
+        # Rich asks before deciding whether to emit control sequences. The
+        # destination is a terminal, even though this object is not one.
+        return True
+
+    @property
+    def encoding(self) -> str:
+        return "utf-8"
 
 
 class OutputSink:
     """Where everything the REPL prints ends up.
 
-    One object because a full-screen app cannot tolerate a second writer: a
-    single stray `print` lands in the middle of a redraw and corrupts the
-    frame. In line mode it forwards to the console it was given and behaves
-    exactly as before; in full-screen mode it captures Rich's own output and
-    hands the text to whoever is drawing.
+    One object because two writers to one screen is how a layout gets shredded.
+    In line mode it forwards to the console it was given and behaves exactly as
+    before; under the Application it hands Rich a console whose file writes
+    through to whoever is printing above the viewport.
 
-    Rich is not replaced. It is pointed at a buffer.
+    Rich is not replaced. It is pointed somewhere else.
     """
 
     def __init__(
@@ -67,15 +111,14 @@ class OutputSink:
     ) -> None:
         self.capture = capture
         self.on_write = on_write
-        self._buffer = io.StringIO()
         if capture:
             from rich.console import Console
 
-            # `force_terminal` is what makes Rich emit ANSI into a plain
-            # buffer; without it the markup is flattened and every colour,
-            # rule and table border is lost before prompt_toolkit ever sees it.
+            # `force_terminal` is what makes Rich emit ANSI at all when its
+            # file is not a tty; without it every colour, rule and table border
+            # is flattened away before it reaches the terminal.
             self.console = Console(
-                file=self._buffer,
+                file=_ForwardingFile(on_write or (lambda _t: None)),
                 force_terminal=True,
                 color_system="truecolor",
                 width=width,
@@ -84,189 +127,120 @@ class OutputSink:
         else:
             self.console = console
 
-    # ── the two ways the REPL emits ───────────────────────────────────────
-
     def print(self, *args: Any, **kwargs: Any) -> None:
         """Rich-flavoured output: markup, Markdown, tables, panels."""
         if self.console is not None:
             self.console.print(*args, **kwargs)
         else:
             print(*args, **kwargs)
-        self._drain()
 
     def write(self, text: str) -> None:
         """Raw text, as the streaming renderer produces it."""
         if self.capture:
-            self._buffer.write(text)
-            self._drain()
+            if self.on_write is not None:
+                self.on_write(text)
         else:
             import sys
 
             sys.stdout.write(text)
             sys.stdout.flush()
 
-    # ── capture plumbing ──────────────────────────────────────────────────
-
-    def _drain(self) -> None:
-        """Hand off whatever Rich just wrote, and reset the buffer.
-
-        Draining rather than accumulating: the buffer is a transport, not the
-        transcript. Letting it grow would mean re-rendering the whole session
-        on every token.
-        """
-        if not self.capture:
-            return
-        text = self._buffer.getvalue()
-        if not text:
-            return
-        self._buffer.seek(0)
-        self._buffer.truncate(0)
-        if self.on_write is not None:
-            self.on_write(text)
-
     def resize(self, width: int) -> None:
         if self.capture and self.console is not None:
             self.console.width = max(20, width)
 
 
-class Transcript:
-    """What the terminal's scrollback used to hold.
+class InlineREPL:
+    """A long-lived Application that owns the bottom strip and nothing else.
 
-    In line mode the terminal keeps everything and the app need not. A
-    full-screen app owns its own history or it has none, so this is not a
-    convenience — it is the thing standing in for a capability that was
-    removed.
-
-    Bounded, because a session that runs all day would otherwise grow without
-    limit. The bound is in lines rather than bytes so the number means
-    something to whoever tunes it.
-    """
-
-    def __init__(self, max_lines: int = 5000) -> None:
-        self.max_lines = max_lines
-        self._lines: List[str] = [""]
-
-    def append(self, text: str) -> None:
-        if not text:
-            return
-        parts = text.split("\n")
-        self._lines[-1] += parts[0]
-        self._lines.extend(parts[1:])
-        if len(self._lines) > self.max_lines:
-            # Drop from the front: the recent end is the part being read.
-            del self._lines[: len(self._lines) - self.max_lines]
-
-    def clear(self) -> None:
-        self._lines = [""]
-
-    @property
-    def text(self) -> str:
-        return "\n".join(self._lines)
-
-    def __len__(self) -> int:
-        return len(self._lines)
-
-
-class FullScreenREPL:
-    """The Application the REPL runs inside.
-
-    The layout is the whole point. The status bar is a `Window` in it, so it is
-    drawn on every frame — including the frames produced while a turn is
-    streaming, which is exactly when the old `bottom_toolbar` was absent and a
-    header line had to be printed into the scrollback to compensate.
+    The status bar is a `Window` in the layout, so it is drawn on every frame —
+    including the frames produced while a turn streams, which is exactly when
+    `bottom_toolbar` was absent before. Everything the turn prints goes to
+    stdout under `patch_stdout`, which lifts the viewport, writes above it, and
+    puts it back: the terminal keeps the history, and search, selection and
+    scrolling keep working because they were never taken away.
 
     A turn runs on a worker thread. Running it inline would block the event
     loop, nothing would redraw, and the status bar would freeze for the length
-    of the turn — the same symptom this exists to remove, arrived at from the
-    other direction.
+    of the turn — the same symptom this exists to remove, reached from the
+    other side.
     """
+
+    #: Marks the input. A single glyph rather than a box: Codex, pi and
+    #: CodeWhale all frame their input with one, and a full border in a strip
+    #: this short reads as heavier than what it contains.
+    PROMPT = "› "
 
     def __init__(
         self,
         *,
-        toolbar: Callable[[], Any],
+        status: Callable[[], Any],
         completer: Any = None,
         key_bindings: Any = None,
         style: Any = None,
         on_submit: Optional[Callable[[str], None]] = None,
-        prompt: str = "> ",
-        max_transcript_lines: int = 5000,
+        placeholder: str = "",
     ) -> None:
-        self.transcript = Transcript(max_lines=max_transcript_lines)
-        self.toolbar = toolbar
+        self.status = status
         self.on_submit = on_submit
-        self.prompt = prompt
+        self.placeholder = placeholder
         self._busy = False
         self._app: Any = None
-        self._follow = True          # stick to the bottom until the user scrolls
-        self._scroll = 0             # lines up from the bottom
         self._completer = completer
         self._extra_bindings = key_bindings
         self._style = style
+        self._patch: Any = None
+        self._worker: Any = None
 
     # ── output ────────────────────────────────────────────────────────────
 
     def write(self, text: str) -> None:
-        """Called from the worker thread as output is produced."""
-        self.transcript.append(text)
-        if self._follow:
-            self._scroll = 0
-        self.invalidate()
+        """Print above the viewport, from whichever thread produced it."""
+        if not text:
+            return
+        import sys
+
+        sys.stdout.write(text)
+        sys.stdout.flush()
 
     def invalidate(self) -> None:
         if self._app is not None:
             try:
                 self._app.invalidate()
             except Exception:
-                # A redraw request that arrives after the app has gone is not
+                # A redraw request arriving after the app has gone is not
                 # worth taking a turn down for.
                 pass
 
     def sink(self, width: int = 100) -> OutputSink:
         return OutputSink(capture=True, width=width, on_write=self.write)
 
+    def _two_line_status(self) -> bool:
+        """Whether the status needs a second row this frame.
+
+        Asked per frame rather than fixed, because the fleet line only exists
+        while a fleet is running; a permanently reserved row would be a blank
+        one most of the time.
+        """
+        try:
+            from prompt_toolkit.formatted_text import to_formatted_text
+
+            text = "".join(f[1] for f in to_formatted_text(self.status()))
+            return "\n" in text
+        except Exception:
+            return False
+
     # ── layout ────────────────────────────────────────────────────────────
 
     def _build(self) -> Any:
         from prompt_toolkit.application import Application
         from prompt_toolkit.buffer import Buffer
-        from prompt_toolkit.formatted_text import ANSI, HTML, to_formatted_text
-        from prompt_toolkit.key_binding import KeyBindings, merge_key_bindings
+        from prompt_toolkit.formatted_text import HTML, to_formatted_text
+        from prompt_toolkit.key_binding import merge_key_bindings
         from prompt_toolkit.layout import Layout
-        from prompt_toolkit.layout.containers import HSplit, Window
+        from prompt_toolkit.layout.containers import HSplit, VSplit, Window
         from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
         from prompt_toolkit.layout.dimension import Dimension
-
-        def transcript_fragments():
-            text = self.transcript.text
-            if self._scroll:
-                lines = text.split("\n")
-                end = max(1, len(lines) - self._scroll)
-                text = "\n".join(lines[:end])
-            return to_formatted_text(ANSI(text))
-
-        output_window = Window(
-            content=FormattedTextControl(transcript_fragments, focusable=False),
-            wrap_lines=True,
-            # Bottom-anchored: a REPL reads from the newest line, and a window
-            # that grows downward from the top leaves the newest output off
-            # screen until it happens to fill.
-            dont_extend_height=False,
-        )
-
-        def toolbar_fragments():
-            try:
-                value = self.toolbar()
-            except Exception as exc:  # noqa: BLE001 — a broken bar must not
-                # take down the app; it is decoration around a working REPL.
-                return to_formatted_text(HTML(f" <ansired>status unavailable: {exc}</ansired>"))
-            return to_formatted_text(value)
-
-        status_window = Window(
-            content=FormattedTextControl(toolbar_fragments, focusable=False),
-            height=Dimension(min=1, max=2),
-            style="class:bottom-toolbar",
-        )
 
         self.buffer = Buffer(
             completer=self._completer,
@@ -274,24 +248,57 @@ class FullScreenREPL:
             multiline=False,
             accept_handler=self._accept,
         )
-        input_window = Window(
-            content=BufferControl(buffer=self.buffer),
-            height=Dimension(min=1, max=6),
-        )
 
-        prompt_window = Window(
-            content=FormattedTextControl(lambda: [("class:prompt", self.prompt)]),
-            width=len(self.prompt),
-            dont_extend_width=True,
-        )
+        def status_fragments():
+            try:
+                return to_formatted_text(self.status())
+            except Exception as exc:  # noqa: BLE001 — decoration around a
+                # working REPL; a broken bar must not end the session.
+                return to_formatted_text(
+                    HTML(f"  <ansired>status unavailable: {exc}</ansired>")
+                )
 
-        from prompt_toolkit.layout.containers import VSplit
+        def prompt_fragments():
+            """The marker, plus the hint when there is nothing typed yet.
+
+            Drawn as part of the prompt rather than as its own window: a
+            separate column put the hint at the far side of the terminal, which
+            read as a second field instead of as a placeholder.
+            """
+            marker = [("class:prompt", self.PROMPT)]
+            if self.buffer.text or self._busy or not self.placeholder:
+                return marker
+            return marker + [("class:placeholder", self.placeholder)]
+
+        # Every window in the strip is pinned to its exact height. A window
+        # left free to grow takes the rest of the terminal with it — the first
+        # attempt put seven blank rows between the input and the status line,
+        # because the input was allowed to expand and did.
+        input_row = VSplit([
+            Window(
+                content=FormattedTextControl(prompt_fragments),
+                width=Dimension.exact(len(self.PROMPT)),
+            ),
+            Window(
+                content=BufferControl(buffer=self.buffer),
+                height=Dimension.exact(1),
+                # The hint is drawn *behind* the buffer rather than beside it,
+                # so it occupies the space the text will, the way a form
+                # placeholder does. Beside it, it read as a second column.
+                get_line_prefix=None,
+            ),
+        ])
 
         root = HSplit([
-            output_window,
-            Window(height=1, char="─", style="class:separator"),
-            status_window,
-            VSplit([prompt_window, input_window]),
+            # One blank row above. Codex spends its budget on space rather than
+            # rules, and that is most of why its strip reads as calm.
+            Window(height=Dimension.exact(1), char=" "),
+            input_row,
+            Window(height=Dimension.exact(1), char=" "),
+            Window(
+                content=FormattedTextControl(status_fragments, focusable=False),
+                height=Dimension.exact(1 + (1 if self._two_line_status() else 0)),
+            ),
         ])
 
         bindings = self._own_bindings()
@@ -299,9 +306,11 @@ class FullScreenREPL:
             bindings = merge_key_bindings([self._extra_bindings, bindings])
 
         self._app = Application(
-            layout=Layout(root, focused_element=input_window),
+            layout=Layout(root, focused_element=input_row),
             key_bindings=bindings,
-            full_screen=True,
+            # The whole point. An alternate screen would take the scrollback
+            # with it, which is the cost this design exists to avoid.
+            full_screen=False,
             style=self._style,
             mouse_support=False,
             refresh_interval=0.2,
@@ -319,29 +328,23 @@ class FullScreenREPL:
 
         @kb.add("c-c")
         def _interrupt(event):
-            # Same meaning as in the line-based REPL: interrupt the work, not
-            # the session. Exiting on Ctrl+C would lose a transcript the
-            # terminal is no longer keeping a copy of.
+            # Interrupt the work, not the session — the same meaning it has in
+            # the line-based REPL.
+            #
+            # The first version only printed "[interrupted]" and left the turn
+            # running. A real run showed the spinner counting past it to seven
+            # seconds: the message was a claim about something that had not
+            # happened, which is the failure this whole surface has been
+            # chasing elsewhere.
+            #
+            # The turn runs on a worker, so a KeyboardInterrupt raised here
+            # never reaches it. `_stream_and_render_session` already catches
+            # one — the line-based REPL depends on it — so the interrupt is
+            # delivered *into that thread* rather than reinvented.
             if self._busy:
-                self.write("\n[interrupted]\n")
+                self._interrupt_worker()
             else:
                 self.buffer.reset()
-
-        @kb.add("pageup")
-        def _up(event):
-            self._follow = False
-            self._scroll = min(self._scroll + 10, max(0, len(self.transcript) - 1))
-
-        @kb.add("pagedown")
-        def _down(event):
-            self._scroll = max(0, self._scroll - 10)
-            if self._scroll == 0:
-                self._follow = True
-
-        @kb.add("end")
-        def _bottom(event):
-            self._scroll = 0
-            self._follow = True
 
         return kb
 
@@ -352,7 +355,7 @@ class FullScreenREPL:
         buff.reset()
         if not text.strip() or self._busy:
             return False
-        self.write(f"\n{self.prompt}{text}\n")
+        self.write(f"\n{self.PROMPT}{text}\n")
         self._run_turn(text)
         return False
 
@@ -368,105 +371,59 @@ class FullScreenREPL:
             self.invalidate()
             try:
                 self.on_submit(text)
+            except KeyboardInterrupt:
+                # Delivered by `_interrupt_worker`. Silent on purpose: the
+                # turn's own handler catches this first and prints
+                # "[Interrupted]" itself, and saying so again put the word on
+                # screen twice. Reaching here at all only means the interrupt
+                # landed between statements rather than inside the turn.
+                pass
             except Exception as exc:  # noqa: BLE001
                 self.write(f"\n[error] {exc}\n")
             finally:
                 self._busy = False
+                self._worker = None
                 self.invalidate()
 
-        threading.Thread(target=work, daemon=True).start()
+        self._worker = threading.Thread(target=work, daemon=True)
+        self._worker.start()
+
+    def _interrupt_worker(self) -> None:
+        """Raise KeyboardInterrupt inside the thread running the turn.
+
+        `PyThreadState_SetAsyncExc` is the only way to interrupt a thread that
+        is not looking for it, which a streaming turn is not. It lands at the
+        next bytecode boundary — near-instant for a loop pumping tokens, and
+        the thread is a daemon either way, so a turn blocked in a syscall does
+        not outlive the session.
+        """
+        import ctypes
+        import threading
+
+        worker = getattr(self, "_worker", None)
+        if worker is None or not worker.is_alive():
+            return
+        ident = worker.ident
+        if ident is None:
+            return
+        raised = ctypes.pythonapi.PyThreadState_SetAsyncExc(
+            ctypes.c_ulong(ident), ctypes.py_object(KeyboardInterrupt)
+        )
+        if raised > 1:
+            # Undo an over-broad set, as CPython's own documentation requires.
+            ctypes.pythonapi.PyThreadState_SetAsyncExc(ctypes.c_ulong(ident), None)
 
     # ── lifecycle ─────────────────────────────────────────────────────────
 
     def run(self) -> None:
-        self._build().run()
+        """Run until Ctrl+D.
 
-
-class StderrGuard:
-    """Route stderr into the transcript for as long as the app owns the screen.
-
-    Thirteen places write ANSI to stderr — spinners, tool-progress lines, and
-    the erase-line codes that clear them. Every one is a second writer to a
-    screen the Application believes it owns, and in a real run they landed on
-    top of the layout and shredded it.
-
-    Teaching each call site about full-screen mode would be thirteen edits and
-    one missed edit away from the same corruption, and the next one added would
-    not know to ask. Taking the stream instead covers all of them, including
-    the ones written later.
-
-    Carriage returns and erase-line sequences are dropped rather than
-    forwarded: they mean "redraw this line in place", which a scrolling
-    transcript cannot honour and would render as gibberish. What remains is the
-    text a human wanted to see.
-    """
-
-    #: `\r`, and the CSI sequences a spinner uses to erase what it just wrote.
-    _CONTROL = None
-
-    def __init__(self, write: Callable[[str], None]) -> None:
-        self._write = write
-        self._saved: Any = None
-        self._pending = ""
-
-    def __enter__(self) -> "StderrGuard":
-        import re
-        import sys
-
-        if StderrGuard._CONTROL is None:
-            StderrGuard._CONTROL = re.compile(r"\r|\x1b\[[0-9;]*[KGJ]")
-        self._saved = sys.stderr
-        sys.stderr = self  # type: ignore[assignment]
-        return self
-
-    def __exit__(self, *exc: Any) -> None:
-        import sys
-
-        if self._saved is not None:
-            sys.stderr = self._saved
-            self._saved = None
-
-    # ── file-like surface ────────────────────────────────────────────────
-
-    def write(self, text: str) -> int:
-        if not text:
-            return 0
-        cleaned = StderrGuard._CONTROL.sub("", text)
-        if not cleaned.strip():
-            return len(text)
-        # A spinner redraws the same line ten times a second. Stripped of the
-        # carriage return that made it animate, that is ten lines a second in a
-        # transcript. Collapse consecutive repeats rather than short-circuiting
-        # each spinner by hand: the next one added will not know to ask.
-        #
-        # Compared with the braille glyphs removed. They are what makes a
-        # spinner a spinner — each frame is a *different* character — so
-        # comparing the raw text finds every frame distinct and collapses
-        # nothing, which is what the first version of this did.
-        stamp = self._despin(cleaned)
-        if stamp == self._pending:
-            return len(text)
-        self._pending = stamp
-        self._write(cleaned if cleaned.endswith("\n") else cleaned + "\n")
-        return len(text)
-
-    @staticmethod
-    def _despin(text: str) -> str:
-        """The line with its animation frame removed, for comparison only.
-
-        U+2800–U+28FF is the braille block, which is where every spinner in
-        this codebase draws its frames from.
+        `patch_stdout` is what makes a print from a worker thread land *above*
+        the viewport instead of through it. Without it the two writers fight
+        over the same rows and the strip is redrawn on top of the output.
         """
-        return "".join(c for c in text if not (0x2800 <= ord(c) <= 0x28FF)).strip()
+        from prompt_toolkit.patch_stdout import patch_stdout
 
-    def flush(self) -> None:
-        return None
-
-    def isatty(self) -> bool:
-        # False, deliberately. A library that asks is deciding whether to emit
-        # cursor control, and the honest answer for a transcript is no.
-        return False
-
-    @property
-    def encoding(self) -> str:
-        return "utf-8"
+        app = self._build()
+        with patch_stdout(raw=True):
+            app.run()
