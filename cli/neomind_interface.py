@@ -1635,6 +1635,102 @@ class NeoMindInterface:
         # Fallback: just print
         print(text)
 
+    def _run_fullscreen(self, *, bindings=None, style=None) -> None:
+        """Host the REPL in a long-lived Application.
+
+        The only structural difference from the line-based loop is where output
+        goes. `self.console` is swapped for one that renders into the app's
+        transcript, which is enough to move all 135 `_print` calls and every
+        Rich panel, table and Markdown block without touching them — `_print`
+        reads `self.console` and nothing else.
+
+        The console is restored on exit. Leaving it pointed at a dead app's
+        buffer would silently discard everything printed during shutdown,
+        including the goodbye and any error that caused it.
+        """
+        from cli.fullscreen import FullScreenREPL, StderrGuard
+
+        repl = FullScreenREPL(
+            toolbar=self._bottom_toolbar,
+            completer=self._completer,
+            key_bindings=bindings,
+            style=style,
+            prompt=self._compute_prompt_str(),
+        )
+
+        original_console = self.console
+        sink = repl.sink(width=100)
+        self.console = sink.console
+        # Every writer the REPL has is now pointed at the app: Rich through the
+        # console above, streamed tokens through this, and stderr through the
+        # guard below. A writer left pointing at the real terminal draws on top
+        # of the layout — the streamed answer landed on the input line before
+        # this existed.
+        self._fullscreen_write = repl.write
+
+        def submit(text: str) -> None:
+            text = text.strip()
+            if not text:
+                return
+            if text.startswith("/"):
+                if not self._dispatch_input(text):
+                    self.running = False
+                    repl.invalidate()
+                    if repl._app is not None:
+                        repl._app.exit()
+                return
+            self._stream_and_render(text)
+
+        repl.on_submit = submit
+        try:
+            # stderr is taken for the duration, not just quietened at the known
+            # call sites. A real run showed why: the spinner's carriage returns
+            # went straight past the Application and shredded the layout, and
+            # it is one of thirteen places that write there.
+            with StderrGuard(repl.write):
+                repl.run()
+        finally:
+            self.console = original_console
+            self._fullscreen_write = None
+            try:
+                self.chat.write_session_journal()
+            except Exception:
+                pass
+
+    def _stream_writer(self):
+        """Where streamed tokens go.
+
+        stdout in the line-based REPL, exactly as before. Under a full-screen
+        Application it is the app's transcript instead — set by
+        `_run_fullscreen`, which is the only place that knows an app exists.
+        """
+        target = getattr(self, "_fullscreen_write", None)
+        if target is not None:
+            return target
+        return lambda text: (sys.stdout.write(text), sys.stdout.flush())
+
+    def _dispatch_input(self, user_input: str) -> bool:
+        """Handle one submitted line. Returns False when the REPL should stop.
+
+        Extracted so the line-based loop and the full-screen Application run
+        the *same* dispatch. The alternative — a second copy for the new
+        surface — is the mistake this codebase already paid for once:
+        `main.headless_main()` used to run its own parse → authorize → execute
+        loop beside the REPL's, so "what may run without a human present" was
+        answered twice and drifted.
+
+        The three-way result of `_handle_local_command` is preserved exactly:
+        False stops, True means handled, and None means it was not a local
+        command after all and belongs to the agent.
+        """
+        result = self._handle_local_command(user_input)
+        if result is False:
+            return False
+        if result is True:
+            return True
+        self._stream_and_render(user_input)
+        return True
+
     # ── Helper: print via rich or plain ────────────────────────────────────
     def _print(self, msg: str):
         if self.console:
@@ -1652,10 +1748,21 @@ class NeoMindInterface:
         """Start a lightweight ANSI spinner on stderr. Returns a stop event.
 
         The label can be updated dynamically via stop_event._label_ref[0].
+
+        Silent under a full-screen Application. The spinner writes carriage
+        returns and erase-line codes straight to stderr, which is a second
+        writer to a screen the Application believes it owns: in a real run the
+        frames landed on top of the layout and shredded it. The status bar is
+        already redrawing continuously there — that is the whole point of the
+        Application — so a separate liveness indicator has nothing to add.
         """
         stop_event = threading.Event()
         label_ref = [label]
         stop_event._label_ref = label_ref  # Expose for dynamic updates
+        from cli.fullscreen import fullscreen_enabled
+
+        if fullscreen_enabled():
+            return stop_event
         frames = itertools.cycle(self._SPINNER_FRAMES)
 
         def _spin():
@@ -2623,8 +2730,13 @@ class NeoMindInterface:
             except Exception:
                 pass
 
+        # The renderer takes its writer rather than owning one, which is what
+        # lets the full-screen surface exist at all. Wiring it straight to
+        # stdout regardless is how the streamed answer ended up drawn on the
+        # input line: the Application owns the screen, and a write it did not
+        # make lands wherever the cursor happens to be.
         renderer = SessionRenderer(
-            write=lambda text: (sys.stdout.write(text), sys.stdout.flush()),
+            write=self._stream_writer(),
             write_markup=self._print,
             stop_spinner=_stop_spinner_and_clear,
             content_filter=content_filter,
@@ -2999,6 +3111,16 @@ class NeoMindInterface:
             "completion-menu.meta.completion.current": "bg:#3a3a5e #aaaaaa italic",
         })
 
+        # The full-screen surface reuses everything assembled above — the
+        # bindings, the completer, the style, the toolbar — and differs only in
+        # who hosts them. Branching here rather than earlier is deliberate: it
+        # keeps the two paths sharing one setup instead of two that drift.
+        from cli.fullscreen import fullscreen_enabled
+
+        if fullscreen_enabled():
+            self._run_fullscreen(bindings=bindings, style=style)
+            return
+
         try:
             session = PromptSession(
                 history=FileHistory(str(history_path)),
@@ -3134,12 +3256,9 @@ class NeoMindInterface:
 
                 # Try local commands first
                 if user_input.startswith("/"):
-                    result = self._handle_local_command(user_input)
-                    if result is False:
+                    if not self._dispatch_input(user_input):
                         break
-                    if result is True:
-                        continue
-                    # result is None → pass to agent core
+                    continue
 
                 # Send to agent core (which handles /search, /code, etc. and regular chat)
                 self._stream_and_render(user_input)
