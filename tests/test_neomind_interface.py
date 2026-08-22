@@ -417,30 +417,40 @@ class TestStatusBar(unittest.TestCase):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestWelcomeScreen(unittest.TestCase):
+    """What the banner has to tell you, not how it words it.
 
-    def test_chat_welcome_with_rich(self):
+    These used to assert on the exact strings `"chat mode"`, `"coding mode"`
+    and `"Tools ("`, which broke the moment the banner was reshaped even
+    though every one of those facts was still on screen. Asserting on the
+    fact — the mode is named, the tools are counted, the fallback prints —
+    survives a redesign and still fails if the fact goes missing.
+    """
+
+    @staticmethod
+    def _rich_output(mode):
         from cli.neomind_interface import NeoMindInterface
-        mock = _make_mock_chat(mode="chat")
+        mock = _make_mock_chat(mode=mode)
         iface = NeoMindInterface(mock)
         captured = StringIO()
         if iface.console:
             iface.console.file = captured
         iface.display_welcome()
-        output = captured.getvalue()
+        return captured.getvalue()
+
+    def test_chat_welcome_names_the_mode(self):
+        output = self._rich_output("chat")
         self.assertIn("neomind", output)
-        self.assertIn("chat mode", output)
+        self.assertIn("chat", output)
 
-    def test_coding_welcome_with_rich(self):
-        from cli.neomind_interface import NeoMindInterface
-        mock = _make_mock_chat(mode="coding")
-        iface = NeoMindInterface(mock)
-        captured = StringIO()
-        if iface.console:
-            iface.console.file = captured
-        iface.display_welcome()
-        output = captured.getvalue()
-        self.assertIn("coding mode", output)
-        self.assertIn("Tools (", output)   # now "Tools (52): ..."
+    def test_coding_welcome_names_the_mode_and_the_tools(self):
+        output = self._rich_output("coding")
+        self.assertIn("coding", output)
+        self.assertIn("tools", output.lower())
+
+    def test_coding_welcome_shows_the_workspace(self):
+        """Which directory the agent is about to edit is the one fact worth
+        never having to guess."""
+        self.assertIn("workspace", self._rich_output("coding").lower())
 
     def test_welcome_fallback(self):
         from cli.neomind_interface import NeoMindInterface
@@ -459,7 +469,7 @@ class TestWelcomeScreen(unittest.TestCase):
         with patch("builtins.print") as mock_print:
             iface.display_welcome()
             printed = " ".join(str(call) for call in mock_print.call_args_list)
-            self.assertIn("Tools", printed)
+            self.assertIn("tools", printed.lower())
 
 
 # ──────────────────────────────────────────────────────────────────────────────

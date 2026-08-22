@@ -34,7 +34,7 @@ from acp import schema
 
 from agent.runtime.events import TurnFailed, TurnFinished
 
-from .acp_translate import stop_reason_for, translate, turn_usage
+from .acp_translate import _tag, stop_reason_for, translate, turn_usage
 
 #: The protocol revision this server implements. Echoed back in `initialize`;
 #: a client that speaks something else sees the mismatch immediately rather
@@ -43,6 +43,15 @@ PROTOCOL_VERSION = 1
 
 #: Modes a client may switch between, matching the CLI's personalities.
 SESSION_MODES = ("chat", "coding", "fin")
+
+#: What a client is shown in a mode picker. The ids are the same strings
+#: `set_session_mode` validates, so a client can round-trip what it was given
+#: without knowing anything about NeoMind.
+SESSION_MODE_DESCRIPTIONS = {
+    "chat": ("Chat", "General conversation."),
+    "coding": ("Coding", "Reads and edits code in the workspace."),
+    "fin": ("Finance", "Markets, filings, and portfolio analysis."),
+}
 
 #: What an ACP client may reach for.
 #:
@@ -55,6 +64,55 @@ ACP_TOOLS = (
     "Read", "Glob", "Grep", "LS", "WebSearch", "WebFetch",
     "Write", "Edit", "Bash",
 )
+
+
+#: Returned by the cancel watcher so a caller can tell "the client answered
+#: with nothing" from "we stopped waiting". A sentinel rather than None,
+#: because None is already a meaningful answer here — it means denied.
+_CANCELLED = object()
+
+#: How often the cancel watcher looks. `session.cancelled` is a plain flag set
+#: from another task, so there is nothing to await on; this bounds how long a
+#: cancelled turn keeps a dialog open, and is short enough to feel immediate.
+_CANCEL_POLL_SECONDS = 0.05
+
+
+async def _cancelled(session: Any) -> Any:
+    """Resolve once the session is marked cancelled, never if it cannot be.
+
+    `getattr` rather than attribute access: the broker is handed whatever the
+    caller has, and a stand-in without the flag should mean "nothing will
+    cancel this" — not an AttributeError raised into a permission prompt.
+    """
+    while not getattr(session, "cancelled", False):
+        await asyncio.sleep(_CANCEL_POLL_SECONDS)
+    return _CANCELLED
+
+
+async def _first_of(*coros: Any) -> Any:
+    """Whichever finishes first; the rest are cancelled and awaited.
+
+    Awaiting the losers matters: a bare `task.cancel()` returns before the task
+    has actually stopped, and an in-flight `request_permission` left running
+    would deliver its answer into a turn that has already ended.
+    """
+    tasks = [asyncio.ensure_future(c) for c in coros]
+    try:
+        done, pending = await asyncio.wait(
+            tasks, return_when=asyncio.FIRST_COMPLETED
+        )
+        for task in pending:
+            task.cancel()
+        for task in pending:
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        return next(iter(done)).result()
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 @dataclass
@@ -113,7 +171,21 @@ class NeoMindACPAgent(acp.Agent):
     ) -> Any:
         return schema.InitializeResponse(
             protocol_version=PROTOCOL_VERSION,
-            agent_capabilities=schema.AgentCapabilities(load_session=False),
+            agent_capabilities=schema.AgentCapabilities(
+                load_session=False,
+                # `close_session` has always been implemented and never
+                # advertised, so no client called it and `_sessions` only ever
+                # grew — harmless for a per-run stdio process, a leak for a
+                # server that stays up. Only `close` is claimed: listing,
+                # deletion, forking and resuming are not implemented, and
+                # advertising them would invite calls that fail.
+                # Presence is the claim — the field takes a capability object,
+                # not a bool, and pydantic drops a bool without complaining, so
+                # `close=True` reads back as `None` and advertises nothing.
+                session_capabilities=schema.SessionCapabilities(
+                    close=schema.SessionCloseCapabilities(),
+                ),
+            ),
         )
 
     async def new_session(self, cwd: str, **kwargs: Any) -> Any:
@@ -140,7 +212,27 @@ class NeoMindACPAgent(acp.Agent):
             session_id=session_id, cwd=cwd, mode=self._default_mode,
             config=config,
         )
-        return schema.NewSessionResponse(session_id=session_id)
+        # Without this the modes are unreachable from outside: `set_session_mode`
+        # worked, but nothing told a client the ids existed, so a client with a
+        # mode picker had nothing to put in it and one without could only guess.
+        return schema.NewSessionResponse(
+            session_id=session_id,
+            modes=self._mode_state(self._default_mode),
+        )
+
+    @staticmethod
+    def _mode_state(current: str) -> Any:
+        return schema.SessionModeState(
+            current_mode_id=current,
+            available_modes=[
+                schema.SessionMode(
+                    id=mode_id,
+                    name=SESSION_MODE_DESCRIPTIONS[mode_id][0],
+                    description=SESSION_MODE_DESCRIPTIONS[mode_id][1],
+                )
+                for mode_id in SESSION_MODES
+            ],
+        )
 
     async def close_session(self, session_id: str, **kwargs: Any) -> Any:
         self._sessions.pop(session_id, None)
@@ -161,6 +253,17 @@ class NeoMindACPAgent(acp.Agent):
         # A fresh agent session is built per turn, so the next one picks this
         # up; nothing cached needs invalidating.
         self._agent_sessions.pop(session_id, None)
+        # A client that did not initiate the switch — a second one attached to
+        # the same session, or the same one after a reconnect — has no other way
+        # to learn the mode changed.
+        if self._client is not None:
+            await self._client.session_update(
+                session_id,
+                schema.CurrentModeUpdate(
+                    session_update=_tag(schema.CurrentModeUpdate),
+                    current_mode_id=mode_id,
+                ),
+            )
         return None
 
     # ── the turn ──────────────────────────────────────────────────────────
@@ -406,7 +509,7 @@ class NeoMindACPAgent(acp.Agent):
                         option_id="reject", name="Reject", kind="reject_once",
                     ),
                 ]
-                answer = await client.request_permission(
+                asking = asyncio.ensure_future(client.request_permission(
                     session.session_id,
                     schema.ToolCallUpdate(
                         tool_call_id=request_id,
@@ -417,7 +520,17 @@ class NeoMindACPAgent(acp.Agent):
                         raw_input=dict(params or {}) or None,
                     ),
                     options,
-                )
+                ))
+                # A cancel arriving while the dialog is up has to end the wait.
+                # ACP says a client that cancels answers the outstanding request
+                # with `cancelled`, but a client that just closes the dialog —
+                # or drops — sends nothing, and this used to sit here for the
+                # executor's full 300s permission timeout before the turn could
+                # finish. The user pressed Escape; they should not wait five
+                # minutes to find out it worked.
+                answer = await _first_of(asking, _cancelled(session))
+                if answer is _CANCELLED:
+                    return None
                 # `outcome` is a discriminated union: AllowedOutcome carries
                 # the chosen option_id, DeniedOutcome carries only
                 # outcome="cancelled" and has no option_id at all. Reading

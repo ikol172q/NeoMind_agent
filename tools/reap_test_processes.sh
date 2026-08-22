@@ -17,6 +17,16 @@ REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PATTERNS=(
   "python.* -m pytest .*tests/"          # the run itself
   "${REPO}/.venv/bin/python .*pytest"    # the run, launched by path
+  # A real-terminal test launches the CLI in an iTerm2 window. Closing the
+  # window is the user's to do — never this script's — but the interpreter
+  # behind it is a leftover like any other, and a full-screen app that lost
+  # its window keeps running forever waiting for input that cannot arrive.
+  "${REPO}/.venv/bin/python .*main\.py"
+  # An ACP client spawns NeoMind per run. A client that dies without closing
+  # stdin leaves this holding the pipe.
+  "${REPO}/.venv/bin/python -m agent\.integration\.acp_stdio"
+  # Front-end prototypes driven against that server.
+  "node .*neomind-tui/tui\.mjs"
 )
 
 found=0

@@ -705,3 +705,382 @@ class TestTheSessionRemembers:
         a, b = _Session(session_id="a", cwd="/tmp"), _Session(session_id="b", cwd="/tmp")
         NeoMindACPAgent._HistoryStore(a).append("a", {"role": "user", "content": "hi"})
         assert b.history == []
+
+
+class TestModesAreReachableFromOutside:
+    """`set_session_mode` worked; nothing told a client the modes existed.
+
+    NeoMind has had three personalities the whole time and validated switches
+    against them, but `NewSessionResponse` went out carrying only a session id.
+    A client with a mode picker had nothing to put in it, and one without could
+    only guess the ids. The capability was implemented and unreachable — the
+    same shape as the missing system prompt, one layer up.
+    """
+
+    def test_a_new_session_advertises_every_mode(self):
+        agent, _, _ = agent_with([])
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        assert resp.modes is not None, "a client is told nothing about modes"
+        ids = [m.id for m in resp.modes.available_modes]
+        assert ids == list(SESSION_MODES)
+
+    def test_the_advertised_ids_are_the_ones_set_mode_accepts(self):
+        """A client must be able to hand back exactly what it was given."""
+        agent, _, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            for mode in resp.modes.available_modes:
+                await agent.set_session_mode(resp.session_id, mode.id)
+            return agent._sessions[resp.session_id].mode
+
+        assert asyncio.run(go()) == SESSION_MODES[-1]
+
+    def test_each_mode_carries_something_displayable(self):
+        agent, _, _ = agent_with([])
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        for mode in resp.modes.available_modes:
+            assert mode.name and mode.name != mode.id
+            assert mode.description
+
+    def test_the_current_mode_is_the_one_the_session_starts_in(self):
+        agent, _, _ = agent_with([])
+        agent._default_mode = "fin"
+        resp = asyncio.run(agent.new_session(cwd="/tmp"))
+        assert resp.modes.current_mode_id == "fin"
+
+    def test_a_switch_notifies_the_client(self):
+        """A second client on the same session, or the same one after a
+        reconnect, has no other way to learn the mode moved."""
+        agent, client, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            await agent.set_session_mode(resp.session_id, "chat")
+
+        asyncio.run(go())
+        updates = [u for u in client.updates
+                   if type(u).__name__ == "CurrentModeUpdate"]
+        assert updates, "the mode changed and no client was told"
+        assert updates[-1].current_mode_id == "chat"
+
+    def test_the_notification_carries_its_discriminator(self):
+        """A union member without its tag is dropped by a strict client."""
+        agent, client, _ = agent_with([])
+
+        async def go():
+            resp = await agent.new_session(cwd="/tmp")
+            await agent.set_session_mode(resp.session_id, "chat")
+
+        asyncio.run(go())
+        update = [u for u in client.updates
+                  if type(u).__name__ == "CurrentModeUpdate"][-1]
+        assert update.session_update == "current_mode_update"
+
+
+class TestAdvertisedCapabilitiesMatchReality:
+    """A capability claim is a promise a client will act on.
+
+    Both directions are bugs. Claiming something unimplemented invites calls
+    that fail; implementing something unclaimed means nobody ever calls it —
+    which is how `close_session` came to exist for a surface where every client
+    leaked sessions instead.
+    """
+
+    @staticmethod
+    def _caps():
+        agent = NeoMindACPAgent(session_factory=lambda s: None)
+        return asyncio.run(agent.initialize(protocol_version=1)).agent_capabilities
+
+    def test_close_is_advertised_because_it_is_implemented(self):
+        caps = self._caps()
+        assert caps.session_capabilities is not None
+        # Presence is the claim; the field holds a capability object, and a
+        # bool put here is silently dropped back to None.
+        assert caps.session_capabilities.close is not None
+
+    def test_nothing_unimplemented_is_claimed(self):
+        """Each of these has no handler; claiming one would break a client that
+        believed it."""
+        caps = self._caps()
+        sc = caps.session_capabilities
+        for field in ("list", "delete", "fork", "resume"):
+            assert not getattr(sc, field), f"{field} advertised without a handler"
+        assert caps.load_session is False
+
+    def test_rich_content_is_not_claimed_because_the_turn_takes_text(self):
+        """`_prompt_text` names non-text blocks rather than understanding them,
+        so a client must not be told to send them."""
+        caps = self._caps()
+        pc = caps.prompt_capabilities
+        assert not pc.image and not pc.audio and not pc.embedded_context
+
+    def test_every_advertised_session_capability_has_a_handler(self):
+        """Derives the claim set from the response rather than listing it, so a
+        capability added later is covered without editing this test."""
+        caps = self._caps()
+        handlers = {
+            "close": "close_session",
+            "list": "list_sessions",
+            "delete": "delete_session",
+            "fork": "fork_session",
+            "resume": "load_session",
+        }
+        sc = caps.session_capabilities
+        for field, method in handlers.items():
+            if getattr(sc, field, None):
+                assert callable(getattr(NeoMindACPAgent, method, None)), (
+                    f"advertised {field} with no {method}()"
+                )
+
+
+class TestClosingASession:
+
+    def test_a_closed_session_is_gone(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            s = await agent.new_session(cwd="/tmp")
+            await agent.close_session(s.session_id)
+            return s.session_id in agent._sessions
+
+        assert asyncio.run(go()) is False
+
+    def test_closing_an_unknown_session_is_not_an_error(self):
+        """A client that closes twice, or after a reconnect, must not be
+        punished for it."""
+        agent, _, _ = agent_with([])
+        asyncio.run(agent.close_session("never-existed"))
+
+    def test_a_closed_session_cannot_be_prompted(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            s = await agent.new_session(cwd="/tmp")
+            await agent.close_session(s.session_id)
+            await agent.prompt(s.session_id, [])
+
+        with pytest.raises(ValueError):
+            asyncio.run(go())
+
+    def test_closing_one_session_leaves_the_other_alone(self):
+        agent, _, _ = agent_with([])
+
+        async def go():
+            a = await agent.new_session(cwd="/tmp")
+            b = await agent.new_session(cwd="/tmp")
+            await agent.close_session(a.session_id)
+            return b.session_id in agent._sessions
+
+        assert asyncio.run(go()) is True
+
+
+class TestTwoClientsDoNotShareOneConfig:
+    """The property Phase 6A established, and the one this surface breaks first.
+
+    Each ACP session forks its own config. That fork is bound around the turn
+    rather than at `session/new`, because the SDK runs every request in its own
+    task and a contextvar set in one is invisible to the next. These assert the
+    outcome — what the turn actually read — rather than that a bind was called,
+    since the earlier version called one and it had no effect by the time the
+    turn ran.
+    """
+
+    @staticmethod
+    def _agent_recording_config():
+        seen = []
+
+        def factory(session):
+            from agent_config import agent_config
+
+            seen.append({
+                "session_id": session.session_id,
+                "session_mode": session.mode,
+                "config_mode": getattr(agent_config, "mode", None),
+                "prompt": getattr(agent_config, "system_prompt", "") or "",
+            })
+            return FakeSession([ev(TurnFinished, response="")])
+
+        agent = NeoMindACPAgent(session_factory=factory)
+        agent.on_connect(FakeClient())
+        return agent, seen
+
+    @staticmethod
+    def _text(t="hi"):
+        return [schema.TextContentBlock(type="text", text=t)]
+
+    def test_interleaved_turns_each_read_their_own_mode(self):
+        agent, seen = self._agent_recording_config()
+
+        async def go():
+            a = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+            b = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+            await asyncio.create_task(agent.set_session_mode(a.session_id, "fin"))
+            await asyncio.create_task(agent.set_session_mode(b.session_id, "chat"))
+            await asyncio.gather(
+                asyncio.create_task(agent.prompt(a.session_id, self._text())),
+                asyncio.create_task(agent.prompt(b.session_id, self._text())),
+            )
+
+        asyncio.run(go())
+        assert [s["config_mode"] for s in seen] == [s["session_mode"] for s in seen], (
+            "a turn read a config whose mode was not its session's — one client "
+            "changed another's"
+        )
+        assert {s["config_mode"] for s in seen} == {"fin", "chat"}
+
+    def test_each_mode_brings_a_different_personality(self):
+        """Otherwise the switch renames the mode without changing the agent —
+        which is what it did before the config was told about it."""
+        agent, seen = self._agent_recording_config()
+
+        async def go():
+            for mode in SESSION_MODES:
+                s = await asyncio.create_task(agent.new_session(cwd="/tmp"))
+                await asyncio.create_task(agent.set_session_mode(s.session_id, mode))
+                await asyncio.create_task(agent.prompt(s.session_id, self._text()))
+
+        asyncio.run(go())
+        prompts = [s["prompt"] for s in seen]
+        assert all(prompts), "a mode ran with an empty system prompt"
+        assert len(set(prompts)) == len(SESSION_MODES), (
+            "two modes shared a system prompt; the switch is cosmetic"
+        )
+
+    def test_the_binding_is_released_after_the_turn(self):
+        """A turn must not leave its config bound behind it.
+
+        Awaited directly rather than through `create_task`: a task gets its own
+        copy of the context, so a leaked binding inside one is invisible from
+        outside it and the assertion would hold no matter what. Awaiting in the
+        caller's context is the case where failing to release actually shows —
+        the next turn in that context would run as this session.
+        """
+        from agent_config import agent_config
+
+        agent, _ = self._agent_recording_config()
+
+        async def go():
+            before = getattr(agent_config, "mode", None)
+            # Any mode but the ambient one. Switching to the mode the process
+            # already runs in makes before and after equal whatever happens,
+            # which is how this assertion silently stopped testing anything.
+            target = next(m for m in SESSION_MODES if m != before)
+            s = await agent.new_session(cwd="/tmp")
+            await agent.set_session_mode(s.session_id, target)
+            await agent.prompt(s.session_id, self._text())
+            return before, getattr(agent_config, "mode", None)
+
+        before, after = asyncio.run(go())
+        assert after == before, (
+            f"the turn left its config bound: mode is {after!r}, was {before!r}"
+        )
+
+
+class TestCancellingWhileADialogIsOpen:
+    """Escape has to end the wait, not start a five-minute one.
+
+    The broker awaited `client.request_permission` with nothing watching for
+    cancellation. ACP says a client that cancels answers the outstanding
+    request with `cancelled`, but one that simply closes its dialog — or drops
+    — sends nothing, and the executor's 300s permission timeout was then the
+    only thing that ended the turn.
+    """
+
+    @staticmethod
+    def _broker_and_session(*, answer_after: float):
+        asked = asyncio.Event()
+
+        class SlowClient:
+            async def session_update(self, session_id, update):
+                pass
+
+            async def request_permission(self, session_id, tool_call, options, **kw):
+                asked.set()
+                await asyncio.sleep(answer_after)
+                return None
+
+        agent = NeoMindACPAgent(session_factory=lambda s: None)
+        agent.on_connect(SlowClient())
+        return agent, asked
+
+    def test_a_cancel_ends_the_wait_promptly(self):
+        agent, asked = self._broker_and_session(answer_after=300)
+
+        async def go():
+            session = await agent.new_session(cwd="/tmp")
+            record = agent._sessions[session.session_id]
+            broker = agent._permission_broker(record)
+            task = asyncio.create_task(
+                broker.request(request_id="r1", tool_name="Edit", params={"path": "x"})
+            )
+            await asyncio.wait_for(asked.wait(), timeout=5)
+            record.cancelled = True
+            # Far below the 300s the client would take and the 300s executor
+            # ceiling, so passing means cancellation ended it, not a timeout.
+            return await asyncio.wait_for(task, timeout=5)
+
+        assert asyncio.run(go()) is None, "a cancelled request must not approve"
+
+    def test_an_answer_still_arrives_when_nothing_cancels(self):
+        """The watcher must not swallow a normal reply."""
+        approved = {}
+
+        class Client:
+            async def session_update(self, session_id, update):
+                pass
+
+            async def request_permission(self, session_id, tool_call, options, **kw):
+                approved["asked"] = tool_call.title
+                return schema.RequestPermissionResponse(
+                    outcome=schema.AllowedOutcome(outcome="selected", option_id="allow"),
+                )
+
+        agent = NeoMindACPAgent(session_factory=lambda s: None)
+        agent.on_connect(Client())
+
+        async def go():
+            session = await agent.new_session(cwd="/tmp")
+            broker = agent._permission_broker(agent._sessions[session.session_id])
+            return await broker.request(
+                request_id="r1", tool_name="Edit", params={"path": "x"},
+            )
+
+        result = asyncio.run(go())
+        assert approved["asked"] == "Edit"
+        assert result is not None, "an allowed call came back denied"
+        assert result.request_id == "r1"
+
+    def test_the_outstanding_request_is_not_left_running(self):
+        """A reply delivered after the turn ended would land nowhere, or worse,
+        into the next one."""
+        finished = []
+
+        class Client:
+            async def session_update(self, session_id, update):
+                pass
+
+            async def request_permission(self, session_id, tool_call, options, **kw):
+                try:
+                    await asyncio.sleep(300)
+                except asyncio.CancelledError:
+                    finished.append("cancelled")
+                    raise
+                return None
+
+        agent = NeoMindACPAgent(session_factory=lambda s: None)
+        agent.on_connect(Client())
+
+        async def go():
+            session = await agent.new_session(cwd="/tmp")
+            record = agent._sessions[session.session_id]
+            broker = agent._permission_broker(record)
+            task = asyncio.create_task(
+                broker.request(request_id="r1", tool_name="Edit", params={"path": "x"})
+            )
+            await asyncio.sleep(0.2)
+            record.cancelled = True
+            await asyncio.wait_for(task, timeout=5)
+
+        asyncio.run(go())
+        assert finished == ["cancelled"], "the client call was left in flight"

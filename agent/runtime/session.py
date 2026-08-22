@@ -28,6 +28,7 @@ answers times out rather than silently granting.
 from __future__ import annotations
 
 import asyncio
+import re
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Dict, List, Mapping, Optional, Sequence
 
@@ -58,6 +59,17 @@ from agent.runtime.llm_stream import (
 #: Matches the ceiling the headless loop used. A turn that wants more rounds
 #: than this is looping, not working.
 DEFAULT_MAX_TOOL_ROUNDS = 10
+
+#: Sent back when the model invents a tool-call spelling. Names the tool it was
+#: reaching for and restates the one shape the parser reads, because the failure
+#: is a formatting one and the model has no other way to learn that.
+_REISSUE_TOOL_CALL = (
+    "Your last message looked like a call to `{residue}`, but it was not in a "
+    "format this runtime can execute, so **nothing ran** and no file or command "
+    "was touched. Do not claim the action happened.\n\n"
+    "Reissue it exactly like this, on its own, with no surrounding prose:\n"
+    '<tool_call>{{"tool": "{residue}", "params": {{...}}}}</tool_call>'
+)
 
 #: Tool output beyond this goes to the store; the event carries a preview.
 #: Same 5000 the headless loop used, kept so migrated output does not change
@@ -190,6 +202,7 @@ class AgentSession:
         yield _ev(TurnStarted, normalized_input=text, mode=self.mode, model=self.model)
 
         answer_parts: List[str] = []
+        corrected = False
         try:
             for round_index in range(self.max_tool_rounds + 1):
                 if turn_id in self._cancelled_turns:
@@ -211,6 +224,37 @@ class AgentSession:
                 tool_call = self._parse_tool_call(assistant_text)
 
                 if tool_call is None:
+                    residue = self._unexecuted_tool_call(assistant_text)
+                    if residue and not corrected:
+                        # The model wrote something shaped like a call to a real
+                        # tool in a spelling the parser does not read, so nothing
+                        # ran. Accepting this as the answer is how a turn comes
+                        # to report edits it never made. Say so, and give it one
+                        # chance to reissue the call properly.
+                        corrected = True
+                        self._append({"role": "assistant", "content": assistant_text})
+                        self._append({
+                            "role": "user",
+                            "content": _REISSUE_TOOL_CALL.format(residue=residue),
+                        })
+                        yield _ev(
+                            StatusChanged,
+                            code="tool_call_unparsed",
+                            text=f"Unrecognised tool call ({residue}); nothing ran — retrying.",
+                        )
+                        continue
+                    if residue:
+                        # It happened again after being told. The prose is kept,
+                        # because it may still hold something useful, but the
+                        # turn must not read as a completed action.
+                        yield _ev(
+                            StatusChanged,
+                            code="tool_call_unparsed_final",
+                            text=(
+                                f"Unrecognised tool call ({residue}) — no tool ran. "
+                                "Any action described above did not happen."
+                            ),
+                        )
                     self._append({"role": "assistant", "content": assistant_text})
                     answer_parts.append(assistant_text)
                     break
@@ -377,6 +421,74 @@ class AgentSession:
                 "_tool_result": True,
             }
         )
+
+    def _known_tool_names(self) -> List[str]:
+        """Tool names the executor would actually accept.
+
+        The residue check keys off these rather than off the shape alone: an
+        answer that merely discusses tool syntax should not be treated as a
+        failed call, and requiring a real name is what separates the two.
+        """
+        registry = getattr(self.executor, "registry", None)
+        if registry is None:
+            return []
+        # `get_all_tools` is what the real registry offers; the others are here
+        # for fakes and for registries that grow a cheaper accessor later. The
+        # order matters only in that the real one must be reachable — an
+        # unreachable list would leave the residue check silently inert.
+        getter = getattr(registry, "get_all_tools", None)
+        if callable(getter):
+            try:
+                return [str(getattr(t, "name", t)) for t in getter()]
+            except Exception:
+                pass
+        for attr in ("tool_names", "names"):
+            getter = getattr(registry, attr, None)
+            if callable(getter):
+                try:
+                    return [str(n) for n in getter()]
+                except Exception:
+                    pass
+        tools = getattr(registry, "tools", None)
+        if isinstance(tools, Mapping):
+            return [str(n) for n in tools]
+        return []
+
+    def _unexecuted_tool_call(self, text: str) -> str:
+        """Name the tool an unparsed invocation was aiming at, or "".
+
+        A model that improvises a spelling — `[tool:Edit]` was the one seen in
+        the wild — produces text the parser reads as prose, so the turn ends
+        looking successful while nothing ran. The parser cannot report this:
+        from where it sits, "no tool call" and "a tool call I cannot read" are
+        the same answer.
+
+        Deliberately narrow. It fires only when the text names a registered
+        tool in an invocation-like shape, so prose *about* a tool does not trip
+        it, and a genuinely unrelated answer never does.
+        """
+        if not text:
+            return ""
+        names = self._known_tool_names()
+        if not names:
+            return ""
+        alternation = "|".join(re.escape(n) for n in sorted(names, key=len, reverse=True))
+        shapes = (
+            # `[tool:Edit]`, `[tool: Edit]` — the improvised form seen in the wild.
+            rf"\[\s*tool\s*:\s*({alternation})\s*\]",
+            # A delimited payload naming a tool. This runs only after the parser
+            # declined, so a match means the call was truncated, mis-delimited,
+            # or carried malformed JSON — all cases where nothing executed and
+            # the text must not pass as an answer.
+            rf"<tool_call>(?:(?!</tool_call>).)*?[\"']?({alternation})[\"']?",
+            # Bare structured payload with no delimiters at all.
+            rf"\{{\s*[\"']tool[\"']\s*:\s*[\"']({alternation})[\"']",
+        )
+        for pattern in shapes:
+            match = re.search(pattern, text, re.DOTALL)
+            if match:
+                return match.group(1)
+        return ""
 
     def _parse_tool_call(self, text: str):
         if not self._tool_parser or not text:
