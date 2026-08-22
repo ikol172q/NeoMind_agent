@@ -650,3 +650,90 @@ class TestTheStatusLineIsReadableOnAnyTheme:
 
         trimmed = NeoMindInterface._ellipsise("中文" * 30, 20)
         assert NeoMindInterface._display_width(trimmed) <= 20
+
+
+class TestOneTurnDoesNotEatThePrevious:
+    """Asking a second question erased the answer to the first.
+
+    A streamed reply usually ends without a newline, so the cursor stays parked
+    on that row. `StdoutProxy` lifts the strip out of the way by whole lines
+    and puts it back, so the next turn's repaint took the row the answer was
+    still sitting on. The same partial row being repainted on every token is
+    also what the flicker was.
+    """
+
+    @staticmethod
+    def _repl():
+        from prompt_toolkit.formatted_text import HTML
+
+        return InlineREPL(status=lambda: HTML(" bar"))
+
+    def test_a_turn_ends_on_a_fresh_line(self):
+        repl = self._repl()
+        written = []
+        with mock.patch.object(sys, "stdout") as out:
+            repl.write("第一个答案")          # streamed, no trailing newline
+            repl._end_line()
+            written = [c.args[0] for c in out.write.call_args_list if c.args]
+        assert written[-1] == "\n", "the cursor was left mid-line for the next repaint"
+
+    def test_a_line_already_closed_is_not_closed_twice(self):
+        """A blank line between turns is as wrong as none."""
+        repl = self._repl()
+        with mock.patch.object(sys, "stdout") as out:
+            repl.write("answer\n")
+            repl._end_line()
+            written = [c.args[0] for c in out.write.call_args_list if c.args]
+        assert written == ["answer\n"]
+
+    def test_the_turn_closes_its_line_when_it_finishes(self):
+        """Asserted through a real turn: the fix has to be on the path a turn
+        takes, not only on the helper.
+
+        `write` is wrapped rather than replaced. Swapping it for a bare
+        `list.append` skips the bookkeeping `_end_line` reads, so the helper
+        never sees an open line and the assertion holds whatever the turn did.
+        """
+        import time
+
+        repl = self._repl()
+        written = []
+        real_write = repl.write
+
+        def spy(text):
+            written.append(text)
+            with mock.patch.object(sys, "stdout"):
+                real_write(text)
+
+        repl.write = spy
+        repl.on_submit = lambda _t: spy("streamed answer")
+        repl._run_turn("q")
+        time.sleep(0.4)
+        assert written[-1] == "\n", f"turn left the cursor mid-line: {written!r}"
+
+    def test_submitting_closes_an_open_line_first(self):
+        """If a turn was interrupted mid-line, the echo must not land on it."""
+        repl = self._repl()
+        repl._build()
+        written = []
+        repl.write = written.append
+        repl._at_line_start = False
+        repl.buffer.text = "next question"
+        repl._accept(repl.buffer)
+        assert written[0] == "\n"
+
+    def test_writes_are_batched_rather_than_flushed_per_token(self):
+        """One repaint per token is one flicker per token."""
+        assert InlineREPL.WRITE_INTERVAL > 0
+
+        import ast
+        import inspect
+        import textwrap
+
+        src = textwrap.dedent(inspect.getsource(InlineREPL.write))
+        calls = {
+            node.func.attr
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        }
+        assert "flush" not in calls, "flushing per write defeats the batching"

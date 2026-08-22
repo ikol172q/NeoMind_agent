@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import io
 import os
+import sys
 from typing import Any, Callable, Optional
 
 
@@ -186,6 +187,13 @@ class InlineREPL:
     #: this short reads as heavier than what it contains.
     PROMPT = "› "
 
+    #: How long the output proxy batches writes before painting. Every write
+    #: lifts the strip out of the way and puts it back, so one repaint per
+    #: token is one flicker per token. Long enough to coalesce a burst of
+    #: tokens, short enough that a reply still appears to stream.
+    #: Overridable so the interval can be measured rather than assumed.
+    WRITE_INTERVAL = float(os.getenv("NEOMIND_TUI_INTERVAL", "0.1"))
+
     def __init__(
         self,
         *,
@@ -206,6 +214,7 @@ class InlineREPL:
         self._style = style
         self._patch: Any = None
         self._worker: Any = None
+        self._at_line_start = True
 
     # ── output ────────────────────────────────────────────────────────────
 
@@ -215,8 +224,25 @@ class InlineREPL:
             return
         import sys
 
+        # Remembered so `_end_line` knows whether the cursor is mid-line.
+        # A streamed answer usually ends without a newline, which leaves the
+        # cursor parked on that row — and `patch_stdout` lifts the strip by
+        # whole lines, so the next turn's redraw erased the row the answer was
+        # still sitting on. That is the answer disappearing when you ask the
+        # next question, and the flicker: the same partial row was repainted
+        # on every write.
+        self._at_line_start = text.endswith("\n")
         sys.stdout.write(text)
-        sys.stdout.flush()
+        # Deliberately not flushed per token. `StdoutProxy` batches writes and
+        # emits them on its own cadence; flushing each one defeated that and
+        # made the strip lift and settle once per token — which is the flicker.
+        # A turn ends with `_end_line`, and the proxy drains on exit, so
+        # nothing is left unwritten.
+
+    def _end_line(self) -> None:
+        """Close the current line, if anything is on it."""
+        if not getattr(self, "_at_line_start", True):
+            self.write("\n")
 
     def invalidate(self) -> None:
         if self._app is not None:
@@ -386,6 +412,7 @@ class InlineREPL:
         buff.reset()
         if not text.strip() or self._busy:
             return False
+        self._end_line()
         self.write(f"\n{self.PROMPT}{text}\n")
         self._run_turn(text)
         return False
@@ -412,6 +439,8 @@ class InlineREPL:
             except Exception as exc:  # noqa: BLE001
                 self.write(f"\n[error] {exc}\n")
             finally:
+                # Land on a fresh row before the strip is drawn again.
+                self._end_line()
                 self._busy = False
                 self._worker = None
                 self.invalidate()
@@ -453,8 +482,18 @@ class InlineREPL:
         the viewport instead of through it. Without it the two writers fight
         over the same rows and the strip is redrawn on top of the output.
         """
-        from prompt_toolkit.patch_stdout import patch_stdout
+        from prompt_toolkit.patch_stdout import StdoutProxy
 
         app = self._build()
-        with patch_stdout(raw=True):
-            app.run()
+        # `StdoutProxy` directly rather than `patch_stdout`, which hardcodes
+        # its cadence. Batching writes is what stops the viewport being lifted
+        # and replaced on every token; the interval is short enough that
+        # streaming still reads as streaming.
+        with StdoutProxy(raw=True, sleep_between_writes=self.WRITE_INTERVAL) as proxy:
+            saved_out, saved_err = sys.stdout, sys.stderr
+            sys.stdout = proxy
+            sys.stderr = proxy
+            try:
+                app.run()
+            finally:
+                sys.stdout, sys.stderr = saved_out, saved_err
