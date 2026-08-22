@@ -1723,18 +1723,42 @@ class NeoMindInterface:
         parts.append(where)
 
         line = " · ".join(escape(p) for p in parts if p)
-        line = self._ellipsise(line, 108)
-        # Dim throughout. Codex spends no colour on its footer at all, and the
-        # earlier version's red/amber/green percentage was this file's own idea.
-        out = f"  <ansibrightblack>{line}</ansibrightblack>"
+        # Measured against the terminal, not a constant. Ellipsising at a
+        # fixed 108 left the line running off the side of an 80-column window,
+        # cut mid-token by the terminal rather than by us.
+        from cli.fullscreen import terminal_width
+
+        line = self._ellipsise(line, max(20, terminal_width() - 4))
+        # Dim as an *attribute*, not as palette colour 8. Codex uses ratatui's
+        # `.dim()`, which is SGR 2 — it keeps the theme's own foreground and
+        # lowers its intensity. `ansibrightblack` picks a fixed slot instead,
+        # and on a theme where that slot sits near the background the whole
+        # status line disappears. Copying the reference's colour word rather
+        # than what it actually does is how that happened.
+        out = f"  <status>{line}</status>"
         if f["fleet"]:
-            out += f"\n  <ansibrightblack>{escape(str(f['fleet']))}</ansibrightblack>"
+            out += f"\n  <status>{escape(str(f['fleet']))}</status>"
         return HTML(out)
 
-    @staticmethod
-    def _ellipsise(text: str, width: int) -> str:
-        """Trailing `…`, the way all three truncate an over-long footer."""
-        return text if len(text) <= width else text[: width - 1] + "…"
+    @classmethod
+    def _ellipsise(cls, text: str, width: int) -> str:
+        """Trailing `…`, the way all three truncate an over-long footer.
+
+        Measured in columns rather than characters: a status line carrying a
+        CJK branch or directory name is two columns per glyph, and trimming by
+        `len()` leaves it overflowing exactly where it was supposed to fit.
+        """
+        if cls._display_width(text) <= width:
+            return text
+        out = ""
+        used = 0
+        for ch in text:
+            step = cls._display_width(ch)
+            if used + step > width - 1:
+                break
+            out += ch
+            used += step
+        return out + "…"
 
     def _git_branch(self) -> str:
         """The branch, or "" when there is not one to show.
@@ -1787,16 +1811,27 @@ class NeoMindInterface:
         """
         from cli.fullscreen import InlineREPL
 
+        from prompt_toolkit.styles import Style, merge_styles
+
+        # `dim` rather than a colour, so the line inherits whatever foreground
+        # the terminal theme uses and simply reads as secondary. The
+        # placeholder is dimmer still; the prompt marker keeps full weight.
+        surface_style = Style([
+            ("status", "dim"),
+            ("placeholder", "dim italic"),
+            ("prompt", "bold"),
+        ])
+
         repl = InlineREPL(
             status=self._inline_status,
             completer=self._completer,
             key_bindings=bindings,
-            style=style,
+            style=merge_styles([style, surface_style]) if style else surface_style,
             placeholder="Ask NeoMind to do anything",
         )
 
         original_console = self.console
-        sink = repl.sink(width=100)
+        sink = repl.sink()   # sized to the terminal, and resized with it
         self.console = sink.console
         self._fullscreen_write = repl.write
 

@@ -55,6 +55,21 @@ def fullscreen_enabled() -> bool:
     return value not in ("0", "off", "false", "no", "legacy", "line")
 
 
+def terminal_width(default: int = 80) -> int:
+    """Columns the terminal actually has.
+
+    Asked rather than assumed, and asked again on resize: every width baked
+    into this file was wrong for every terminal but the one it was written in.
+    """
+    import shutil
+
+    try:
+        columns = shutil.get_terminal_size(fallback=(default, 24)).columns
+    except Exception:
+        return default
+    return columns if columns > 20 else default
+
+
 class _ForwardingFile:
     """A file Rich can write to that hands each write straight on.
 
@@ -212,8 +227,24 @@ class InlineREPL:
                 # worth taking a turn down for.
                 pass
 
-    def sink(self, width: int = 100) -> OutputSink:
-        return OutputSink(capture=True, width=width, on_write=self.write)
+    def sink(self, width: Optional[int] = None) -> OutputSink:
+        """A sink sized to the terminal, and resized when the terminal is.
+
+        The first version hardcoded 100 columns. Rich then wrapped at 100 in an
+        80-column window and the terminal re-wrapped what was left, which is
+        how a paragraph came out ragged with pieces missing. A width that is
+        not the terminal's is wrong at every width except one.
+        """
+        self._sink = OutputSink(
+            capture=True, width=width or terminal_width(), on_write=self.write,
+        )
+        return self._sink
+
+    def _resync_width(self) -> None:
+        """Follow the terminal across a resize."""
+        sink = getattr(self, "_sink", None)
+        if sink is not None:
+            sink.resize(terminal_width())
 
     def _two_line_status(self) -> bool:
         """Whether the status needs a second row this frame.

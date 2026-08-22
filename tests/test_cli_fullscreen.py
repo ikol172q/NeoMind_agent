@@ -566,3 +566,87 @@ class TestInterruptActuallyInterrupts:
         repl._interrupt_worker()
         time.sleep(0.4)
         assert "".join(written).lower().count("interrupted") == 1
+
+
+class TestTheStatusLineIsReadableOnAnyTheme:
+    """Dim as an attribute, not as palette colour 8.
+
+    Codex's footer is `.dim()` — ratatui's SGR 2, which keeps the terminal's
+    own foreground and lowers its intensity. The first version copied the word
+    and picked `ansibrightblack`, a fixed palette slot. On a theme where slot 8
+    sits near the background the whole line vanishes, which is what a user
+    reported: a status bar that was drawn and could not be seen.
+
+    Widths are the same class of mistake. Both the Rich console and the
+    ellipsis were hardcoded, so on any terminal that was not the one they were
+    written in, Rich wrapped at the wrong column and the terminal cut the line
+    mid-token.
+    """
+
+    @staticmethod
+    def _rendered(markup, style):
+        import io
+
+        from prompt_toolkit.formatted_text import HTML
+        from prompt_toolkit.output.vt100 import Vt100_Output
+        from prompt_toolkit.renderer import print_formatted_text
+
+        buf = io.StringIO()
+        out = Vt100_Output(buf, lambda: {"columns": 100, "rows": 30},
+                           term="xterm-256color")
+        print_formatted_text(out, HTML(markup), style)
+        return buf.getvalue()
+
+    def test_the_status_line_dims_without_choosing_a_colour(self):
+        from prompt_toolkit.styles import Style
+
+        raw = self._rendered("<status>model · coding</status>", Style([("status", "dim")]))
+        assert "\x1b[0;2m" in raw or ";2m" in raw, "no SGR 2 — it is not dimmed"
+        assert "38;5;8" not in raw and "\x1b[90m" not in raw, (
+            "a fixed palette slot was chosen; on a theme where it sits near the "
+            "background the line disappears"
+        )
+
+    def test_the_interface_supplies_that_style(self):
+        """Asserted on the parsed source: the style has to be attached where
+        the surface is built, or the class name renders as nothing at all."""
+        import ast
+        import inspect
+        import textwrap
+
+        from cli.neomind_interface import NeoMindInterface
+
+        src = textwrap.dedent(inspect.getsource(NeoMindInterface._run_fullscreen))
+        names = {
+            node.value
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+        }
+        assert "dim" in names, "nothing in the surface defines what `status` looks like"
+        assert "status" in names
+
+    def test_the_sink_is_sized_to_the_terminal(self):
+        from prompt_toolkit.formatted_text import HTML
+
+        from cli.fullscreen import terminal_width
+
+        repl = InlineREPL(status=lambda: HTML(" bar"))
+        assert repl.sink().console.width == terminal_width()
+
+    def test_the_status_line_is_trimmed_to_the_terminal(self):
+        """Trimming to a constant leaves it running off the side of a narrower
+        window, cut mid-token by the terminal rather than by us."""
+        from cli.neomind_interface import NeoMindInterface
+
+        with mock.patch("shutil.get_terminal_size") as size:
+            size.return_value = mock.Mock(columns=60)
+            trimmed = NeoMindInterface._ellipsise("x" * 200, 56)
+        assert len(trimmed) <= 56
+
+    def test_trimming_counts_columns_not_characters(self):
+        """A CJK branch or directory is two columns per glyph; trimming by
+        `len()` leaves it overflowing exactly where it was meant to fit."""
+        from cli.neomind_interface import NeoMindInterface
+
+        trimmed = NeoMindInterface._ellipsise("中文" * 30, 20)
+        assert NeoMindInterface._display_width(trimmed) <= 20
